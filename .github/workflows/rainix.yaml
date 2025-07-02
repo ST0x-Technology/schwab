@@ -35,7 +35,7 @@ jobs:
           # collect garbage until the Nix store size (in bytes) is at most this number
           gc-max-store-size-linux: 10G
 
-      # - run: nix develop -c rainix-sol-prelude
+      - run: nix develop -c rainix-sol-prelude
       - run: nix develop -c rainix-rs-prelude
 
       - name: Run ${{ matrix.task }}
