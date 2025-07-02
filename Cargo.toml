@@ -1,7 +1,11 @@
 [package]
-name = "schwarbot"
+name = "rain_schwab"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 alloy = { version = "1.0.9", features = ["full"] }
+anyhow = "1.0.98"
+clap = { version = "4.5.40", features = ["derive", "env"] }
+dotenv = "0.15.0"
+tokio = { version = "1.46.0", features = ["full"] }
