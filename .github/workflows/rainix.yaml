@@ -38,6 +38,7 @@ jobs:
       - run: (cd lib/rain.orderbook.interface/ && nix develop -c rainix-sol-prelude)
       - run: nix develop -c rainix-rs-prelude
 
+      - run: cp -v .env.example .env
       - run: nix develop -c sqlx db create
       - run: nix develop -c sqlx migrate run
 
