@@ -21,6 +21,13 @@
               (cd lib/forge-std/ && rainix-sol-prelude)
             '';
           };
+
+          checkTestCoverage = rainix.mkTask.${system} {
+            name = "check-test-coverage";
+            additionalBuildInputs = [ pkgs.cargo-tarpaulin ];
+            body =
+              "cargo-tarpaulin --skip-clean --exclude-files lib/* --out Html";
+          };
         };
 
         devShell = pkgs.mkShell {

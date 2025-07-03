@@ -1,18 +1,13 @@
-name: Rainix CI
+name: Test Coverage
 on: [push]
 
 concurrency:
-  group: ${{ github.ref }}-rainix
+  group: ${{ github.ref }}-test-coverage
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
   rainix:
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-        task: [rainix-rs-test, rainix-rs-static]
-      fail-fast: false
-    runs-on: ${{ matrix.os }}
+    runs-on: [ubuntu-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -36,10 +31,8 @@ jobs:
           gc-max-store-size-linux: 10G
 
       - run: nix run .#prepSolArtifacts
-
       - run: cp -v .env.example .env
       - run: nix develop -c sqlx db create
       - run: nix develop -c sqlx migrate run
-
-      - name: Run ${{ matrix.task }}
-        run: nix develop -c ${{ matrix.task }}
+      - run: nix run .#checkTestCoverage
+      - run: git diff --exit-code
