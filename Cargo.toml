@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 alloy = { version = "1.0.9", features = ["full"] }
 anyhow = "1.0.98"
+backon = { version = "1.5.1", features = ["tokio"] }
 clap = { version = "4.5.40", features = ["derive", "env"] }
 dotenvy = "0.15.7"
 futures-util = "0.3.31"

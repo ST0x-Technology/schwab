@@ -5,9 +5,11 @@ use futures_util::StreamExt;
 use sqlx::SqlitePool;
 
 mod bindings;
+mod symbol_cache;
 mod trade;
 
 use bindings::IOrderBookV4::IOrderBookV4Instance;
+use symbol_cache::SymbolCache;
 use trade::Trade;
 
 #[derive(Parser, Debug)]
@@ -25,6 +27,7 @@ pub struct Env {
 pub async fn run(env: Env, _pool: &SqlitePool) -> anyhow::Result<()> {
     let ws = WsConnect::new(env.ws_rpc_url);
     let provider = ProviderBuilder::new().connect_ws(ws).await?;
+    let cache = SymbolCache::default();
     let orderbook = IOrderBookV4Instance::new(env.orderbook, &provider);
 
     // let clear_filter = orderbook.ClearV2_filter().watch().await?;
@@ -40,9 +43,9 @@ pub async fn run(env: Env, _pool: &SqlitePool) -> anyhow::Result<()> {
 
             //     Trade::try_from_take_order(provider, event).await?
             // }
-            Some(log) = take_stream.next() => {
-                let (event, _) = log?;
-                Trade::try_from_take_order(&provider, event).await?
+            Some(take) = take_stream.next() => {
+                let (event, log) = take?;
+                Trade::try_from_take_order(&cache, &provider, event, log).await?
             }
         };
     }

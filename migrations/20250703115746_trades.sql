@@ -9,11 +9,10 @@ CREATE TABLE trades (
   onchain_output_amount REAL,
   onchain_io_ratio REAL,
 
-  schwab_input_symbol TEXT,
-  schwab_input_amount REAL,
-  schwab_output_symbol TEXT,
-  schwab_output_amount REAL,
-  schwab_io_ratio REAL,
+  schwab_ticker TEXT,
+  schwab_instruction TEXT, /* BUY or SELL */
+  schwab_quantity REAL,
+  schwab_price_cents INTEGER,
 
   status TEXT,
   schwab_order_id TEXT,
