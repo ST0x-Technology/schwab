@@ -9,7 +9,7 @@
   outputs = { self, flake-utils, rainix }:
     flake-utils.lib.eachDefaultSystem (system:
       let pkgs = rainix.pkgs.${system};
-      in {
+      in rec {
         packages = let rainixPkgs = rainix.packages.${system};
         in rainixPkgs // {
           prepSolArtifacts = rainix.mkTask.${system} {
@@ -25,16 +25,22 @@
           checkTestCoverage = rainix.mkTask.${system} {
             name = "check-test-coverage";
             additionalBuildInputs = [ pkgs.cargo-tarpaulin ];
-            body =
-              "cargo-tarpaulin --skip-clean --exclude-files lib/* --out Html";
+            body = ''
+              cargo-tarpaulin --skip-clean --exclude-files lib/* --out Html
+            '';
           };
         };
 
         devShell = pkgs.mkShell {
           shellHook = rainix.devShells.${system}.default.shellHook;
           buildInputs = with pkgs;
-            [ sqlx-cli bacon ]
-            ++ rainix.devShells.${system}.default.buildInputs;
+            [
+              sqlx-cli
+              bacon
+              cargo-tarpaulin
+              packages.prepSolArtifacts
+              packages.checkTestCoverage
+            ] ++ rainix.devShells.${system}.default.buildInputs;
           nativeBuildInputs =
             rainix.devShells.${system}.default.nativeBuildInputs;
         };
