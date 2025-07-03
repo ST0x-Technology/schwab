@@ -25,7 +25,8 @@
 
         devShell = pkgs.mkShell {
           shellHook = rainix.devShells.${system}.default.shellHook;
-          buildInputs = [ pkgs.sqlx-cli ]
+          buildInputs = with pkgs;
+            [ sqlx-cli bacon ]
             ++ rainix.devShells.${system}.default.buildInputs;
           nativeBuildInputs =
             rainix.devShells.${system}.default.nativeBuildInputs;
