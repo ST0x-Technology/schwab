@@ -7,8 +7,16 @@
   };
 
   outputs = { self, flake-utils, rainix }:
-    flake-utils.lib.eachDefaultSystem (system: {
-      packages = rainix.packages.${system};
-      devShells = rainix.devShells.${system};
-    });
+    flake-utils.lib.eachDefaultSystem (system:
+      let pkgs = rainix.pkgs.${system};
+      in {
+        packages = rainix.packages.${system};
+        devShell = pkgs.mkShell {
+          shellHook = rainix.devShells.${system}.default.shellHook;
+          buildInputs = [ pkgs.sqlx-cli ]
+            ++ rainix.devShells.${system}.default.buildInputs;
+          nativeBuildInputs =
+            rainix.devShells.${system}.default.nativeBuildInputs;
+        };
+      });
 }
