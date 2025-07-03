@@ -2984,7 +2984,10 @@ dependencies = [
  "anyhow",
  "clap",
  "dotenvy",
+ "futures-util",
+ "lazy_static",
  "sqlx",
+ "thiserror",
  "tokio",
  "url",
 ]

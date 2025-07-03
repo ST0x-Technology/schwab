@@ -9,7 +9,7 @@ async fn main() -> anyhow::Result<()> {
     let env = Env::try_parse()?;
     let pool = SqlitePool::connect(&env.database_url).await?;
 
-    run(env, pool).await?;
+    run(env, &pool).await?;
 
     Ok(())
 }
