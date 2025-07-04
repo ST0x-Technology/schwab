@@ -109,46 +109,8 @@ mod tests {
     use url::Url;
 
     use crate::bindings::IERC20::symbolCall;
-    use crate::bindings::IOrderBookV4::{EvaluableV3, IO, OrderV3};
+    use crate::test_utils::get_test_order;
     use crate::trade::SchwabInstruction;
-
-    fn get_test_order() -> OrderV3 {
-        OrderV3 {
-            owner: address!("0x1111111111111111111111111111111111111111"),
-            evaluable: EvaluableV3 {
-                interpreter: address!("0x2222222222222222222222222222222222222222"),
-                store: address!("0x3333333333333333333333333333333333333333"),
-                bytecode: alloy::primitives::bytes!("0x00"),
-            },
-            nonce: fixed_bytes!(
-                "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-            ),
-            validInputs: vec![
-                IO {
-                    token: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-                    decimals: 6,
-                    vaultId: U256::from(0),
-                },
-                IO {
-                    token: address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
-                    decimals: 18,
-                    vaultId: U256::from(0),
-                },
-            ],
-            validOutputs: vec![
-                IO {
-                    token: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-                    decimals: 6,
-                    vaultId: U256::from(0),
-                },
-                IO {
-                    token: address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
-                    decimals: 18,
-                    vaultId: U256::from(0),
-                },
-            ],
-        }
-    }
 
     fn get_env(
         orderbook: alloy::primitives::Address,

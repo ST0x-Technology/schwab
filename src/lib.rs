@@ -8,6 +8,9 @@ mod bindings;
 mod symbol_cache;
 mod trade;
 
+#[cfg(test)]
+pub mod test_utils;
+
 use bindings::IOrderBookV4::IOrderBookV4Instance;
 use symbol_cache::SymbolCache;
 use trade::Trade;
@@ -37,7 +40,7 @@ pub async fn run(env: Env, _pool: &SqlitePool) -> anyhow::Result<()> {
     let mut take_stream = take_filter.into_stream();
 
     loop {
-        let _trade = tokio::select! {
+        let trade = tokio::select! {
             Some(next_res) = clear_stream.next() => {
                 let (event, log) = next_res?;
                 Trade::try_from_clear_v2(&env, &cache, &provider, event, log).await?
@@ -47,5 +50,9 @@ pub async fn run(env: Env, _pool: &SqlitePool) -> anyhow::Result<()> {
                 Trade::try_from_take_order_if_target_order(&cache, &provider, event, log, env.order_hash).await?
             }
         };
+
+        if let Some(trade) = trade {
+            println!("TODO: dedup and trade: {trade:?}");
+        }
     }
 }

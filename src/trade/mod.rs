@@ -199,15 +199,14 @@ fn u256_to_f64(amount: U256, decimals: u8) -> Result<f64, ParseFloatError> {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::{LogData, U256, address, bytes, fixed_bytes};
+    use alloy::primitives::{U256, fixed_bytes};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
-    use alloy::rpc::types::Log;
     use alloy::sol_types::SolCall;
     use std::str::FromStr;
 
     use super::*;
     use crate::bindings::IERC20::symbolCall;
-    use crate::bindings::IOrderBookV4::{EvaluableV3, IO, OrderV3};
+    use crate::test_utils::{get_test_log, get_test_order};
 
     #[tokio::test]
     async fn test_try_from_order_and_fill_details_ok_sell_schwab() {
@@ -578,61 +577,5 @@ mod tests {
         let amount = U256::from(123456789u64); // 123.456789 with 6 decimals
         let expected = 123.456789_f64;
         assert!((u256_to_f64(amount, 6).unwrap() - expected).abs() < f64::EPSILON);
-    }
-
-    fn get_test_order() -> OrderV3 {
-        OrderV3 {
-            owner: address!("0x1111111111111111111111111111111111111111"),
-            evaluable: EvaluableV3 {
-                interpreter: address!("0x2222222222222222222222222222222222222222"),
-                store: address!("0x3333333333333333333333333333333333333333"),
-                bytecode: bytes!("0x00"),
-            },
-            nonce: fixed_bytes!(
-                "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-            ),
-            validInputs: vec![
-                IO {
-                    token: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-                    decimals: 6, // USDC
-                    vaultId: U256::from(0),
-                },
-                IO {
-                    token: address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
-                    decimals: 18, // Some stock token
-                    vaultId: U256::from(0),
-                },
-            ],
-            validOutputs: vec![
-                IO {
-                    token: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-                    decimals: 6, // USDC
-                    vaultId: U256::from(0),
-                },
-                IO {
-                    token: address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
-                    decimals: 18, // Some stock token
-                    vaultId: U256::from(0),
-                },
-            ],
-        }
-    }
-
-    fn get_test_log() -> Log {
-        Log {
-            inner: alloy::primitives::Log {
-                address: address!("0xfefefefefefefefefefefefefefefefefefefefe"),
-                data: LogData::empty(),
-            },
-            block_hash: None,
-            block_number: None,
-            block_timestamp: None,
-            transaction_hash: Some(fixed_bytes!(
-                "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-            )),
-            transaction_index: None,
-            log_index: Some(293),
-            removed: false,
-        }
     }
 }
