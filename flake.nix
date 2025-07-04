@@ -26,7 +26,8 @@
             name = "check-test-coverage";
             additionalBuildInputs = [ pkgs.cargo-tarpaulin ];
             body = ''
-              cargo-tarpaulin --skip-clean --exclude-files lib/* --out Html
+              # cargo-tarpaulin --skip-clean --exclude-files lib/* --out Html
+              cargo-tarpaulin --exclude-files lib/* --out Html --rustflags="-C opt-level=0"
             '';
           };
         };
