@@ -35,4 +35,9 @@ jobs:
       - run: nix develop -c sqlx db create
       - run: nix develop -c sqlx migrate run
       - run: nix run .#checkTestCoverage
-      - run: git diff --exit-code
+
+      - name: Archive trades.csv
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-coverage
+          path: tarpaulin-report.html
