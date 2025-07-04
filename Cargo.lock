@@ -3010,6 +3010,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "lazy_static",
+ "serde_json",
  "sqlx",
  "thiserror",
  "tokio",

@@ -87,7 +87,7 @@ impl Trade {
         order: OrderV3,
         fill: OrderFill,
         log: Log,
-    ) -> Result<Self, TradeConversionError> {
+    ) -> Result<Option<Self>, TradeConversionError> {
         let tx_hash = log.transaction_hash.ok_or(TradeConversionError::NoTxHash)?;
         let log_index = log.log_index.ok_or(TradeConversionError::NoLogIndex)?;
 
@@ -142,15 +142,17 @@ impl Trade {
         // if we're buying on schwab then we sold onchain, so we need to divide the onchain output amount
         // by the input amount. if we're selling on schwab then we bought onchain, so we need to divide the
         // onchain input amount by the output amount.
-        let onchain_price_per_share_cents = if schwab_instruction == SchwabInstruction::Buy {
-            if onchain_input_amount == 0.0 {
-                0
-            } else {
-                ((onchain_output_amount / onchain_input_amount) * 100.0) as u64
-            }
+        let onchain_price_per_share_usdc = if schwab_instruction == SchwabInstruction::Buy {
+            onchain_output_amount / onchain_input_amount
         } else {
-            ((onchain_input_amount / onchain_output_amount) * 100.0) as u64
+            onchain_input_amount / onchain_output_amount
         };
+
+        if onchain_price_per_share_usdc.is_nan() {
+            return Ok(None);
+        }
+
+        let onchain_price_per_share_cents = (onchain_price_per_share_usdc * 100.0) as u64;
 
         let trade = Trade {
             tx_hash,
@@ -167,7 +169,7 @@ impl Trade {
             schwab_instruction,
         };
 
-        Ok(trade)
+        Ok(Some(trade))
     }
 }
 
@@ -234,6 +236,7 @@ mod tests {
             get_test_log(),
         )
         .await
+        .unwrap()
         .unwrap();
 
         let expected_trade = Trade {
@@ -270,6 +273,7 @@ mod tests {
             get_test_log(),
         )
         .await
+        .unwrap()
         .unwrap();
 
         assert_eq!(trade.onchain_input_symbol, "USDC");
@@ -305,6 +309,7 @@ mod tests {
             get_test_log(),
         )
         .await
+        .unwrap()
         .unwrap();
 
         let expected_trade = Trade {
@@ -558,6 +563,21 @@ mod tests {
             TradeConversionError::InvalidSymbolConfiguration(ref input, ref output)
             if input == "FOOs1" && output == "BARs1"
         ));
+    }
+
+    #[test]
+    fn test_u256_to_f64() {
+        // zero amount
+        assert_eq!(u256_to_f64(U256::ZERO, 6).unwrap(), 0.0);
+
+        // 18 decimals (st0x-like)
+        let amount = U256::from_str("1000000000000000000").unwrap(); // 1.0
+        assert!((u256_to_f64(amount, 18).unwrap() - 1.0).abs() < f64::EPSILON);
+
+        // 6 decimals (USDC-like)
+        let amount = U256::from(123456789u64); // 123.456789 with 6 decimals
+        let expected = 123.456789_f64;
+        assert!((u256_to_f64(amount, 6).unwrap() - expected).abs() < f64::EPSILON);
     }
 
     fn get_test_order() -> OrderV3 {
