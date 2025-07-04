@@ -32,7 +32,7 @@ pub(crate) struct Trade {
     #[allow(dead_code)] // TODO: remove this once we store trades in db
     onchain_io_ratio: f64,
     #[allow(dead_code)] // TODO: remove this once we store trades in db
-    onchain_price_per_share: f64,
+    onchain_price_per_share_cents: u64,
 
     #[allow(dead_code)] // TODO: remove this once we store trades in db
     schwab_ticker: String,
@@ -144,10 +144,10 @@ impl Trade {
         // if we're buying on schwab then we sold onchain, so we need to divide the onchain output amount
         // by the input amount. if we're selling on schwab then we bought onchain, so we need to divide the
         // onchain input amount by the output amount.
-        let onchain_price_per_share = if schwab_instruction == SchwabInstruction::Buy {
-            onchain_output_amount / onchain_input_amount
+        let onchain_price_per_share_cents = if schwab_instruction == SchwabInstruction::Buy {
+            ((onchain_output_amount / onchain_input_amount) * 100.0) as u64
         } else {
-            onchain_input_amount / onchain_output_amount
+            ((onchain_input_amount / onchain_output_amount) * 100.0) as u64
         };
 
         let trade = Trade {
@@ -159,7 +159,7 @@ impl Trade {
             onchain_output_symbol,
             onchain_output_amount,
             onchain_io_ratio,
-            onchain_price_per_share,
+            onchain_price_per_share_cents,
 
             schwab_ticker,
             schwab_instruction,
@@ -270,7 +270,7 @@ mod tests {
             onchain_output_symbol: "FOOs1".to_string(),
             onchain_output_amount: 9.0,
             onchain_io_ratio: 100.0 / 9.0,
-            onchain_price_per_share: 100.0 / 9.0,
+            onchain_price_per_share_cents: 1111,
             schwab_ticker: "FOO".to_string(),
             schwab_instruction: SchwabInstruction::Sell,
         };
@@ -319,7 +319,7 @@ mod tests {
             onchain_output_symbol: "USDC".to_string(),
             onchain_output_amount: 100.0,
             onchain_io_ratio: 9.0 / 100.0,
-            onchain_price_per_share: 100.0 / 9.0,
+            onchain_price_per_share_cents: 1111,
             schwab_ticker: "BAR".to_string(),
             schwab_instruction: SchwabInstruction::Buy,
         };
