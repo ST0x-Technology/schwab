@@ -131,7 +131,7 @@ mod tests {
                 data: alloy::primitives::LogData::empty(),
             },
             block_hash: None,
-            block_number: Some(block_number.into()),
+            block_number: Some(block_number),
             block_timestamp: None,
             transaction_hash: Some(tx_hash),
             transaction_index: None,
