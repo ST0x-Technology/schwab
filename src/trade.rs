@@ -1,5 +1,7 @@
-use alloy::primitives::B256;
+use std::num::ParseFloatError;
+
 use alloy::primitives::ruint::FromUintError;
+use alloy::primitives::{B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::Log;
 
@@ -18,10 +20,18 @@ pub(crate) struct Trade {
     tx_hash: B256,
     #[allow(dead_code)] // TODO: remove this once we store trades in db
     log_index: u64,
+
     #[allow(dead_code)] // TODO: remove this once we store trades in db
     onchain_input_symbol: String,
     #[allow(dead_code)] // TODO: remove this once we store trades in db
+    onchain_input_amount: f64,
+    #[allow(dead_code)] // TODO: remove this once we store trades in db
     onchain_output_symbol: String,
+    #[allow(dead_code)] // TODO: remove this once we store trades in db
+    onchain_output_amount: f64,
+
+    // #[allow(dead_code)] // TODO: remove this once we store trades in db
+    // onchain_io_ratio: U256,
     #[allow(dead_code)] // TODO: remove this once we store trades in db
     schwab_ticker: String,
     #[allow(dead_code)] // TODO: remove this once we store trades in db
@@ -48,6 +58,8 @@ pub enum TradeConversionError {
         "Invalid symbol configuration. Expected one USDC and one s1-suffixed symbol but got {0} and {1}"
     )]
     InvalidSymbolConfiguration(String, String),
+    #[error("Failed to convert U256 to f64: {0}")]
+    U256ToF64(#[from] ParseFloatError),
 }
 
 impl Trade {
@@ -57,12 +69,19 @@ impl Trade {
         event: TakeOrderV2,
         log: Log,
     ) -> Result<Self, TradeConversionError> {
+        let TakeOrderV2 {
+            config,
+            input: input_amount,
+            output: output_amount,
+            sender: _,
+        } = event;
+
         let TakeOrderConfigV3 {
             order,
             inputIOIndex,
             outputIOIndex,
             signedContext: _,
-        } = event.config;
+        } = config;
 
         let tx_hash = log.transaction_hash.ok_or(TradeConversionError::NoTxHash)?;
         let log_index = log.log_index.ok_or(TradeConversionError::NoLogIndex)?;
@@ -78,6 +97,12 @@ impl Trade {
             .validOutputs
             .get(output_index)
             .ok_or(TradeConversionError::NoOutputAtIndex(output_index))?;
+
+        let input_decimals = input.decimals;
+        let onchain_input_amount = u256_to_f64(input_amount, input_decimals)?;
+
+        let output_decimals = output.decimals;
+        let onchain_output_amount = u256_to_f64(output_amount, output_decimals)?;
 
         let onchain_input_symbol = cache.get_io_symbol(&provider, input).await?;
         let onchain_output_symbol = cache.get_io_symbol(provider, output).await?;
@@ -112,15 +137,45 @@ impl Trade {
                 ));
             };
 
-        Ok(Trade {
+        let trade = Trade {
             tx_hash,
             log_index,
+
             onchain_input_symbol,
+            onchain_input_amount,
             onchain_output_symbol,
+            onchain_output_amount,
+
             schwab_ticker,
             schwab_instruction,
-        })
+        };
+
+        Ok(trade)
     }
+}
+
+/// Helper that converts a fixed‐decimal `U256` amount into an `f64` using
+/// the provided number of decimals.
+///
+/// NOTE: Parsing should never fail but precision may be lost.
+fn u256_to_f64(amount: U256, decimals: u8) -> Result<f64, ParseFloatError> {
+    if amount.is_zero() {
+        return Ok(0.);
+    }
+
+    let u256_str = amount.to_string();
+    let decimals = decimals as usize;
+
+    let formatted = if decimals == 0 {
+        u256_str
+    } else if u256_str.len() <= decimals {
+        format!("0.{}{}", "0".repeat(decimals - u256_str.len()), u256_str)
+    } else {
+        let (int_part, frac_part) = u256_str.split_at(u256_str.len() - decimals);
+        format!("{int_part}.{frac_part}")
+    };
+
+    formatted.parse::<f64>()
 }
 
 #[cfg(test)]
@@ -128,6 +183,7 @@ mod tests {
     use alloy::primitives::{LogData, U256, address, bytes, fixed_bytes};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
     use alloy::sol_types::SolCall;
+    use std::str::FromStr;
 
     use super::*;
     use crate::bindings::IERC20::symbolCall;
@@ -139,7 +195,7 @@ mod tests {
         asserter.push_failure_msg("reverted");
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
-        let take_order = get_take_order_event();
+        let take_order = get_take_order_event(true);
         let cache = SymbolCache::default();
 
         let error = Trade::try_from_take_order(&cache, &provider, take_order.clone(), get_log())
@@ -182,7 +238,7 @@ mod tests {
         ));
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
-        let take_order = get_take_order_event();
+        let take_order = get_take_order_event(true);
         let cache = SymbolCache::default();
 
         let trade = Trade::try_from_take_order(&cache, &provider, take_order.clone(), get_log())
@@ -195,7 +251,9 @@ mod tests {
             ),
             log_index: 293,
             onchain_input_symbol: "USDC".to_string(),
+            onchain_input_amount: 100.0,
             onchain_output_symbol: "FOOs1".to_string(),
+            onchain_output_amount: 9.0,
             schwab_ticker: "FOO".to_string(),
             schwab_instruction: SchwabInstruction::Sell,
         };
@@ -217,7 +275,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_try_from_take_order_ok_buy() {
+    async fn test_try_from_take_order_ok_schwab_buy() {
         let asserter = Asserter::new();
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"BARs1".to_string(),
@@ -227,7 +285,7 @@ mod tests {
         ));
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
-        let take_order = get_take_order_event();
+        let take_order = get_take_order_event(false);
         let cache = SymbolCache::default();
 
         let trade = Trade::try_from_take_order(&cache, &provider, take_order.clone(), get_log())
@@ -240,7 +298,9 @@ mod tests {
             ),
             log_index: 293,
             onchain_input_symbol: "BARs1".to_string(),
+            onchain_input_amount: 9.0,
             onchain_output_symbol: "USDC".to_string(),
+            onchain_output_amount: 100.0,
             schwab_ticker: "BAR".to_string(),
             schwab_instruction: SchwabInstruction::Buy,
         };
@@ -271,7 +331,7 @@ mod tests {
         ));
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
-        let take_order = get_take_order_event();
+        let take_order = get_take_order_event(true);
         let log = get_log();
         let cache = SymbolCache::default();
 
@@ -291,7 +351,7 @@ mod tests {
         asserter.push_failure_msg("decode error");
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
-        let take_order = get_take_order_event();
+        let take_order = get_take_order_event(false);
         let log = get_log();
         let cache = SymbolCache::default();
 
@@ -304,7 +364,7 @@ mod tests {
         // Test with a log missing transaction_hash
         let asserter = Asserter::new();
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
-        let take_order = get_take_order_event();
+        let take_order = get_take_order_event(true);
         let mut log = get_log();
         log.transaction_hash = None;
         let cache = SymbolCache::default();
@@ -318,7 +378,7 @@ mod tests {
         // Test with a log missing log_index
         let asserter = Asserter::new();
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
-        let take_order = get_take_order_event();
+        let take_order = get_take_order_event(false);
         let mut log = get_log();
         log.log_index = None;
         let cache = SymbolCache::default();
@@ -339,7 +399,7 @@ mod tests {
         ));
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
-        let take_order = get_take_order_event();
+        let take_order = get_take_order_event(true);
         let cache = SymbolCache::default();
 
         let err = Trade::try_from_take_order(&cache, &provider, take_order, get_log())
@@ -365,9 +425,10 @@ mod tests {
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_take_order(&cache, &provider, get_take_order_event(), get_log())
-            .await
-            .unwrap_err();
+        let err =
+            Trade::try_from_take_order(&cache, &provider, get_take_order_event(false), get_log())
+                .await
+                .unwrap_err();
         assert!(
             matches!(err, TradeConversionError::InvalidSymbolConfiguration(ref input, ref output) if input == "USDC" && output == "FOO"),
             "Expected InvalidSymbolConfiguration with USDC/FOO, got: {err:?}"
@@ -388,9 +449,10 @@ mod tests {
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_take_order(&cache, &provider, get_take_order_event(), get_log())
-            .await
-            .unwrap_err();
+        let err =
+            Trade::try_from_take_order(&cache, &provider, get_take_order_event(true), get_log())
+                .await
+                .unwrap_err();
         assert!(
             matches!(err, TradeConversionError::InvalidSymbolConfiguration(ref input, ref output) if input == "FOOs1" && output == "BARs1"),
             "Expected InvalidSymbolConfiguration with FOOs1/BARs1, got: {err:?}"
@@ -411,16 +473,17 @@ mod tests {
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_take_order(&cache, &provider, get_take_order_event(), get_log())
-            .await
-            .unwrap_err();
+        let err =
+            Trade::try_from_take_order(&cache, &provider, get_take_order_event(false), get_log())
+                .await
+                .unwrap_err();
         assert!(
             matches!(err, TradeConversionError::InvalidSymbolConfiguration(ref input, ref output) if input == "FOO" && output == "USDC"),
             "Expected InvalidSymbolConfiguration with FOO/USDC, got: {err:?}"
         );
     }
 
-    fn get_take_order_event() -> TakeOrderV2 {
+    fn get_take_order_event(buy: bool) -> TakeOrderV2 {
         TakeOrderV2 {
             sender: address!("0x0000000000000000000000000000000000000000"),
             config: TakeOrderConfigV3 {
@@ -434,23 +497,47 @@ mod tests {
                     nonce: fixed_bytes!(
                         "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
                     ),
-                    validInputs: vec![IO {
-                        token: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-                        decimals: 18,
-                        vaultId: U256::from(0),
-                    }],
-                    validOutputs: vec![IO {
-                        token: address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
-                        decimals: 18,
-                        vaultId: U256::from(0),
-                    }],
+                    validInputs: vec![
+                        IO {
+                            token: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                            decimals: 6,
+                            vaultId: U256::from(0),
+                        },
+                        IO {
+                            token: address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+                            decimals: 18,
+                            vaultId: U256::from(0),
+                        },
+                    ],
+                    validOutputs: vec![
+                        IO {
+                            token: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                            decimals: 6,
+                            vaultId: U256::from(0),
+                        },
+                        IO {
+                            token: address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+                            decimals: 18,
+                            vaultId: U256::from(0),
+                        },
+                    ],
                 },
-                inputIOIndex: U256::from(0),
-                outputIOIndex: U256::from(0),
+                inputIOIndex: if buy { U256::from(0) } else { U256::from(1) },
+                outputIOIndex: if buy { U256::from(1) } else { U256::from(0) },
                 signedContext: vec![],
             },
-            input: U256::from(100),
-            output: U256::from(100),
+            // 100 bucks or 9 shares
+            input: if buy {
+                U256::from(100000000)
+            } else {
+                U256::from_str("9000000000000000000").unwrap()
+            },
+            // 9 shares or 100 bucks
+            output: if buy {
+                U256::from_str("9000000000000000000").unwrap()
+            } else {
+                U256::from(100000000)
+            },
         }
     }
 
