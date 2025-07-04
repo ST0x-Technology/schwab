@@ -25,27 +25,26 @@ pub struct Env {
 }
 
 pub async fn run(env: Env, _pool: &SqlitePool) -> anyhow::Result<()> {
-    let ws = WsConnect::new(env.ws_rpc_url);
+    let ws = WsConnect::new(env.ws_rpc_url.as_str());
     let provider = ProviderBuilder::new().connect_ws(ws).await?;
     let cache = SymbolCache::default();
     let orderbook = IOrderBookV4Instance::new(env.orderbook, &provider);
 
-    // let clear_filter = orderbook.ClearV2_filter().watch().await?;
+    let clear_filter = orderbook.ClearV2_filter().watch().await?;
     let take_filter = orderbook.TakeOrderV2_filter().watch().await?;
 
-    // let mut clear_stream = clear_filter.into_stream();
+    let mut clear_stream = clear_filter.into_stream();
     let mut take_stream = take_filter.into_stream();
 
     loop {
         let _trade = tokio::select! {
-            // Some(next_res) = clear_stream.next() => {
-            //     let (event, _) = next_res?;
-
-            //     Trade::try_from_take_order(provider, event).await?
-            // }
+            Some(next_res) = clear_stream.next() => {
+                let (event, log) = next_res?;
+                Trade::try_from_clear_v2(&env, &cache, &provider, event, log).await?
+            }
             Some(take) = take_stream.next() => {
                 let (event, log) = take?;
-                Trade::try_from_take_order(&cache, &provider, event, log).await?
+                Trade::try_from_take_order_if_target_order(&cache, &provider, event, log, env.order_hash).await?
             }
         };
     }
