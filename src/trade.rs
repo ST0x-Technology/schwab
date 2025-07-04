@@ -29,9 +29,11 @@ pub(crate) struct Trade {
     onchain_output_symbol: String,
     #[allow(dead_code)] // TODO: remove this once we store trades in db
     onchain_output_amount: f64,
+    #[allow(dead_code)] // TODO: remove this once we store trades in db
+    onchain_io_ratio: f64,
+    #[allow(dead_code)] // TODO: remove this once we store trades in db
+    onchain_price_per_share: f64,
 
-    // #[allow(dead_code)] // TODO: remove this once we store trades in db
-    // onchain_io_ratio: U256,
     #[allow(dead_code)] // TODO: remove this once we store trades in db
     schwab_ticker: String,
     #[allow(dead_code)] // TODO: remove this once we store trades in db
@@ -137,6 +139,17 @@ impl Trade {
                 ));
             };
 
+        let onchain_io_ratio = onchain_input_amount / onchain_output_amount;
+
+        // if we're buying on schwab then we sold onchain, so we need to divide the onchain output amount
+        // by the input amount. if we're selling on schwab then we bought onchain, so we need to divide the
+        // onchain input amount by the output amount.
+        let onchain_price_per_share = if schwab_instruction == SchwabInstruction::Buy {
+            onchain_output_amount / onchain_input_amount
+        } else {
+            onchain_input_amount / onchain_output_amount
+        };
+
         let trade = Trade {
             tx_hash,
             log_index,
@@ -145,6 +158,8 @@ impl Trade {
             onchain_input_amount,
             onchain_output_symbol,
             onchain_output_amount,
+            onchain_io_ratio,
+            onchain_price_per_share,
 
             schwab_ticker,
             schwab_instruction,
@@ -254,6 +269,8 @@ mod tests {
             onchain_input_amount: 100.0,
             onchain_output_symbol: "FOOs1".to_string(),
             onchain_output_amount: 9.0,
+            onchain_io_ratio: 100.0 / 9.0,
+            onchain_price_per_share: 100.0 / 9.0,
             schwab_ticker: "FOO".to_string(),
             schwab_instruction: SchwabInstruction::Sell,
         };
@@ -301,6 +318,8 @@ mod tests {
             onchain_input_amount: 9.0,
             onchain_output_symbol: "USDC".to_string(),
             onchain_output_amount: 100.0,
+            onchain_io_ratio: 9.0 / 100.0,
+            onchain_price_per_share: 100.0 / 9.0,
             schwab_ticker: "BAR".to_string(),
             schwab_instruction: SchwabInstruction::Buy,
         };
