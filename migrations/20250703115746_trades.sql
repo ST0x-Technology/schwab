@@ -10,7 +10,7 @@ CREATE TABLE trades (
   onchain_io_ratio REAL,
 
   schwab_ticker TEXT,
-  schwab_instruction TEXT, /* BUY or SELL */
+  schwab_instruction TEXT CHECK (schwab_instruction IN ('BUY', 'SELL')),
   schwab_quantity REAL,
   schwab_price_cents INTEGER,
 
