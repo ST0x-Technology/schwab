@@ -5,6 +5,7 @@ use futures_util::StreamExt;
 use sqlx::SqlitePool;
 
 mod bindings;
+pub mod schwab_auth;
 mod symbol_cache;
 mod trade;
 
