@@ -25,7 +25,7 @@ CREATE TABLE trades (
 CREATE TABLE schwab_auth (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   access_token TEXT NOT NULL,
-  access_token_expires_at DATETIME NOT NULL,
+  access_token_fetched_at DATETIME NOT NULL,
   refresh_token TEXT NOT NULL,
-  refresh_token_expires_at DATETIME NOT NULL
+  refresh_token_fetched_at DATETIME NOT NULL
 );
