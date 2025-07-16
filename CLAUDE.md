@@ -4,141 +4,120 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a hybrid Rust and Solidity project that implements a trading system connecting blockchain transactions to Schwab brokerage API. The system:
+This is a Rust-based arbitrage bot for tokenized equities that monitors onchain trades via the Raindex orderbook and executes offsetting trades on Charles Schwab to maintain market-neutral positions. The bot bridges the gap between onchain tokenized equity markets and traditional brokerage platforms by exploiting price discrepancies.
 
-1. **Monitors blockchain events** from an Order Book contract using Alloy (Rust Ethereum library)
-2. **Processes trades** by parsing ClearV2 and TakeOrderV2 events
-3. **Maps onchain tokens** to traditional stock symbols (e.g., "FOOs1" token → "FOO" stock)
-4. **Interfaces with Schwab API** for OAuth authentication and order execution
-5. **Stores data** in SQLite database for persistence
+## Key Development Commands
 
-## Build and Development Commands
+### Building & Running
+- `cargo build` - Build the project
+- `cargo run --bin main` - Run the main arbitrage bot
+- `cargo run --bin auth` - Run the authentication flow for Charles Schwab OAuth setup
 
-### Rust Development
-```bash
-# Build the project
-cargo build
-
-# Run tests
-cargo test
-
-# Run integration tests
-cargo test --test integration
-
-# Run with coverage report
-cargo-tarpaulin --skip-clean --out Html
-# or use the nix task:
-nix run .#checkTestCoverage
-
-# Run the main application
-cargo run --bin main
-
-# Run the auth utility
-cargo run --bin auth
-```
-
-### Solidity Development
-```bash
-# Build Solidity contracts (via nix)
-nix run .#prepSolArtifacts
-
-# Or manually:
-cd lib/rain.orderbook.interface/ && forge build
-cd lib/forge-std/ && forge build
-```
-
-### Mock Server
-```bash
-# Start mock Schwab API server (for development/testing)
-npm run mock
-```
+### Testing
+- `cargo test` - Run all tests
+- `cargo test --lib` - Run library tests only
+- `cargo test --bin <binary>` - Run tests for specific binary
+- `cargo test <test_name>` - Run specific test
 
 ### Database Management
-```bash
-# Run database migrations
-sqlx migrate run
+- `sqlx migrate run` - Apply database migrations
+- `sqlx migrate revert` - Revert last migration
+- Database URL configured via `DATABASE_URL` environment variable
 
-# Set up database URL
-export DATABASE_URL="sqlite:schwab.db"
-```
+### Development Tools
+- `cargo clippy` - Run linter
+- `cargo fmt` - Format code
+- `cargo-tarpaulin --skip-clean --out Html` - Generate test coverage report
+- `bacon` - Watch mode for continuous compilation
 
-## Code Architecture
+### Mock Server
+- `npm run mock` - Start mock Charles Schwab API server on port 4020
 
-### Core Components
+### Nix Development Environment
+- `nix develop` - Enter development shell with all dependencies
+- `nix run .#prepSolArtifacts` - Build Solidity artifacts for orderbook interface
+- `nix run .#checkTestCoverage` - Generate test coverage report
 
-1. **`src/lib.rs`** - Main application entry point and event loop
-   - Sets up WebSocket connection to blockchain RPC
-   - Filters for OrderBook events (ClearV2, TakeOrderV2)
-   - Orchestrates trade processing pipeline
+## Architecture Overview
 
-2. **`src/schwab.rs`** - Schwab API integration
-   - OAuth 2.0 authentication flow
-   - Token storage and refresh logic
-   - Future: order execution API calls
+### Core Event Processing Flow
 
-3. **`src/trade/`** - Trade processing logic
-   - `mod.rs` - Core trade types and conversion logic
-   - `clear.rs` - Handles ClearV2 events (order clearing)
-   - `take_order.rs` - Handles TakeOrderV2 events (order taking)
+**Main Event Loop (`src/lib.rs:35-63`)**
+- Monitors two concurrent WebSocket event streams: `ClearV2` and `TakeOrderV2` from the Raindex orderbook
+- Uses `tokio::select!` to handle events from either stream without blocking
+- Converts blockchain events to structured `Trade` objects for processing
 
-4. **`src/symbol_cache.rs`** - Token symbol caching
-   - Caches ERC20 symbol() calls to avoid repeated RPC requests
-   - Maps contract addresses to human-readable symbols
+**Trade Conversion Logic (`src/trade/mod.rs`)**
+- Parses onchain events into actionable trade data with strict validation
+- Expects symbol pairs of USDC + tokenized equity with "s1" suffix (e.g., "AAPLs1")
+- Determines Schwab trade direction: buying tokenized equity onchain → selling on Schwab
+- Calculates prices in cents and maintains onchain/offchain trade ratios
 
-5. **`src/bindings.rs`** - Generated Solidity bindings
-   - Auto-generated from OrderBook and ERC20 interfaces
-   - Provides type-safe contract interaction
+**Async Event Processing Architecture**
+- Each blockchain event spawns independent async execution flow
+- Handles throughput mismatch: fast onchain events vs slower Schwab API calls
+- No artificial concurrency limits - processes events as they arrive
+- Flow: Parse Event → SQLite Deduplication Check → Schwab API Call → Record Result
 
-### Key Data Flow
+### Authentication & API Integration
 
-1. **Event Monitoring**: WebSocket listens for blockchain events
-2. **Event Parsing**: Extract order details and fill information
-3. **Symbol Resolution**: Map contract addresses to symbols (cached)
-4. **Trade Validation**: Ensure valid USDC ↔ stock token pairs
-5. **Schwab Mapping**: Convert onchain data to Schwab order format
-6. **Database Storage**: Persist trade records (TODO: implement)
+**Charles Schwab OAuth (`src/schwab.rs`)**
+- OAuth 2.0 flow with 30-minute access tokens and 7-day refresh tokens
+- Token storage and retrieval from SQLite database
+- Comprehensive error handling for authentication failures
+
+**Symbol Caching (`src/symbol_cache.rs`)**
+- Thread-safe caching of ERC20 token symbols using `tokio::sync::RwLock`
+- Prevents repeated RPC calls for the same token addresses
+
+### Database Schema & Idempotency
+
+**SQLite Tables:**
+- `trades`: Stores trade attempts with onchain/offchain details and unique `(tx_hash, log_index)` constraint
+- `schwab_auth`: Stores OAuth tokens with timestamps
+
+**Idempotency Controls:**
+- Uses `(tx_hash, log_index)` as unique identifier to prevent duplicate trade execution
+- Trade status tracking: pending → completed/failed
+- Retry logic with exponential backoff for failed trades
 
 ### Configuration
 
-The application uses environment variables and CLI arguments (via clap):
+Environment variables (can be set via `.env` file):
+- `DATABASE_URL`: SQLite database path
+- `WS_RPC_URL`: WebSocket RPC endpoint for blockchain monitoring  
+- `ORDERBOOK`: Raindex orderbook contract address
+- `ORDER_HASH`: Target order hash to monitor for trades
+- `APP_KEY`, `APP_SECRET`: Charles Schwab API credentials
+- `REDIRECT_URI`: OAuth redirect URI (default: https://127.0.0.1)
+- `BASE_URL`: Schwab API base URL (default: https://api.schwabapi.com)
 
-- `DATABASE_URL` - SQLite database connection string
-- `APP_KEY` / `APP_SECRET` - Schwab API credentials
-- `REDIRECT_URI` - OAuth redirect URI (default: https://127.0.0.1)
-- `BASE_URL` - Schwab API base URL (default: https://api.schwabapi.com)
-- `WS_RPC_URL` - Blockchain WebSocket RPC endpoint
-- `ORDERBOOK` - OrderBook contract address
-- `ORDER_HASH` - Specific order hash to monitor
+### Charles Schwab Setup Process
 
-### Token Symbol Convention
+1. Create Charles Schwab brokerage account (Charles Schwab International if outside US)
+2. Register developer account at https://developer.schwab.com/
+3. Set up as Individual Developer and request Trader API access
+4. Include your Charles Schwab account number in the API access request
+5. Wait 3-5 days for account linking approval
 
-The system expects a specific token naming pattern:
-- Onchain tokens end with "s1" suffix (e.g., "FOOs1", "BARs1")
-- Traditional stock symbols are derived by removing the "s1" suffix
-- USDC is used as the base currency for price calculations
+### Key Architectural Decisions
 
-### Database Schema
+- **Event-Driven Architecture**: Each trade spawns independent async task for maximum throughput
+- **SQLite Persistence**: Embedded database for trade tracking and authentication tokens
+- **Symbol Suffix Convention**: Tokenized equities use "s1" suffix to distinguish from base assets
+- **Price Direction Logic**: Onchain buy = offchain sell (and vice versa) to maintain market-neutral positions
+- **Comprehensive Error Handling**: Custom error types (`TradeConversionError`, `SchwabAuthError`) with proper propagation
 
-See `migrations/20250703115746_trades.sql` for the complete schema:
-- `trades` table stores transaction details and Schwab order information
-- `schwab_auth` table stores OAuth tokens with expiration tracking
+### Testing Strategy
 
-## Testing
+- **Mock Blockchain Interactions**: Uses `alloy::providers::mock::Asserter` for deterministic testing
+- **HTTP API Mocking**: `httpmock` crate for Charles Schwab API testing
+- **Database Isolation**: In-memory SQLite databases for test isolation
+- **Edge Case Coverage**: Comprehensive error scenario testing for trade conversion logic
 
-The project includes comprehensive unit tests with mocked blockchain providers:
-- Mock Alloy providers for testing contract interactions
-- Test utilities in `src/test_utils.rs`
-- Integration tests in `tests/integration.rs`
+### Known V1 Limitations
 
-## Development Environment
-
-This project uses Nix for reproducible development environments:
-- `flake.nix` defines the development shell
-- Includes tools: sqlx-cli, bacon, cargo-tarpaulin
-- Solidity build tools via rainix
-
-## Security Considerations
-
-- OAuth tokens are stored in SQLite with expiration tracking
-- Never commit API keys or secrets to version control
-- Use environment variables for sensitive configuration
+- **After-Hours Trading Gap**: Pyth oracle operates when traditional markets are closed
+- **Manual Rebalancing**: Inventory management via st0x bridge requires manual intervention
+- **Missed Trade Risk**: Bot downtime or API failures can create unhedged exposure
+- **No Circuit Breakers**: Limited risk management controls in initial implementation
