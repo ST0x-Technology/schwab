@@ -1,8 +1,9 @@
 use alloy::primitives::ruint::FromUintError;
-use alloy::primitives::{B256, U256};
+use alloy::primitives::{Address, B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::Log;
 use alloy::transports::{RpcError, TransportErrorKind};
+use clap::Parser;
 use std::num::ParseFloatError;
 
 use crate::bindings::IOrderBookV4::OrderV3;
@@ -10,6 +11,16 @@ use crate::symbol_cache::SymbolCache;
 
 mod clear;
 mod take_order;
+
+#[derive(Parser, Debug)]
+pub struct EvmEnv {
+    #[clap(short, long, env)]
+    pub ws_rpc_url: url::Url,
+    #[clap(short = 'b', long, env)]
+    pub orderbook: Address,
+    #[clap(short, long, env)]
+    pub order_hash: B256,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchwabInstruction {

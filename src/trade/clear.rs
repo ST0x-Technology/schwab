@@ -3,14 +3,13 @@ use alloy::providers::Provider;
 use alloy::rpc::types::{Filter, Log};
 use alloy::sol_types::{SolEvent, SolValue};
 
-use super::{OrderFill, Trade, TradeConversionError};
-use crate::Env;
+use super::{EvmEnv, OrderFill, Trade, TradeConversionError};
 use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
 use crate::symbol_cache::SymbolCache;
 
 impl Trade {
     pub(crate) async fn try_from_clear_v2<P: Provider>(
-        env: &Env,
+        env: &EvmEnv,
         cache: &SymbolCache,
         provider: P,
         event: ClearV2,
@@ -115,9 +114,8 @@ mod tests {
     fn get_env(
         orderbook: alloy::primitives::Address,
         order_hash: alloy::primitives::B256,
-    ) -> crate::Env {
-        crate::Env {
-            database_url: "sqlite::memory:".to_string(),
+    ) -> EvmEnv {
+        EvmEnv {
             ws_rpc_url: Url::parse("ws://localhost").unwrap(),
             orderbook,
             order_hash,

@@ -16,8 +16,16 @@ CREATE TABLE trades (
 
   status TEXT,
   schwab_order_id TEXT,
-  created_at TEXT,
-  completed_at TEXT,
+  created_at DATETIME NOT NULL,
+  completed_at DATETIME,
 
   UNIQUE (tx_hash, log_index)
+);
+
+CREATE TABLE schwab_auth (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  access_token TEXT NOT NULL,
+  access_token_expires_at DATETIME NOT NULL,
+  refresh_token TEXT NOT NULL,
+  refresh_token_expires_at DATETIME NOT NULL
 );
