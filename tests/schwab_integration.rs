@@ -4,8 +4,10 @@ use std::time::Duration as StdDuration;
 use tokio::time::{sleep, timeout};
 use url::Url;
 
-#[allow(unused_imports)]
+use rain_schwab::order::OrderRequestMinimal;
+use rain_schwab::schwab_auth::SchwabAuthError;
 use rain_schwab::schwab_auth::{AccessToken, SchwabClient};
+use rain_schwab::trade::SchwabInstruction;
 
 /// Spawn the Prism mock server defined in `package.json` (OpenAPI based mocks).
 /// Requires Node and `npm install` to have been run.
@@ -20,14 +22,8 @@ fn spawn_prism_mock() -> Child {
         .expect("failed to start prism mock server; ensure Node and prism are installed")
 }
 
-/// End-to-end test that exercises the Schwab OAuth flow and a sample API call
-/// against the locally mocked Trader API.
-///
-/// The test is `ignored` by default because it relies on the external Prism
-/// mock server started via `npm run mock`. Run it manually with:
-/// `cargo test --test schwab_integration -- --ignored`
 #[tokio::test]
-async fn test_trader_api_with_prism_mock() -> anyhow::Result<()> {
+async fn test_trader_api_with_prism_mock() -> Result<(), SchwabAuthError> {
     // Start Prism mock server serving the Trader API
     let mut prism = spawn_prism_mock();
 
@@ -42,12 +38,13 @@ async fn test_trader_api_with_prism_mock() -> anyhow::Result<()> {
             }
             sleep(StdDuration::from_millis(500)).await;
         }
-        Ok::<(), anyhow::Error>(())
+        Ok::<(), SchwabAuthError>(())
     };
 
     timeout(StdDuration::from_secs(TIMEOUT_SECS), prism_ready)
         .await
-        .map_err(|_| anyhow::anyhow!("Prism mock server did not become ready in time"))??;
+        .unwrap()
+        .unwrap();
 
     let api_base = Url::parse("http://127.0.0.1:4020").unwrap();
     // Use dummy access token – Prism ignores authentication headers.
@@ -59,12 +56,15 @@ async fn test_trader_api_with_prism_mock() -> anyhow::Result<()> {
 
     let client = SchwabClient::new(api_base, dummy_token);
 
-    // Call an endpoint exposed by the Prism mock
-    let json = client.get_account_numbers().await?;
-    assert!(
-        json.is_array(),
-        "accountNumbers should return an array JSON payload"
-    );
+    // Retrieve account hash
+    let hash_value = client.first_account_hash().await?;
+
+    // Preview order endpoint – Prism returns 200
+    let order = OrderRequestMinimal::market_equity("AAPL", 1, SchwabInstruction::Buy);
+    let preview_payload = serde_json::to_value(&order)?;
+
+    let status = client.preview_order(&hash_value, &preview_payload).await?;
+    assert_eq!(status, reqwest::StatusCode::OK);
 
     let _ = prism.kill();
     Ok(())

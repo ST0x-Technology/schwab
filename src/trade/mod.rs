@@ -17,6 +17,18 @@ pub enum SchwabInstruction {
     Sell,
 }
 
+impl serde::Serialize for SchwabInstruction {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(match self {
+            SchwabInstruction::Buy => "BUY",
+            SchwabInstruction::Sell => "SELL",
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Trade {
     #[allow(dead_code)] // TODO: remove this once we store trades in db
