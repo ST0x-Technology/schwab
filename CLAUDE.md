@@ -25,7 +25,8 @@ This is a Rust-based arbitrage bot for tokenized equities that monitors onchain 
 - Database URL configured via `DATABASE_URL` environment variable
 
 ### Development Tools
-- `cargo-clippy` - Run linter
+- `rainix-rs-static` - Run Rust static analysis
+- `cargo clippy` or `cargo-clippy` in Direnv - Run Clippy for linting
 - `cargo fmt` - Format code
 - `cargo-tarpaulin --skip-clean --out Html` - Generate test coverage report
 - `bacon` - Watch mode for continuous compilation
@@ -100,7 +101,7 @@ Environment variables (can be set via `.env` file):
 4. Include your Charles Schwab account number in the API access request
 5. Wait 3-5 days for account linking approval
 
-### Key Architectural Decisions
+### Code Quality & Best Practices
 
 - **Event-Driven Architecture**: Each trade spawns independent async task for maximum throughput
 - **SQLite Persistence**: Embedded database for trade tracking and authentication tokens
@@ -108,6 +109,7 @@ Environment variables (can be set via `.env` file):
 - **Price Direction Logic**: Onchain buy = offchain sell (and vice versa) to maintain market-neutral positions
 - **Comprehensive Error Handling**: Custom error types (`TradeConversionError`, `SchwabAuthError`) with proper propagation
 - **Idiomatic Functional Programming**: Prefer iterator-based functional programming patterns over imperative loops unless it increases complexity
+- **Comments**: Never leave redundant comments. Only use comments to explain complex logic. Generally, code should be self-documenting through clear naming, structure, and type modeling. If a comment is needed to explain what the code does, consider refactoring the code to make it clearer.
 
 ### Testing Strategy
 
@@ -116,9 +118,3 @@ Environment variables (can be set via `.env` file):
 - **Database Isolation**: In-memory SQLite databases for test isolation
 - **Edge Case Coverage**: Comprehensive error scenario testing for trade conversion logic
 
-### Known V1 Limitations
-
-- **After-Hours Trading Gap**: Pyth oracle operates when traditional markets are closed
-- **Manual Rebalancing**: Inventory management via st0x bridge requires manual intervention
-- **Missed Trade Risk**: Bot downtime or API failures can create unhedged exposure
-- **No Circuit Breakers**: Limited risk management controls in initial implementation

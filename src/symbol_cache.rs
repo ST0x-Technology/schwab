@@ -33,11 +33,10 @@ impl SymbolCache {
             .retry(ExponentialBuilder::new().with_max_times(3))
             .await?;
 
-        let mut write_guard = self
-            .map
+        self.map
             .write()
-            .map_err(|_| TradeConversionError::SymbolMapLock)?;
-        write_guard.insert(io.token, symbol.clone());
+            .map_err(|_| TradeConversionError::SymbolMapLock)?
+            .insert(io.token, symbol.clone());
 
         Ok(symbol)
     }

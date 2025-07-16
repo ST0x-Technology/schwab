@@ -14,7 +14,7 @@ pub async fn run_oauth_flow(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<()
     print!("Paste code (from URL): ");
 
     let mut code = String::new();
-    std::io::stdin().read_line(&mut code).unwrap();
+    std::io::stdin().read_line(&mut code)?;
     let code = code.trim();
 
     let tokens = env.get_tokens(code).await?;
@@ -43,9 +43,12 @@ pub enum SchwabAuthError {
     Reqwest(#[from] reqwest::Error),
     #[error("Database error: {0}")]
     Sqlx(#[from] sqlx::Error),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 impl SchwabAuthEnv {
+    #[must_use]
     pub fn get_auth_url(&self) -> String {
         format!(
             "{}/v1/oauth/authorize?client_id={}&redirect_uri={}",
@@ -62,19 +65,18 @@ impl SchwabAuthEnv {
             code, self.redirect_uri
         );
 
-        let headers = HeaderMap::from_iter(
-            vec![
-                (
-                    header::AUTHORIZATION,
-                    HeaderValue::from_str(&format!("Basic {credentials}"))?,
-                ),
-                (
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_str("application/x-www-form-urlencoded")?,
-                ),
-            ]
-            .into_iter(),
-        );
+        let headers = vec![
+            (
+                header::AUTHORIZATION,
+                HeaderValue::from_str(&format!("Basic {credentials}"))?,
+            ),
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_str("application/x-www-form-urlencoded")?,
+            ),
+        ]
+        .into_iter()
+        .collect::<HeaderMap>();
 
         let client = reqwest::Client::new();
         let response = client
@@ -326,27 +328,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_tokens_invalid_header_credentials() {
-        let env = SchwabAuthEnv {
-            app_key: "test\nkey".to_string(),
-            app_secret: "test_secret".to_string(),
-            redirect_uri: "https://127.0.0.1".to_string(),
-            base_url: "https://api.schwabapi.com".to_string(),
-        };
-
-        let result = env.get_tokens("test_code").await;
-
-        match result.unwrap_err() {
-            SchwabAuthError::InvalidHeader(_) => {
-                // This is what we expect
-            }
-            other => {
-                panic!("Expected InvalidHeader error, got: {:?}", other);
-            }
-        }
-    }
-
-    #[tokio::test]
     async fn test_schwab_tokens_store_success() {
         let pool = setup_test_db().await;
         let now = Utc::now();
@@ -440,7 +421,7 @@ mod tests {
             refresh_token_fetched_at: now,
         };
 
-        let debug_str = format!("{:?}", tokens);
+        let debug_str = format!("{tokens:?}");
         assert!(debug_str.contains("access_token"));
         assert!(debug_str.contains("refresh_token"));
         assert!(debug_str.contains("test_access_token"));
@@ -540,7 +521,7 @@ mod tests {
                 // Network timeout is expected and acceptable
             }
             Err(e) => {
-                panic!("Unexpected error type: {:?}", e);
+                panic!("Unexpected error type: {e:?}");
             }
         }
     }

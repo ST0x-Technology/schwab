@@ -18,9 +18,8 @@ fn spawn_prism_mock() -> Child {
 
 #[tokio::test]
 async fn test_trader_api_with_prism_mock() -> Result<(), SchwabAuthError> {
-    let mut prism = spawn_prism_mock();
-
     const TIMEOUT_SECS: u64 = 60;
+    let mut prism = spawn_prism_mock();
     let prism_ready = async {
         let client = reqwest::Client::new();
         let base = "http://127.0.0.1:4020/accounts/accountNumbers";
@@ -39,6 +38,7 @@ async fn test_trader_api_with_prism_mock() -> Result<(), SchwabAuthError> {
         .unwrap();
 
     let _ = prism.kill();
+    let _ = prism.wait();
 
     Ok(())
 }

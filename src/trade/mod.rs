@@ -34,8 +34,8 @@ impl serde::Serialize for SchwabInstruction {
         S: serde::Serializer,
     {
         serializer.serialize_str(match self {
-            SchwabInstruction::Buy => "BUY",
-            SchwabInstruction::Sell => "SELL",
+            Self::Buy => "BUY",
+            Self::Sell => "SELL",
         })
     }
 }
@@ -134,7 +134,7 @@ impl Trade {
             if onchain_input_symbol == "USDC" && onchain_output_symbol.ends_with("s1") {
                 let ticker = onchain_output_symbol
                     .strip_suffix("s1")
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
                     .ok_or_else(|| {
                         TradeConversionError::InvalidSymbolConfiguration(
                             onchain_input_symbol.clone(),
@@ -145,7 +145,7 @@ impl Trade {
             } else if onchain_output_symbol == "USDC" && onchain_input_symbol.ends_with("s1") {
                 let ticker = onchain_input_symbol
                     .strip_suffix("s1")
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
                     .ok_or_else(|| {
                         TradeConversionError::InvalidSymbolConfiguration(
                             onchain_input_symbol.clone(),
@@ -175,9 +175,10 @@ impl Trade {
             return Ok(None);
         }
 
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let onchain_price_per_share_cents = (onchain_price_per_share_usdc * 100.0) as u64;
 
-        let trade = Trade {
+        let trade = Self {
             tx_hash,
             log_index,
 
@@ -251,7 +252,7 @@ mod tests {
             order,
             OrderFill {
                 input_index: 0,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 1,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -288,7 +289,7 @@ mod tests {
             get_test_order(),
             OrderFill {
                 input_index: 0,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 1,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -326,7 +327,7 @@ mod tests {
                 input_index: 1,
                 input_amount: U256::from_str("9000000000000000000").unwrap(),
                 output_index: 0,
-                output_amount: U256::from(100000000),
+                output_amount: U256::from(100_000_000),
             },
             get_test_log(),
         )
@@ -367,7 +368,7 @@ mod tests {
             order,
             OrderFill {
                 input_index: 0,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 1,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -394,7 +395,7 @@ mod tests {
             order,
             OrderFill {
                 input_index: 0,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 1,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -419,7 +420,7 @@ mod tests {
             order,
             OrderFill {
                 input_index: 99,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 1,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -444,7 +445,7 @@ mod tests {
             order,
             OrderFill {
                 input_index: 0,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 99, // invalid output index
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -471,7 +472,7 @@ mod tests {
             order,
             OrderFill {
                 input_index: 0,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 1,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -503,7 +504,7 @@ mod tests {
             order,
             OrderFill {
                 input_index: 0,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 1,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -537,7 +538,7 @@ mod tests {
             order,
             OrderFill {
                 input_index: 0,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 1,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -571,7 +572,7 @@ mod tests {
             order,
             OrderFill {
                 input_index: 0,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 1,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -593,12 +594,12 @@ mod tests {
         assert_eq!(u256_to_f64(U256::ZERO, 6).unwrap(), 0.0);
 
         // 18 decimals (st0x-like)
-        let amount = U256::from_str("1000000000000000000").unwrap(); // 1.0
+        let amount = U256::from_str("1_000_000_000_000_000_000").unwrap(); // 1.0
         assert!((u256_to_f64(amount, 18).unwrap() - 1.0).abs() < f64::EPSILON);
 
         // 6 decimals (USDC-like)
-        let amount = U256::from(123456789u64); // 123.456789 with 6 decimals
-        let expected = 123.456789_f64;
+        let amount = U256::from(123_456_789u64);
+        let expected = 123.456_789_f64;
         assert!((u256_to_f64(amount, 6).unwrap() - expected).abs() < f64::EPSILON);
     }
 }

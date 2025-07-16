@@ -35,5 +35,10 @@ unsafe_code = "forbid"
 [lints.clippy]
 unwrap_used = "deny"
 enum_glob_use = "deny"
-pedantic = "deny"
-nursery = "deny"
+# `priority = -1` allow for allowing lints enabled by a group to be re-disabled
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+missing_errors_doc = "allow"
+doc_markdown = "allow"
+missing_docs_in_private_items = "allow"
+missing_panics_doc = "allow"

@@ -79,7 +79,7 @@ impl Trade {
                 output_amount: aliceOutput,
             };
 
-            Trade::try_from_order_and_fill_details(cache, provider, alice_order, fill, log).await
+            Self::try_from_order_and_fill_details(cache, provider, alice_order, fill, log).await
         } else {
             // bob_hash_matches must be true here
             let input_index = usize::try_from(bobInputIOIndex)?;
@@ -92,7 +92,7 @@ impl Trade {
                 output_amount: bobOutput,
             };
 
-            Trade::try_from_order_and_fill_details(cache, provider, bob_order, fill, log).await
+            Self::try_from_order_and_fill_details(cache, provider, bob_order, fill, log).await
         }
     }
 }
@@ -175,7 +175,7 @@ mod tests {
             clearStateChange: ClearStateChange {
                 aliceOutput: U256::from_str("9000000000000000000").unwrap(), // 9 shares (18 dps)
                 bobOutput: U256::ZERO,
-                aliceInput: U256::from(100000000u64), // 100 USDC (6 dps)
+                aliceInput: U256::from(100_000_000u64),
                 bobInput: U256::ZERO,
             },
         };

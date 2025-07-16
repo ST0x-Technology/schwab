@@ -37,7 +37,7 @@ impl Trade {
             output_amount: event.output,
         };
 
-        Trade::try_from_order_and_fill_details(cache, provider, order, fill, log).await
+        Self::try_from_order_and_fill_details(cache, provider, order, fill, log).await
     }
 }
 
@@ -123,7 +123,7 @@ mod tests {
         TakeOrderV2 {
             sender: address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
             config,
-            input: U256::from(100000000u64), // 100 USDC with 6 decimals
+            input: U256::from(100_000_000u64),
             output: U256::from_str("9000000000000000000").unwrap(), // 9 shares with 18 decimals
         }
     }
