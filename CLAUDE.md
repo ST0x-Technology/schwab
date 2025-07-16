@@ -25,7 +25,7 @@ This is a Rust-based arbitrage bot for tokenized equities that monitors onchain 
 - Database URL configured via `DATABASE_URL` environment variable
 
 ### Development Tools
-- `cargo clippy` - Run linter
+- `cargo-clippy` - Run linter
 - `cargo fmt` - Format code
 - `cargo-tarpaulin --skip-clean --out Html` - Generate test coverage report
 - `bacon` - Watch mode for continuous compilation
@@ -107,6 +107,7 @@ Environment variables (can be set via `.env` file):
 - **Symbol Suffix Convention**: Tokenized equities use "s1" suffix to distinguish from base assets
 - **Price Direction Logic**: Onchain buy = offchain sell (and vice versa) to maintain market-neutral positions
 - **Comprehensive Error Handling**: Custom error types (`TradeConversionError`, `SchwabAuthError`) with proper propagation
+- **Idiomatic Functional Programming**: Prefer iterator-based functional programming patterns over imperative loops unless it increases complexity
 
 ### Testing Strategy
 

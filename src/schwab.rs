@@ -139,26 +139,31 @@ impl SchwabTokens {
     pub async fn load(pool: &SqlitePool) -> Result<Self, SchwabAuthError> {
         let row = sqlx::query!(
             r#"
-            SELECT (
+            SELECT
                 id,
                 access_token,
                 access_token_fetched_at,
                 refresh_token,
                 refresh_token_fetched_at
-            )
             FROM schwab_auth
             ORDER BY id DESC
             LIMIT 1
             "#
         )
-        .fetch_one(&pool)
+        .fetch_one(pool)
         .await?;
 
         Ok(Self {
             access_token: row.access_token,
-            access_token_fetched_at: row.access_token_fetched_at,
+            access_token_fetched_at: DateTime::from_naive_utc_and_offset(
+                row.access_token_fetched_at,
+                Utc,
+            ),
             refresh_token: row.refresh_token,
-            refresh_token_fetched_at: row.refresh_token_fetched_at,
+            refresh_token_fetched_at: DateTime::from_naive_utc_and_offset(
+                row.refresh_token_fetched_at,
+                Utc,
+            ),
         })
     }
 }
@@ -331,10 +336,14 @@ mod tests {
 
         let result = env.get_tokens("test_code").await;
 
-        assert!(matches!(
-            result.unwrap_err(),
-            SchwabAuthError::InvalidHeader(_)
-        ));
+        match result.unwrap_err() {
+            SchwabAuthError::InvalidHeader(_) => {
+                // This is what we expect
+            }
+            other => {
+                panic!("Expected InvalidHeader error, got: {:?}", other);
+            }
+        }
     }
 
     #[tokio::test]
@@ -352,10 +361,11 @@ mod tests {
         let result = tokens.store(&pool).await;
         assert!(result.is_ok());
 
-        let stored_token = assert_eq!(stored_token.access_token, "test_access_token");
+        let stored_token = SchwabTokens::load(&pool).await.unwrap();
+        assert_eq!(stored_token.access_token, "test_access_token");
         assert_eq!(stored_token.refresh_token, "test_refresh_token");
-        assert_eq!(stored_token.access_token_expires_at, now.naive_utc());
-        assert_eq!(stored_token.refresh_token_expires_at, now.naive_utc());
+        assert_eq!(stored_token.access_token_fetched_at, now);
+        assert_eq!(stored_token.refresh_token_fetched_at, now);
     }
 
     #[tokio::test]

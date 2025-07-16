@@ -28,3 +28,12 @@ base64 = "0.22"
 
 [dev-dependencies]
 httpmock = "0.7.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+enum_glob_use = "deny"
+pedantic = "deny"
+nursery = "deny"
