@@ -591,7 +591,7 @@ mod tests {
     #[test]
     fn test_u256_to_f64() {
         // zero amount
-        assert_eq!(u256_to_f64(U256::ZERO, 6).unwrap(), 0.0);
+        assert!((u256_to_f64(U256::ZERO, 6).unwrap() - 0.0).abs() < f64::EPSILON);
 
         // 18 decimals (st0x-like)
         let amount = U256::from_str("1_000_000_000_000_000_000").unwrap(); // 1.0
