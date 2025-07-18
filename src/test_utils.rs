@@ -5,7 +5,6 @@ use alloy::rpc::types::Log;
 /// Returns a test `OrderV3` instance that is shared across multiple
 /// unit-tests. The exact values are not important – only that the
 /// structure is valid and deterministic.
-#[must_use]
 pub fn get_test_order() -> OrderV3 {
     OrderV3 {
         owner: address!("0x1111111111111111111111111111111111111111"),
@@ -45,7 +44,6 @@ pub fn get_test_order() -> OrderV3 {
 /// Creates a generic `Log` stub with the supplied log index. This helper is
 /// useful when the concrete value of most fields is irrelevant for the
 /// assertion being performed.
-#[must_use]
 pub fn create_log(log_index: u64) -> Log {
     Log {
         inner: alloy::primitives::Log {
@@ -66,7 +64,6 @@ pub fn create_log(log_index: u64) -> Log {
 
 /// Convenience wrapper that returns the log routinely used by the
 /// higher-level tests in `trade::mod` (with log index set to `293`).
-#[must_use]
 pub fn get_test_log() -> Log {
     create_log(293)
 }

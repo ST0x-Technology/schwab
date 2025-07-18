@@ -118,3 +118,34 @@ Environment variables (can be set via `.env` file):
 - **Database Isolation**: In-memory SQLite databases for test isolation
 - **Edge Case Coverage**: Comprehensive error scenario testing for trade conversion logic
 
+### Code patterns
+
+#### Use `.unwrap` over boolean result assertions in tests
+
+Instead of
+
+```rust
+assert!(result.is_err());
+assert!(matches!(result.unwrap_err(), SchwabAuthError::Reqwest(_)));
+```
+
+or
+
+```rust
+assert!(result.is_ok());
+assert_eq!(result.unwrap(), "refreshed_access_token");
+```
+
+Write
+
+```rust
+assert!(matches!(result.unwrap_err(), SchwabAuthError::Reqwest(_)));
+```
+
+and
+
+```rust
+assert_eq!(result.unwrap(), "refreshed_access_token");
+```
+
+so that if we get an unexpected result value, we immediately see the value.
