@@ -15,8 +15,7 @@ serde_json = "1.0.140"
 sqlx = { version = "0.8.6", features = [
     "sqlite",
     "chrono",
-    "runtime-tokio",
-    "rustls",
+    "runtime-tokio-rustls",
 ] }
 thiserror = "2.0.12"
 tokio = { version = "1.46.0", features = ["full"] }

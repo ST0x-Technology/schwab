@@ -298,7 +298,9 @@ impl SchwabTokens {
             return Err(SchwabAuthError::RefreshTokenExpired);
         }
 
-        if tokens.is_access_token_expired() || tokens.access_token_expires_in() <= Duration::minutes(1) {
+        if tokens.is_access_token_expired()
+            || tokens.access_token_expires_in() <= Duration::minutes(1)
+        {
             let new_tokens = env.refresh_tokens(&tokens.refresh_token).await?;
             new_tokens.store(pool).await?;
             Ok(true)
@@ -1079,5 +1081,71 @@ mod tests {
         let stored_tokens = SchwabTokens::load(&pool).await.unwrap();
         assert_eq!(stored_tokens.access_token, "refreshed_access_token");
         assert_eq!(stored_tokens.refresh_token, "new_refresh_token");
+    }
+
+    #[tokio::test]
+    async fn test_automatic_token_refresh_before_expiration() -> Result<(), SchwabAuthError> {
+        use std::thread;
+        use tokio::time::{Duration as TokioDuration, sleep};
+
+        let server = MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+        let pool = setup_test_db().await;
+        let now = Utc::now();
+
+        let tokens = SchwabTokens {
+            access_token: "near_expiration_access_token".to_string(),
+            access_token_fetched_at: now - Duration::minutes(29),
+            refresh_token: "valid_refresh_token".to_string(),
+            refresh_token_fetched_at: now - Duration::days(1),
+        };
+
+        tokens.store(&pool).await?;
+
+        let mock_response = serde_json::json!({
+            "access_token": "refreshed_access_token",
+            "refresh_token": "new_refresh_token"
+        });
+
+        let mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/v1/oauth/token")
+                .header(
+                    "authorization",
+                    "Basic dGVzdF9hcHBfa2V5OnRlc3RfYXBwX3NlY3JldA==",
+                )
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body_contains("grant_type=refresh_token")
+                .body_contains("refresh_token=valid_refresh_token");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(mock_response);
+        });
+
+        let pool_clone = pool.clone();
+        let env_clone = env.clone();
+
+        let handle = thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                tokio::time::timeout(
+                    TokioDuration::from_secs(5),
+                    SchwabTokens::start_automatic_token_refresh(pool_clone, env_clone),
+                )
+                .await
+            })
+        });
+
+        sleep(TokioDuration::from_millis(2000)).await;
+
+        handle.join().unwrap().unwrap_err();
+
+        mock.assert();
+
+        let stored_tokens = SchwabTokens::load(&pool).await?;
+        assert_eq!(stored_tokens.access_token, "refreshed_access_token");
+        assert_eq!(stored_tokens.refresh_token, "new_refresh_token");
+
+        Ok(())
     }
 }
