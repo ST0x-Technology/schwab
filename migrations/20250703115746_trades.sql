@@ -22,6 +22,10 @@ CREATE TABLE trades (
   UNIQUE (tx_hash, log_index)
 );
 
+/* NOTE: Storing underlying Schwab auth tokens is sensitive.
+ * Ensure that this table is secured and access is controlled.
+ * Consider encrypting the tokens if necessary.
+ */
 CREATE TABLE schwab_auth (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   access_token TEXT NOT NULL,

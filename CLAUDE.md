@@ -43,12 +43,12 @@ This is a Rust-based arbitrage bot for tokenized equities that monitors onchain 
 
 ### Core Event Processing Flow
 
-**Main Event Loop (`src/lib.rs:35-63`)**
+**Main Event Loop ([`run` function in `src/lib.rs`])**
 - Monitors two concurrent WebSocket event streams: `ClearV2` and `TakeOrderV2` from the Raindex orderbook
 - Uses `tokio::select!` to handle events from either stream without blocking
 - Converts blockchain events to structured `Trade` objects for processing
 
-**Trade Conversion Logic (`src/trade/mod.rs`)**
+**Trade Conversion Logic ([`Trade` struct and methods in `src/trade/mod.rs`])**
 - Parses onchain events into actionable trade data with strict validation
 - Expects symbol pairs of USDC + tokenized equity with "s1" suffix (e.g., "AAPLs1")
 - Determines Schwab trade direction: buying tokenized equity onchain → selling on Schwab
