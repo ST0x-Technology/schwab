@@ -109,7 +109,7 @@ Environment variables (can be set via `.env` file):
 - **Price Direction Logic**: Onchain buy = offchain sell (and vice versa) to maintain market-neutral positions
 - **Comprehensive Error Handling**: Custom error types (`TradeConversionError`, `SchwabAuthError`) with proper propagation
 - **Idiomatic Functional Programming**: Prefer iterator-based functional programming patterns over imperative loops unless it increases complexity
-- **Comments**: Never leave redundant comments. Only use comments to explain complex logic. Generally, code should be self-documenting through clear naming, structure, and type modeling. If a comment is needed to explain what the code does, consider refactoring the code to make it clearer.
+- **Comments**: Never leave redundant comments. Only use comments to explain complex logic. Generally, code should be self-documenting through clear naming, structure, and type modeling. If a comment is needed to explain what the code does, consider refactoring the code to make it clearer
 
 ### Testing Strategy
 
@@ -117,8 +117,9 @@ Environment variables (can be set via `.env` file):
 - **HTTP API Mocking**: `httpmock` crate for Charles Schwab API testing
 - **Database Isolation**: In-memory SQLite databases for test isolation
 - **Edge Case Coverage**: Comprehensive error scenario testing for trade conversion logic
+- **Testing Principle**: Only cover happy paths with all components working and connected in integration tests and cover everything in unit tests
 
-### Code patterns
+### Code style
 
 #### Use `.unwrap` over boolean result assertions in tests
 
@@ -149,3 +150,98 @@ assert_eq!(result.unwrap(), "refreshed_access_token");
 ```
 
 so that if we get an unexpected result value, we immediately see the value.
+
+#### Avoid deep nesting
+
+Prefer flat code over deeply nested blocks to improve readability and maintainability.
+
+**Use early returns:**
+
+```rust
+fn process_data(data: Option<&str>) -> Result<String, Error> {
+    let data = data.ok_or(Error::None)?;
+    
+    if data.is_empty() {
+        return Err(Error::Empty);
+    }
+    
+    if data.len() <= 5 {
+        return Err(Error::TooShort);
+    }
+    
+    Ok(data.to_uppercase())
+}
+```
+
+**Extract functions for complex logic:**
+
+```rust
+fn validate_trade_data(trade: &Trade) -> Result<(), ValidationError> {
+    validate_symbol(&trade.symbol)?;
+    validate_quantity(trade.quantity)?;
+    validate_price(trade.price)?;
+    Ok(())
+}
+```
+
+**Use pattern matching with guards:**
+
+```rust
+match (input, state) {
+    (Some(data), State::Ready) if data.is_valid() => process(data),
+    (Some(_), State::Ready) => Err(Error::InvalidData),
+    (None, _) => Err(Error::NoData),
+    _ => Err(Error::NotReady),
+}
+```
+
+**Prefer iterator chains over nested loops:**
+
+```rust
+trades
+    .iter()
+    .filter(|t| t.is_valid())
+    .map(|t| process_trade(t))
+    .collect::<Result<Vec<_>, _>>()
+```
+
+#### Struct field access
+
+Avoid creating unnecessary constructors or getters when they don't add logic beyond setting/getting field values. Use public fields directly instead.
+
+**Prefer direct field access:**
+
+```rust
+pub struct SchwabTokens {
+    pub access_token: String,
+    pub access_token_fetched_at: DateTime<Utc>,
+    pub refresh_token: String,
+    pub refresh_token_fetched_at: DateTime<Utc>,
+}
+
+// Create with struct literal syntax
+let tokens = SchwabTokens {
+    access_token: "token123".to_string(),
+    access_token_fetched_at: Utc::now(),
+    refresh_token: "refresh456".to_string(),
+    refresh_token_fetched_at: Utc::now(),
+};
+
+// Access fields directly
+println!("Token: {}", tokens.access_token);
+```
+
+**Avoid unnecessary constructors and getters:**
+
+```rust
+// Don't create these unless they add meaningful logic
+impl SchwabTokens {
+    // Unnecessary - just sets fields without additional logic
+    pub fn new(access_token: String, /* ... */) -> Self { /* ... */ }
+    
+    // Unnecessary - just returns field value
+    pub fn access_token(&self) -> &str { &self.access_token }
+}
+```
+
+This preserves argument clarity and avoids losing information about what each field represents.
