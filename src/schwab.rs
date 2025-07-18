@@ -1148,4 +1148,49 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_run_oauth_flow() {
+        let server = MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+        let pool = setup_test_db().await;
+
+        let mock_response = json!({
+            "access_token": "test_access_token",
+            "refresh_token": "test_refresh_token"
+        });
+
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/oauth/token")
+                .header(
+                    "authorization",
+                    "Basic dGVzdF9hcHBfa2V5OnRlc3RfYXBwX3NlY3JldA==",
+                )
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body_contains("grant_type=authorization_code")
+                .body_contains("code=test_code")
+                .body_contains("redirect_uri=https://127.0.0.1");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(mock_response);
+        });
+
+        let result = env.get_tokens("test_code").await;
+        assert!(result.is_ok());
+
+        let tokens = result.unwrap();
+        let store_result = tokens.store(&pool).await;
+        assert!(store_result.is_ok());
+
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_schwab_tokens_conversion_error() {
+        let header_err = HeaderValue::from_str("test\x00").unwrap_err();
+        let schwab_err = SchwabAuthError::InvalidHeader(header_err);
+
+        assert!(matches!(schwab_err, SchwabAuthError::InvalidHeader(_)));
+    }
 }

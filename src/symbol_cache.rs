@@ -41,3 +41,53 @@ impl SymbolCache {
         Ok(symbol)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::{Address, U256};
+    use alloy::providers::{ProviderBuilder, mock::Asserter};
+    use std::str::FromStr;
+
+    #[tokio::test]
+    async fn test_symbol_cache_hit() {
+        let cache = SymbolCache::default();
+        let address = Address::from_str("0x1234567890123456789012345678901234567890").unwrap();
+
+        // Pre-populate cache
+        cache
+            .map
+            .write()
+            .unwrap()
+            .insert(address, "TEST".to_string());
+
+        let io = IO {
+            token: address,
+            decimals: 18,
+            vaultId: U256::from(0),
+        };
+
+        let asserter = Asserter::new();
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let result = cache.get_io_symbol(provider, &io).await.unwrap();
+        assert_eq!(result, "TEST");
+    }
+
+    #[tokio::test]
+    async fn test_symbol_cache_miss_rpc_failure() {
+        let cache = SymbolCache::default();
+        let address = Address::from_str("0x1234567890123456789012345678901234567890").unwrap();
+
+        let io = IO {
+            token: address,
+            decimals: 18,
+            vaultId: U256::from(0),
+        };
+
+        let asserter = Asserter::new();
+        asserter.push_failure_msg("RPC failure");
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let result = cache.get_io_symbol(provider, &io).await;
+        assert!(result.is_err());
+    }
+}

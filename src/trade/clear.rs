@@ -299,4 +299,187 @@ mod tests {
             .unwrap();
         assert!(res.is_none());
     }
+
+    #[tokio::test]
+    async fn test_try_from_clear_v2_err_no_block_number() {
+        let order = get_test_order();
+        let order_hash = keccak256(order.abi_encode());
+        let orderbook = address!("0xfefefefefefefefefefefefefefefefefefefefe");
+        let env = get_env(orderbook, order_hash);
+
+        let clear_config = ClearConfig {
+            aliceInputIOIndex: U256::from(0),
+            aliceOutputIOIndex: U256::from(1),
+            bobInputIOIndex: U256::from(1),
+            bobOutputIOIndex: U256::from(0),
+            aliceBountyVaultId: U256::ZERO,
+            bobBountyVaultId: U256::ZERO,
+        };
+
+        let clear_event = ClearV2 {
+            sender: address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+            alice: order.clone(),
+            bob: order.clone(),
+            clearConfig: clear_config,
+        };
+
+        let mut clear_log = get_clear_log(
+            1,
+            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
+        );
+        clear_log.block_number = None;
+
+        let asserter = Asserter::new();
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let cache = SymbolCache::default();
+
+        let err = Trade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, TradeConversionError::NoBlockNumber));
+    }
+
+    #[tokio::test]
+    async fn test_try_from_clear_v2_ok_bob_match() {
+        let bob_order = get_test_order();
+        let bob_order_hash = keccak256(bob_order.abi_encode());
+        let orderbook = address!("0xfefefefefefefefefefefefefefefefefefefefe");
+        let env = get_env(orderbook, bob_order_hash);
+
+        let clear_config = ClearConfig {
+            aliceInputIOIndex: U256::from(0),
+            aliceOutputIOIndex: U256::from(1),
+            bobInputIOIndex: U256::from(1),
+            bobOutputIOIndex: U256::from(0),
+            aliceBountyVaultId: U256::ZERO,
+            bobBountyVaultId: U256::ZERO,
+        };
+
+        // Create a different alice order so only bob matches
+        let mut alice_order = get_test_order();
+        alice_order.nonce =
+            fixed_bytes!("0x1111111111111111111111111111111111111111111111111111111111111111");
+
+        let clear_event = ClearV2 {
+            sender: address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+            alice: alice_order,
+            bob: bob_order,
+            clearConfig: clear_config,
+        };
+
+        let tx_hash =
+            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        let clear_log = get_clear_log(1, tx_hash);
+
+        let asserter = Asserter::new();
+
+        let after_clear_event = AfterClear {
+            sender: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            clearStateChange: ClearStateChange {
+                aliceOutput: U256::ZERO,
+                bobOutput: U256::from_str("9000000000000000000").unwrap(),
+                aliceInput: U256::ZERO,
+                bobInput: U256::from(100_000_000u64),
+            },
+        };
+
+        let after_clear_log = Log {
+            inner: alloy::primitives::Log {
+                address: orderbook,
+                data: after_clear_event.to_log_data(),
+            },
+            block_hash: None,
+            block_number: Some(1),
+            block_timestamp: None,
+            transaction_hash: Some(tx_hash),
+            transaction_index: None,
+            log_index: Some(2),
+            removed: false,
+        };
+
+        asserter.push_success(&json!([after_clear_log]));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"BARs1".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"USDC".to_string(),
+        ));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let cache = SymbolCache::default();
+
+        let trade = Trade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(trade.schwab_ticker, "BAR");
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
+    }
+
+    #[tokio::test]
+    async fn test_try_from_clear_v2_err_invalid_index_conversion() {
+        let order = get_test_order();
+        let order_hash = keccak256(order.abi_encode());
+        let orderbook = address!("0xfefefefefefefefefefefefefefefefefefefefe");
+        let env = get_env(orderbook, order_hash);
+
+        let clear_config = ClearConfig {
+            aliceInputIOIndex: U256::MAX,
+            aliceOutputIOIndex: U256::from(1),
+            bobInputIOIndex: U256::from(1),
+            bobOutputIOIndex: U256::from(0),
+            aliceBountyVaultId: U256::ZERO,
+            bobBountyVaultId: U256::ZERO,
+        };
+
+        let clear_event = ClearV2 {
+            sender: address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+            alice: order.clone(),
+            bob: order.clone(),
+            clearConfig: clear_config,
+        };
+
+        let tx_hash =
+            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        let clear_log = get_clear_log(1, tx_hash);
+
+        let asserter = Asserter::new();
+
+        let after_clear_event = AfterClear {
+            sender: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            clearStateChange: ClearStateChange {
+                aliceOutput: U256::from_str("9000000000000000000").unwrap(),
+                bobOutput: U256::ZERO,
+                aliceInput: U256::from(100_000_000u64),
+                bobInput: U256::ZERO,
+            },
+        };
+
+        let after_clear_log = Log {
+            inner: alloy::primitives::Log {
+                address: orderbook,
+                data: after_clear_event.to_log_data(),
+            },
+            block_hash: None,
+            block_number: Some(1),
+            block_timestamp: None,
+            transaction_hash: Some(tx_hash),
+            transaction_index: None,
+            log_index: Some(2),
+            removed: false,
+        };
+
+        asserter.push_success(&json!([after_clear_log]));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let cache = SymbolCache::default();
+
+        let err = Trade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, TradeConversionError::InvalidIndex(_)));
+    }
 }

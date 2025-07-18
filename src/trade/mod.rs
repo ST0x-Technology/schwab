@@ -601,5 +601,126 @@ mod tests {
         let amount = U256::from(123_456_789u64);
         let expected = 123.456_789_f64;
         assert!((u256_to_f64(amount, 6).unwrap() - expected).abs() < f64::EPSILON);
+
+        // small amount with many decimals
+        let amount = U256::from(123u64);
+        let expected = 0.000123_f64;
+        assert!((u256_to_f64(amount, 6).unwrap() - expected).abs() < f64::EPSILON);
+
+        // no decimals
+        let amount = U256::from(999u64);
+        assert!((u256_to_f64(amount, 0).unwrap() - 999.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_schwab_instruction_serialize() {
+        let buy_json = serde_json::to_string(&SchwabInstruction::Buy).unwrap();
+        assert_eq!(buy_json, "\"BUY\"");
+
+        let sell_json = serde_json::to_string(&SchwabInstruction::Sell).unwrap();
+        assert_eq!(sell_json, "\"SELL\"");
+    }
+
+    #[tokio::test]
+    async fn test_try_from_order_and_fill_details_zero_input_amount() {
+        let asserter = Asserter::new();
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"BARs1".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"USDC".to_string(),
+        ));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let order = get_test_order();
+        let cache = SymbolCache::default();
+
+        let result = Trade::try_from_order_and_fill_details(
+            &cache,
+            &provider,
+            order,
+            OrderFill {
+                input_index: 1,
+                input_amount: U256::ZERO,
+                output_index: 0,
+                output_amount: U256::from(100_000_000),
+            },
+            get_test_log(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result.onchain_input_amount, 0.0);
+        assert_eq!(result.schwab_instruction, SchwabInstruction::Buy);
+        assert_eq!(result.onchain_price_per_share_cents, u64::MAX);
+    }
+
+    #[tokio::test]
+    async fn test_try_from_order_and_fill_details_input_s1_suffix_empty_ticker() {
+        let asserter = Asserter::new();
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"s1".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"USDC".to_string(),
+        ));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let order = get_test_order();
+        let cache = SymbolCache::default();
+
+        let trade = Trade::try_from_order_and_fill_details(
+            &cache,
+            &provider,
+            order,
+            OrderFill {
+                input_index: 1,
+                input_amount: U256::from_str("9000000000000000000").unwrap(),
+                output_index: 0,
+                output_amount: U256::from(100_000_000),
+            },
+            get_test_log(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(trade.schwab_ticker, "");
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
+    }
+
+    #[tokio::test]
+    async fn test_try_from_order_and_fill_details_output_s1_suffix_empty_ticker() {
+        let asserter = Asserter::new();
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"USDC".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"s1".to_string(),
+        ));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let order = get_test_order();
+        let cache = SymbolCache::default();
+
+        let trade = Trade::try_from_order_and_fill_details(
+            &cache,
+            &provider,
+            order,
+            OrderFill {
+                input_index: 0,
+                input_amount: U256::from(100_000_000),
+                output_index: 1,
+                output_amount: U256::from_str("9000000000000000000").unwrap(),
+            },
+            get_test_log(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(trade.schwab_ticker, "");
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
     }
 }
