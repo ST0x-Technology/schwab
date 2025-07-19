@@ -604,7 +604,7 @@ mod tests {
 
         // small amount with many decimals
         let amount = U256::from(123u64);
-        let expected = 0.000123_f64;
+        let expected = 0.000_123_f64;
         assert!((u256_to_f64(amount, 6).unwrap() - expected).abs() < f64::EPSILON);
 
         // no decimals
@@ -651,7 +651,7 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert_eq!(result.onchain_input_amount, 0.0);
+        assert!((result.onchain_input_amount - 0.0).abs() < f64::EPSILON);
         assert_eq!(result.schwab_instruction, SchwabInstruction::Buy);
         assert_eq!(result.onchain_price_per_share_cents, u64::MAX);
     }
