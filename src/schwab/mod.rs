@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod order;
 pub mod tokens;
 
 pub use auth::{SchwabAuthEnv, SchwabAuthError, SchwabAuthResponse};
