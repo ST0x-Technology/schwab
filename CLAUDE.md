@@ -29,10 +29,6 @@ This is a Rust-based arbitrage bot for tokenized equities that monitors onchain 
 - `cargo clippy` or `cargo-clippy` in Direnv - Run Clippy for linting
 - `cargo fmt` - Format code
 - `cargo-tarpaulin --skip-clean --out Html` - Generate test coverage report
-- `bacon` - Watch mode for continuous compilation
-
-### Mock Server
-- `npm run mock` - Start mock Charles Schwab API server on port 4020
 
 ### Nix Development Environment
 - `nix develop` - Enter development shell with all dependencies
