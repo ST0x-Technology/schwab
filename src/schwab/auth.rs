@@ -60,6 +60,15 @@ impl SchwabAuthEnv {
             .send()
             .await?;
 
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Failed to read response body".to_string());
+            return Err(crate::schwab::SchwabError::AccountHashRetrievalFailed { status, body });
+        }
+
         let account_numbers: Vec<AccountNumbers> = response.json().await?;
 
         if account_numbers.is_empty() {

@@ -27,6 +27,11 @@ pub enum SchwabError {
     AccountIndexOutOfBounds { index: usize, count: usize },
     #[error("Order placement failed with status: {status}")]
     OrderPlacementFailed { status: reqwest::StatusCode },
+    #[error("Account hash retrieval failed with status: {status}, body: {body}")]
+    AccountHashRetrievalFailed {
+        status: reqwest::StatusCode,
+        body: String,
+    },
 }
 
 pub use auth::{AccountNumbers, SchwabAuthEnv, SchwabAuthResponse};
