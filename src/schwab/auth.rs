@@ -5,7 +5,7 @@ use reqwest::header::{self, HeaderMap, HeaderValue};
 use serde::Deserialize;
 use sqlx::SqlitePool;
 
-use super::{tokens::SchwabTokens, SchwabError};
+use super::{SchwabError, tokens::SchwabTokens};
 
 #[derive(Parser, Debug, Clone)]
 pub struct SchwabAuthEnv {
@@ -52,7 +52,10 @@ impl SchwabAuthEnv {
 
         let client = reqwest::Client::new();
         let response = client
-            .get(format!("{}/trader/v1/accounts/accountNumbers", self.base_url))
+            .get(format!(
+                "{}/trader/v1/accounts/accountNumbers",
+                self.base_url
+            ))
             .headers(headers)
             .send()
             .await?;
@@ -120,10 +123,7 @@ impl SchwabAuthEnv {
         })
     }
 
-    pub async fn refresh_tokens(
-        &self,
-        refresh_token: &str,
-    ) -> Result<SchwabTokens, SchwabError> {
+    pub async fn refresh_tokens(&self, refresh_token: &str) -> Result<SchwabTokens, SchwabError> {
         let credentials = format!("{}:{}", self.app_key, self.app_secret);
         let credentials = BASE64_STANDARD.encode(credentials);
 
@@ -558,8 +558,7 @@ mod tests {
         ]);
 
         let mock = server.mock(|when, then| {
-            when.method(GET)
-                .path("/trader/v1/accounts/accountNumbers");
+            when.method(GET).path("/trader/v1/accounts/accountNumbers");
             then.status(200)
                 .header("content-type", "application/json")
                 .json_body(mock_response);
@@ -568,7 +567,10 @@ mod tests {
         let result = env.get_account_hash(&pool).await;
 
         mock.assert();
-        assert!(matches!(result.unwrap_err(), SchwabError::AccountIndexOutOfBounds { index: 2, count: 1 }));
+        assert!(matches!(
+            result.unwrap_err(),
+            SchwabError::AccountIndexOutOfBounds { index: 2, count: 1 }
+        ));
     }
 
     #[tokio::test]
@@ -579,8 +581,7 @@ mod tests {
         setup_test_tokens(&pool).await;
 
         let mock = server.mock(|when, then| {
-            when.method(GET)
-                .path("/trader/v1/accounts/accountNumbers");
+            when.method(GET).path("/trader/v1/accounts/accountNumbers");
             then.status(200)
                 .header("content-type", "application/json")
                 .json_body(json!([]));

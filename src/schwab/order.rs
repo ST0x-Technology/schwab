@@ -46,7 +46,10 @@ impl Order {
                 HeaderValue::from_str(&format!("Bearer {access_token}"))?,
             ),
             (header::ACCEPT, HeaderValue::from_str("*/*")?),
-            (header::CONTENT_TYPE, HeaderValue::from_str("application/json")?),
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_str("application/json")?,
+            ),
         ]
         .into_iter()
         .collect::<HeaderMap>();
@@ -55,7 +58,10 @@ impl Order {
 
         let client = reqwest::Client::new();
         let response = client
-            .post(format!("{}/trader/v1/accounts/{}/orders", env.base_url, account_hash))
+            .post(format!(
+                "{}/trader/v1/accounts/{}/orders",
+                env.base_url, account_hash
+            ))
             .headers(headers)
             .body(order_json)
             .send()
@@ -416,10 +422,14 @@ mod tests {
         account_mock.assert();
         order_mock.assert();
         let error = result.unwrap_err();
-        assert!(matches!(error, super::SchwabError::OrderPlacementFailed { status } if status.as_u16() == 400));
+        assert!(
+            matches!(error, super::SchwabError::OrderPlacementFailed { status } if status.as_u16() == 400)
+        );
     }
 
-    fn create_test_env_with_mock_server(mock_server: &httpmock::MockServer) -> super::SchwabAuthEnv {
+    fn create_test_env_with_mock_server(
+        mock_server: &httpmock::MockServer,
+    ) -> super::SchwabAuthEnv {
         super::SchwabAuthEnv {
             app_key: "test_app_key".to_string(),
             app_secret: "test_app_secret".to_string(),

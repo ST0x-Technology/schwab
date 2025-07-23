@@ -3,7 +3,7 @@ use serde::Deserialize;
 use sqlx::SqlitePool;
 use tokio::time::{Duration as TokioDuration, interval};
 
-use super::{auth::SchwabAuthEnv, SchwabError};
+use super::{SchwabError, auth::SchwabAuthEnv};
 
 #[derive(Debug, Deserialize)]
 pub struct SchwabTokens {
