@@ -107,12 +107,8 @@ mod tests {
                 .json_body(mock_response);
         });
 
-        let result = env.get_tokens("test_code").await;
-        assert!(result.is_ok());
-
-        let tokens = result.unwrap();
-        let store_result = tokens.store(&pool).await;
-        assert!(store_result.is_ok());
+        let tokens = env.get_tokens("test_code").await.unwrap();
+        tokens.store(&pool).await.unwrap();
 
         mock.assert();
     }

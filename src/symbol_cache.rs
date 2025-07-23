@@ -88,6 +88,6 @@ mod tests {
         asserter.push_failure_msg("RPC failure");
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
         let result = cache.get_io_symbol(provider, &io).await;
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 }
