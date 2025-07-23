@@ -106,6 +106,7 @@ Environment variables (can be set via `.env` file):
 - **Comprehensive Error Handling**: Custom error types (`TradeConversionError`, `SchwabAuthError`) with proper propagation
 - **Idiomatic Functional Programming**: Prefer iterator-based functional programming patterns over imperative loops unless it increases complexity
 - **Comments**: Never leave redundant comments. Only use comments to explain complex logic. Generally, code should be self-documenting through clear naming, structure, and type modeling. If a comment is needed to explain what the code does, consider refactoring the code to make it clearer
+- **Spacing**: Leave an empty line in between code blocks to allow vim curly braces jumping between blocks and for easier reading
 
 ### Testing Strategy
 
@@ -153,6 +154,28 @@ Prefer flat code over deeply nested blocks to improve readability and maintainab
 
 **Use early returns:**
 
+Instead of
+
+```rust
+fn process_data(data: Option<&str>) -> Result<String, Error> {
+    if let Some(data) = data {
+        if !data.is_empty() {
+            if data.len() > 5 {
+                Ok(data.to_uppercase())
+            } else {
+                Err(Error::TooShort)
+            }
+        } else {
+            Err(Error::Empty)
+        }
+    } else {
+        Err(Error::None)
+    }
+}
+```
+
+Write
+
 ```rust
 fn process_data(data: Option<&str>) -> Result<String, Error> {
     let data = data.ok_or(Error::None)?;
@@ -171,16 +194,153 @@ fn process_data(data: Option<&str>) -> Result<String, Error> {
 
 **Extract functions for complex logic:**
 
+Instead of
+
 ```rust
-fn validate_trade_data(trade: &Trade) -> Result<(), ValidationError> {
-    validate_symbol(&trade.symbol)?;
-    validate_quantity(trade.quantity)?;
-    validate_price(trade.price)?;
+fn process_blockchain_event(event: &Event, db: &Database) -> Result<(), ProcessingError> {
+    match event.event_type {
+        EventType::ClearV2 => {
+            if let Some(trade_data) = &event.trade_data {
+                for trade in &trade_data.trades {
+                    if trade.token_pair.len() == 2 {
+                        if let (Some(token_a), Some(token_b)) = (&trade.token_pair[0], &trade.token_pair[1]) {
+                            if token_a.symbol.ends_with("s1") || token_b.symbol.ends_with("s1") {
+                                let (equity_token, usdc_token) = if token_a.symbol.ends_with("s1") {
+                                    (token_a, token_b)
+                                } else {
+                                    (token_b, token_a)
+                                };
+                                
+                                if usdc_token.symbol == "USDC" {
+                                    if let Ok(existing) = db.find_trade(&event.tx_hash, event.log_index) {
+                                        if existing.status != TradeStatus::Completed {
+                                            // Process retry logic
+                                            if existing.retry_count < 3 {
+                                                match schwab_client.execute_trade(&trade) {
+                                                    Ok(result) => {
+                                                        db.update_trade_status(&existing.id, TradeStatus::Completed)?;
+                                                    }
+                                                    Err(e) => {
+                                                        db.increment_retry_count(&existing.id)?;
+                                                        if existing.retry_count >= 2 {
+                                                            db.update_trade_status(&existing.id, TradeStatus::Failed)?;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        // New trade processing
+                                        let new_trade = Trade::new(equity_token, usdc_token, &trade)?;
+                                        db.insert_trade(&new_trade)?;
+                                        match schwab_client.execute_trade(&new_trade) {
+                                            Ok(result) => {
+                                                db.update_trade_status(&new_trade.id, TradeStatus::Completed)?;
+                                            }
+                                            Err(e) => {
+                                                db.update_trade_status(&new_trade.id, TradeStatus::Failed)?;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        EventType::TakeOrderV2 => {
+            // Similar deeply nested logic for TakeOrderV2...
+        }
+        _ => return Err(ProcessingError::UnsupportedEventType),
+    }
     Ok(())
 }
 ```
 
+Write
+
+```rust
+fn process_blockchain_event(event: &Event, db: &Database) -> Result<(), ProcessingError> {
+    match event.event_type {
+        EventType::ClearV2 => process_clear_event(event, db),
+        EventType::TakeOrderV2 => process_take_order_event(event, db),
+        _ => Err(ProcessingError::UnsupportedEventType),
+    }
+}
+
+fn process_clear_event(event: &Event, db: &Database) -> Result<(), ProcessingError> {
+    let trade_data = event.trade_data.as_ref().ok_or(ProcessingError::NoTradeData)?;
+    
+    for trade in &trade_data.trades {
+        if let Some((equity_token, usdc_token)) = extract_valid_token_pair(trade)? {
+            handle_trade_processing(event, trade, equity_token, usdc_token, db)?;
+        }
+    }
+    Ok(())
+}
+
+fn extract_valid_token_pair(trade: &TradeInfo) -> Result<Option<(&Token, &Token)>, ProcessingError> {
+    if trade.token_pair.len() != 2 {
+        return Ok(None);
+    }
+    
+    let (token_a, token_b) = (&trade.token_pair[0], &trade.token_pair[1]);
+    let (equity_token, usdc_token) = if token_a.symbol.ends_with("s1") {
+        (token_a, token_b)
+    } else if token_b.symbol.ends_with("s1") {
+        (token_b, token_a)
+    } else {
+        return Ok(None);
+    };
+    
+    if usdc_token.symbol == "USDC" {
+        Ok(Some((equity_token, usdc_token)))
+    } else {
+        Ok(None)
+    }
+}
+
+fn handle_trade_processing(
+    event: &Event,
+    trade: &TradeInfo, 
+    equity_token: &Token,
+    usdc_token: &Token,
+    db: &Database
+) -> Result<(), ProcessingError> {
+    if let Ok(existing) = db.find_trade(&event.tx_hash, event.log_index) {
+        handle_existing_trade(existing, trade, db)
+    } else {
+        handle_new_trade(event, trade, equity_token, usdc_token, db)
+    }
+}
+```
+
 **Use pattern matching with guards:**
+
+Instead of
+
+```rust
+if let Some(data) = input {
+    if state == State::Ready {
+        if data.is_valid() {
+            process(data)
+        } else {
+            Err(Error::InvalidData)
+        }
+    } else {
+        Err(Error::NotReady)
+    }
+} else {
+    if state == State::Ready {
+        Err(Error::NoData)
+    } else {
+        Err(Error::NotReady)
+    }
+}
+```
+
+Write
 
 ```rust
 match (input, state) {
@@ -192,6 +352,23 @@ match (input, state) {
 ```
 
 **Prefer iterator chains over nested loops:**
+
+Instead of
+
+```rust
+let mut results = Vec::new();
+for trade in &trades {
+    if trade.is_valid() {
+        match process_trade(trade) {
+            Ok(result) => results.push(result),
+            Err(e) => return Err(e),
+        }
+    }
+}
+Ok(results)
+```
+
+Write
 
 ```rust
 trades
