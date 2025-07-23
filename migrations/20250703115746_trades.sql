@@ -27,7 +27,7 @@ CREATE TABLE trades (
  * Consider encrypting the tokens if necessary.
  */
 CREATE TABLE schwab_auth (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id INTEGER PRIMARY KEY CHECK (id = 1),
   access_token TEXT NOT NULL,
   access_token_fetched_at DATETIME NOT NULL,
   refresh_token TEXT NOT NULL,

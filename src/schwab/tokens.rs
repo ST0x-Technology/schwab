@@ -20,12 +20,18 @@ impl SchwabTokens {
         sqlx::query!(
             r#"
             INSERT INTO schwab_auth (
+                id,
                 access_token,
                 access_token_fetched_at,
                 refresh_token,
                 refresh_token_fetched_at
             )
-            VALUES (?, ?, ?, ?)
+            VALUES (1, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                access_token = excluded.access_token,
+                access_token_fetched_at = excluded.access_token_fetched_at,
+                refresh_token = excluded.refresh_token,
+                refresh_token_fetched_at = excluded.refresh_token_fetched_at
             "#,
             self.access_token,
             self.access_token_fetched_at,
@@ -48,8 +54,6 @@ impl SchwabTokens {
                 refresh_token,
                 refresh_token_fetched_at
             FROM schwab_auth
-            ORDER BY id DESC
-            LIMIT 1
             "#
         )
         .fetch_one(pool)
@@ -224,7 +228,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_schwab_tokens_store_duplicate_insert() {
+    async fn test_schwab_tokens_store_upsert() {
         let pool = setup_test_db().await;
         let now = Utc::now();
 
@@ -237,14 +241,25 @@ mod tests {
 
         tokens.store(&pool).await.unwrap();
 
-        tokens.store(&pool).await.unwrap();
+        let updated_tokens = SchwabTokens {
+            access_token: "updated_access_token".to_string(),
+            access_token_fetched_at: now,
+            refresh_token: "updated_refresh_token".to_string(),
+            refresh_token_fetched_at: now,
+        };
+
+        updated_tokens.store(&pool).await.unwrap();
 
         let count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_auth")
             .fetch_one(&pool)
             .await
             .unwrap()
             .count;
-        assert_eq!(count, 2);
+        assert_eq!(count, 1);
+
+        let stored_tokens = SchwabTokens::load(&pool).await.unwrap();
+        assert_eq!(stored_tokens.access_token, "updated_access_token");
+        assert_eq!(stored_tokens.refresh_token, "updated_refresh_token");
     }
 
     #[test]
