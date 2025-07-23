@@ -1,25 +1,11 @@
 use base64::prelude::*;
 use chrono::Utc;
 use clap::Parser;
-use reqwest::header::{self, HeaderMap, HeaderValue, InvalidHeaderValue};
+use reqwest::header::{self, HeaderMap, HeaderValue};
 use serde::Deserialize;
-use thiserror::Error;
+use sqlx::SqlitePool;
 
-use super::tokens::SchwabTokens;
-
-#[derive(Error, Debug)]
-pub enum SchwabAuthError {
-    #[error("Failed to create header value: {0}")]
-    InvalidHeader(#[from] InvalidHeaderValue),
-    #[error("Request failed: {0}")]
-    Reqwest(#[from] reqwest::Error),
-    #[error("Database error: {0}")]
-    Sqlx(#[from] sqlx::Error),
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("Refresh token has expired")]
-    RefreshTokenExpired,
-}
+use super::{tokens::SchwabTokens, SchwabError};
 
 #[derive(Parser, Debug, Clone)]
 pub struct SchwabAuthEnv {
@@ -31,6 +17,8 @@ pub struct SchwabAuthEnv {
     pub redirect_uri: String,
     #[clap(short, long, env, default_value = "https://api.schwabapi.com")]
     pub base_url: String,
+    #[clap(long, env, default_value = "0")]
+    pub account_index: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -41,7 +29,50 @@ pub struct SchwabAuthResponse {
     pub refresh_token: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountNumbers {
+    pub account_number: String,
+    pub hash_value: String,
+}
+
 impl SchwabAuthEnv {
+    pub async fn get_account_hash(&self, pool: &SqlitePool) -> Result<String, SchwabError> {
+        let access_token = SchwabTokens::get_valid_access_token(pool, self).await?;
+
+        let headers = [
+            (
+                header::AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {access_token}"))?,
+            ),
+            (header::ACCEPT, HeaderValue::from_str("application/json")?),
+        ]
+        .into_iter()
+        .collect::<HeaderMap>();
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("{}/trader/v1/accounts/accountNumbers", self.base_url))
+            .headers(headers)
+            .send()
+            .await?;
+
+        let account_numbers: Vec<AccountNumbers> = response.json().await?;
+
+        if account_numbers.is_empty() {
+            return Err(SchwabError::NoAccountsFound);
+        }
+
+        if self.account_index >= account_numbers.len() {
+            return Err(SchwabError::AccountIndexOutOfBounds {
+                index: self.account_index,
+                count: account_numbers.len(),
+            });
+        }
+
+        Ok(account_numbers[self.account_index].hash_value.clone())
+    }
+
     pub fn get_auth_url(&self) -> String {
         format!(
             "{}/v1/oauth/authorize?client_id={}&redirect_uri={}",
@@ -49,7 +80,7 @@ impl SchwabAuthEnv {
         )
     }
 
-    pub async fn get_tokens(&self, code: &str) -> Result<SchwabTokens, SchwabAuthError> {
+    pub async fn get_tokens(&self, code: &str) -> Result<SchwabTokens, SchwabError> {
         let credentials = format!("{}:{}", self.app_key, self.app_secret);
         let credentials = BASE64_STANDARD.encode(credentials);
 
@@ -92,7 +123,7 @@ impl SchwabAuthEnv {
     pub async fn refresh_tokens(
         &self,
         refresh_token: &str,
-    ) -> Result<SchwabTokens, SchwabAuthError> {
+    ) -> Result<SchwabTokens, SchwabError> {
         let credentials = format!("{}:{}", self.app_key, self.app_secret);
         let credentials = BASE64_STANDARD.encode(credentials);
 
@@ -143,6 +174,7 @@ mod tests {
             app_secret: "test_app_secret".to_string(),
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: "https://api.schwabapi.com".to_string(),
+            account_index: 0,
         }
     }
 
@@ -152,6 +184,7 @@ mod tests {
             app_secret: "test_app_secret".to_string(),
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: mock_server.base_url(),
+            account_index: 0,
         }
     }
 
@@ -169,6 +202,7 @@ mod tests {
             app_secret: "custom_secret".to_string(),
             redirect_uri: "https://custom.redirect.com".to_string(),
             base_url: "https://custom.api.com".to_string(),
+            account_index: 0,
         };
         let expected_url = "https://custom.api.com/v1/oauth/authorize?client_id=custom_key&redirect_uri=https://custom.redirect.com";
         assert_eq!(env.get_auth_url(), expected_url);
@@ -228,7 +262,7 @@ mod tests {
         let result = env.get_tokens("invalid_code").await;
 
         mock.assert();
-        assert!(matches!(result.unwrap_err(), SchwabAuthError::Reqwest(_)));
+        assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
     }
 
     #[tokio::test]
@@ -246,7 +280,7 @@ mod tests {
         let result = env.get_tokens("test_code").await;
 
         mock.assert();
-        assert!(matches!(result.unwrap_err(), SchwabAuthError::Reqwest(_)));
+        assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
     }
 
     #[tokio::test]
@@ -268,7 +302,7 @@ mod tests {
         let result = env.get_tokens("test_code").await;
 
         mock.assert();
-        assert!(matches!(result.unwrap_err(), SchwabAuthError::Reqwest(_)));
+        assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
     }
 
     #[tokio::test]
@@ -355,7 +389,7 @@ mod tests {
         let result = env.refresh_tokens("invalid_refresh_token").await;
 
         mock.assert();
-        assert!(matches!(result.unwrap_err(), SchwabAuthError::Reqwest(_)));
+        assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
     }
 
     #[tokio::test]
@@ -373,7 +407,7 @@ mod tests {
         let result = env.refresh_tokens("test_refresh_token").await;
 
         mock.assert();
-        assert!(matches!(result.unwrap_err(), SchwabAuthError::Reqwest(_)));
+        assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
     }
 
     #[tokio::test]
@@ -395,7 +429,7 @@ mod tests {
         let result = env.refresh_tokens("test_refresh_token").await;
 
         mock.assert();
-        assert!(matches!(result.unwrap_err(), SchwabAuthError::Reqwest(_)));
+        assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
     }
 
     #[test]
@@ -417,19 +451,12 @@ mod tests {
     #[test]
     fn test_schwab_auth_error_display() {
         let invalid_header_err =
-            SchwabAuthError::InvalidHeader(HeaderValue::from_str("test\x00").unwrap_err());
+            SchwabError::InvalidHeader(HeaderValue::from_str("test\x00").unwrap_err());
         assert!(
             invalid_header_err
                 .to_string()
                 .contains("Failed to create header value")
         );
-    }
-
-    #[test]
-    fn test_schwab_auth_error_from_conversions() {
-        let header_err = HeaderValue::from_str("test\x00").unwrap_err();
-        let auth_err: SchwabAuthError = header_err.into();
-        assert!(matches!(auth_err, SchwabAuthError::InvalidHeader(_)));
     }
 
     #[test]
@@ -439,9 +466,145 @@ mod tests {
             app_secret: "test_secret".to_string(),
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: "https://api.schwabapi.com".to_string(),
+            account_index: 0,
         };
 
         assert_eq!(env.redirect_uri, "https://127.0.0.1");
         assert_eq!(env.base_url, "https://api.schwabapi.com");
+    }
+
+    #[tokio::test]
+    async fn test_get_account_hash_success() {
+        let server = MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let mock_response = json!([
+            {
+                "accountNumber": "123456789",
+                "hashValue": "ABC123DEF456"
+            },
+            {
+                "accountNumber": "987654321",
+                "hashValue": "XYZ789GHI012"
+            }
+        ]);
+
+        let mock = server.mock(|when, then| {
+            when.method(GET)
+                .path("/trader/v1/accounts/accountNumbers")
+                .header("authorization", "Bearer test_access_token")
+                .header("accept", "application/json");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(mock_response);
+        });
+
+        let result = env.get_account_hash(&pool).await;
+
+        mock.assert();
+        assert_eq!(result.unwrap(), "ABC123DEF456");
+    }
+
+    #[tokio::test]
+    async fn test_get_account_hash_with_custom_index() {
+        let server = MockServer::start();
+        let mut env = create_test_env_with_mock_server(&server);
+        env.account_index = 1;
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let mock_response = json!([
+            {
+                "accountNumber": "123456789",
+                "hashValue": "ABC123DEF456"
+            },
+            {
+                "accountNumber": "987654321",
+                "hashValue": "XYZ789GHI012"
+            }
+        ]);
+
+        let mock = server.mock(|when, then| {
+            when.method(GET)
+                .path("/trader/v1/accounts/accountNumbers")
+                .header("authorization", "Bearer test_access_token")
+                .header("accept", "application/json");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(mock_response);
+        });
+
+        let result = env.get_account_hash(&pool).await;
+
+        mock.assert();
+        assert_eq!(result.unwrap(), "XYZ789GHI012");
+    }
+
+    #[tokio::test]
+    async fn test_get_account_hash_index_out_of_bounds() {
+        let server = MockServer::start();
+        let mut env = create_test_env_with_mock_server(&server);
+        env.account_index = 2;
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let mock_response = json!([
+            {
+                "accountNumber": "123456789",
+                "hashValue": "ABC123DEF456"
+            }
+        ]);
+
+        let mock = server.mock(|when, then| {
+            when.method(GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(mock_response);
+        });
+
+        let result = env.get_account_hash(&pool).await;
+
+        mock.assert();
+        assert!(matches!(result.unwrap_err(), SchwabError::AccountIndexOutOfBounds { index: 2, count: 1 }));
+    }
+
+    #[tokio::test]
+    async fn test_get_account_hash_no_accounts() {
+        let server = MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let mock = server.mock(|when, then| {
+            when.method(GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([]));
+        });
+
+        let result = env.get_account_hash(&pool).await;
+
+        mock.assert();
+        assert!(matches!(result.unwrap_err(), SchwabError::NoAccountsFound));
+    }
+
+    async fn setup_test_db() -> SqlitePool {
+        let pool = SqlitePool::connect(":memory:").await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+        pool
+    }
+
+    async fn setup_test_tokens(pool: &SqlitePool) {
+        let tokens = crate::schwab::tokens::SchwabTokens {
+            access_token: "test_access_token".to_string(),
+            access_token_fetched_at: chrono::Utc::now(),
+            refresh_token: "test_refresh_token".to_string(),
+            refresh_token_fetched_at: chrono::Utc::now(),
+        };
+        tokens.store(pool).await.unwrap();
     }
 }

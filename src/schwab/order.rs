@@ -1,4 +1,8 @@
+use reqwest::header::{self, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
+
+use super::{SchwabAuthEnv, SchwabError, SchwabTokens};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +34,40 @@ impl Order {
             order_strategy_type: OrderStrategyType::Single,
             order_leg_collection: vec![order_leg],
         }
+    }
+
+    pub async fn place(&self, env: &SchwabAuthEnv, pool: &SqlitePool) -> Result<(), SchwabError> {
+        let access_token = SchwabTokens::get_valid_access_token(pool, env).await?;
+        let account_hash = env.get_account_hash(pool).await?;
+
+        let headers = [
+            (
+                header::AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {access_token}"))?,
+            ),
+            (header::ACCEPT, HeaderValue::from_str("*/*")?),
+            (header::CONTENT_TYPE, HeaderValue::from_str("application/json")?),
+        ]
+        .into_iter()
+        .collect::<HeaderMap>();
+
+        let order_json = serde_json::to_string(self)?;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("{}/trader/v1/accounts/{}/orders", env.base_url, account_hash))
+            .headers(headers)
+            .body(order_json)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(SchwabError::OrderPlacementFailed {
+                status: response.status(),
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -310,5 +348,100 @@ mod tests {
         assert_eq!(order_leg.quantity, 75);
         assert_eq!(order_leg.instrument.symbol, "VTI");
         assert_eq!(order_leg.instrument.asset_type, AssetType::Equity);
+    }
+
+    #[tokio::test]
+    async fn test_place_order_success() {
+        let server = httpmock::MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(serde_json::json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/trader/v1/accounts/ABC123DEF456/orders")
+                .header("authorization", "Bearer test_access_token")
+                .header("accept", "*/*")
+                .header("content-type", "application/json");
+            then.status(201);
+        });
+
+        let order = Order::new("AAPL".to_string(), Instruction::Buy, 100);
+        let result = order.place(&env, &pool).await;
+
+        account_mock.assert();
+        order_mock.assert();
+        result.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_place_order_failure() {
+        let server = httpmock::MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(serde_json::json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/trader/v1/accounts/ABC123DEF456/orders");
+            then.status(400)
+                .json_body(serde_json::json!({"error": "Invalid order"}));
+        });
+
+        let order = Order::new("INVALID".to_string(), Instruction::Buy, 100);
+        let result = order.place(&env, &pool).await;
+
+        account_mock.assert();
+        order_mock.assert();
+        let error = result.unwrap_err();
+        assert!(matches!(error, super::SchwabError::OrderPlacementFailed { status } if status.as_u16() == 400));
+    }
+
+    fn create_test_env_with_mock_server(mock_server: &httpmock::MockServer) -> super::SchwabAuthEnv {
+        super::SchwabAuthEnv {
+            app_key: "test_app_key".to_string(),
+            app_secret: "test_app_secret".to_string(),
+            redirect_uri: "https://127.0.0.1".to_string(),
+            base_url: mock_server.base_url(),
+            account_index: 0,
+        }
+    }
+
+    async fn setup_test_db() -> sqlx::SqlitePool {
+        let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+        pool
+    }
+
+    async fn setup_test_tokens(pool: &sqlx::SqlitePool) {
+        let tokens = super::super::tokens::SchwabTokens {
+            access_token: "test_access_token".to_string(),
+            access_token_fetched_at: chrono::Utc::now(),
+            refresh_token: "test_refresh_token".to_string(),
+            refresh_token_fetched_at: chrono::Utc::now(),
+        };
+        tokens.store(pool).await.unwrap();
     }
 }

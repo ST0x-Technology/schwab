@@ -2,13 +2,37 @@ pub mod auth;
 pub mod order;
 pub mod tokens;
 
-pub use auth::{SchwabAuthEnv, SchwabAuthError, SchwabAuthResponse};
-pub use tokens::SchwabTokens;
-
+use reqwest::header::InvalidHeaderValue;
 use sqlx::SqlitePool;
 use std::io;
+use thiserror::Error;
 
-pub async fn run_oauth_flow(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<(), SchwabAuthError> {
+#[derive(Error, Debug)]
+pub enum SchwabError {
+    #[error("Failed to create header value: {0}")]
+    InvalidHeader(#[from] InvalidHeaderValue),
+    #[error("Request failed: {0}")]
+    Reqwest(#[from] reqwest::Error),
+    #[error("Database error: {0}")]
+    Sqlx(#[from] sqlx::Error),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("JSON serialization failed: {0}")]
+    JsonSerialization(#[from] serde_json::Error),
+    #[error("Refresh token has expired")]
+    RefreshTokenExpired,
+    #[error("No accounts found")]
+    NoAccountsFound,
+    #[error("Account index {index} out of bounds (found {count} accounts)")]
+    AccountIndexOutOfBounds { index: usize, count: usize },
+    #[error("Order placement failed with status: {status}")]
+    OrderPlacementFailed { status: reqwest::StatusCode },
+}
+
+pub use auth::{AccountNumbers, SchwabAuthEnv, SchwabAuthResponse};
+pub use tokens::SchwabTokens;
+
+pub async fn run_oauth_flow(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<(), SchwabError> {
     println!(
         "Authenticate portfolio brokerage account (not dev account) and paste URL: {}",
         env.get_auth_url()
@@ -38,6 +62,7 @@ mod tests {
             app_secret: "test_app_secret".to_string(),
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: mock_server.base_url(),
+            account_index: 0,
         }
     }
 

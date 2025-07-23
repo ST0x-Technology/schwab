@@ -3,7 +3,7 @@ use serde::Deserialize;
 use sqlx::SqlitePool;
 use tokio::time::{Duration as TokioDuration, interval};
 
-use super::auth::{SchwabAuthEnv, SchwabAuthError};
+use super::{auth::SchwabAuthEnv, SchwabError};
 
 #[derive(Debug, Deserialize)]
 pub struct SchwabTokens {
@@ -16,7 +16,7 @@ pub struct SchwabTokens {
 }
 
 impl SchwabTokens {
-    pub async fn store(&self, pool: &SqlitePool) -> Result<(), SchwabAuthError> {
+    pub async fn store(&self, pool: &SqlitePool) -> Result<(), SchwabError> {
         sqlx::query!(
             r#"
             INSERT INTO schwab_auth (
@@ -38,7 +38,7 @@ impl SchwabTokens {
         Ok(())
     }
 
-    pub async fn load(pool: &SqlitePool) -> Result<Self, SchwabAuthError> {
+    pub async fn load(pool: &SqlitePool) -> Result<Self, SchwabError> {
         let row = sqlx::query!(
             r#"
             SELECT
@@ -96,7 +96,7 @@ impl SchwabTokens {
     pub async fn get_valid_access_token(
         pool: &SqlitePool,
         env: &SchwabAuthEnv,
-    ) -> Result<String, SchwabAuthError> {
+    ) -> Result<String, SchwabError> {
         let tokens = Self::load(pool).await?;
 
         if !tokens.is_access_token_expired() {
@@ -104,7 +104,7 @@ impl SchwabTokens {
         }
 
         if tokens.is_refresh_token_expired() {
-            return Err(SchwabAuthError::RefreshTokenExpired);
+            return Err(SchwabError::RefreshTokenExpired);
         }
 
         let new_tokens = env.refresh_tokens(&tokens.refresh_token).await?;
@@ -115,7 +115,7 @@ impl SchwabTokens {
     pub async fn start_automatic_token_refresh(
         pool: SqlitePool,
         env: SchwabAuthEnv,
-    ) -> Result<(), SchwabAuthError> {
+    ) -> Result<(), SchwabError> {
         let mut interval_timer = interval(TokioDuration::from_secs(29 * 60));
 
         loop {
@@ -128,16 +128,16 @@ impl SchwabTokens {
     async fn handle_token_refresh(
         pool: &SqlitePool,
         env: &SchwabAuthEnv,
-    ) -> Result<(), SchwabAuthError> {
+    ) -> Result<(), SchwabError> {
         match Self::refresh_if_needed(pool, env).await {
             Ok(refreshed) if refreshed => {
                 println!("Access token refreshed successfully");
                 Ok(())
             }
             Ok(_) => Ok(()),
-            Err(SchwabAuthError::RefreshTokenExpired) => {
+            Err(SchwabError::RefreshTokenExpired) => {
                 println!("Refresh token expired, manual re-authentication required");
-                Err(SchwabAuthError::RefreshTokenExpired)
+                Err(SchwabError::RefreshTokenExpired)
             }
             Err(e) => {
                 println!("Failed to refresh token: {e}");
@@ -149,11 +149,11 @@ impl SchwabTokens {
     pub async fn refresh_if_needed(
         pool: &SqlitePool,
         env: &SchwabAuthEnv,
-    ) -> Result<bool, SchwabAuthError> {
+    ) -> Result<bool, SchwabError> {
         let tokens = Self::load(pool).await?;
 
         if tokens.is_refresh_token_expired() {
-            return Err(SchwabAuthError::RefreshTokenExpired);
+            return Err(SchwabError::RefreshTokenExpired);
         }
 
         if tokens.is_access_token_expired()
@@ -182,6 +182,7 @@ mod tests {
             app_secret: "test_app_secret".to_string(),
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: mock_server.base_url(),
+            account_index: 0,
         }
     }
 
@@ -191,6 +192,7 @@ mod tests {
             app_secret: "test_app_secret".to_string(),
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: "https://api.schwabapi.com".to_string(),
+            account_index: 0,
         }
     }
 
@@ -419,7 +421,7 @@ mod tests {
 
         assert!(matches!(
             result.unwrap_err(),
-            SchwabAuthError::RefreshTokenExpired
+            SchwabError::RefreshTokenExpired
         ));
     }
 
@@ -490,7 +492,7 @@ mod tests {
         let result = SchwabTokens::get_valid_access_token(&pool, &env).await;
 
         mock.assert();
-        assert!(matches!(result.unwrap_err(), SchwabAuthError::Reqwest(_)));
+        assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
     }
 
     #[tokio::test]
@@ -500,7 +502,7 @@ mod tests {
 
         let result = SchwabTokens::get_valid_access_token(&pool, &env).await;
 
-        assert!(matches!(result.unwrap_err(), SchwabAuthError::Sqlx(_)));
+        assert!(matches!(result.unwrap_err(), SchwabError::Sqlx(_)));
     }
 
     #[tokio::test]
@@ -569,7 +571,7 @@ mod tests {
 
         assert!(matches!(
             result.unwrap_err(),
-            SchwabAuthError::RefreshTokenExpired
+            SchwabError::RefreshTokenExpired
         ));
     }
 
@@ -644,7 +646,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_automatic_token_refresh_before_expiration() -> Result<(), SchwabAuthError> {
+    async fn test_automatic_token_refresh_before_expiration() -> Result<(), SchwabError> {
         use std::thread;
         use tokio::time::{Duration as TokioDuration, sleep};
 
