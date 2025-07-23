@@ -9,7 +9,7 @@ use super::{SchwabAuthEnv, SchwabError, SchwabTokens};
 pub struct Order {
     pub order_type: OrderType,
     pub session: Session,
-    pub duration: Duration,
+    pub duration: OrderDuration,
     pub order_strategy_type: OrderStrategyType,
     pub order_leg_collection: Vec<OrderLeg>,
 }
@@ -30,7 +30,7 @@ impl Order {
         Self {
             order_type: OrderType::Market,
             session: Session::Normal,
-            duration: Duration::Day,
+            duration: OrderDuration::Day,
             order_strategy_type: OrderStrategyType::Single,
             order_leg_collection: vec![order_leg],
         }
@@ -116,11 +116,8 @@ pub enum Session {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum Duration {
+pub enum OrderDuration {
     Day,
-    Gtc,
-    Fok,
-    Ioc,
     GoodTillCancel,
 }
 
@@ -170,7 +167,7 @@ mod tests {
 
         assert_eq!(order.order_type, OrderType::Market);
         assert_eq!(order.session, Session::Normal);
-        assert_eq!(order.duration, Duration::Day);
+        assert_eq!(order.duration, OrderDuration::Day);
         assert_eq!(order.order_strategy_type, OrderStrategyType::Single);
         assert_eq!(order.order_leg_collection.len(), 1);
 
@@ -187,7 +184,7 @@ mod tests {
 
         assert_eq!(order.order_type, OrderType::Market);
         assert_eq!(order.session, Session::Normal);
-        assert_eq!(order.duration, Duration::Day);
+        assert_eq!(order.duration, OrderDuration::Day);
         assert_eq!(order.order_strategy_type, OrderStrategyType::Single);
 
         let leg = &order.order_leg_collection[0];
@@ -285,9 +282,12 @@ mod tests {
         assert_eq!(serde_json::to_value(Session::Am).unwrap(), "AM");
         assert_eq!(serde_json::to_value(Session::Pm).unwrap(), "PM");
 
-        // Test Duration enum serialization
-        assert_eq!(serde_json::to_value(Duration::Day).unwrap(), "DAY");
-        assert_eq!(serde_json::to_value(Duration::Gtc).unwrap(), "GTC");
+        // Test OrderDuration enum serialization
+        assert_eq!(serde_json::to_value(OrderDuration::Day).unwrap(), "DAY");
+        assert_eq!(
+            serde_json::to_value(OrderDuration::GoodTillCancel).unwrap(),
+            "GOOD_TILL_CANCEL"
+        );
 
         // Test AssetType enum serialization
         assert_eq!(serde_json::to_value(AssetType::Equity).unwrap(), "EQUITY");
