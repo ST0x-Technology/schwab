@@ -41,7 +41,7 @@ pub enum SchwabError {
 }
 
 pub async fn run_oauth_flow(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<(), SchwabError> {
-    println!(
+    tracing::info!(
         "Authenticate portfolio brokerage account (not dev account) and paste URL: {}",
         env.get_auth_url()
     );

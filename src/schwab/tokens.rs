@@ -2,6 +2,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 use sqlx::SqlitePool;
 use tokio::time::{Duration as TokioDuration, interval};
+use tracing::{error, info, warn};
 
 use super::{SchwabError, auth::SchwabAuthEnv};
 
@@ -135,16 +136,16 @@ impl SchwabTokens {
     ) -> Result<(), SchwabError> {
         match Self::refresh_if_needed(pool, env).await {
             Ok(refreshed) if refreshed => {
-                println!("Access token refreshed successfully");
+                info!("Access token refreshed successfully");
                 Ok(())
             }
             Ok(_) => Ok(()),
             Err(SchwabError::RefreshTokenExpired) => {
-                println!("Refresh token expired, manual re-authentication required");
+                error!("Refresh token expired, manual re-authentication required");
                 Err(SchwabError::RefreshTokenExpired)
             }
             Err(e) => {
-                println!("Failed to refresh token: {e}");
+                warn!("Failed to refresh token: {e}");
                 Ok(())
             }
         }

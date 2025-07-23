@@ -57,7 +57,7 @@ pub async fn run(env: Env) -> anyhow::Result<()> {
         };
 
         if let Some(trade) = trade {
-            println!("TODO: dedup and trade: {trade:?}");
+            tracing::info!("TODO: dedup and trade: {trade:?}");
         }
     }
 }
