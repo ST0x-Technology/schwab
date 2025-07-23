@@ -16,8 +16,20 @@ CREATE TABLE trades (
 
   status TEXT,
   schwab_order_id TEXT,
-  created_at TEXT,
-  completed_at TEXT,
+  created_at DATETIME NOT NULL,
+  completed_at DATETIME,
 
   UNIQUE (tx_hash, log_index)
+);
+
+/* NOTE: Storing underlying Schwab auth tokens is sensitive.
+ * Ensure that this table is secured and access is controlled.
+ * Consider encrypting the tokens if necessary.
+ */
+CREATE TABLE schwab_auth (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  access_token TEXT NOT NULL,
+  access_token_fetched_at DATETIME NOT NULL,
+  refresh_token TEXT NOT NULL,
+  refresh_token_fetched_at DATETIME NOT NULL
 );

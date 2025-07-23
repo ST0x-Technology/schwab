@@ -37,7 +37,6 @@
           buildInputs = with pkgs;
             [
               sqlx-cli
-              bacon
               cargo-tarpaulin
               packages.prepSolArtifacts
               packages.checkTestCoverage

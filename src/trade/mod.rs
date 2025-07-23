@@ -1,8 +1,9 @@
 use alloy::primitives::ruint::FromUintError;
-use alloy::primitives::{B256, U256};
+use alloy::primitives::{Address, B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::Log;
 use alloy::transports::{RpcError, TransportErrorKind};
+use clap::Parser;
 use std::num::ParseFloatError;
 
 use crate::bindings::IOrderBookV4::OrderV3;
@@ -11,10 +12,32 @@ use crate::symbol_cache::SymbolCache;
 mod clear;
 mod take_order;
 
+#[derive(Parser, Debug)]
+pub struct EvmEnv {
+    #[clap(short, long, env)]
+    pub ws_rpc_url: url::Url,
+    #[clap(short = 'b', long, env)]
+    pub orderbook: Address,
+    #[clap(short, long, env)]
+    pub order_hash: B256,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchwabInstruction {
     Buy,
     Sell,
+}
+
+impl serde::Serialize for SchwabInstruction {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(match self {
+            Self::Buy => "BUY",
+            Self::Sell => "SELL",
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -111,7 +134,7 @@ impl Trade {
             if onchain_input_symbol == "USDC" && onchain_output_symbol.ends_with("s1") {
                 let ticker = onchain_output_symbol
                     .strip_suffix("s1")
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
                     .ok_or_else(|| {
                         TradeConversionError::InvalidSymbolConfiguration(
                             onchain_input_symbol.clone(),
@@ -122,7 +145,7 @@ impl Trade {
             } else if onchain_output_symbol == "USDC" && onchain_input_symbol.ends_with("s1") {
                 let ticker = onchain_input_symbol
                     .strip_suffix("s1")
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
                     .ok_or_else(|| {
                         TradeConversionError::InvalidSymbolConfiguration(
                             onchain_input_symbol.clone(),
@@ -152,9 +175,10 @@ impl Trade {
             return Ok(None);
         }
 
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let onchain_price_per_share_cents = (onchain_price_per_share_usdc * 100.0) as u64;
 
-        let trade = Trade {
+        let trade = Self {
             tx_hash,
             log_index,
 
@@ -228,7 +252,7 @@ mod tests {
             order,
             OrderFill {
                 input_index: 0,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 1,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -265,7 +289,7 @@ mod tests {
             get_test_order(),
             OrderFill {
                 input_index: 0,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 1,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -303,7 +327,7 @@ mod tests {
                 input_index: 1,
                 input_amount: U256::from_str("9000000000000000000").unwrap(),
                 output_index: 0,
-                output_amount: U256::from(100000000),
+                output_amount: U256::from(100_000_000),
             },
             get_test_log(),
         )
@@ -344,7 +368,7 @@ mod tests {
             order,
             OrderFill {
                 input_index: 0,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 1,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -371,7 +395,7 @@ mod tests {
             order,
             OrderFill {
                 input_index: 0,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 1,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -396,7 +420,7 @@ mod tests {
             order,
             OrderFill {
                 input_index: 99,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 1,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -421,7 +445,7 @@ mod tests {
             order,
             OrderFill {
                 input_index: 0,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 99, // invalid output index
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -448,7 +472,7 @@ mod tests {
             order,
             OrderFill {
                 input_index: 0,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 1,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -480,7 +504,7 @@ mod tests {
             order,
             OrderFill {
                 input_index: 0,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 1,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -514,7 +538,7 @@ mod tests {
             order,
             OrderFill {
                 input_index: 0,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 1,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -548,7 +572,7 @@ mod tests {
             order,
             OrderFill {
                 input_index: 0,
-                input_amount: U256::from(100000000),
+                input_amount: U256::from(100_000_000),
                 output_index: 1,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
@@ -567,15 +591,136 @@ mod tests {
     #[test]
     fn test_u256_to_f64() {
         // zero amount
-        assert_eq!(u256_to_f64(U256::ZERO, 6).unwrap(), 0.0);
+        assert!((u256_to_f64(U256::ZERO, 6).unwrap() - 0.0).abs() < f64::EPSILON);
 
         // 18 decimals (st0x-like)
-        let amount = U256::from_str("1000000000000000000").unwrap(); // 1.0
+        let amount = U256::from_str("1_000_000_000_000_000_000").unwrap(); // 1.0
         assert!((u256_to_f64(amount, 18).unwrap() - 1.0).abs() < f64::EPSILON);
 
         // 6 decimals (USDC-like)
-        let amount = U256::from(123456789u64); // 123.456789 with 6 decimals
-        let expected = 123.456789_f64;
+        let amount = U256::from(123_456_789u64);
+        let expected = 123.456_789_f64;
         assert!((u256_to_f64(amount, 6).unwrap() - expected).abs() < f64::EPSILON);
+
+        // small amount with many decimals
+        let amount = U256::from(123u64);
+        let expected = 0.000_123_f64;
+        assert!((u256_to_f64(amount, 6).unwrap() - expected).abs() < f64::EPSILON);
+
+        // no decimals
+        let amount = U256::from(999u64);
+        assert!((u256_to_f64(amount, 0).unwrap() - 999.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_schwab_instruction_serialize() {
+        let buy_json = serde_json::to_string(&SchwabInstruction::Buy).unwrap();
+        assert_eq!(buy_json, "\"BUY\"");
+
+        let sell_json = serde_json::to_string(&SchwabInstruction::Sell).unwrap();
+        assert_eq!(sell_json, "\"SELL\"");
+    }
+
+    #[tokio::test]
+    async fn test_try_from_order_and_fill_details_zero_input_amount() {
+        let asserter = Asserter::new();
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"BARs1".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"USDC".to_string(),
+        ));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let order = get_test_order();
+        let cache = SymbolCache::default();
+
+        let result = Trade::try_from_order_and_fill_details(
+            &cache,
+            &provider,
+            order,
+            OrderFill {
+                input_index: 1,
+                input_amount: U256::ZERO,
+                output_index: 0,
+                output_amount: U256::from(100_000_000),
+            },
+            get_test_log(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!((result.onchain_input_amount - 0.0).abs() < f64::EPSILON);
+        assert_eq!(result.schwab_instruction, SchwabInstruction::Buy);
+        assert_eq!(result.onchain_price_per_share_cents, u64::MAX);
+    }
+
+    #[tokio::test]
+    async fn test_try_from_order_and_fill_details_input_s1_suffix_empty_ticker() {
+        let asserter = Asserter::new();
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"s1".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"USDC".to_string(),
+        ));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let order = get_test_order();
+        let cache = SymbolCache::default();
+
+        let trade = Trade::try_from_order_and_fill_details(
+            &cache,
+            &provider,
+            order,
+            OrderFill {
+                input_index: 1,
+                input_amount: U256::from_str("9000000000000000000").unwrap(),
+                output_index: 0,
+                output_amount: U256::from(100_000_000),
+            },
+            get_test_log(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(trade.schwab_ticker, "");
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
+    }
+
+    #[tokio::test]
+    async fn test_try_from_order_and_fill_details_output_s1_suffix_empty_ticker() {
+        let asserter = Asserter::new();
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"USDC".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"s1".to_string(),
+        ));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let order = get_test_order();
+        let cache = SymbolCache::default();
+
+        let trade = Trade::try_from_order_and_fill_details(
+            &cache,
+            &provider,
+            order,
+            OrderFill {
+                input_index: 0,
+                input_amount: U256::from(100_000_000),
+                output_index: 1,
+                output_amount: U256::from_str("9000000000000000000").unwrap(),
+            },
+            get_test_log(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(trade.schwab_ticker, "");
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
     }
 }
