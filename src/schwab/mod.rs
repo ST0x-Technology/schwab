@@ -1,11 +1,14 @@
-pub mod auth;
-pub mod order;
-pub mod tokens;
-
 use reqwest::header::InvalidHeaderValue;
 use sqlx::SqlitePool;
 use std::io;
 use thiserror::Error;
+
+pub mod auth;
+pub mod order;
+pub mod tokens;
+
+pub use auth::{AccountNumbers, SchwabAuthEnv, SchwabAuthResponse};
+pub use tokens::SchwabTokens;
 
 #[derive(Error, Debug)]
 pub enum SchwabError {
@@ -25,17 +28,17 @@ pub enum SchwabError {
     NoAccountsFound,
     #[error("Account index {index} out of bounds (found {count} accounts)")]
     AccountIndexOutOfBounds { index: usize, count: usize },
-    #[error("Order placement failed with status: {status}")]
-    OrderPlacementFailed { status: reqwest::StatusCode },
+    #[error("Order placement failed with status: {status}, body: {body}")]
+    OrderPlacementFailed {
+        status: reqwest::StatusCode,
+        body: String,
+    },
     #[error("Account hash retrieval failed with status: {status}, body: {body}")]
     AccountHashRetrievalFailed {
         status: reqwest::StatusCode,
         body: String,
     },
 }
-
-pub use auth::{AccountNumbers, SchwabAuthEnv, SchwabAuthResponse};
-pub use tokens::SchwabTokens;
 
 pub async fn run_oauth_flow(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<(), SchwabError> {
     println!(

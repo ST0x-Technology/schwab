@@ -68,8 +68,11 @@ impl Order {
             .await?;
 
         if !response.status().is_success() {
+            let status = response.status();
+            let error_body = response.text().await.unwrap_or_default();
             return Err(SchwabError::OrderPlacementFailed {
-                status: response.status(),
+                status,
+                body: error_body,
             });
         }
 
@@ -423,7 +426,7 @@ mod tests {
         order_mock.assert();
         let error = result.unwrap_err();
         assert!(
-            matches!(error, super::SchwabError::OrderPlacementFailed { status } if status.as_u16() == 400)
+            matches!(error, super::SchwabError::OrderPlacementFailed { status, .. } if status.as_u16() == 400)
         );
     }
 
