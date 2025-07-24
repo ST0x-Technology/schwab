@@ -83,7 +83,7 @@ mod tests {
         assert_eq!(trade.schwab_ticker, "FOO");
         assert_eq!(
             trade.schwab_instruction,
-            super::super::SchwabInstruction::Sell
+            super::super::SchwabInstruction::Buy
         );
     }
 

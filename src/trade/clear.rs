@@ -213,7 +213,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(trade.schwab_ticker, "FOO");
-        assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
     }
 
     #[tokio::test]
@@ -415,7 +415,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(trade.schwab_ticker, "BAR");
-        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
     }
 
     #[tokio::test]

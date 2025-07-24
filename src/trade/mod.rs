@@ -130,6 +130,10 @@ impl Trade {
         let onchain_output_amount = u256_to_f64(fill.output_amount, output.decimals)?;
         let onchain_output_symbol = cache.get_io_symbol(provider, output).await?;
 
+        // If the on-chain order has USDC as input and an s1 tokenized stock as
+        // output then it means the order received USDC and gave away an s1
+        // tokenized stock, i.e. sold, which means that to take the opposite
+        // trade in schwab we need to buy and vice versa.
         let (schwab_ticker, schwab_instruction) =
             if onchain_input_symbol == "USDC" && onchain_output_symbol.ends_with("s1") {
                 let ticker = onchain_output_symbol
@@ -141,7 +145,7 @@ impl Trade {
                             onchain_output_symbol.clone(),
                         )
                     })?;
-                (ticker, SchwabInstruction::Sell)
+                (ticker, SchwabInstruction::Buy)
             } else if onchain_output_symbol == "USDC" && onchain_input_symbol.ends_with("s1") {
                 let ticker = onchain_input_symbol
                     .strip_suffix("s1")
@@ -152,7 +156,7 @@ impl Trade {
                             onchain_output_symbol.clone(),
                         )
                     })?;
-                (ticker, SchwabInstruction::Buy)
+                (ticker, SchwabInstruction::Sell)
             } else {
                 return Err(TradeConversionError::InvalidSymbolConfiguration(
                     onchain_input_symbol,
@@ -166,9 +170,9 @@ impl Trade {
         // by the input amount. if we're selling on schwab then we bought onchain, so we need to divide the
         // onchain input amount by the output amount.
         let onchain_price_per_share_usdc = if schwab_instruction == SchwabInstruction::Buy {
-            onchain_output_amount / onchain_input_amount
-        } else {
             onchain_input_amount / onchain_output_amount
+        } else {
+            onchain_output_amount / onchain_input_amount
         };
 
         if onchain_price_per_share_usdc.is_nan() {
@@ -233,7 +237,7 @@ mod tests {
     use crate::test_utils::{get_test_log, get_test_order};
 
     #[tokio::test]
-    async fn test_try_from_order_and_fill_details_ok_sell_schwab() {
+    async fn test_try_from_order_and_fill_details_ok_buy_schwab() {
         let asserter = Asserter::new();
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
@@ -274,7 +278,7 @@ mod tests {
             onchain_io_ratio: 100.0 / 9.0,
             onchain_price_per_share_cents: 1111,
             schwab_ticker: "FOO".to_string(),
-            schwab_instruction: SchwabInstruction::Sell,
+            schwab_instruction: SchwabInstruction::Buy,
         };
 
         assert_eq!(trade, expected_trade);
@@ -301,12 +305,12 @@ mod tests {
 
         assert_eq!(trade.onchain_input_symbol, "USDC");
         assert_eq!(trade.onchain_output_symbol, "FOOs1");
-        assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
         assert_eq!(trade.schwab_ticker, "FOO");
     }
 
     #[tokio::test]
-    async fn test_try_from_order_and_fill_details_ok_buy_schwab() {
+    async fn test_try_from_order_and_fill_details_ok_sell_schwab() {
         let asserter = Asserter::new();
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"BARs1".to_string(),
@@ -347,7 +351,7 @@ mod tests {
             onchain_io_ratio: 9.0 / 100.0,
             onchain_price_per_share_cents: 1111,
             schwab_ticker: "BAR".to_string(),
-            schwab_instruction: SchwabInstruction::Buy,
+            schwab_instruction: SchwabInstruction::Sell,
         };
 
         assert_eq!(trade, expected_trade);
@@ -652,7 +656,7 @@ mod tests {
         .unwrap();
 
         assert!((result.onchain_input_amount - 0.0).abs() < f64::EPSILON);
-        assert_eq!(result.schwab_instruction, SchwabInstruction::Buy);
+        assert_eq!(result.schwab_instruction, SchwabInstruction::Sell);
         assert_eq!(result.onchain_price_per_share_cents, u64::MAX);
     }
 
@@ -687,7 +691,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(trade.schwab_ticker, "");
-        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
     }
 
     #[tokio::test]
@@ -721,6 +725,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(trade.schwab_ticker, "");
-        assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
     }
 }
