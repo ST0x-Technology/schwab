@@ -1,9 +1,11 @@
+use alloy::hex;
 use alloy::primitives::ruint::FromUintError;
 use alloy::primitives::{Address, B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::Log;
 use alloy::transports::{RpcError, TransportErrorKind};
 use clap::Parser;
+use sqlx::SqlitePool;
 use std::num::ParseFloatError;
 
 use crate::bindings::IOrderBookV4::OrderV3;
@@ -41,29 +43,20 @@ impl serde::Serialize for SchwabInstruction {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Trade {
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    tx_hash: B256,
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    log_index: u64,
+pub struct Trade {
+    pub tx_hash: B256,
+    pub log_index: u64,
 
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    onchain_input_symbol: String,
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    onchain_input_amount: f64,
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    onchain_output_symbol: String,
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    onchain_output_amount: f64,
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    onchain_io_ratio: f64,
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    onchain_price_per_share_cents: u64,
+    pub onchain_input_symbol: String,
+    pub onchain_input_amount: f64,
+    pub onchain_output_symbol: String,
+    pub onchain_output_amount: f64,
+    pub onchain_io_ratio: f64,
+    pub onchain_price_per_share_cents: u64,
 
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    schwab_ticker: String,
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    schwab_instruction: SchwabInstruction,
+    pub schwab_ticker: String,
+    pub schwab_instruction: SchwabInstruction,
+    pub schwab_quantity: f64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -94,6 +87,8 @@ pub enum TradeConversionError {
     SolType(#[from] alloy::sol_types::Error),
     #[error("RPC transport error: {0}")]
     RpcTransport(#[from] RpcError<TransportErrorKind>),
+    #[error("Database error: {0}")]
+    Database(#[from] sqlx::Error),
 }
 
 struct OrderFill {
@@ -182,6 +177,12 @@ impl Trade {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let onchain_price_per_share_cents = (onchain_price_per_share_usdc * 100.0) as u64;
 
+        let schwab_quantity = if schwab_instruction == SchwabInstruction::Buy {
+            onchain_output_amount
+        } else {
+            onchain_input_amount
+        };
+
         let trade = Self {
             tx_hash,
             log_index,
@@ -195,9 +196,69 @@ impl Trade {
 
             schwab_ticker,
             schwab_instruction,
+            schwab_quantity,
         };
 
         Ok(Some(trade))
+    }
+
+    pub async fn save_to_db(&self, pool: &SqlitePool) -> Result<(), TradeConversionError> {
+        let tx_hash_hex = hex::encode_prefixed(self.tx_hash.as_slice());
+        #[allow(clippy::cast_possible_wrap)]
+        let log_index_i64 = self.log_index as i64;
+        let schwab_instruction_str = match self.schwab_instruction {
+            SchwabInstruction::Buy => "BUY",
+            SchwabInstruction::Sell => "SELL",
+        };
+        #[allow(clippy::cast_possible_wrap)]
+        let price_cents_i64 = self.onchain_price_per_share_cents as i64;
+
+        sqlx::query!(
+            r#"
+            INSERT INTO trades (
+                tx_hash, log_index,
+                onchain_input_symbol, onchain_input_amount,
+                onchain_output_symbol, onchain_output_amount, onchain_io_ratio,
+                schwab_ticker, schwab_instruction, schwab_quantity, schwab_price_cents,
+                status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', datetime('now'))
+            "#,
+            tx_hash_hex,
+            log_index_i64,
+            self.onchain_input_symbol,
+            self.onchain_input_amount,
+            self.onchain_output_symbol,
+            self.onchain_output_amount,
+            self.onchain_io_ratio,
+            self.schwab_ticker,
+            schwab_instruction_str,
+            self.schwab_quantity,
+            price_cents_i64,
+        )
+        .execute(pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn exists_in_db(
+        pool: &SqlitePool,
+        tx_hash: B256,
+        log_index: u64,
+    ) -> Result<bool, TradeConversionError> {
+        let tx_hash_hex = hex::encode_prefixed(tx_hash.as_slice());
+        #[allow(clippy::cast_possible_wrap)]
+        let log_index_i64 = log_index as i64;
+
+        let result = sqlx::query!(
+            "SELECT COUNT(*) as count FROM trades WHERE tx_hash = ? AND log_index = ?",
+            tx_hash_hex,
+            log_index_i64
+        )
+        .fetch_one(pool)
+        .await?;
+
+        Ok(result.count > 0)
     }
 }
 
@@ -279,11 +340,11 @@ mod tests {
             onchain_price_per_share_cents: 1111,
             schwab_ticker: "FOO".to_string(),
             schwab_instruction: SchwabInstruction::Buy,
+            schwab_quantity: 9.0,
         };
 
         assert_eq!(trade, expected_trade);
 
-        // test that the symbol is cached
         let asserter = Asserter::new();
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
@@ -307,6 +368,7 @@ mod tests {
         assert_eq!(trade.onchain_output_symbol, "FOOs1");
         assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
         assert_eq!(trade.schwab_ticker, "FOO");
+        assert_eq!(trade.schwab_quantity, 9.0);
     }
 
     #[tokio::test]
@@ -352,6 +414,7 @@ mod tests {
             onchain_price_per_share_cents: 1111,
             schwab_ticker: "BAR".to_string(),
             schwab_instruction: SchwabInstruction::Sell,
+            schwab_quantity: 9.0,
         };
 
         assert_eq!(trade, expected_trade);
@@ -450,7 +513,7 @@ mod tests {
             OrderFill {
                 input_index: 0,
                 input_amount: U256::from(100_000_000),
-                output_index: 99, // invalid output index
+                output_index: 99,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
             get_test_log(),
@@ -529,7 +592,7 @@ mod tests {
             &"USDC".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"FOO".to_string(), // no s1 suffix
+            &"FOO".to_string(),
         ));
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
@@ -658,6 +721,7 @@ mod tests {
         assert!((result.onchain_input_amount - 0.0).abs() < f64::EPSILON);
         assert_eq!(result.schwab_instruction, SchwabInstruction::Sell);
         assert_eq!(result.onchain_price_per_share_cents, u64::MAX);
+        assert!((result.schwab_quantity - 0.0).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
@@ -692,6 +756,7 @@ mod tests {
 
         assert_eq!(trade.schwab_ticker, "");
         assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
+        assert_eq!(trade.schwab_quantity, 9.0);
     }
 
     #[tokio::test]
@@ -726,5 +791,194 @@ mod tests {
 
         assert_eq!(trade.schwab_ticker, "");
         assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
+        assert_eq!(trade.schwab_quantity, 9.0);
+    }
+
+    #[tokio::test]
+    async fn test_save_to_db_success() {
+        let pool = SqlitePool::connect(":memory:").await.unwrap();
+
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let trade = Trade {
+            tx_hash: fixed_bytes!(
+                "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+            ),
+            log_index: 123,
+            onchain_input_symbol: "USDC".to_string(),
+            onchain_input_amount: 1000.0,
+            onchain_output_symbol: "AAPLs1".to_string(),
+            onchain_output_amount: 5.0,
+            onchain_io_ratio: 200.0,
+            onchain_price_per_share_cents: 20000,
+            schwab_ticker: "AAPL".to_string(),
+            schwab_instruction: SchwabInstruction::Buy,
+            schwab_quantity: 5.0,
+        };
+
+        trade.save_to_db(&pool).await.unwrap();
+
+        let saved_trade = sqlx::query!(
+            "SELECT * FROM trades WHERE tx_hash = ? AND log_index = ?",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            123_i64
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(saved_trade.onchain_input_symbol.unwrap(), "USDC");
+        assert_eq!(saved_trade.onchain_input_amount.unwrap(), 1000.0);
+        assert_eq!(saved_trade.onchain_output_symbol.unwrap(), "AAPLs1");
+        assert_eq!(saved_trade.onchain_output_amount.unwrap(), 5.0);
+        assert_eq!(saved_trade.onchain_io_ratio.unwrap(), 200.0);
+        assert_eq!(saved_trade.schwab_ticker.unwrap(), "AAPL");
+        assert_eq!(saved_trade.schwab_instruction.unwrap(), "BUY");
+        assert_eq!(saved_trade.schwab_quantity.unwrap(), 5.0);
+        assert_eq!(saved_trade.schwab_price_cents.unwrap(), 20000);
+        assert_eq!(saved_trade.status.unwrap(), "PENDING");
+    }
+
+    #[tokio::test]
+    async fn test_save_to_db_duplicate_fails() {
+        let pool = SqlitePool::connect(":memory:").await.unwrap();
+
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let trade = Trade {
+            tx_hash: fixed_bytes!(
+                "0x1111111111111111111111111111111111111111111111111111111111111111"
+            ),
+            log_index: 456,
+            onchain_input_symbol: "BARs1".to_string(),
+            onchain_input_amount: 10.0,
+            onchain_output_symbol: "USDC".to_string(),
+            onchain_output_amount: 2000.0,
+            onchain_io_ratio: 0.005,
+            onchain_price_per_share_cents: 20000,
+            schwab_ticker: "BAR".to_string(),
+            schwab_instruction: SchwabInstruction::Sell,
+            schwab_quantity: 10.0,
+        };
+
+        trade.save_to_db(&pool).await.unwrap();
+
+        let duplicate_result = trade.save_to_db(&pool).await;
+        assert!(duplicate_result.is_err());
+
+        if let Err(TradeConversionError::Database(sqlx::Error::Database(db_err))) = duplicate_result
+        {
+            assert!(db_err.message().contains("UNIQUE constraint failed"));
+        } else {
+            panic!(
+                "Expected UNIQUE constraint error, got: {:?}",
+                duplicate_result
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_exists_in_db_true() {
+        let pool = SqlitePool::connect(":memory:").await.unwrap();
+
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let tx_hash =
+            fixed_bytes!("0x2222222222222222222222222222222222222222222222222222222222222222");
+
+        sqlx::query!(
+            "INSERT INTO trades (tx_hash, log_index, status, created_at) VALUES (?, ?, 'PENDING', datetime('now'))",
+            "0x2222222222222222222222222222222222222222222222222222222222222222",
+            789_i64
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let exists = Trade::exists_in_db(&pool, tx_hash, 789).await.unwrap();
+        assert!(exists);
+    }
+
+    #[tokio::test]
+    async fn test_exists_in_db_false() {
+        let pool = SqlitePool::connect(":memory:").await.unwrap();
+
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let tx_hash =
+            fixed_bytes!("0x3333333333333333333333333333333333333333333333333333333333333333");
+
+        let exists = Trade::exists_in_db(&pool, tx_hash, 999).await.unwrap();
+        assert!(!exists);
+    }
+
+    #[tokio::test]
+    async fn test_schwab_quantity_calculation_buy() {
+        let asserter = Asserter::new();
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"USDC".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"MSFTs1".to_string(),
+        ));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let order = get_test_order();
+        let cache = SymbolCache::default();
+
+        let trade = Trade::try_from_order_and_fill_details(
+            &cache,
+            &provider,
+            order,
+            OrderFill {
+                input_index: 0,
+                input_amount: U256::from(500_000_000),
+                output_index: 1,
+                output_amount: U256::from_str("1250000000000000000").unwrap(),
+            },
+            get_test_log(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
+        assert_eq!(trade.schwab_quantity, 1.25);
+        assert_eq!(trade.schwab_ticker, "MSFT");
+    }
+
+    #[tokio::test]
+    async fn test_schwab_quantity_calculation_sell() {
+        let asserter = Asserter::new();
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"TSLAs1".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"USDC".to_string(),
+        ));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let order = get_test_order();
+        let cache = SymbolCache::default();
+
+        let trade = Trade::try_from_order_and_fill_details(
+            &cache,
+            &provider,
+            order,
+            OrderFill {
+                input_index: 1,
+                input_amount: U256::from_str("2750000000000000000").unwrap(),
+                output_index: 0,
+                output_amount: U256::from(825_000_000),
+            },
+            get_test_log(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
+        assert_eq!(trade.schwab_quantity, 2.75);
+        assert_eq!(trade.schwab_ticker, "TSLA");
     }
 }

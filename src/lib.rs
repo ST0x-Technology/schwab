@@ -37,6 +37,7 @@ pub async fn run(env: Env) -> anyhow::Result<()> {
     let provider = ProviderBuilder::new().connect_ws(ws).await?;
     let cache = SymbolCache::default();
     let orderbook = IOrderBookV4Instance::new(env.evm_env.orderbook, &provider);
+    let pool = env.get_sqlite_pool().await?;
 
     let clear_filter = orderbook.ClearV2_filter().watch().await?;
     let take_filter = orderbook.TakeOrderV2_filter().watch().await?;
@@ -57,7 +58,17 @@ pub async fn run(env: Env) -> anyhow::Result<()> {
         };
 
         if let Some(trade) = trade {
-            tracing::info!("TODO: dedup and trade: {trade:?}");
+            if Trade::exists_in_db(&pool, trade.tx_hash, trade.log_index).await? {
+                tracing::info!(
+                    "Trade already exists in database, skipping: tx_hash={:?}, log_index={}",
+                    trade.tx_hash,
+                    trade.log_index
+                );
+                continue;
+            }
+
+            trade.save_to_db(&pool).await?;
+            tracing::info!("Saved trade to database: {:?}", trade);
         }
     }
 }
