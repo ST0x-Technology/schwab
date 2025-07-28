@@ -1,8 +1,9 @@
 use alloy::providers::{ProviderBuilder, WsConnect};
 use backon::{ExponentialBuilder, Retryable};
 use clap::Parser;
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use sqlx::SqlitePool;
+use tracing::{error, info};
 
 mod bindings;
 pub mod schwab;
@@ -18,7 +19,7 @@ use schwab::{
     order::{Instruction, Order},
 };
 use symbol_cache::SymbolCache;
-use trade::{EvmEnv, SchwabInstruction, Trade};
+use trade::{EvmEnv, SchwabInstruction, Trade, TradeStatus};
 
 #[derive(Parser, Debug, Clone)]
 pub struct Env {
@@ -48,9 +49,9 @@ pub fn setup_tracing() {
 pub async fn run(env: Env) -> anyhow::Result<()> {
     let pool = env.get_sqlite_pool().await?;
 
-    tracing::info!("Validating Schwab tokens...");
+    info!("Validating Schwab tokens...");
     schwab::tokens::SchwabTokens::refresh_if_needed(&pool, &env.schwab_auth).await?;
-    tracing::info!("Token validation successful");
+    info!("Token validation successful");
 
     let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
     let provider = ProviderBuilder::new().connect_ws(ws).await?;

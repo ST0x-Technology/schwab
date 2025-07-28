@@ -163,7 +163,7 @@ impl Trade {
             if onchain_input_symbol == "USDC" && onchain_output_symbol.ends_with("s1") {
                 let ticker = onchain_output_symbol
                     .strip_suffix("s1")
-                    .map(std::string::ToString::to_string)
+                    .map(ToString::to_string)
                     .ok_or_else(|| {
                         TradeConversionError::InvalidSymbolConfiguration(
                             onchain_input_symbol.clone(),
@@ -174,7 +174,7 @@ impl Trade {
             } else if onchain_output_symbol == "USDC" && onchain_input_symbol.ends_with("s1") {
                 let ticker = onchain_input_symbol
                     .strip_suffix("s1")
-                    .map(std::string::ToString::to_string)
+                    .map(ToString::to_string)
                     .ok_or_else(|| {
                         TradeConversionError::InvalidSymbolConfiguration(
                             onchain_input_symbol.clone(),

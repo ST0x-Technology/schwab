@@ -116,6 +116,14 @@ Environment variables (can be set via `.env` file):
 - **Edge Case Coverage**: Comprehensive error scenario testing for trade conversion logic
 - **Testing Principle**: Only cover happy paths with all components working and connected in integration tests and cover everything in unit tests
 
+### Workflow Best Practices
+
+- **Always run tests, clippy, and fmt before handing over a piece of work**
+  - Run tests first, as changing tests can break clippy
+  - Run clippy next, as fixing linting errors can break formatting
+  - Deny warnings when running clippy
+  - Always run `cargo fmt` last to ensure clean code formatting
+
 ### Commenting Guidelines
 
 Code should be primarily self-documenting through clear naming, structure, and type modeling. Comments should only be used when they add meaningful context that cannot be expressed through code structure alone.

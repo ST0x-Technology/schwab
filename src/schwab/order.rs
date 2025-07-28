@@ -165,7 +165,8 @@ pub struct Instrument {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json;
+    use chrono::Utc;
+    use serde_json::json;
 
     #[test]
     fn test_new_buy() {
@@ -403,7 +404,7 @@ mod tests {
                 .path("/trader/v1/accounts/accountNumbers");
             then.status(200)
                 .header("content-type", "application/json")
-                .json_body(serde_json::json!([{
+                .json_body(json!([{
                     "accountNumber": "123456789",
                     "hashValue": "ABC123DEF456"
                 }]));
@@ -438,7 +439,7 @@ mod tests {
                 .path("/trader/v1/accounts/accountNumbers");
             then.status(200)
                 .header("content-type", "application/json")
-                .json_body(serde_json::json!([{
+                .json_body(json!([{
                     "accountNumber": "123456789",
                     "hashValue": "ABC123DEF456"
                 }]));
@@ -448,7 +449,7 @@ mod tests {
             when.method(httpmock::Method::POST)
                 .path("/trader/v1/accounts/ABC123DEF456/orders");
             then.status(400)
-                .json_body(serde_json::json!({"error": "Invalid order"}));
+                .json_body(json!({"error": "Invalid order"}));
         });
 
         let order = Order::new("INVALID".to_string(), Instruction::Buy, 100.0);
@@ -483,9 +484,9 @@ mod tests {
     async fn setup_test_tokens(pool: &sqlx::SqlitePool) {
         let tokens = super::super::tokens::SchwabTokens {
             access_token: "test_access_token".to_string(),
-            access_token_fetched_at: chrono::Utc::now(),
+            access_token_fetched_at: Utc::now(),
             refresh_token: "test_refresh_token".to_string(),
-            refresh_token_fetched_at: chrono::Utc::now(),
+            refresh_token_fetched_at: Utc::now(),
         };
         tokens.store(pool).await.unwrap();
     }

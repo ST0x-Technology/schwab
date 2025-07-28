@@ -686,9 +686,9 @@ mod tests {
     async fn setup_test_tokens(pool: &SqlitePool) {
         let tokens = crate::schwab::tokens::SchwabTokens {
             access_token: "test_access_token".to_string(),
-            access_token_fetched_at: chrono::Utc::now(),
+            access_token_fetched_at: Utc::now(),
             refresh_token: "test_refresh_token".to_string(),
-            refresh_token_fetched_at: chrono::Utc::now(),
+            refresh_token_fetched_at: Utc::now(),
         };
         tokens.store(pool).await.unwrap();
     }

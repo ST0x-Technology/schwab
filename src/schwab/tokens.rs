@@ -117,7 +117,15 @@ impl SchwabTokens {
         Ok(new_tokens.access_token)
     }
 
-    pub async fn start_automatic_token_refresh(
+    pub fn spawn_automatic_token_refresh(pool: SqlitePool, env: SchwabAuthEnv) {
+        tokio::spawn(async move {
+            if let Err(e) = Self::start_automatic_token_refresh_loop(pool, env).await {
+                error!("Token refresh task failed: {:?}", e);
+            }
+        });
+    }
+
+    async fn start_automatic_token_refresh_loop(
         pool: SqlitePool,
         env: SchwabAuthEnv,
     ) -> Result<(), SchwabError> {
@@ -680,7 +688,7 @@ mod tests {
 
         tokens.store(&pool).await?;
 
-        let mock_response = serde_json::json!({
+        let mock_response = json!({
             "access_token": "refreshed_access_token",
             "refresh_token": "new_refresh_token"
         });
@@ -708,7 +716,7 @@ mod tests {
             rt.block_on(async {
                 tokio::time::timeout(
                     TokioDuration::from_secs(5),
-                    SchwabTokens::start_automatic_token_refresh(pool_clone, env_clone),
+                    SchwabTokens::start_automatic_token_refresh_loop(pool_clone, env_clone),
                 )
                 .await
             })
