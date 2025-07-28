@@ -46,11 +46,21 @@ pub fn setup_tracing() {
 }
 
 pub async fn run(env: Env) -> anyhow::Result<()> {
+    let pool = env.get_sqlite_pool().await?;
+
+    tracing::info!("Validating Schwab tokens...");
+    schwab::tokens::SchwabTokens::refresh_if_needed(&pool, &env.schwab_auth).await?;
+    tracing::info!("Token validation successful");
+
     let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
     let provider = ProviderBuilder::new().connect_ws(ws).await?;
     let cache = SymbolCache::default();
     let orderbook = IOrderBookV4Instance::new(env.evm_env.orderbook, &provider);
-    let pool = env.get_sqlite_pool().await?;
+
+    schwab::tokens::SchwabTokens::spawn_automatic_token_refresh(
+        pool.clone(),
+        env.schwab_auth.clone(),
+    );
 
     let clear_filter = orderbook.ClearV2_filter().watch().await?;
     let take_filter = orderbook.TakeOrderV2_filter().watch().await?;

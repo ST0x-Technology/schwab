@@ -1,10 +1,11 @@
+use backon::{ExponentialBuilder, Retryable};
 use base64::prelude::*;
 use chrono::Utc;
 use clap::Parser;
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use serde::Deserialize;
 use sqlx::SqlitePool;
-use tracing::{info, debug};
+use tracing::{debug, info};
 
 use super::{SchwabError, tokens::SchwabTokens};
 
@@ -52,25 +53,26 @@ impl SchwabAuthEnv {
         .collect::<HeaderMap>();
 
         let client = reqwest::Client::new();
-        let response = client
-            .get(format!(
-                "{}/trader/v1/accounts/accountNumbers",
-                self.base_url
-            ))
-            .headers(headers)
-            .send()
-            .await?;
+        let response = (|| async {
+            client
+                .get(format!(
+                    "{}/trader/v1/accounts/accountNumbers",
+                    self.base_url
+                ))
+                .headers(headers.clone())
+                .send()
+                .await
+        })
+        .retry(ExponentialBuilder::default())
+        .await?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response
-                .text()
-                .await
-                .unwrap_or_default();
-            return Err(crate::schwab::SchwabError::RequestFailed { 
+            let body = response.text().await.unwrap_or_default();
+            return Err(crate::schwab::SchwabError::RequestFailed {
                 action: "get account hash".to_string(),
-                status, 
-                body 
+                status,
+                body,
             });
         }
 
@@ -97,15 +99,14 @@ impl SchwabAuthEnv {
         )
     }
 
-    pub async fn get_tokens(&self, code: &str) -> Result<SchwabTokens, SchwabError> {
+    pub async fn get_tokens_from_code(&self, code: &str) -> Result<SchwabTokens, SchwabError> {
         info!("Getting tokens for code: {code}");
         let credentials = format!("{}:{}", self.app_key, self.app_secret);
         let credentials = BASE64_STANDARD.encode(credentials);
 
         let payload = format!(
             "grant_type=authorization_code&code={}&redirect_uri={}",
-            code,
-            &self.redirect_uri
+            code, &self.redirect_uri
         );
 
         let headers = [
@@ -134,7 +135,12 @@ impl SchwabAuthEnv {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = if response.headers().get("content-encoding").map(|h| h.as_bytes()) == Some(b"gzip") {
+            let body = if response
+                .headers()
+                .get("content-encoding")
+                .map(reqwest::header::HeaderValue::as_bytes)
+                == Some(b"gzip")
+            {
                 use std::io::Read;
                 let bytes = response.bytes().await.unwrap_or_default();
                 let mut decoder = flate2::read::GzDecoder::new(bytes.as_ref());
@@ -149,10 +155,10 @@ impl SchwabAuthEnv {
                     .await
                     .unwrap_or_else(|_| "Failed to read response body".to_string())
             };
-            return Err(SchwabError::RequestFailed { 
+            return Err(SchwabError::RequestFailed {
                 action: "get tokens".to_string(),
-                status, 
-                body 
+                status,
+                body,
             });
         }
 
@@ -189,12 +195,16 @@ impl SchwabAuthEnv {
         .collect::<HeaderMap>();
 
         let client = reqwest::Client::new();
-        let response = client
-            .post(format!("{}/v1/oauth/token", self.base_url))
-            .headers(headers)
-            .body(payload)
-            .send()
-            .await?;
+        let response = (|| async {
+            client
+                .post(format!("{}/v1/oauth/token", self.base_url))
+                .headers(headers.clone())
+                .body(payload.clone())
+                .send()
+                .await
+        })
+        .retry(ExponentialBuilder::default())
+        .await?;
 
         let response: SchwabAuthResponse = response.json().await?;
 
@@ -280,7 +290,7 @@ mod tests {
                 .json_body(mock_response);
         });
 
-        let result = env.get_tokens("test_code").await;
+        let result = env.get_tokens_from_code("test_code").await;
 
         mock.assert();
 
@@ -305,10 +315,14 @@ mod tests {
                 .json_body(json!({"error": "invalid_request"}));
         });
 
-        let result = env.get_tokens("invalid_code").await;
+        let result = env.get_tokens_from_code("invalid_code").await;
 
         mock.assert();
-        assert!(matches!(result.unwrap_err(), SchwabError::RequestFailed { action, status, .. } if action == "get tokens" && status.as_u16() == 400));
+        assert!(matches!(
+            result.unwrap_err(),
+            SchwabError::RequestFailed { action, status, .. }
+            if action == "get tokens" && status.as_u16() == 400
+        ));
     }
 
     #[tokio::test]
@@ -323,7 +337,7 @@ mod tests {
                 .body("invalid json");
         });
 
-        let result = env.get_tokens("test_code").await;
+        let result = env.get_tokens_from_code("test_code").await;
 
         mock.assert();
         assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
@@ -345,7 +359,7 @@ mod tests {
                 .json_body(mock_response);
         });
 
-        let result = env.get_tokens("test_code").await;
+        let result = env.get_tokens_from_code("test_code").await;
 
         mock.assert();
         assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
@@ -368,7 +382,9 @@ mod tests {
                 .json_body(mock_response);
         });
 
-        let result = env.get_tokens("code_with_special_chars_!@#$%^&*()").await;
+        let result = env
+            .get_tokens_from_code("code_with_special_chars_!@#$%^&*()")
+            .await;
 
         mock.assert();
         let tokens = result.unwrap();
@@ -637,6 +653,28 @@ mod tests {
 
         mock.assert();
         assert!(matches!(result.unwrap_err(), SchwabError::NoAccountsFound));
+    }
+
+    #[tokio::test]
+    async fn test_get_tokens_from_code_no_retries_on_failure() {
+        let server = MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+
+        let mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/oauth/token");
+            then.status(500);
+        });
+
+        let result = env.get_tokens_from_code("test_code").await;
+
+        assert_eq!(mock.hits(), 1);
+        match result {
+            Err(SchwabError::RequestFailed { action, status, .. }) => {
+                assert_eq!(action, "get tokens");
+                assert_eq!(status.as_u16(), 500);
+            }
+            other => panic!("Expected RequestFailed error, got: {:?}", other),
+        }
     }
 
     async fn setup_test_db() -> SqlitePool {

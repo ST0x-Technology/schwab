@@ -54,7 +54,6 @@ mod tests {
         let cache = SymbolCache::default();
         let address = Address::from_str("0x1234567890123456789012345678901234567890").unwrap();
 
-        // Pre-populate cache
         cache
             .map
             .write()

@@ -81,7 +81,6 @@ impl Trade {
 
             Self::try_from_order_and_fill_details(cache, provider, alice_order, fill, log).await
         } else {
-            // bob_hash_matches must be true here
             let input_index = usize::try_from(bobInputIOIndex)?;
             let output_index = usize::try_from(bobOutputIOIndex)?;
 

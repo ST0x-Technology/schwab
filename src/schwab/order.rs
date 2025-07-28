@@ -1,10 +1,11 @@
+use backon::{ExponentialBuilder, Retryable};
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
 use super::{SchwabAuthEnv, SchwabError, SchwabTokens};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Order {
     pub order_type: OrderType,
@@ -15,7 +16,7 @@ pub struct Order {
 }
 
 impl Order {
-    pub fn new(symbol: String, instruction: Instruction, quantity: u32) -> Self {
+    pub fn new(symbol: String, instruction: Instruction, quantity: f64) -> Self {
         let instrument = Instrument {
             symbol,
             asset_type: AssetType::Equity,
@@ -57,15 +58,19 @@ impl Order {
         let order_json = serde_json::to_string(self)?;
 
         let client = reqwest::Client::new();
-        let response = client
-            .post(format!(
-                "{}/trader/v1/accounts/{}/orders",
-                env.base_url, account_hash
-            ))
-            .headers(headers)
-            .body(order_json)
-            .send()
-            .await?;
+        let response = (|| async {
+            client
+                .post(format!(
+                    "{}/trader/v1/accounts/{}/orders",
+                    env.base_url, account_hash
+                ))
+                .headers(headers.clone())
+                .body(order_json.clone())
+                .send()
+                .await
+        })
+        .retry(ExponentialBuilder::default())
+        .await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -142,11 +147,11 @@ pub enum AssetType {
     Currency,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderLeg {
     pub instruction: Instruction,
-    pub quantity: u32,
+    pub quantity: f64,
     pub instrument: Instrument,
 }
 
@@ -164,7 +169,7 @@ mod tests {
 
     #[test]
     fn test_new_buy() {
-        let order = Order::new("AAPL".to_string(), Instruction::Buy, 100);
+        let order = Order::new("AAPL".to_string(), Instruction::Buy, 100.0);
 
         assert_eq!(order.order_type, OrderType::Market);
         assert_eq!(order.session, Session::Normal);
@@ -174,14 +179,14 @@ mod tests {
 
         let leg = &order.order_leg_collection[0];
         assert_eq!(leg.instruction, Instruction::Buy);
-        assert_eq!(leg.quantity, 100);
+        assert!((leg.quantity - 100.0).abs() < f64::EPSILON);
         assert_eq!(leg.instrument.symbol, "AAPL");
         assert_eq!(leg.instrument.asset_type, AssetType::Equity);
     }
 
     #[test]
     fn test_new_sell() {
-        let order = Order::new("TSLA".to_string(), Instruction::Sell, 50);
+        let order = Order::new("TSLA".to_string(), Instruction::Sell, 50.5);
 
         assert_eq!(order.order_type, OrderType::Market);
         assert_eq!(order.session, Session::Normal);
@@ -190,43 +195,78 @@ mod tests {
 
         let leg = &order.order_leg_collection[0];
         assert_eq!(leg.instruction, Instruction::Sell);
-        assert_eq!(leg.quantity, 50);
+        assert!((leg.quantity - 50.5).abs() < f64::EPSILON);
         assert_eq!(leg.instrument.symbol, "TSLA");
         assert_eq!(leg.instrument.asset_type, AssetType::Equity);
     }
 
     #[test]
     fn test_new_sell_short() {
-        let order = Order::new("GME".to_string(), Instruction::SellShort, 25);
+        let order = Order::new("GME".to_string(), Instruction::SellShort, 25.75);
 
         let leg = &order.order_leg_collection[0];
         assert_eq!(leg.instruction, Instruction::SellShort);
-        assert_eq!(leg.quantity, 25);
+        assert!((leg.quantity - 25.75).abs() < f64::EPSILON);
         assert_eq!(leg.instrument.symbol, "GME");
     }
 
     #[test]
     fn test_new_buy_to_cover() {
-        let order = Order::new("AMC".to_string(), Instruction::BuyToCover, 15);
+        let order = Order::new("AMC".to_string(), Instruction::BuyToCover, 15.25);
 
         let leg = &order.order_leg_collection[0];
         assert_eq!(leg.instruction, Instruction::BuyToCover);
-        assert_eq!(leg.quantity, 15);
+        assert!((leg.quantity - 15.25).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_fractional_shares() {
+        let order = Order::new("SPY".to_string(), Instruction::Buy, 0.5);
+
+        let leg = &order.order_leg_collection[0];
+        assert_eq!(leg.instruction, Instruction::Buy);
+        assert!((leg.quantity - 0.5).abs() < f64::EPSILON);
+        assert_eq!(leg.instrument.symbol, "SPY");
+
+        // Test serialization preserves fractional shares
+        let json = serde_json::to_value(&order).unwrap();
+        assert_eq!(json["orderLegCollection"][0]["quantity"], 0.5);
     }
 
     #[test]
     fn test_order_serialization() {
-        let order = Order::new("MSFT".to_string(), Instruction::Buy, 25);
+        let order = Order::new("MSFT".to_string(), Instruction::Buy, 25.333);
 
         let json = serde_json::to_string(&order).unwrap();
         let deserialized: Order = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(order, deserialized);
+        assert_eq!(order.order_type, deserialized.order_type);
+        assert_eq!(order.session, deserialized.session);
+        assert_eq!(order.duration, deserialized.duration);
+        assert_eq!(order.order_strategy_type, deserialized.order_strategy_type);
+        assert_eq!(
+            order.order_leg_collection.len(),
+            deserialized.order_leg_collection.len()
+        );
+        assert_eq!(
+            order.order_leg_collection[0].instruction,
+            deserialized.order_leg_collection[0].instruction
+        );
+        assert!(
+            (order.order_leg_collection[0].quantity
+                - deserialized.order_leg_collection[0].quantity)
+                .abs()
+                < f64::EPSILON
+        );
+        assert_eq!(
+            order.order_leg_collection[0].instrument,
+            deserialized.order_leg_collection[0].instrument
+        );
     }
 
     #[test]
     fn test_order_camel_case_serialization() {
-        let order = Order::new("GOOGL".to_string(), Instruction::Buy, 10);
+        let order = Order::new("GOOGL".to_string(), Instruction::Buy, 10.0);
 
         let json = serde_json::to_string_pretty(&order).unwrap();
 
@@ -238,7 +278,7 @@ mod tests {
 
     #[test]
     fn test_serialization_matches_schwab_format() {
-        let order = Order::new("XYZ".to_string(), Instruction::Buy, 15);
+        let order = Order::new("XYZ".to_string(), Instruction::Buy, 15.0);
 
         let json = serde_json::to_value(&order).unwrap();
 
@@ -247,7 +287,7 @@ mod tests {
         assert_eq!(json["duration"], "DAY");
         assert_eq!(json["orderStrategyType"], "SINGLE");
         assert_eq!(json["orderLegCollection"][0]["instruction"], "BUY");
-        assert_eq!(json["orderLegCollection"][0]["quantity"], 15);
+        assert_eq!(json["orderLegCollection"][0]["quantity"], 15.0);
         assert_eq!(json["orderLegCollection"][0]["instrument"]["symbol"], "XYZ");
         assert_eq!(
             json["orderLegCollection"][0]["instrument"]["assetType"],
@@ -257,7 +297,6 @@ mod tests {
 
     #[test]
     fn test_enum_serialization_values() {
-        // Test OrderType enum serialization
         assert_eq!(serde_json::to_value(OrderType::Market).unwrap(), "MARKET");
         assert_eq!(serde_json::to_value(OrderType::Limit).unwrap(), "LIMIT");
         assert_eq!(serde_json::to_value(OrderType::Stop).unwrap(), "STOP");
@@ -266,7 +305,6 @@ mod tests {
             "STOP_LIMIT"
         );
 
-        // Test Instruction enum serialization
         assert_eq!(serde_json::to_value(Instruction::Buy).unwrap(), "BUY");
         assert_eq!(serde_json::to_value(Instruction::Sell).unwrap(), "SELL");
         assert_eq!(
@@ -278,34 +316,27 @@ mod tests {
             "BUY_TO_COVER"
         );
 
-        // Test Session enum serialization
         assert_eq!(serde_json::to_value(Session::Normal).unwrap(), "NORMAL");
         assert_eq!(serde_json::to_value(Session::Am).unwrap(), "AM");
         assert_eq!(serde_json::to_value(Session::Pm).unwrap(), "PM");
 
-        // Test OrderDuration enum serialization
         assert_eq!(serde_json::to_value(OrderDuration::Day).unwrap(), "DAY");
         assert_eq!(
             serde_json::to_value(OrderDuration::GoodTillCancel).unwrap(),
             "GOOD_TILL_CANCEL"
         );
 
-        // Test AssetType enum serialization
         assert_eq!(serde_json::to_value(AssetType::Equity).unwrap(), "EQUITY");
         assert_eq!(serde_json::to_value(AssetType::Option).unwrap(), "OPTION");
     }
 
     #[test]
     fn test_enum_deserialization() {
-        // Test OrderType deserialization
         let order_type: OrderType = serde_json::from_str("\"MARKET\"").unwrap();
         assert_eq!(order_type, OrderType::Market);
 
-        // Test Instruction deserialization
         let instruction: Instruction = serde_json::from_str("\"SELL_SHORT\"").unwrap();
         assert_eq!(instruction, Instruction::SellShort);
-
-        // Test full order deserialization
         let json = r#"{
             "orderType": "MARKET",
             "session": "NORMAL", 
@@ -313,7 +344,7 @@ mod tests {
             "orderStrategyType": "SINGLE",
             "orderLegCollection": [{
                 "instruction": "BUY",
-                "quantity": 100,
+                "quantity": 100.0,
                 "instrument": {
                     "symbol": "AAPL",
                     "assetType": "EQUITY"
@@ -350,12 +381,12 @@ mod tests {
 
         let order_leg = OrderLeg {
             instruction: Instruction::Sell,
-            quantity: 75,
+            quantity: 75.5,
             instrument,
         };
 
         assert_eq!(order_leg.instruction, Instruction::Sell);
-        assert_eq!(order_leg.quantity, 75);
+        assert!((order_leg.quantity - 75.5).abs() < f64::EPSILON);
         assert_eq!(order_leg.instrument.symbol, "VTI");
         assert_eq!(order_leg.instrument.asset_type, AssetType::Equity);
     }
@@ -387,7 +418,7 @@ mod tests {
             then.status(201);
         });
 
-        let order = Order::new("AAPL".to_string(), Instruction::Buy, 100);
+        let order = Order::new("AAPL".to_string(), Instruction::Buy, 100.0);
         let result = order.place(&env, &pool).await;
 
         account_mock.assert();
@@ -420,7 +451,7 @@ mod tests {
                 .json_body(serde_json::json!({"error": "Invalid order"}));
         });
 
-        let order = Order::new("INVALID".to_string(), Instruction::Buy, 100);
+        let order = Order::new("INVALID".to_string(), Instruction::Buy, 100.0);
         let result = order.place(&env, &pool).await;
 
         account_mock.assert();

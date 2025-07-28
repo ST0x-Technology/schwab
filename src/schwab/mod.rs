@@ -47,24 +47,33 @@ pub async fn run_oauth_flow(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<()
     io::stdin().read_line(&mut redirect_url)?;
     let redirect_url = redirect_url.trim();
 
-    // Extract code from URL
     let code = extract_code_from_url(redirect_url)?;
-    println!("Extracted code: {}", code);
+    println!("Extracted code: {code}");
 
-    let tokens = env.get_tokens(&code).await?;
+    let tokens = env.get_tokens_from_code(&code).await?;
     tokens.store(pool).await?;
 
     Ok(())
 }
 
 fn extract_code_from_url(url: &str) -> Result<String, SchwabError> {
-    let parsed_url = url::Url::parse(url).map_err(|e| SchwabError::Io(io::Error::new(io::ErrorKind::InvalidInput, format!("Invalid URL: {}", e))))?;
-    
+    let parsed_url = url::Url::parse(url).map_err(|e| {
+        SchwabError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Invalid URL: {e}"),
+        ))
+    })?;
+
     parsed_url
         .query_pairs()
         .find(|(key, _)| key == "code")
         .map(|(_, value)| value.into_owned())
-        .ok_or_else(|| SchwabError::Io(io::Error::new(io::ErrorKind::InvalidInput, "No 'code' parameter found in URL")))
+        .ok_or_else(|| {
+            SchwabError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "No 'code' parameter found in URL",
+            ))
+        })
 }
 
 #[cfg(test)]
@@ -117,7 +126,7 @@ mod tests {
                 .json_body(mock_response);
         });
 
-        let tokens = env.get_tokens("test_code").await.unwrap();
+        let tokens = env.get_tokens_from_code("test_code").await.unwrap();
         tokens.store(&pool).await.unwrap();
 
         mock.assert();
