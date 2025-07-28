@@ -105,7 +105,7 @@ Environment variables (can be set via `.env` file):
 - **Price Direction Logic**: Onchain buy = offchain sell (and vice versa) to maintain market-neutral positions
 - **Comprehensive Error Handling**: Custom error types (`TradeConversionError`, `SchwabAuthError`) with proper propagation
 - **Idiomatic Functional Programming**: Prefer iterator-based functional programming patterns over imperative loops unless it increases complexity
-- **Comments**: Never leave redundant comments. Only use comments to explain complex logic. Generally, code should be self-documenting through clear naming, structure, and type modeling. If a comment is needed to explain what the code does, consider refactoring the code to make it clearer
+- **Comments**: Follow comprehensive commenting guidelines (see detailed section below)
 - **Spacing**: Leave an empty line in between code blocks to allow vim curly braces jumping between blocks and for easier reading
 
 ### Testing Strategy
@@ -115,6 +115,116 @@ Environment variables (can be set via `.env` file):
 - **Database Isolation**: In-memory SQLite databases for test isolation
 - **Edge Case Coverage**: Comprehensive error scenario testing for trade conversion logic
 - **Testing Principle**: Only cover happy paths with all components working and connected in integration tests and cover everything in unit tests
+
+### Commenting Guidelines
+
+Code should be primarily self-documenting through clear naming, structure, and type modeling. Comments should only be used when they add meaningful context that cannot be expressed through code structure alone.
+
+#### When to Use Comments
+
+**✅ DO comment when:**
+
+- **Complex business logic**: Explaining non-obvious domain-specific rules or calculations
+- **Algorithm rationale**: Why a particular approach was chosen over alternatives
+- **External system interactions**: Behavior that depends on external APIs or protocols
+- **Non-obvious technical constraints**: Performance considerations, platform limitations
+- **Test data context**: Explaining what mock values represent or test scenarios
+- **Workarounds**: Temporary solutions with context about why they exist
+
+**❌ DON'T comment when:**
+
+- The code is self-explanatory through naming and structure
+- Restating what the code obviously does
+- Describing function signatures (use doc comments instead)
+- Adding obvious test setup descriptions
+- Marking code sections that are clear from structure
+
+#### Good Comment Examples
+
+```rust
+// If the on-chain order has USDC as input and an s1 tokenized stock as
+// output then it means the order received USDC and gave away an s1  
+// tokenized stock, i.e. sold, which means that to take the opposite
+// trade in schwab we need to buy and vice versa.
+let (schwab_ticker, schwab_instruction) = 
+    if onchain_input_symbol == "USDC" && onchain_output_symbol.ends_with("s1") {
+        // ... complex mapping logic
+    }
+
+// We need to get the corresponding AfterClear event as ClearV2 doesn't
+// contain the amounts. So we query the same block number, filter out
+// logs with index lower than the ClearV2 log index and with tx hashes
+// that don't match the ClearV2 tx hash.
+let after_clear_logs = provider.get_logs(/* ... */).await?;
+
+// Test data representing 9 shares with 18 decimal places
+aliceOutput: U256::from_str("9000000000000000000").unwrap(), // 9 shares (18 dps)
+
+/// Helper that converts a fixed-decimal `U256` amount into an `f64` using
+/// the provided number of decimals.
+///
+/// NOTE: Parsing should never fail but precision may be lost.
+fn u256_to_f64(amount: U256, decimals: u8) -> Result<f64, ParseFloatError> {
+```
+
+#### Bad Comment Examples
+
+```rust
+// ❌ Redundant - the function name says this
+// Spawn background token refresh task
+spawn_automatic_token_refresh(pool, env);
+
+// ❌ Obvious from context
+// Store test tokens
+let tokens = SchwabTokens { /* ... */ };
+tokens.store(&pool).await.unwrap();
+
+// ❌ Just restating the code
+// Mock account hash endpoint
+let mock = server.mock(|when, then| {
+    when.method(GET).path("/trader/v1/accounts/accountNumbers");
+    // ...
+});
+
+// ❌ Test section markers that add no value
+// 1. Test token refresh integration
+let result = refresh_tokens(&pool).await;
+
+// ❌ Explaining what the code obviously does
+// Execute the order
+execute_schwab_order(env, pool, trade).await;
+
+// ❌ Obvious variable assignments
+// Create a trade
+let trade = Trade { /* ... */ };
+
+// ❌ Test setup that's clear from code structure
+// Verify mocks were called
+mock.assert();
+
+// ❌ Obvious control flow
+// Save trade to DB
+trade.save_to_db(&pool).await?;
+```
+
+#### Function Documentation
+
+Use Rust doc comments (`///`) for public APIs:
+
+```rust
+/// Validates Schwab authentication tokens and refreshes if needed.
+/// 
+/// Returns `SchwabError::RefreshTokenExpired` if the refresh token
+/// has expired and manual re-authentication is required.
+pub async fn refresh_if_needed(pool: &SqlitePool) -> Result<bool, SchwabError> {
+```
+
+#### Comment Maintenance
+
+- Remove comments when refactoring makes them obsolete
+- Update comments when changing the logic they describe  
+- If a comment is needed to explain what code does, consider refactoring for clarity
+- Keep comments concise and focused on the "why" rather than the "what"
 
 ### Code style
 

@@ -1,6 +1,6 @@
 use clap::Parser;
-use rain_schwab::{Env, setup_tracing};
 use rain_schwab::schwab::run_oauth_flow;
+use rain_schwab::{Env, setup_tracing};
 use tracing::debug;
 
 #[tokio::main]

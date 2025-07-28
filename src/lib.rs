@@ -1,4 +1,5 @@
 use alloy::providers::{ProviderBuilder, WsConnect};
+use backon::{ExponentialBuilder, Retryable};
 use clap::Parser;
 use futures_util::StreamExt;
 use sqlx::SqlitePool;
@@ -12,11 +13,14 @@ pub mod trade;
 pub mod test_utils;
 
 use bindings::IOrderBookV4::IOrderBookV4Instance;
-use schwab::SchwabAuthEnv;
+use schwab::{
+    SchwabAuthEnv,
+    order::{Instruction, Order},
+};
 use symbol_cache::SymbolCache;
-use trade::{EvmEnv, Trade};
+use trade::{EvmEnv, SchwabInstruction, Trade};
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 pub struct Env {
     #[clap(short, long, env)]
     pub database_url: String,
@@ -36,7 +40,7 @@ pub fn setup_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "rain_schwab=debug,auth=debug,main=debug".into())
+                .unwrap_or_else(|_| "rain_schwab=debug,auth=debug,main=debug".into()),
         )
         .init();
 }
