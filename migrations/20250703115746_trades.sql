@@ -14,7 +14,7 @@ CREATE TABLE trades (
   schwab_quantity REAL,
   schwab_price_cents INTEGER,
 
-  status TEXT,
+  status TEXT CHECK (status IN ('PENDING', 'COMPLETED', 'FAILED')),
   schwab_order_id TEXT,
   created_at DATETIME NOT NULL,
   completed_at DATETIME,

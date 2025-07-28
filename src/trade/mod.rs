@@ -14,7 +14,7 @@ use crate::symbol_cache::SymbolCache;
 mod clear;
 mod take_order;
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 pub struct EvmEnv {
     #[clap(short, long, env)]
     pub ws_rpc_url: url::Url,
@@ -30,6 +30,13 @@ pub enum SchwabInstruction {
     Sell,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradeStatus {
+    Pending,
+    Completed,
+    Failed,
+}
+
 impl serde::Serialize for SchwabInstruction {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -39,6 +46,29 @@ impl serde::Serialize for SchwabInstruction {
             Self::Buy => "BUY",
             Self::Sell => "SELL",
         })
+    }
+}
+
+impl TradeStatus {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "PENDING",
+            Self::Completed => "COMPLETED",
+            Self::Failed => "FAILED",
+        }
+    }
+}
+
+impl std::str::FromStr for TradeStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "PENDING" => Ok(Self::Pending),
+            "COMPLETED" => Ok(Self::Completed),
+            "FAILED" => Ok(Self::Failed),
+            _ => Err(format!("Invalid trade status: {s}")),
+        }
     }
 }
 
@@ -212,6 +242,7 @@ impl Trade {
         };
         #[allow(clippy::cast_possible_wrap)]
         let price_cents_i64 = self.onchain_price_per_share_cents as i64;
+        let status_str = TradeStatus::Pending.as_str();
 
         sqlx::query!(
             r#"
@@ -221,7 +252,7 @@ impl Trade {
                 onchain_output_symbol, onchain_output_amount, onchain_io_ratio,
                 schwab_ticker, schwab_instruction, schwab_quantity, schwab_price_cents,
                 status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', datetime('now'))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             "#,
             tx_hash_hex,
             log_index_i64,
@@ -234,6 +265,30 @@ impl Trade {
             schwab_instruction_str,
             self.schwab_quantity,
             price_cents_i64,
+            status_str,
+        )
+        .execute(pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn update_status(
+        pool: &SqlitePool,
+        tx_hash: B256,
+        log_index: u64,
+        status: TradeStatus,
+    ) -> Result<(), TradeConversionError> {
+        let tx_hash_hex = hex::encode_prefixed(tx_hash.as_slice());
+        #[allow(clippy::cast_possible_wrap)]
+        let log_index_i64 = log_index as i64;
+        let status_str = status.as_str();
+
+        sqlx::query!(
+            "UPDATE trades SET status = ?, completed_at = datetime('now') WHERE tx_hash = ? AND log_index = ?",
+            status_str,
+            tx_hash_hex,
+            log_index_i64
         )
         .execute(pool)
         .await?;
@@ -368,7 +423,7 @@ mod tests {
         assert_eq!(trade.onchain_output_symbol, "FOOs1");
         assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
         assert_eq!(trade.schwab_ticker, "FOO");
-        assert_eq!(trade.schwab_quantity, 9.0);
+        assert!((trade.schwab_quantity - 9.0).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
@@ -657,24 +712,19 @@ mod tests {
 
     #[test]
     fn test_u256_to_f64() {
-        // zero amount
         assert!((u256_to_f64(U256::ZERO, 6).unwrap() - 0.0).abs() < f64::EPSILON);
 
-        // 18 decimals (st0x-like)
         let amount = U256::from_str("1_000_000_000_000_000_000").unwrap(); // 1.0
         assert!((u256_to_f64(amount, 18).unwrap() - 1.0).abs() < f64::EPSILON);
 
-        // 6 decimals (USDC-like)
         let amount = U256::from(123_456_789u64);
         let expected = 123.456_789_f64;
         assert!((u256_to_f64(amount, 6).unwrap() - expected).abs() < f64::EPSILON);
 
-        // small amount with many decimals
         let amount = U256::from(123u64);
         let expected = 0.000_123_f64;
         assert!((u256_to_f64(amount, 6).unwrap() - expected).abs() < f64::EPSILON);
 
-        // no decimals
         let amount = U256::from(999u64);
         assert!((u256_to_f64(amount, 0).unwrap() - 999.0).abs() < f64::EPSILON);
     }
@@ -756,7 +806,7 @@ mod tests {
 
         assert_eq!(trade.schwab_ticker, "");
         assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
-        assert_eq!(trade.schwab_quantity, 9.0);
+        assert!((trade.schwab_quantity - 9.0).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
@@ -791,7 +841,7 @@ mod tests {
 
         assert_eq!(trade.schwab_ticker, "");
         assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
-        assert_eq!(trade.schwab_quantity, 9.0);
+        assert!((trade.schwab_quantity - 9.0).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
@@ -828,13 +878,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(saved_trade.onchain_input_symbol.unwrap(), "USDC");
-        assert_eq!(saved_trade.onchain_input_amount.unwrap(), 1000.0);
+        assert!((saved_trade.onchain_input_amount.unwrap() - 1000.0).abs() < f64::EPSILON);
         assert_eq!(saved_trade.onchain_output_symbol.unwrap(), "AAPLs1");
-        assert_eq!(saved_trade.onchain_output_amount.unwrap(), 5.0);
-        assert_eq!(saved_trade.onchain_io_ratio.unwrap(), 200.0);
+        assert!((saved_trade.onchain_output_amount.unwrap() - 5.0).abs() < f64::EPSILON);
+        assert!((saved_trade.onchain_io_ratio.unwrap() - 200.0).abs() < f64::EPSILON);
         assert_eq!(saved_trade.schwab_ticker.unwrap(), "AAPL");
         assert_eq!(saved_trade.schwab_instruction.unwrap(), "BUY");
-        assert_eq!(saved_trade.schwab_quantity.unwrap(), 5.0);
+        assert!((saved_trade.schwab_quantity.unwrap() - 5.0).abs() < f64::EPSILON);
         assert_eq!(saved_trade.schwab_price_cents.unwrap(), 20000);
         assert_eq!(saved_trade.status.unwrap(), "PENDING");
     }
@@ -870,10 +920,7 @@ mod tests {
         {
             assert!(db_err.message().contains("UNIQUE constraint failed"));
         } else {
-            panic!(
-                "Expected UNIQUE constraint error, got: {:?}",
-                duplicate_result
-            );
+            panic!("Expected UNIQUE constraint error, got: {duplicate_result:?}");
         }
     }
 
@@ -943,7 +990,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
-        assert_eq!(trade.schwab_quantity, 1.25);
+        assert!((trade.schwab_quantity - 1.25).abs() < f64::EPSILON);
         assert_eq!(trade.schwab_ticker, "MSFT");
     }
 
@@ -978,7 +1025,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
-        assert_eq!(trade.schwab_quantity, 2.75);
+        assert!((trade.schwab_quantity - 2.75).abs() < f64::EPSILON);
         assert_eq!(trade.schwab_ticker, "TSLA");
     }
 }
