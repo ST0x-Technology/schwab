@@ -32,6 +32,15 @@ impl Env {
     }
 }
 
+pub fn setup_tracing() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "rain_schwab=debug,auth=debug,main=debug".into())
+        )
+        .init();
+}
+
 pub async fn run(env: Env) -> anyhow::Result<()> {
     let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
     let provider = ProviderBuilder::new().connect_ws(ws).await?;

@@ -28,33 +28,43 @@ pub enum SchwabError {
     NoAccountsFound,
     #[error("Account index {index} out of bounds (found {count} accounts)")]
     AccountIndexOutOfBounds { index: usize, count: usize },
-    #[error("Order placement failed with status: {status}, body: {body}")]
-    OrderPlacementFailed {
-        status: reqwest::StatusCode,
-        body: String,
-    },
-    #[error("Account hash retrieval failed with status: {status}, body: {body}")]
-    AccountHashRetrievalFailed {
+    #[error("{action} failed with status: {status}, body: {body}")]
+    RequestFailed {
+        action: String,
         status: reqwest::StatusCode,
         body: String,
     },
 }
 
 pub async fn run_oauth_flow(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<(), SchwabError> {
-    tracing::info!(
+    println!(
         "Authenticate portfolio brokerage account (not dev account) and paste URL: {}",
         env.get_auth_url()
     );
-    print!("Paste code (from URL): ");
+    print!("Paste the full redirect URL you were sent to: ");
 
-    let mut code = String::new();
-    io::stdin().read_line(&mut code)?;
-    let code = code.trim();
+    let mut redirect_url = String::new();
+    io::stdin().read_line(&mut redirect_url)?;
+    let redirect_url = redirect_url.trim();
 
-    let tokens = env.get_tokens(code).await?;
+    // Extract code from URL
+    let code = extract_code_from_url(redirect_url)?;
+    println!("Extracted code: {}", code);
+
+    let tokens = env.get_tokens(&code).await?;
     tokens.store(pool).await?;
 
     Ok(())
+}
+
+fn extract_code_from_url(url: &str) -> Result<String, SchwabError> {
+    let parsed_url = url::Url::parse(url).map_err(|e| SchwabError::Io(io::Error::new(io::ErrorKind::InvalidInput, format!("Invalid URL: {}", e))))?;
+    
+    parsed_url
+        .query_pairs()
+        .find(|(key, _)| key == "code")
+        .map(|(_, value)| value.into_owned())
+        .ok_or_else(|| SchwabError::Io(io::Error::new(io::ErrorKind::InvalidInput, "No 'code' parameter found in URL")))
 }
 
 #[cfg(test)]

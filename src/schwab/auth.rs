@@ -4,18 +4,19 @@ use clap::Parser;
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use serde::Deserialize;
 use sqlx::SqlitePool;
+use tracing::{info, debug};
 
 use super::{SchwabError, tokens::SchwabTokens};
 
 #[derive(Parser, Debug, Clone)]
 pub struct SchwabAuthEnv {
-    #[clap(short, long, env)]
+    #[clap(long, env)]
     pub app_key: String,
-    #[clap(short, long, env)]
+    #[clap(long, env)]
     pub app_secret: String,
-    #[clap(short, long, env, default_value = "https://127.0.0.1")]
+    #[clap(long, env, default_value = "https://127.0.0.1")]
     pub redirect_uri: String,
-    #[clap(short, long, env, default_value = "https://api.schwabapi.com")]
+    #[clap(long, env, default_value = "https://api.schwabapi.com")]
     pub base_url: String,
     #[clap(long, env, default_value = "0")]
     pub account_index: usize,
@@ -65,8 +66,12 @@ impl SchwabAuthEnv {
             let body = response
                 .text()
                 .await
-                .unwrap_or_else(|_| "Failed to read response body".to_string());
-            return Err(crate::schwab::SchwabError::AccountHashRetrievalFailed { status, body });
+                .unwrap_or_default();
+            return Err(crate::schwab::SchwabError::RequestFailed { 
+                action: "get account hash".to_string(),
+                status, 
+                body 
+            });
         }
 
         let account_numbers: Vec<AccountNumbers> = response.json().await?;
@@ -93,12 +98,14 @@ impl SchwabAuthEnv {
     }
 
     pub async fn get_tokens(&self, code: &str) -> Result<SchwabTokens, SchwabError> {
+        info!("Getting tokens for code: {code}");
         let credentials = format!("{}:{}", self.app_key, self.app_secret);
         let credentials = BASE64_STANDARD.encode(credentials);
 
         let payload = format!(
-            "grant_type=authorization_code&code={code}&redirect_uri={}",
-            self.redirect_uri
+            "grant_type=authorization_code&code={}&redirect_uri={}",
+            code,
+            &self.redirect_uri
         );
 
         let headers = [
@@ -114,6 +121,7 @@ impl SchwabAuthEnv {
         .into_iter()
         .collect::<HeaderMap>();
 
+        debug!("Sending request to Schwab API with headers: {headers:?}\nAnd payload: {payload}");
         let client = reqwest::Client::new();
         let response = client
             .post(format!("{}/v1/oauth/token", self.base_url))
@@ -121,6 +129,32 @@ impl SchwabAuthEnv {
             .body(payload)
             .send()
             .await?;
+
+        debug!("Received response from Schwab API: {response:#?}");
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = if response.headers().get("content-encoding").map(|h| h.as_bytes()) == Some(b"gzip") {
+                use std::io::Read;
+                let bytes = response.bytes().await.unwrap_or_default();
+                let mut decoder = flate2::read::GzDecoder::new(bytes.as_ref());
+                let mut decompressed = String::new();
+                match decoder.read_to_string(&mut decompressed) {
+                    Ok(_) => decompressed,
+                    Err(_) => "Failed to decode gzipped response".to_string(),
+                }
+            } else {
+                response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "Failed to read response body".to_string())
+            };
+            return Err(SchwabError::RequestFailed { 
+                action: "get tokens".to_string(),
+                status, 
+                body 
+            });
+        }
 
         let response: SchwabAuthResponse = response.json().await?;
 
@@ -136,7 +170,10 @@ impl SchwabAuthEnv {
         let credentials = format!("{}:{}", self.app_key, self.app_secret);
         let credentials = BASE64_STANDARD.encode(credentials);
 
-        let payload = format!("grant_type=refresh_token&refresh_token={refresh_token}");
+        let payload = format!(
+            "grant_type=refresh_token&refresh_token={}",
+            urlencoding::encode(refresh_token)
+        );
 
         let headers = [
             (
@@ -271,7 +308,7 @@ mod tests {
         let result = env.get_tokens("invalid_code").await;
 
         mock.assert();
-        assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
+        assert!(matches!(result.unwrap_err(), SchwabError::RequestFailed { action, status, .. } if action == "get tokens" && status.as_u16() == 400));
     }
 
     #[tokio::test]

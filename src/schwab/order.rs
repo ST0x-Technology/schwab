@@ -70,7 +70,8 @@ impl Order {
         if !response.status().is_success() {
             let status = response.status();
             let error_body = response.text().await.unwrap_or_default();
-            return Err(SchwabError::OrderPlacementFailed {
+            return Err(SchwabError::RequestFailed {
+                action: "place order".to_string(),
                 status,
                 body: error_body,
             });
@@ -426,7 +427,7 @@ mod tests {
         order_mock.assert();
         let error = result.unwrap_err();
         assert!(
-            matches!(error, super::SchwabError::OrderPlacementFailed { status, .. } if status.as_u16() == 400)
+            matches!(error, super::SchwabError::RequestFailed { action, status, .. } if action == "place order" && status.as_u16() == 400)
         );
     }
 
