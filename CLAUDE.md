@@ -212,7 +212,7 @@ mock.assert();
 
 // ❌ Obvious control flow
 // Save trade to DB
-trade.save_to_db(&pool).await?;
+trade.try_save_to_db(&pool).await?;
 ```
 
 #### Function Documentation

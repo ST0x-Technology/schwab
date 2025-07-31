@@ -8,11 +8,12 @@ CREATE TABLE trades (
   onchain_output_symbol TEXT,
   onchain_output_amount REAL,
   onchain_io_ratio REAL,
+  onchain_price_per_share_cents REAL,
 
   schwab_ticker TEXT,
   schwab_instruction TEXT CHECK (schwab_instruction IN ('BUY', 'SELL')),
   schwab_quantity REAL,
-  schwab_price_cents INTEGER,
+  schwab_price_per_share_cents REAL,
 
   status TEXT CHECK (status IN ('PENDING', 'COMPLETED', 'FAILED')),
   schwab_order_id TEXT,

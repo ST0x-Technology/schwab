@@ -2,8 +2,12 @@ use backon::{ExponentialBuilder, Retryable};
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use tracing::{error, info};
 
 use super::{SchwabAuthEnv, SchwabError, SchwabTokens};
+use crate::Env;
+use crate::arb::ArbTrade;
+use crate::trade::{SchwabInstruction, TradeStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -160,6 +164,64 @@ pub struct OrderLeg {
 pub struct Instrument {
     pub symbol: String,
     pub asset_type: AssetType,
+}
+
+pub async fn execute_trade(env: &Env, pool: &SqlitePool, trade: ArbTrade) {
+    let schwab_instruction = match trade.schwab_instruction {
+        SchwabInstruction::Buy => Instruction::Buy,
+        SchwabInstruction::Sell => Instruction::Sell,
+    };
+
+    let order = Order::new(
+        trade.schwab_ticker.clone(),
+        schwab_instruction,
+        trade.schwab_quantity,
+    );
+
+    let result = (|| async { order.place(&env.schwab_auth, pool).await })
+        .retry(ExponentialBuilder::new().with_max_times(10))
+        .await;
+
+    match result {
+        Ok(()) => handle_order_success(&trade, pool).await,
+        Err(e) => handle_order_failure(&trade, pool, e).await,
+    }
+}
+
+async fn handle_order_success(trade: &ArbTrade, pool: &SqlitePool) {
+    info!(
+        "Successfully placed Schwab order for trade: tx_hash={tx_hash:?}, log_index={log_index}",
+        tx_hash = trade.tx_hash,
+        log_index = trade.log_index
+    );
+
+    if let Err(e) =
+        ArbTrade::update_status(pool, trade.tx_hash, trade.log_index, TradeStatus::Completed).await
+    {
+        error!(
+            "Failed to update trade status to COMPLETED: tx_hash={tx_hash:?}, log_index={log_index}, error={e:?}",
+            tx_hash = trade.tx_hash,
+            log_index = trade.log_index
+        );
+    }
+}
+
+async fn handle_order_failure(trade: &ArbTrade, pool: &SqlitePool, error: SchwabError) {
+    error!(
+        "Failed to place Schwab order after retries for trade: tx_hash={tx_hash:?}, log_index={log_index}, error={error:?}",
+        tx_hash = trade.tx_hash,
+        log_index = trade.log_index
+    );
+
+    if let Err(update_err) =
+        ArbTrade::update_status(pool, trade.tx_hash, trade.log_index, TradeStatus::Failed).await
+    {
+        error!(
+            "Failed to update trade status to FAILED: tx_hash={tx_hash:?}, log_index={log_index}, error={update_err:?}",
+            tx_hash = trade.tx_hash,
+            log_index = trade.log_index
+        );
+    }
 }
 
 #[cfg(test)]
