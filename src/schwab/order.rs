@@ -166,7 +166,7 @@ pub struct Instrument {
     pub asset_type: AssetType,
 }
 
-pub async fn execute_trade(env: &Env, pool: &SqlitePool, trade: ArbTrade) {
+pub async fn execute_trade(env: &Env, pool: &SqlitePool, trade: ArbTrade, max_retries: usize) {
     let schwab_instruction = match trade.schwab_instruction {
         SchwabInstruction::Buy => Instruction::Buy,
         SchwabInstruction::Sell => Instruction::Sell,
@@ -179,7 +179,7 @@ pub async fn execute_trade(env: &Env, pool: &SqlitePool, trade: ArbTrade) {
     );
 
     let result = (|| async { order.place(&env.schwab_auth, pool).await })
-        .retry(ExponentialBuilder::new().with_max_times(10))
+        .retry(ExponentialBuilder::new().with_max_times(max_retries))
         .await;
 
     match result {
@@ -551,5 +551,245 @@ mod tests {
             refresh_token_fetched_at: Utc::now(),
         };
         tokens.store(pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_execute_trade_success() {
+        let server = httpmock::MockServer::start();
+        let env = create_test_env_for_execute_trade(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/trader/v1/accounts/ABC123DEF456/orders")
+                .header("authorization", "Bearer test_access_token")
+                .header("accept", "*/*")
+                .header("content-type", "application/json");
+            then.status(201);
+        });
+
+        let trade = create_test_trade();
+        trade.try_save_to_db(&pool).await.unwrap();
+
+        execute_trade(&env, &pool, trade.clone(), 0).await;
+
+        account_mock.assert();
+        order_mock.assert();
+
+        let updated_trade = sqlx::query!(
+            "SELECT status FROM trades WHERE tx_hash = ? AND log_index = ?",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            123_i64
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(updated_trade.status.unwrap(), "COMPLETED");
+    }
+
+    #[tokio::test]
+    async fn test_execute_trade_failure() {
+        let server = httpmock::MockServer::start();
+        let env = create_test_env_for_execute_trade(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/trader/v1/accounts/ABC123DEF456/orders");
+            then.status(400)
+                .json_body(json!({"error": "Order validation failed"}));
+        });
+
+        let trade = create_test_trade();
+        trade.try_save_to_db(&pool).await.unwrap();
+
+        execute_trade(&env, &pool, trade.clone(), 0).await;
+
+        account_mock.assert();
+        order_mock.assert();
+
+        let updated_trade = sqlx::query!(
+            "SELECT status FROM trades WHERE tx_hash = ? AND log_index = ?",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            123_i64
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(updated_trade.status.unwrap(), "FAILED");
+    }
+
+    #[tokio::test]
+    async fn test_execute_trade_retry_until_failure() {
+        let server = httpmock::MockServer::start();
+        let env = create_test_env_for_execute_trade(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        // Mock that fails twice then succeeds
+        let order_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/trader/v1/accounts/ABC123DEF456/orders");
+            then.status(500)
+                .json_body(json!({"error": "Internal server error"}));
+        });
+
+        let trade = create_test_trade();
+        trade.try_save_to_db(&pool).await.unwrap();
+
+        execute_trade(&env, &pool, trade.clone(), 2).await;
+
+        // Should fail 3 times total (1 initial + 2 retries)
+        account_mock.assert_hits(3);
+        order_mock.assert_hits(3);
+
+        let updated_trade = sqlx::query!(
+            "SELECT status FROM trades WHERE tx_hash = ? AND log_index = ?",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            123_i64
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(updated_trade.status.unwrap(), "FAILED");
+    }
+
+    #[tokio::test]
+    async fn test_handle_order_success() {
+        let pool = setup_test_db().await;
+        let trade = create_test_trade();
+        trade.try_save_to_db(&pool).await.unwrap();
+
+        handle_order_success(&trade, &pool).await;
+
+        let updated_trade = sqlx::query!(
+            "SELECT status FROM trades WHERE tx_hash = ? AND log_index = ?",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            123_i64
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(updated_trade.status.unwrap(), "COMPLETED");
+    }
+
+    #[tokio::test]
+    async fn test_handle_order_failure() {
+        let pool = setup_test_db().await;
+        let trade = create_test_trade();
+        trade.try_save_to_db(&pool).await.unwrap();
+
+        let error = SchwabError::RequestFailed {
+            action: "place order".to_string(),
+            status: reqwest::StatusCode::BAD_REQUEST,
+            body: "Invalid order".to_string(),
+        };
+
+        handle_order_failure(&trade, &pool, error).await;
+
+        let updated_trade = sqlx::query!(
+            "SELECT status FROM trades WHERE tx_hash = ? AND log_index = ?",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            123_i64
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(updated_trade.status.unwrap(), "FAILED");
+    }
+
+    fn create_test_env_for_execute_trade(mock_server: &httpmock::MockServer) -> crate::Env {
+        use crate::{Env, trade::EvmEnv};
+        use alloy::primitives::{Address, fixed_bytes};
+        use std::str::FromStr;
+        use url::Url;
+
+        Env {
+            database_url: ":memory:".to_string(),
+            schwab_auth: SchwabAuthEnv {
+                app_key: "test_app_key".to_string(),
+                app_secret: "test_app_secret".to_string(),
+                redirect_uri: "https://127.0.0.1".to_string(),
+                base_url: mock_server.base_url(),
+                account_index: 0,
+            },
+            evm_env: EvmEnv {
+                ws_rpc_url: Url::parse("ws://localhost:8545").unwrap(),
+                orderbook: Address::from_str("0x1234567890123456789012345678901234567890").unwrap(),
+                order_hash: fixed_bytes!(
+                    "0x0000000000000000000000000000000000000000000000000000000000000000"
+                ),
+            },
+        }
+    }
+
+    fn create_test_trade() -> crate::arb::ArbTrade {
+        use crate::{
+            arb::ArbTrade,
+            trade::{SchwabInstruction, TradeStatus},
+        };
+        use alloy::primitives::fixed_bytes;
+
+        ArbTrade {
+            id: None,
+            tx_hash: fixed_bytes!(
+                "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+            ),
+            log_index: 123,
+            onchain_input_symbol: "USDC".to_string(),
+            onchain_input_amount: 1000.0,
+            onchain_output_symbol: "AAPLs1".to_string(),
+            onchain_output_amount: 5.0,
+            onchain_io_ratio: 200.0,
+            onchain_price_per_share_cents: 20000.0,
+            schwab_ticker: "AAPL".to_string(),
+            schwab_instruction: SchwabInstruction::Buy,
+            schwab_quantity: 5.0,
+            schwab_price_per_share_cents: None,
+            status: TradeStatus::Pending,
+            schwab_order_id: None,
+            created_at: None,
+            completed_at: None,
+        }
     }
 }
