@@ -1,10 +1,13 @@
-use alloy::providers::{ProviderBuilder, WsConnect};
+use alloy::providers::{Provider, ProviderBuilder, WsConnect};
+use alloy::rpc::types::Log;
+use alloy::sol_types;
 use backon::{ExponentialBuilder, Retryable};
 use clap::Parser;
 use futures_util::{Stream, StreamExt};
 use sqlx::SqlitePool;
 use tracing::{error, info};
 
+pub mod arb;
 mod bindings;
 pub mod schwab;
 mod symbol_cache;
@@ -13,13 +16,14 @@ pub mod trade;
 #[cfg(test)]
 pub mod test_utils;
 
-use bindings::IOrderBookV4::IOrderBookV4Instance;
+use arb::ArbTrade;
+use bindings::IOrderBookV4::{ClearV2, IOrderBookV4Instance, TakeOrderV2};
 use schwab::{
     SchwabAuthEnv,
     order::{Instruction, Order},
 };
 use symbol_cache::SymbolCache;
-use trade::{EvmEnv, SchwabInstruction, Trade, TradeStatus};
+use trade::{EvmEnv, PartialArbTrade, SchwabInstruction, TradeStatus};
 
 #[derive(Parser, Debug, Clone)]
 pub struct Env {
@@ -70,14 +74,68 @@ pub async fn run(env: Env) -> anyhow::Result<()> {
     let mut take_stream = take_filter.into_stream();
 
     loop {
-        let trade = tokio::select! {
-            Some(next_res) = clear_stream.next() => {
-                let (event, log) = next_res?;
-                Trade::try_from_clear_v2(&env.evm_env, &cache, &provider, event, log).await?
-            }
-            Some(take) = take_stream.next() => {
-                let (event, log) = take?;
-                Trade::try_from_take_order_if_target_order(&cache, &provider, event, log, env.evm_env.order_hash).await?
+        step(
+            &mut clear_stream,
+            &mut take_stream,
+            &env,
+            &pool,
+            &cache,
+            &provider,
+        )
+        .await?;
+    }
+}
+
+async fn step<S1, S2, P>(
+    clear_stream: &mut S1,
+    take_stream: &mut S2,
+    env: &Env,
+    pool: &SqlitePool,
+    cache: &SymbolCache,
+    provider: &P,
+) -> anyhow::Result<()>
+where
+    S1: Stream<Item = Result<(ClearV2, Log), sol_types::Error>> + Unpin,
+    S2: Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin,
+    P: Provider + Clone,
+{
+    let trade = tokio::select! {
+        Some(next_res) = clear_stream.next() => {
+            let (event, log) = next_res?;
+            PartialArbTrade::try_from_clear_v2(&env.evm_env, cache, provider, event, log).await?
+        }
+        Some(take) = take_stream.next() => {
+            let (event, log) = take?;
+            PartialArbTrade::try_from_take_order_if_target_order(cache, provider, event, log, env.evm_env.order_hash).await?
+        }
+    };
+
+    let Some(trade) = trade else {
+        return Ok(());
+    };
+
+    if ArbTrade::exists_in_db(pool, trade.tx_hash, trade.log_index).await? {
+        info!(
+            "Trade already exists in database, skipping: tx_hash={tx_hash:?}, log_index={log_index}",
+            tx_hash = trade.tx_hash,
+            log_index = trade.log_index
+        );
+        return Ok(());
+    }
+
+    let arb_trade = ArbTrade::from_partial_trade(trade.clone());
+    arb_trade.save_to_db(pool).await?;
+    info!("Saved trade to database: {trade:?}");
+
+    let env_clone = env.clone();
+    let pool_clone = pool.clone();
+
+    tokio::spawn(async move {
+        execute_schwab_order(env_clone, pool_clone, arb_trade).await;
+    });
+
+    Ok(())
+}
             }
         };
 

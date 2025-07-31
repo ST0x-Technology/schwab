@@ -673,7 +673,7 @@ mod tests {
                 assert_eq!(action, "get tokens");
                 assert_eq!(status.as_u16(), 500);
             }
-            other => panic!("Expected RequestFailed error, got: {:?}", other),
+            other => panic!("Expected RequestFailed error, got: {other:?}"),
         }
     }
 
