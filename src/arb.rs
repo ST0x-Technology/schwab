@@ -245,29 +245,30 @@ mod tests {
             arb_trade.onchain_input_symbol,
             partial_trade.onchain_input_symbol
         );
-        assert_eq!(
-            arb_trade.onchain_input_amount,
-            partial_trade.onchain_input_amount
+        assert!(
+            (arb_trade.onchain_input_amount - partial_trade.onchain_input_amount).abs()
+                < f64::EPSILON
         );
         assert_eq!(
             arb_trade.onchain_output_symbol,
             partial_trade.onchain_output_symbol
         );
-        assert_eq!(
-            arb_trade.onchain_output_amount,
-            partial_trade.onchain_output_amount
+        assert!(
+            (arb_trade.onchain_output_amount - partial_trade.onchain_output_amount).abs()
+                < f64::EPSILON
         );
-        assert_eq!(arb_trade.onchain_io_ratio, partial_trade.onchain_io_ratio);
-        assert_eq!(
-            arb_trade.onchain_price_per_share_cents,
-            partial_trade.onchain_price_per_share_cents
+        assert!((arb_trade.onchain_io_ratio - partial_trade.onchain_io_ratio).abs() < f64::EPSILON);
+        assert!(
+            (arb_trade.onchain_price_per_share_cents - partial_trade.onchain_price_per_share_cents)
+                .abs()
+                < f64::EPSILON
         );
         assert_eq!(arb_trade.schwab_ticker, partial_trade.schwab_ticker);
         assert_eq!(
             arb_trade.schwab_instruction,
             partial_trade.schwab_instruction
         );
-        assert_eq!(arb_trade.schwab_quantity, partial_trade.schwab_quantity);
+        assert!((arb_trade.schwab_quantity - partial_trade.schwab_quantity).abs() < f64::EPSILON);
         assert_eq!(arb_trade.status, TradeStatus::Pending);
         assert_eq!(arb_trade.schwab_order_id, None);
     }

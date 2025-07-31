@@ -685,7 +685,7 @@ mod tests {
 
         assert!((result.onchain_input_amount - 0.0).abs() < f64::EPSILON);
         assert_eq!(result.schwab_instruction, SchwabInstruction::Sell);
-        assert_eq!(result.onchain_price_per_share_cents, f64::INFINITY);
+        assert!(result.onchain_price_per_share_cents.is_infinite());
         assert!((result.schwab_quantity - 0.0).abs() < f64::EPSILON);
     }
 

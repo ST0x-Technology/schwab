@@ -144,7 +144,9 @@ mod tests {
     use alloy::rpc::types::Log;
     use alloy::sol_types::{self, SolCall, SolValue};
     use bindings::IERC20::symbolCall;
-    use bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2, TakeOrderV2};
+    use bindings::IOrderBookV4::{
+        AfterClear, ClearConfig, ClearStateChange, ClearV2, TakeOrderConfigV3, TakeOrderV2,
+    };
     use futures_util::stream;
     use serde_json::json;
     use sqlx::SqlitePool;
@@ -302,9 +304,9 @@ mod tests {
 
         let take_event = TakeOrderV2 {
             sender: address!("0x1111111111111111111111111111111111111111"),
-            config: Default::default(),
-            input: Default::default(),
-            output: Default::default(),
+            config: TakeOrderConfigV3::default(),
+            input: U256::default(),
+            output: U256::default(),
         };
         let log = crate::test_utils::get_test_log();
         let take_stream_item: Result<(TakeOrderV2, Log), sol_types::Error> = Ok((take_event, log));
