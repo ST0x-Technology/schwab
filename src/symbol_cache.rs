@@ -1,4 +1,4 @@
-use alloy::{primitives::{Address, address}, providers::Provider};
+use alloy::{primitives::Address, providers::Provider};
 use backon::{ExponentialBuilder, Retryable};
 use std::{collections::BTreeMap, sync::RwLock};
 
@@ -50,7 +50,7 @@ impl SymbolCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{Address, U256};
+    use alloy::primitives::{U256, address};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
 
     #[tokio::test]

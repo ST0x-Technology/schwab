@@ -740,7 +740,7 @@ mod tests {
 
     fn create_test_env_for_execute_trade(mock_server: &httpmock::MockServer) -> crate::Env {
         use crate::{Env, trade::EvmEnv};
-        use alloy::primitives::{Address, address, fixed_bytes};
+        use alloy::primitives::{address, fixed_bytes};
         use url::Url;
 
         Env {

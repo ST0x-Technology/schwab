@@ -139,12 +139,12 @@ where
 mod tests {
     use super::*;
     use crate::trade::{SchwabInstruction, TradeStatus};
-    use alloy::primitives::{address, fixed_bytes, keccak256, U256, IntoLogData};
+    use alloy::primitives::{IntoLogData, U256, address, fixed_bytes, keccak256};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
     use alloy::rpc::types::Log;
     use alloy::sol_types::{self, SolCall, SolValue};
-    use bindings::IOrderBookV4::{ClearConfig, ClearV2, TakeOrderV2, AfterClear, ClearStateChange};
     use bindings::IERC20::symbolCall;
+    use bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2, TakeOrderV2};
     use futures_util::stream;
     use serde_json::json;
     use sqlx::SqlitePool;
@@ -173,7 +173,7 @@ mod tests {
             },
         }
     }
-    
+
     fn create_test_env() -> Env {
         create_test_env_with_order_hash(fixed_bytes!(
             "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -338,13 +338,14 @@ mod tests {
         let order_hash = keccak256(order.abi_encode());
         let env = create_test_env_with_order_hash(order_hash);
         let cache = SymbolCache::default();
-        
+
         let orderbook = address!("0x1111111111111111111111111111111111111111");
-        let tx_hash = fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        let tx_hash =
+            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
 
         let clear_config = ClearConfig {
             aliceInputIOIndex: U256::from(0),
-            aliceOutputIOIndex: U256::from(1), 
+            aliceOutputIOIndex: U256::from(1),
             bobInputIOIndex: U256::from(1),
             bobOutputIOIndex: U256::from(0),
             aliceBountyVaultId: U256::ZERO,
@@ -402,13 +403,24 @@ mod tests {
 
         let asserter = Asserter::new();
         asserter.push_success(&json!([after_clear_log]));
-        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(&"USDC".to_string()));
-        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(&"AAPLs1".to_string()));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"USDC".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"AAPLs1".to_string(),
+        ));
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        step(&mut clear_stream, &mut take_stream, &env, &pool, &cache, &provider)
-            .await
-            .unwrap();
+        step(
+            &mut clear_stream,
+            &mut take_stream,
+            &env,
+            &pool,
+            &cache,
+            &provider,
+        )
+        .await
+        .unwrap();
 
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
