@@ -121,26 +121,6 @@ impl ArbTrade {
 
         Ok(())
     }
-
-    pub async fn exists_in_db(
-        pool: &SqlitePool,
-        tx_hash: B256,
-        log_index: u64,
-    ) -> Result<bool, TradeConversionError> {
-        let tx_hash_hex = hex::encode_prefixed(tx_hash.as_slice());
-        #[allow(clippy::cast_possible_wrap)]
-        let log_index_i64 = log_index as i64;
-
-        let result = sqlx::query!(
-            "SELECT COUNT(*) as count FROM trades WHERE tx_hash = ? AND log_index = ?",
-            tx_hash_hex,
-            log_index_i64
-        )
-        .fetch_one(pool)
-        .await?;
-
-        Ok(result.count > 0)
-    }
 }
 
 #[cfg(test)]
@@ -237,41 +217,6 @@ mod tests {
 
         let duplicate_insert = trade.try_save_to_db(&pool).await.unwrap();
         assert!(!duplicate_insert);
-    }
-
-    #[tokio::test]
-    async fn test_exists_in_db_true() {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
-
-        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
-
-        let tx_hash =
-            fixed_bytes!("0x2222222222222222222222222222222222222222222222222222222222222222");
-
-        sqlx::query!(
-            "INSERT INTO trades (tx_hash, log_index, status, created_at) VALUES (?, ?, 'PENDING', datetime('now'))",
-            "0x2222222222222222222222222222222222222222222222222222222222222222",
-            789_i64
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let exists = ArbTrade::exists_in_db(&pool, tx_hash, 789).await.unwrap();
-        assert!(exists);
-    }
-
-    #[tokio::test]
-    async fn test_exists_in_db_false() {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
-
-        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
-
-        let tx_hash =
-            fixed_bytes!("0x3333333333333333333333333333333333333333333333333333333333333333");
-
-        let exists = ArbTrade::exists_in_db(&pool, tx_hash, 999).await.unwrap();
-        assert!(!exists);
     }
 
     #[tokio::test]

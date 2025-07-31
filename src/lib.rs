@@ -1,11 +1,10 @@
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use alloy::rpc::types::Log;
 use alloy::sol_types;
-use backon::{ExponentialBuilder, Retryable};
 use clap::Parser;
 use futures_util::{Stream, StreamExt};
 use sqlx::SqlitePool;
-use tracing::{error, info};
+use tracing::info;
 
 pub mod arb;
 mod bindings;
@@ -18,12 +17,9 @@ pub mod test_utils;
 
 use arb::ArbTrade;
 use bindings::IOrderBookV4::{ClearV2, IOrderBookV4Instance, TakeOrderV2};
-use schwab::{
-    SchwabAuthEnv,
-    order::{Instruction, Order},
-};
+use schwab::{SchwabAuthEnv, order::execute_trade};
 use symbol_cache::SymbolCache;
-use trade::{EvmEnv, PartialArbTrade, SchwabInstruction, TradeStatus};
+use trade::{EvmEnv, PartialArbTrade};
 
 #[derive(Parser, Debug, Clone)]
 pub struct Env {
@@ -114,7 +110,10 @@ where
         return Ok(());
     };
 
-    if ArbTrade::exists_in_db(pool, trade.tx_hash, trade.log_index).await? {
+    let arb_trade = ArbTrade::from_partial_trade(trade.clone());
+
+    let was_inserted = arb_trade.try_save_to_db(pool).await?;
+    if !was_inserted {
         info!(
             "Trade already exists in database, skipping: tx_hash={tx_hash:?}, log_index={log_index}",
             tx_hash = trade.tx_hash,
