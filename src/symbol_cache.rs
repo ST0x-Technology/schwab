@@ -1,4 +1,4 @@
-use alloy::{primitives::Address, providers::Provider};
+use alloy::{primitives::{Address, address}, providers::Provider};
 use backon::{ExponentialBuilder, Retryable};
 use std::{collections::BTreeMap, sync::RwLock};
 
@@ -11,6 +11,11 @@ pub struct SymbolCache {
 }
 
 impl SymbolCache {
+    #[cfg(test)]
+    pub fn insert_for_test(&self, address: Address, symbol: String) {
+        self.map.write().unwrap().insert(address, symbol);
+    }
+
     pub async fn get_io_symbol<P: Provider>(
         &self,
         provider: P,
@@ -47,12 +52,11 @@ mod tests {
     use super::*;
     use alloy::primitives::{Address, U256};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
-    use std::str::FromStr;
 
     #[tokio::test]
     async fn test_symbol_cache_hit() {
         let cache = SymbolCache::default();
-        let address = Address::from_str("0x1234567890123456789012345678901234567890").unwrap();
+        let address = address!("0x1234567890123456789012345678901234567890");
 
         cache
             .map
@@ -75,7 +79,7 @@ mod tests {
     #[tokio::test]
     async fn test_symbol_cache_miss_rpc_failure() {
         let cache = SymbolCache::default();
-        let address = Address::from_str("0x1234567890123456789012345678901234567890").unwrap();
+        let address = address!("0x1234567890123456789012345678901234567890");
 
         let io = IO {
             token: address,

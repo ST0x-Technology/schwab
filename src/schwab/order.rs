@@ -740,8 +740,7 @@ mod tests {
 
     fn create_test_env_for_execute_trade(mock_server: &httpmock::MockServer) -> crate::Env {
         use crate::{Env, trade::EvmEnv};
-        use alloy::primitives::{Address, fixed_bytes};
-        use std::str::FromStr;
+        use alloy::primitives::{Address, address, fixed_bytes};
         use url::Url;
 
         Env {
@@ -755,7 +754,7 @@ mod tests {
             },
             evm_env: EvmEnv {
                 ws_rpc_url: Url::parse("ws://localhost:8545").unwrap(),
-                orderbook: Address::from_str("0x1234567890123456789012345678901234567890").unwrap(),
+                orderbook: address!("0x1234567890123456789012345678901234567890"),
                 order_hash: fixed_bytes!(
                     "0x0000000000000000000000000000000000000000000000000000000000000000"
                 ),
