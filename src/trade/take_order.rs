@@ -3,11 +3,11 @@ use alloy::providers::Provider;
 use alloy::rpc::types::Log;
 use alloy::sol_types::SolValue;
 
-use super::{OrderFill, Trade, TradeConversionError};
+use super::{OrderFill, PartialArbTrade, TradeConversionError};
 use crate::bindings::IOrderBookV4::{TakeOrderConfigV3, TakeOrderV2};
 use crate::symbol_cache::SymbolCache;
 
-impl Trade {
+impl PartialArbTrade {
     pub(crate) async fn try_from_take_order_if_target_order<P: Provider>(
         cache: &SymbolCache,
         provider: P,
@@ -74,11 +74,12 @@ mod tests {
 
         let order_hash = keccak256(order.abi_encode());
 
-        let trade =
-            Trade::try_from_take_order_if_target_order(&cache, &provider, event, log, order_hash)
-                .await
-                .unwrap()
-                .unwrap();
+        let trade = PartialArbTrade::try_from_take_order_if_target_order(
+            &cache, &provider, event, log, order_hash,
+        )
+        .await
+        .unwrap()
+        .unwrap();
 
         assert_eq!(trade.schwab_ticker, "FOO");
         assert_eq!(
@@ -99,7 +100,7 @@ mod tests {
 
         let unrelated_hash = B256::ZERO;
 
-        let res = Trade::try_from_take_order_if_target_order(
+        let res = PartialArbTrade::try_from_take_order_if_target_order(
             &cache,
             &provider,
             event,

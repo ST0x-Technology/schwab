@@ -1,11 +1,9 @@
-use alloy::hex;
 use alloy::primitives::ruint::FromUintError;
 use alloy::primitives::{Address, B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::Log;
 use alloy::transports::{RpcError, TransportErrorKind};
 use clap::Parser;
-use sqlx::SqlitePool;
 use std::num::ParseFloatError;
 
 use crate::bindings::IOrderBookV4::OrderV3;
@@ -73,7 +71,7 @@ impl std::str::FromStr for TradeStatus {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Trade {
+pub struct PartialArbTrade {
     pub tx_hash: B256,
     pub log_index: u64,
 
@@ -82,7 +80,7 @@ pub struct Trade {
     pub onchain_output_symbol: String,
     pub onchain_output_amount: f64,
     pub onchain_io_ratio: f64,
-    pub onchain_price_per_share_cents: u64,
+    pub onchain_price_per_share_cents: f64,
 
     pub schwab_ticker: String,
     pub schwab_instruction: SchwabInstruction,
@@ -128,7 +126,7 @@ struct OrderFill {
     output_amount: U256,
 }
 
-impl Trade {
+impl PartialArbTrade {
     async fn try_from_order_and_fill_details<P: Provider>(
         cache: &SymbolCache,
         provider: P,
@@ -170,6 +168,7 @@ impl Trade {
                             onchain_output_symbol.clone(),
                         )
                     })?;
+
                 (ticker, SchwabInstruction::Buy)
             } else if onchain_output_symbol == "USDC" && onchain_input_symbol.ends_with("s1") {
                 let ticker = onchain_input_symbol
@@ -181,6 +180,7 @@ impl Trade {
                             onchain_output_symbol.clone(),
                         )
                     })?;
+
                 (ticker, SchwabInstruction::Sell)
             } else {
                 return Err(TradeConversionError::InvalidSymbolConfiguration(
@@ -204,8 +204,7 @@ impl Trade {
             return Ok(None);
         }
 
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let onchain_price_per_share_cents = (onchain_price_per_share_usdc * 100.0) as u64;
+        let onchain_price_per_share_cents = onchain_price_per_share_usdc * 100.0;
 
         let schwab_quantity = if schwab_instruction == SchwabInstruction::Buy {
             onchain_output_amount
@@ -230,90 +229,6 @@ impl Trade {
         };
 
         Ok(Some(trade))
-    }
-
-    pub async fn save_to_db(&self, pool: &SqlitePool) -> Result<(), TradeConversionError> {
-        let tx_hash_hex = hex::encode_prefixed(self.tx_hash.as_slice());
-        #[allow(clippy::cast_possible_wrap)]
-        let log_index_i64 = self.log_index as i64;
-        let schwab_instruction_str = match self.schwab_instruction {
-            SchwabInstruction::Buy => "BUY",
-            SchwabInstruction::Sell => "SELL",
-        };
-        #[allow(clippy::cast_possible_wrap)]
-        let price_cents_i64 = self.onchain_price_per_share_cents as i64;
-        let status_str = TradeStatus::Pending.as_str();
-
-        sqlx::query!(
-            r#"
-            INSERT INTO trades (
-                tx_hash, log_index,
-                onchain_input_symbol, onchain_input_amount,
-                onchain_output_symbol, onchain_output_amount, onchain_io_ratio,
-                schwab_ticker, schwab_instruction, schwab_quantity, schwab_price_cents,
-                status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-            "#,
-            tx_hash_hex,
-            log_index_i64,
-            self.onchain_input_symbol,
-            self.onchain_input_amount,
-            self.onchain_output_symbol,
-            self.onchain_output_amount,
-            self.onchain_io_ratio,
-            self.schwab_ticker,
-            schwab_instruction_str,
-            self.schwab_quantity,
-            price_cents_i64,
-            status_str,
-        )
-        .execute(pool)
-        .await?;
-
-        Ok(())
-    }
-
-    pub async fn update_status(
-        pool: &SqlitePool,
-        tx_hash: B256,
-        log_index: u64,
-        status: TradeStatus,
-    ) -> Result<(), TradeConversionError> {
-        let tx_hash_hex = hex::encode_prefixed(tx_hash.as_slice());
-        #[allow(clippy::cast_possible_wrap)]
-        let log_index_i64 = log_index as i64;
-        let status_str = status.as_str();
-
-        sqlx::query!(
-            "UPDATE trades SET status = ?, completed_at = datetime('now') WHERE tx_hash = ? AND log_index = ?",
-            status_str,
-            tx_hash_hex,
-            log_index_i64
-        )
-        .execute(pool)
-        .await?;
-
-        Ok(())
-    }
-
-    pub async fn exists_in_db(
-        pool: &SqlitePool,
-        tx_hash: B256,
-        log_index: u64,
-    ) -> Result<bool, TradeConversionError> {
-        let tx_hash_hex = hex::encode_prefixed(tx_hash.as_slice());
-        #[allow(clippy::cast_possible_wrap)]
-        let log_index_i64 = log_index as i64;
-
-        let result = sqlx::query!(
-            "SELECT COUNT(*) as count FROM trades WHERE tx_hash = ? AND log_index = ?",
-            tx_hash_hex,
-            log_index_i64
-        )
-        .fetch_one(pool)
-        .await?;
-
-        Ok(result.count > 0)
     }
 }
 
@@ -366,7 +281,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let trade = Trade::try_from_order_and_fill_details(
+        let trade = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -382,7 +297,7 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        let expected_trade = Trade {
+        let expected_trade = PartialArbTrade {
             tx_hash: fixed_bytes!(
                 "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             ),
@@ -392,7 +307,7 @@ mod tests {
             onchain_output_symbol: "FOOs1".to_string(),
             onchain_output_amount: 9.0,
             onchain_io_ratio: 100.0 / 9.0,
-            onchain_price_per_share_cents: 1111,
+            onchain_price_per_share_cents: (100.0 / 9.0) * 100.0,
             schwab_ticker: "FOO".to_string(),
             schwab_instruction: SchwabInstruction::Buy,
             schwab_quantity: 9.0,
@@ -403,7 +318,7 @@ mod tests {
         let asserter = Asserter::new();
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        let trade = Trade::try_from_order_and_fill_details(
+        let trade = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             get_test_order(),
@@ -440,7 +355,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let trade = Trade::try_from_order_and_fill_details(
+        let trade = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -456,7 +371,7 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        let expected_trade = Trade {
+        let expected_trade = PartialArbTrade {
             tx_hash: fixed_bytes!(
                 "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             ),
@@ -466,7 +381,7 @@ mod tests {
             onchain_output_symbol: "USDC".to_string(),
             onchain_output_amount: 100.0,
             onchain_io_ratio: 9.0 / 100.0,
-            onchain_price_per_share_cents: 1111,
+            onchain_price_per_share_cents: (100.0 / 9.0) * 100.0,
             schwab_ticker: "BAR".to_string(),
             schwab_instruction: SchwabInstruction::Sell,
             schwab_quantity: 9.0,
@@ -484,7 +399,7 @@ mod tests {
         log.transaction_hash = None;
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_order_and_fill_details(
+        let err = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -511,7 +426,7 @@ mod tests {
         log.log_index = None;
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_order_and_fill_details(
+        let err = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -536,7 +451,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_order_and_fill_details(
+        let err = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -561,7 +476,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_order_and_fill_details(
+        let err = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -588,7 +503,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_order_and_fill_details(
+        let err = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -620,7 +535,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_order_and_fill_details(
+        let err = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -654,7 +569,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_order_and_fill_details(
+        let err = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -688,7 +603,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_order_and_fill_details(
+        let err = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -752,7 +667,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let result = Trade::try_from_order_and_fill_details(
+        let result = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -770,7 +685,7 @@ mod tests {
 
         assert!((result.onchain_input_amount - 0.0).abs() < f64::EPSILON);
         assert_eq!(result.schwab_instruction, SchwabInstruction::Sell);
-        assert_eq!(result.onchain_price_per_share_cents, u64::MAX);
+        assert_eq!(result.onchain_price_per_share_cents, f64::INFINITY);
         assert!((result.schwab_quantity - 0.0).abs() < f64::EPSILON);
     }
 
@@ -788,7 +703,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let trade = Trade::try_from_order_and_fill_details(
+        let trade = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -823,7 +738,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let trade = Trade::try_from_order_and_fill_details(
+        let trade = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -845,121 +760,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_save_to_db_success() {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
-
-        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
-
-        let trade = Trade {
-            tx_hash: fixed_bytes!(
-                "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
-            ),
-            log_index: 123,
-            onchain_input_symbol: "USDC".to_string(),
-            onchain_input_amount: 1000.0,
-            onchain_output_symbol: "AAPLs1".to_string(),
-            onchain_output_amount: 5.0,
-            onchain_io_ratio: 200.0,
-            onchain_price_per_share_cents: 20000,
-            schwab_ticker: "AAPL".to_string(),
-            schwab_instruction: SchwabInstruction::Buy,
-            schwab_quantity: 5.0,
-        };
-
-        trade.save_to_db(&pool).await.unwrap();
-
-        let saved_trade = sqlx::query!(
-            "SELECT * FROM trades WHERE tx_hash = ? AND log_index = ?",
-            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-            123_i64
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-
-        assert_eq!(saved_trade.onchain_input_symbol.unwrap(), "USDC");
-        assert!((saved_trade.onchain_input_amount.unwrap() - 1000.0).abs() < f64::EPSILON);
-        assert_eq!(saved_trade.onchain_output_symbol.unwrap(), "AAPLs1");
-        assert!((saved_trade.onchain_output_amount.unwrap() - 5.0).abs() < f64::EPSILON);
-        assert!((saved_trade.onchain_io_ratio.unwrap() - 200.0).abs() < f64::EPSILON);
-        assert_eq!(saved_trade.schwab_ticker.unwrap(), "AAPL");
-        assert_eq!(saved_trade.schwab_instruction.unwrap(), "BUY");
-        assert!((saved_trade.schwab_quantity.unwrap() - 5.0).abs() < f64::EPSILON);
-        assert_eq!(saved_trade.schwab_price_cents.unwrap(), 20000);
-        assert_eq!(saved_trade.status.unwrap(), "PENDING");
-    }
-
-    #[tokio::test]
-    async fn test_save_to_db_duplicate_fails() {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
-
-        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
-
-        let trade = Trade {
-            tx_hash: fixed_bytes!(
-                "0x1111111111111111111111111111111111111111111111111111111111111111"
-            ),
-            log_index: 456,
-            onchain_input_symbol: "BARs1".to_string(),
-            onchain_input_amount: 10.0,
-            onchain_output_symbol: "USDC".to_string(),
-            onchain_output_amount: 2000.0,
-            onchain_io_ratio: 0.005,
-            onchain_price_per_share_cents: 20000,
-            schwab_ticker: "BAR".to_string(),
-            schwab_instruction: SchwabInstruction::Sell,
-            schwab_quantity: 10.0,
-        };
-
-        trade.save_to_db(&pool).await.unwrap();
-
-        let duplicate_result = trade.save_to_db(&pool).await;
-        assert!(duplicate_result.is_err());
-
-        if let Err(TradeConversionError::Database(sqlx::Error::Database(db_err))) = duplicate_result
-        {
-            assert!(db_err.message().contains("UNIQUE constraint failed"));
-        } else {
-            panic!("Expected UNIQUE constraint error, got: {duplicate_result:?}");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_exists_in_db_true() {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
-
-        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
-
-        let tx_hash =
-            fixed_bytes!("0x2222222222222222222222222222222222222222222222222222222222222222");
-
-        sqlx::query!(
-            "INSERT INTO trades (tx_hash, log_index, status, created_at) VALUES (?, ?, 'PENDING', datetime('now'))",
-            "0x2222222222222222222222222222222222222222222222222222222222222222",
-            789_i64
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let exists = Trade::exists_in_db(&pool, tx_hash, 789).await.unwrap();
-        assert!(exists);
-    }
-
-    #[tokio::test]
-    async fn test_exists_in_db_false() {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
-
-        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
-
-        let tx_hash =
-            fixed_bytes!("0x3333333333333333333333333333333333333333333333333333333333333333");
-
-        let exists = Trade::exists_in_db(&pool, tx_hash, 999).await.unwrap();
-        assert!(!exists);
-    }
-
-    #[tokio::test]
     async fn test_schwab_quantity_calculation_buy() {
         let asserter = Asserter::new();
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
@@ -973,7 +773,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let trade = Trade::try_from_order_and_fill_details(
+        let trade = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -1008,7 +808,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let trade = Trade::try_from_order_and_fill_details(
+        let trade = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
