@@ -4,6 +4,9 @@ CREATE TABLE trades (
   log_index INTEGER NOT NULL,
 
   onchain_input_symbol TEXT,
+  -- TODO: Consider migrating to INTEGER (base units) or DECIMAL for exact precision
+  -- Current REAL type may lose precision for 18-decimal tokenized stocks and financial calculations
+  -- Will need to change for V5 orderbook upgrade (custom Float types)
   onchain_input_amount REAL,
   onchain_output_symbol TEXT,
   onchain_output_amount REAL,
