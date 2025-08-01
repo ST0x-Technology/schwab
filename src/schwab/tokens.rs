@@ -6,6 +6,9 @@ use tracing::{error, info, warn};
 
 use super::{SchwabError, auth::SchwabAuthEnv};
 
+const ACCESS_TOKEN_DURATION_MINUTES: i64 = 30;
+const REFRESH_TOKEN_DURATION_DAYS: i64 = 7;
+
 #[derive(Debug, Deserialize)]
 pub struct SchwabTokens {
     /// Expires every 30 minutes
@@ -76,25 +79,29 @@ impl SchwabTokens {
 
     pub fn is_access_token_expired(&self) -> bool {
         let now = Utc::now();
-        let expires_at = self.access_token_fetched_at + Duration::minutes(30);
+        let expires_at =
+            self.access_token_fetched_at + Duration::minutes(ACCESS_TOKEN_DURATION_MINUTES);
         now >= expires_at
     }
 
     pub fn is_refresh_token_expired(&self) -> bool {
         let now = Utc::now();
-        let expires_at = self.refresh_token_fetched_at + Duration::days(7);
+        let expires_at =
+            self.refresh_token_fetched_at + Duration::days(REFRESH_TOKEN_DURATION_DAYS);
         now >= expires_at
     }
 
     pub fn access_token_expires_in(&self) -> Duration {
         let now = Utc::now();
-        let expires_at = self.access_token_fetched_at + Duration::minutes(30);
+        let expires_at =
+            self.access_token_fetched_at + Duration::minutes(ACCESS_TOKEN_DURATION_MINUTES);
         expires_at - now
     }
 
     pub fn refresh_token_expires_in(&self) -> Duration {
         let now = Utc::now();
-        let expires_at = self.refresh_token_fetched_at + Duration::days(7);
+        let expires_at =
+            self.refresh_token_fetched_at + Duration::days(REFRESH_TOKEN_DURATION_DAYS);
         expires_at - now
     }
 
@@ -129,7 +136,12 @@ impl SchwabTokens {
         pool: SqlitePool,
         env: SchwabAuthEnv,
     ) -> Result<(), SchwabError> {
-        let mut interval_timer = interval(TokioDuration::from_secs(29 * 60));
+        let refresh_interval_secs = (ACCESS_TOKEN_DURATION_MINUTES - 1) * 60;
+        let mut interval_timer = interval(TokioDuration::from_secs(
+            refresh_interval_secs
+                .try_into()
+                .expect("refresh interval must be positive"),
+        ));
 
         loop {
             interval_timer.tick().await;
