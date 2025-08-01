@@ -209,6 +209,16 @@ impl SchwabAuthEnv {
         .retry(ExponentialBuilder::default())
         .await?;
 
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(SchwabError::RequestFailed {
+                action: "token request".to_string(),
+                status,
+                body,
+            });
+        }
+
         let response: SchwabAuthResponse = response.json().await?;
 
         Ok(SchwabTokens {
@@ -467,7 +477,10 @@ mod tests {
         let result = env.refresh_tokens("invalid_refresh_token").await;
 
         mock.assert();
-        assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            SchwabError::RequestFailed { .. }
+        ));
     }
 
     #[tokio::test]

@@ -663,7 +663,7 @@ mod tests {
                 }]));
         });
 
-        // Mock that fails twice then succeeds
+        // Mock that always fails with 500 status
         let order_mock = server.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/trader/v1/accounts/ABC123DEF456/orders");

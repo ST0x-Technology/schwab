@@ -516,7 +516,10 @@ mod tests {
         let result = SchwabTokens::get_valid_access_token(&pool, &env).await;
 
         mock.assert();
-        assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            SchwabError::RequestFailed { .. }
+        ));
     }
 
     #[tokio::test]

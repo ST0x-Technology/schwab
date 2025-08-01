@@ -1,6 +1,6 @@
 use reqwest::header::InvalidHeaderValue;
 use sqlx::SqlitePool;
-use std::io;
+use std::io::{self, Write};
 use thiserror::Error;
 
 pub mod auth;
@@ -20,6 +20,10 @@ pub enum SchwabError {
     Sqlx(#[from] sqlx::Error),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("URL parsing failed: {0}")]
+    Url(#[from] url::ParseError),
+    #[error("Missing authorization code parameter in URL: {url}")]
+    MissingAuthCode { url: String },
     #[error("JSON serialization failed: {0}")]
     JsonSerialization(#[from] serde_json::Error),
     #[error("Refresh token has expired")]
@@ -42,6 +46,7 @@ pub async fn run_oauth_flow(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<()
         env.get_auth_url()
     );
     print!("Paste the full redirect URL you were sent to: ");
+    io::stdout().flush()?;
 
     let mut redirect_url = String::new();
     io::stdin().read_line(&mut redirect_url)?;
@@ -57,22 +62,14 @@ pub async fn run_oauth_flow(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<()
 }
 
 fn extract_code_from_url(url: &str) -> Result<String, SchwabError> {
-    let parsed_url = url::Url::parse(url).map_err(|e| {
-        SchwabError::Io(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("Invalid URL: {e}"),
-        ))
-    })?;
+    let parsed_url = url::Url::parse(url)?;
 
     parsed_url
         .query_pairs()
         .find(|(key, _)| key == "code")
         .map(|(_, value)| value.into_owned())
-        .ok_or_else(|| {
-            SchwabError::Io(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "No 'code' parameter found in URL",
-            ))
+        .ok_or_else(|| SchwabError::MissingAuthCode {
+            url: url.to_string(),
         })
 }
 
@@ -128,6 +125,108 @@ mod tests {
 
         let tokens = env.get_tokens_from_code("test_code").await.unwrap();
         tokens.store(&pool).await.unwrap();
+
+        mock.assert();
+    }
+
+    #[test]
+    fn test_extract_code_from_url_success() {
+        let url = "https://127.0.0.1/?code=test_auth_code&state=xyz";
+        let result = extract_code_from_url(url);
+        assert_eq!(result.unwrap(), "test_auth_code");
+    }
+
+    #[test]
+    fn test_extract_code_from_url_missing_code() {
+        let url = "https://127.0.0.1/?state=xyz&other=param";
+        let result = extract_code_from_url(url);
+        assert!(matches!(
+            result.unwrap_err(),
+            SchwabError::MissingAuthCode { url: ref u } if u == "https://127.0.0.1/?state=xyz&other=param"
+        ));
+    }
+
+    #[test]
+    fn test_extract_code_from_url_invalid_url() {
+        let url = "not_a_valid_url";
+        let result = extract_code_from_url(url);
+        assert!(matches!(result.unwrap_err(), SchwabError::Url(_)));
+    }
+
+    #[test]
+    fn test_extract_code_from_url_no_query_params() {
+        let url = "https://127.0.0.1/";
+        let result = extract_code_from_url(url);
+        assert!(matches!(
+            result.unwrap_err(),
+            SchwabError::MissingAuthCode { url: ref u } if u == "https://127.0.0.1/"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_get_tokens_from_code_http_401() {
+        let server = MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/oauth/token")
+                .header(
+                    "authorization",
+                    "Basic dGVzdF9hcHBfa2V5OnRlc3RfYXBwX3NlY3JldA==",
+                )
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body_contains("grant_type=authorization_code")
+                .body_contains("code=invalid_code");
+            then.status(401)
+                .header("content-type", "application/json")
+                .json_body(json!({"error": "invalid_grant"}));
+        });
+
+        let result = env.get_tokens_from_code("invalid_code").await;
+        assert!(matches!(
+            result.unwrap_err(),
+            SchwabError::RequestFailed { action, status, .. }
+            if action == "get tokens" && status.as_u16() == 401
+        ));
+
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_get_tokens_from_code_http_500() {
+        let server = MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+
+        let mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/oauth/token");
+            then.status(500);
+        });
+
+        let result = env.get_tokens_from_code("test_code").await;
+        assert!(matches!(
+            result.unwrap_err(),
+            SchwabError::RequestFailed { action, status, .. }
+            if action == "get tokens" && status.as_u16() == 500
+        ));
+
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_get_tokens_from_code_invalid_json_response() {
+        let server = MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+
+        let mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/oauth/token");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body("invalid json");
+        });
+
+        let result = env.get_tokens_from_code("test_code").await;
+        assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
 
         mock.assert();
     }
