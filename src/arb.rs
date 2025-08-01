@@ -21,7 +21,7 @@ pub struct ArbTrade {
     pub schwab_ticker: String,
     pub schwab_instruction: SchwabInstruction,
     pub schwab_quantity: f64,
-    pub schwab_price_per_share_cents: Option<f64>,
+    pub schwab_price_per_share_cents: Option<i64>,
 
     pub status: TradeStatus,
     pub schwab_order_id: Option<String>,
@@ -181,6 +181,7 @@ mod tests {
         assert!(
             (saved_trade.onchain_price_per_share_cents.unwrap() - 20000.0).abs() < f64::EPSILON
         );
+        assert!(saved_trade.schwab_price_per_share_cents.is_none());
         assert_eq!(saved_trade.status.unwrap(), "PENDING");
     }
 

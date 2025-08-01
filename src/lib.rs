@@ -440,6 +440,7 @@ mod tests {
         assert_eq!(trade.onchain_output_symbol.unwrap(), "AAPLs1");
         assert_eq!(trade.schwab_ticker.unwrap(), "AAPL");
         assert_eq!(trade.schwab_instruction.unwrap(), "BUY");
+        assert!(trade.schwab_price_per_share_cents.is_none());
         assert_eq!(trade.status.unwrap(), "PENDING");
     }
 }

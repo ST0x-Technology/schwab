@@ -166,7 +166,7 @@ let (schwab_ticker, schwab_instruction) =
 let after_clear_logs = provider.get_logs(/* ... */).await?;
 
 // Test data representing 9 shares with 18 decimal places
-aliceOutput: U256::from_str("9000000000000000000").unwrap(), // 9 shares (18 dps)
+alice_output: U256::from_str("9000000000000000000").unwrap(), // 9 shares (18 dps)
 
 /// Helper that converts a fixed-decimal `U256` amount into an `f64` using
 /// the provided number of decimals.
