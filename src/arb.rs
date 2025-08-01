@@ -276,4 +276,51 @@ mod tests {
         assert_eq!(arb_trade.status, TradeStatus::Pending);
         assert_eq!(arb_trade.schwab_order_id, None);
     }
+
+    #[tokio::test]
+    async fn test_update_status() {
+        let pool = SqlitePool::connect(":memory:").await.unwrap();
+
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let trade = ArbTrade {
+            tx_hash: fixed_bytes!(
+                "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+            ),
+            log_index: 789,
+            onchain_input_symbol: "TSLAs1".to_string(),
+            onchain_input_amount: 50.0,
+            onchain_output_symbol: "USDC".to_string(),
+            onchain_output_amount: 10000.0,
+            onchain_io_ratio: 0.005,
+            schwab_ticker: "TSLA".to_string(),
+            schwab_instruction: SchwabInstruction::Sell,
+            schwab_quantity: 50.0,
+            onchain_price_per_share_cents: 20000.0,
+            schwab_price_per_share_cents: None,
+            status: TradeStatus::Pending,
+            schwab_order_id: None,
+            id: None,
+            created_at: None,
+            completed_at: None,
+        };
+
+        trade.try_save_to_db(&pool).await.unwrap();
+
+        ArbTrade::update_status(&pool, trade.tx_hash, trade.log_index, TradeStatus::Completed)
+            .await
+            .unwrap();
+
+        let updated_trade = sqlx::query!(
+            "SELECT status, completed_at FROM trades WHERE tx_hash = ? AND log_index = ?",
+            "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            789_i64
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(updated_trade.status.unwrap(), "COMPLETED");
+        assert!(updated_trade.completed_at.is_some());
+    }
 }
