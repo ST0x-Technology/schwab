@@ -95,7 +95,9 @@ impl SchwabAuthEnv {
     pub fn get_auth_url(&self) -> String {
         format!(
             "{}/v1/oauth/authorize?client_id={}&redirect_uri={}",
-            self.base_url, self.app_key, self.redirect_uri
+            self.base_url,
+            urlencoding::encode(&self.app_key),
+            urlencoding::encode(&self.redirect_uri)
         )
     }
 
@@ -106,7 +108,8 @@ impl SchwabAuthEnv {
 
         let payload = format!(
             "grant_type=authorization_code&code={}&redirect_uri={}",
-            code, &self.redirect_uri
+            urlencoding::encode(code),
+            urlencoding::encode(&self.redirect_uri)
         );
 
         let headers = [
@@ -247,7 +250,7 @@ mod tests {
     #[test]
     fn test_schwab_auth_env_get_auth_url() {
         let env = create_test_env();
-        let expected_url = "https://api.schwabapi.com/v1/oauth/authorize?client_id=test_app_key&redirect_uri=https://127.0.0.1";
+        let expected_url = "https://api.schwabapi.com/v1/oauth/authorize?client_id=test_app_key&redirect_uri=https%3A%2F%2F127.0.0.1";
         assert_eq!(env.get_auth_url(), expected_url);
     }
 
@@ -260,7 +263,20 @@ mod tests {
             base_url: "https://custom.api.com".to_string(),
             account_index: 0,
         };
-        let expected_url = "https://custom.api.com/v1/oauth/authorize?client_id=custom_key&redirect_uri=https://custom.redirect.com";
+        let expected_url = "https://custom.api.com/v1/oauth/authorize?client_id=custom_key&redirect_uri=https%3A%2F%2Fcustom.redirect.com";
+        assert_eq!(env.get_auth_url(), expected_url);
+    }
+
+    #[test]
+    fn test_schwab_auth_env_get_auth_url_with_special_characters() {
+        let env = SchwabAuthEnv {
+            app_key: "test key with spaces & symbols!".to_string(),
+            app_secret: "test_secret".to_string(),
+            redirect_uri: "https://example.com/callback?param=value&other=test".to_string(),
+            base_url: "https://api.schwabapi.com".to_string(),
+            account_index: 0,
+        };
+        let expected_url = "https://api.schwabapi.com/v1/oauth/authorize?client_id=test%20key%20with%20spaces%20%26%20symbols%21&redirect_uri=https%3A%2F%2Fexample.com%2Fcallback%3Fparam%3Dvalue%26other%3Dtest";
         assert_eq!(env.get_auth_url(), expected_url);
     }
 
@@ -284,7 +300,7 @@ mod tests {
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body_contains("grant_type=authorization_code")
                 .body_contains("code=test_code")
-                .body_contains("redirect_uri=https://127.0.0.1");
+                .body_contains("redirect_uri=https%3A%2F%2F127.0.0.1");
             then.status(200)
                 .header("content-type", "application/json")
                 .json_body(mock_response);

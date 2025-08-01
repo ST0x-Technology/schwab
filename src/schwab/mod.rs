@@ -120,7 +120,7 @@ mod tests {
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body_contains("grant_type=authorization_code")
                 .body_contains("code=test_code")
-                .body_contains("redirect_uri=https://127.0.0.1");
+                .body_contains("redirect_uri=https%3A%2F%2F127.0.0.1");
             then.status(200)
                 .header("content-type", "application/json")
                 .json_body(mock_response);
