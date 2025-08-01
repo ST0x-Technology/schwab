@@ -739,12 +739,13 @@ mod tests {
     }
 
     fn create_test_env_for_execute_trade(mock_server: &httpmock::MockServer) -> crate::Env {
-        use crate::{Env, trade::EvmEnv};
+        use crate::{Env, LogLevel, trade::EvmEnv};
         use alloy::primitives::{address, fixed_bytes};
         use url::Url;
 
         Env {
             database_url: ":memory:".to_string(),
+            log_level: LogLevel::Debug,
             schwab_auth: SchwabAuthEnv {
                 app_key: "test_app_key".to_string(),
                 app_secret: "test_app_secret".to_string(),

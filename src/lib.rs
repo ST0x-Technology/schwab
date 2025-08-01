@@ -4,7 +4,7 @@ use alloy::sol_types;
 use clap::Parser;
 use futures_util::{Stream, StreamExt};
 use sqlx::SqlitePool;
-use tracing::info;
+use tracing::{Level, info};
 
 pub mod arb;
 mod bindings;
@@ -21,10 +21,33 @@ use schwab::{SchwabAuthEnv, order::execute_trade};
 use symbol_cache::SymbolCache;
 use trade::{EvmEnv, PartialArbTrade};
 
+#[derive(clap::ValueEnum, Debug, Clone)]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl From<LogLevel> for Level {
+    fn from(log_level: LogLevel) -> Self {
+        match log_level {
+            LogLevel::Trace => Self::TRACE,
+            LogLevel::Debug => Self::DEBUG,
+            LogLevel::Info => Self::INFO,
+            LogLevel::Warn => Self::WARN,
+            LogLevel::Error => Self::ERROR,
+        }
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 pub struct Env {
     #[clap(short, long, env)]
     pub database_url: String,
+    #[clap(short = 'l', long, env, default_value = "debug")]
+    pub log_level: LogLevel,
     #[clap(flatten)]
     pub schwab_auth: SchwabAuthEnv,
     #[clap(flatten)]
@@ -37,11 +60,14 @@ impl Env {
     }
 }
 
-pub fn setup_tracing() {
+pub fn setup_tracing(log_level: LogLevel) {
+    let level: Level = log_level.into();
+    let default_filter = format!("rain_schwab={level},auth={level},main={level}");
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "rain_schwab=debug,auth=debug,main=debug".into()),
+                .unwrap_or_else(|_| default_filter.into()),
         )
         .init();
 }
@@ -161,6 +187,7 @@ mod tests {
     fn create_test_env_with_order_hash(order_hash: alloy::primitives::B256) -> Env {
         Env {
             database_url: ":memory:".to_string(),
+            log_level: LogLevel::Debug,
             schwab_auth: SchwabAuthEnv {
                 app_key: "test_key".to_string(),
                 app_secret: "test_secret".to_string(),

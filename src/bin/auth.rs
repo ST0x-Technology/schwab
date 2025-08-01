@@ -5,11 +5,9 @@ use tracing::debug;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    setup_tracing();
-
-    debug!("Reading env...");
     dotenvy::dotenv_override().ok();
     let env = Env::try_parse()?;
+    setup_tracing(env.log_level.clone());
 
     debug!("Connecting to SQLite...");
     let pool = env.get_sqlite_pool().await?;

@@ -307,9 +307,14 @@ mod tests {
 
         trade.try_save_to_db(&pool).await.unwrap();
 
-        ArbTrade::update_status(&pool, trade.tx_hash, trade.log_index, TradeStatus::Completed)
-            .await
-            .unwrap();
+        ArbTrade::update_status(
+            &pool,
+            trade.tx_hash,
+            trade.log_index,
+            TradeStatus::Completed,
+        )
+        .await
+        .unwrap();
 
         let updated_trade = sqlx::query!(
             "SELECT status, completed_at FROM trades WHERE tx_hash = ? AND log_index = ?",
