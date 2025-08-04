@@ -26,7 +26,7 @@ This is a Rust-based arbitrage bot for tokenized equities that monitors onchain 
 
 ### Development Tools
 - `rainix-rs-static` - Run Rust static analysis
-- `cargo clippy` or `cargo-clippy` in Direnv - Run Clippy for linting
+- `cargo clippy --all-targets --all-features -- -D clippy::all` - Run Clippy for linting
 - `cargo fmt` - Format code
 - `cargo-tarpaulin --skip-clean --out Html` - Generate test coverage report
 
@@ -117,6 +117,7 @@ Environment variables (can be set via `.env` file):
 - **Database Isolation**: In-memory SQLite databases for test isolation
 - **Edge Case Coverage**: Comprehensive error scenario testing for trade conversion logic
 - **Testing Principle**: Only cover happy paths with all components working and connected in integration tests and cover everything in unit tests
+- **Debugging failing tests**: When debugging tests with failing assert! macros, add additional context to the assert! macro instead of adding temporary println! statements
 
 ### Workflow Best Practices
 
