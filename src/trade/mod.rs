@@ -12,7 +12,7 @@ use crate::symbol_cache::SymbolCache;
 mod clear;
 mod take_order;
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 pub struct EvmEnv {
     #[clap(short, long, env)]
     pub ws_rpc_url: url::Url,
@@ -28,6 +28,13 @@ pub enum SchwabInstruction {
     Sell,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradeStatus {
+    Pending,
+    Completed,
+    Failed,
+}
+
 impl serde::Serialize for SchwabInstruction {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -40,30 +47,47 @@ impl serde::Serialize for SchwabInstruction {
     }
 }
 
+impl TradeStatus {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "PENDING",
+            Self::Completed => "COMPLETED",
+            Self::Failed => "FAILED",
+        }
+    }
+}
+
+impl std::str::FromStr for TradeStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "PENDING" => Ok(Self::Pending),
+            "COMPLETED" => Ok(Self::Completed),
+            "FAILED" => Ok(Self::Failed),
+            _ => Err(format!("Invalid trade status: {s}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Trade {
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    tx_hash: B256,
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    log_index: u64,
+pub struct PartialArbTrade {
+    pub tx_hash: B256,
+    pub log_index: u64,
 
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    onchain_input_symbol: String,
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    onchain_input_amount: f64,
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    onchain_output_symbol: String,
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    onchain_output_amount: f64,
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    onchain_io_ratio: f64,
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    onchain_price_per_share_cents: u64,
+    pub onchain_input_symbol: String,
+    // TODO: Consider migrating to rust_decimal::Decimal or integer base units for exact precision
+    // Current f64 may lose precision for 18-decimal tokenized stocks (USDC=6 decimals, stocks=18 decimals)
+    // Will need to change for V5 orderbook upgrade (custom Float types)
+    pub onchain_input_amount: f64,
+    pub onchain_output_symbol: String,
+    pub onchain_output_amount: f64,
+    pub onchain_io_ratio: f64,
+    pub onchain_price_per_share_cents: f64,
 
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    schwab_ticker: String,
-    #[allow(dead_code)] // TODO: remove this once we store trades in db
-    schwab_instruction: SchwabInstruction,
+    pub schwab_ticker: String,
+    pub schwab_instruction: SchwabInstruction,
+    pub schwab_quantity: f64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -94,6 +118,8 @@ pub enum TradeConversionError {
     SolType(#[from] alloy::sol_types::Error),
     #[error("RPC transport error: {0}")]
     RpcTransport(#[from] RpcError<TransportErrorKind>),
+    #[error("Database error: {0}")]
+    Database(#[from] sqlx::Error),
 }
 
 struct OrderFill {
@@ -103,7 +129,7 @@ struct OrderFill {
     output_amount: U256,
 }
 
-impl Trade {
+impl PartialArbTrade {
     async fn try_from_order_and_fill_details<P: Provider>(
         cache: &SymbolCache,
         provider: P,
@@ -130,29 +156,35 @@ impl Trade {
         let onchain_output_amount = u256_to_f64(fill.output_amount, output.decimals)?;
         let onchain_output_symbol = cache.get_io_symbol(provider, output).await?;
 
+        // If the on-chain order has USDC as input and an s1 tokenized stock as
+        // output then it means the order received USDC and gave away an s1
+        // tokenized stock, i.e. sold, which means that to take the opposite
+        // trade in schwab we need to buy and vice versa.
         let (schwab_ticker, schwab_instruction) =
             if onchain_input_symbol == "USDC" && onchain_output_symbol.ends_with("s1") {
                 let ticker = onchain_output_symbol
                     .strip_suffix("s1")
-                    .map(std::string::ToString::to_string)
+                    .map(ToString::to_string)
                     .ok_or_else(|| {
                         TradeConversionError::InvalidSymbolConfiguration(
                             onchain_input_symbol.clone(),
                             onchain_output_symbol.clone(),
                         )
                     })?;
-                (ticker, SchwabInstruction::Sell)
+
+                (ticker, SchwabInstruction::Buy)
             } else if onchain_output_symbol == "USDC" && onchain_input_symbol.ends_with("s1") {
                 let ticker = onchain_input_symbol
                     .strip_suffix("s1")
-                    .map(std::string::ToString::to_string)
+                    .map(ToString::to_string)
                     .ok_or_else(|| {
                         TradeConversionError::InvalidSymbolConfiguration(
                             onchain_input_symbol.clone(),
                             onchain_output_symbol.clone(),
                         )
                     })?;
-                (ticker, SchwabInstruction::Buy)
+
+                (ticker, SchwabInstruction::Sell)
             } else {
                 return Err(TradeConversionError::InvalidSymbolConfiguration(
                     onchain_input_symbol,
@@ -166,17 +198,22 @@ impl Trade {
         // by the input amount. if we're selling on schwab then we bought onchain, so we need to divide the
         // onchain input amount by the output amount.
         let onchain_price_per_share_usdc = if schwab_instruction == SchwabInstruction::Buy {
-            onchain_output_amount / onchain_input_amount
-        } else {
             onchain_input_amount / onchain_output_amount
+        } else {
+            onchain_output_amount / onchain_input_amount
         };
 
         if onchain_price_per_share_usdc.is_nan() {
             return Ok(None);
         }
 
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let onchain_price_per_share_cents = (onchain_price_per_share_usdc * 100.0) as u64;
+        let onchain_price_per_share_cents = onchain_price_per_share_usdc * 100.0;
+
+        let schwab_quantity = if schwab_instruction == SchwabInstruction::Buy {
+            onchain_output_amount
+        } else {
+            onchain_input_amount
+        };
 
         let trade = Self {
             tx_hash,
@@ -191,6 +228,7 @@ impl Trade {
 
             schwab_ticker,
             schwab_instruction,
+            schwab_quantity,
         };
 
         Ok(Some(trade))
@@ -233,7 +271,7 @@ mod tests {
     use crate::test_utils::{get_test_log, get_test_order};
 
     #[tokio::test]
-    async fn test_try_from_order_and_fill_details_ok_sell_schwab() {
+    async fn test_try_from_order_and_fill_details_ok_buy_schwab() {
         let asserter = Asserter::new();
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
@@ -246,7 +284,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let trade = Trade::try_from_order_and_fill_details(
+        let trade = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -262,7 +300,7 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        let expected_trade = Trade {
+        let expected_trade = PartialArbTrade {
             tx_hash: fixed_bytes!(
                 "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             ),
@@ -272,18 +310,18 @@ mod tests {
             onchain_output_symbol: "FOOs1".to_string(),
             onchain_output_amount: 9.0,
             onchain_io_ratio: 100.0 / 9.0,
-            onchain_price_per_share_cents: 1111,
+            onchain_price_per_share_cents: (100.0 / 9.0) * 100.0,
             schwab_ticker: "FOO".to_string(),
-            schwab_instruction: SchwabInstruction::Sell,
+            schwab_instruction: SchwabInstruction::Buy,
+            schwab_quantity: 9.0,
         };
 
         assert_eq!(trade, expected_trade);
 
-        // test that the symbol is cached
         let asserter = Asserter::new();
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        let trade = Trade::try_from_order_and_fill_details(
+        let trade = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             get_test_order(),
@@ -301,12 +339,13 @@ mod tests {
 
         assert_eq!(trade.onchain_input_symbol, "USDC");
         assert_eq!(trade.onchain_output_symbol, "FOOs1");
-        assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
         assert_eq!(trade.schwab_ticker, "FOO");
+        assert!((trade.schwab_quantity - 9.0).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
-    async fn test_try_from_order_and_fill_details_ok_buy_schwab() {
+    async fn test_try_from_order_and_fill_details_ok_sell_schwab() {
         let asserter = Asserter::new();
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"BARs1".to_string(),
@@ -319,7 +358,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let trade = Trade::try_from_order_and_fill_details(
+        let trade = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -335,7 +374,7 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        let expected_trade = Trade {
+        let expected_trade = PartialArbTrade {
             tx_hash: fixed_bytes!(
                 "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             ),
@@ -345,9 +384,10 @@ mod tests {
             onchain_output_symbol: "USDC".to_string(),
             onchain_output_amount: 100.0,
             onchain_io_ratio: 9.0 / 100.0,
-            onchain_price_per_share_cents: 1111,
+            onchain_price_per_share_cents: (100.0 / 9.0) * 100.0,
             schwab_ticker: "BAR".to_string(),
-            schwab_instruction: SchwabInstruction::Buy,
+            schwab_instruction: SchwabInstruction::Sell,
+            schwab_quantity: 9.0,
         };
 
         assert_eq!(trade, expected_trade);
@@ -362,7 +402,7 @@ mod tests {
         log.transaction_hash = None;
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_order_and_fill_details(
+        let err = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -389,7 +429,7 @@ mod tests {
         log.log_index = None;
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_order_and_fill_details(
+        let err = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -414,7 +454,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_order_and_fill_details(
+        let err = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -439,14 +479,14 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_order_and_fill_details(
+        let err = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
             OrderFill {
                 input_index: 0,
                 input_amount: U256::from(100_000_000),
-                output_index: 99, // invalid output index
+                output_index: 99,
                 output_amount: U256::from_str("9000000000000000000").unwrap(),
             },
             get_test_log(),
@@ -466,7 +506,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_order_and_fill_details(
+        let err = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -498,7 +538,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_order_and_fill_details(
+        let err = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -525,14 +565,14 @@ mod tests {
             &"USDC".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"FOO".to_string(), // no s1 suffix
+            &"FOO".to_string(),
         ));
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_order_and_fill_details(
+        let err = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -566,7 +606,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_order_and_fill_details(
+        let err = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -590,24 +630,19 @@ mod tests {
 
     #[test]
     fn test_u256_to_f64() {
-        // zero amount
         assert!((u256_to_f64(U256::ZERO, 6).unwrap() - 0.0).abs() < f64::EPSILON);
 
-        // 18 decimals (st0x-like)
         let amount = U256::from_str("1_000_000_000_000_000_000").unwrap(); // 1.0
         assert!((u256_to_f64(amount, 18).unwrap() - 1.0).abs() < f64::EPSILON);
 
-        // 6 decimals (USDC-like)
         let amount = U256::from(123_456_789u64);
         let expected = 123.456_789_f64;
         assert!((u256_to_f64(amount, 6).unwrap() - expected).abs() < f64::EPSILON);
 
-        // small amount with many decimals
         let amount = U256::from(123u64);
         let expected = 0.000_123_f64;
         assert!((u256_to_f64(amount, 6).unwrap() - expected).abs() < f64::EPSILON);
 
-        // no decimals
         let amount = U256::from(999u64);
         assert!((u256_to_f64(amount, 0).unwrap() - 999.0).abs() < f64::EPSILON);
     }
@@ -635,7 +670,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let result = Trade::try_from_order_and_fill_details(
+        let result = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -652,8 +687,9 @@ mod tests {
         .unwrap();
 
         assert!((result.onchain_input_amount - 0.0).abs() < f64::EPSILON);
-        assert_eq!(result.schwab_instruction, SchwabInstruction::Buy);
-        assert_eq!(result.onchain_price_per_share_cents, u64::MAX);
+        assert_eq!(result.schwab_instruction, SchwabInstruction::Sell);
+        assert!(result.onchain_price_per_share_cents.is_infinite());
+        assert!((result.schwab_quantity - 0.0).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
@@ -670,7 +706,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let trade = Trade::try_from_order_and_fill_details(
+        let trade = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -687,7 +723,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(trade.schwab_ticker, "");
-        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
+        assert!((trade.schwab_quantity - 9.0).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
@@ -704,7 +741,7 @@ mod tests {
         let order = get_test_order();
         let cache = SymbolCache::default();
 
-        let trade = Trade::try_from_order_and_fill_details(
+        let trade = PartialArbTrade::try_from_order_and_fill_details(
             &cache,
             &provider,
             order,
@@ -721,6 +758,77 @@ mod tests {
         .unwrap();
 
         assert_eq!(trade.schwab_ticker, "");
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
+        assert!((trade.schwab_quantity - 9.0).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn test_schwab_quantity_calculation_buy() {
+        let asserter = Asserter::new();
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"USDC".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"MSFTs1".to_string(),
+        ));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let order = get_test_order();
+        let cache = SymbolCache::default();
+
+        let trade = PartialArbTrade::try_from_order_and_fill_details(
+            &cache,
+            &provider,
+            order,
+            OrderFill {
+                input_index: 0,
+                input_amount: U256::from(500_000_000),
+                output_index: 1,
+                output_amount: U256::from_str("1250000000000000000").unwrap(),
+            },
+            get_test_log(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
+        assert!((trade.schwab_quantity - 1.25).abs() < f64::EPSILON);
+        assert_eq!(trade.schwab_ticker, "MSFT");
+    }
+
+    #[tokio::test]
+    async fn test_schwab_quantity_calculation_sell() {
+        let asserter = Asserter::new();
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"TSLAs1".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"USDC".to_string(),
+        ));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let order = get_test_order();
+        let cache = SymbolCache::default();
+
+        let trade = PartialArbTrade::try_from_order_and_fill_details(
+            &cache,
+            &provider,
+            order,
+            OrderFill {
+                input_index: 1,
+                input_amount: U256::from_str("2750000000000000000").unwrap(),
+                output_index: 0,
+                output_amount: U256::from(825_000_000),
+            },
+            get_test_log(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
         assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
+        assert!((trade.schwab_quantity - 2.75).abs() < f64::EPSILON);
+        assert_eq!(trade.schwab_ticker, "TSLA");
     }
 }

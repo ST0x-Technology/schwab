@@ -3,11 +3,11 @@ use alloy::providers::Provider;
 use alloy::rpc::types::{Filter, Log};
 use alloy::sol_types::{SolEvent, SolValue};
 
-use super::{EvmEnv, OrderFill, Trade, TradeConversionError};
+use super::{EvmEnv, OrderFill, PartialArbTrade, TradeConversionError};
 use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
 use crate::symbol_cache::SymbolCache;
 
-impl Trade {
+impl PartialArbTrade {
     pub(crate) async fn try_from_clear_v2<P: Provider>(
         env: &EvmEnv,
         cache: &SymbolCache,
@@ -81,7 +81,6 @@ impl Trade {
 
             Self::try_from_order_and_fill_details(cache, provider, alice_order, fill, log).await
         } else {
-            // bob_hash_matches must be true here
             let input_index = usize::try_from(bobInputIOIndex)?;
             let output_index = usize::try_from(bobOutputIOIndex)?;
 
@@ -207,13 +206,14 @@ mod tests {
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
         let cache = SymbolCache::default();
 
-        let trade = Trade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
-            .await
-            .unwrap()
-            .unwrap();
+        let trade =
+            PartialArbTrade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
+                .await
+                .unwrap()
+                .unwrap();
 
         assert_eq!(trade.schwab_ticker, "FOO");
-        assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
     }
 
     #[tokio::test]
@@ -249,9 +249,10 @@ mod tests {
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
-            .await
-            .unwrap_err();
+        let err =
+            PartialArbTrade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
+                .await
+                .unwrap_err();
 
         assert!(
             matches!(err, TradeConversionError::NoAfterClearLog),
@@ -294,9 +295,10 @@ mod tests {
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
         let cache = SymbolCache::default();
 
-        let res = Trade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
-            .await
-            .unwrap();
+        let res =
+            PartialArbTrade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
+                .await
+                .unwrap();
         assert!(res.is_none());
     }
 
@@ -333,9 +335,10 @@ mod tests {
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
-            .await
-            .unwrap_err();
+        let err =
+            PartialArbTrade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
+                .await
+                .unwrap_err();
 
         assert!(matches!(err, TradeConversionError::NoBlockNumber));
     }
@@ -409,13 +412,14 @@ mod tests {
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
         let cache = SymbolCache::default();
 
-        let trade = Trade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
-            .await
-            .unwrap()
-            .unwrap();
+        let trade =
+            PartialArbTrade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
+                .await
+                .unwrap()
+                .unwrap();
 
         assert_eq!(trade.schwab_ticker, "BAR");
-        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
     }
 
     #[tokio::test]
@@ -476,9 +480,10 @@ mod tests {
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
         let cache = SymbolCache::default();
 
-        let err = Trade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
-            .await
-            .unwrap_err();
+        let err =
+            PartialArbTrade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
+                .await
+                .unwrap_err();
 
         assert!(matches!(err, TradeConversionError::InvalidIndex(_)));
     }
