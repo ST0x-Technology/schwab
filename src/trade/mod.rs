@@ -1,5 +1,5 @@
 use alloy::primitives::ruint::FromUintError;
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{Address, B256, FixedBytes, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::{Filter, Log};
 use alloy::sol_types::SolEvent;
@@ -8,7 +8,7 @@ use clap::Parser;
 use futures_util::{StreamExt, TryStreamExt, future, stream};
 use itertools::Itertools;
 use std::num::ParseFloatError;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::bindings::IOrderBookV4::{ClearV2, OrderV3, TakeOrderV2};
 use crate::symbol_cache::SymbolCache;
@@ -1079,7 +1079,8 @@ mod tests {
         assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
         assert!((trade.schwab_quantity - 9.0).abs() < f64::EPSILON);
         assert!(
-            (trade.onchain_price_per_share_cents - ((100.0 / 9.0) * 100.0)).abs() < f64::EPSILON
+            ((100.0_f64 / 9.0).mul_add(-100.0, trade.onchain_price_per_share_cents)).abs()
+                < f64::EPSILON
         );
     }
 
@@ -1156,7 +1157,8 @@ mod tests {
         assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
         assert!((trade.schwab_quantity - 9.0).abs() < f64::EPSILON);
         assert!(
-            (trade.onchain_price_per_share_cents - ((100.0 / 9.0) * 100.0)).abs() < f64::EPSILON
+            ((100.0_f64 / 9.0).mul_add(-100.0, trade.onchain_price_per_share_cents)).abs()
+                < f64::EPSILON
         );
     }
 
@@ -1269,6 +1271,65 @@ mod tests {
         assert_eq!(trades.len(), 0);
     }
 
+    fn create_test_take_event(
+        order: &OrderV3,
+        input: u64,
+        output: &str,
+    ) -> IOrderBookV4::TakeOrderV2 {
+        IOrderBookV4::TakeOrderV2 {
+            sender: address!("0x1111111111111111111111111111111111111111"),
+            config: IOrderBookV4::TakeOrderConfigV3 {
+                order: order.clone(),
+                inputIOIndex: U256::from(0),
+                outputIOIndex: U256::from(1),
+                signedContext: Vec::new(),
+            },
+            input: U256::from(input),
+            output: U256::from_str(output).unwrap(),
+        }
+    }
+
+    fn create_test_log(
+        orderbook: Address,
+        event: &IOrderBookV4::TakeOrderV2,
+        block_number: u64,
+        tx_hash: FixedBytes<32>,
+    ) -> Log {
+        Log {
+            inner: alloy::primitives::Log {
+                address: orderbook,
+                data: event.to_log_data(),
+            },
+            block_hash: None,
+            block_number: Some(block_number),
+            block_timestamp: None,
+            transaction_hash: Some(tx_hash),
+            transaction_index: None,
+            log_index: Some(1),
+            removed: false,
+        }
+    }
+
+    fn assert_trade_details(
+        trade: &PartialArbTrade,
+        tx_hash: FixedBytes<32>,
+        input_amount: f64,
+        output_amount: f64,
+        schwab_quantity: f64,
+        price_per_share_cents: f64,
+    ) {
+        assert_eq!(trade.tx_hash, tx_hash);
+        assert_eq!(trade.log_index, 1);
+        assert_eq!(trade.onchain_input_symbol, "USDC");
+        assert_eq!(trade.onchain_output_symbol, "MSFTs1");
+        assert!((trade.onchain_input_amount - input_amount).abs() < f64::EPSILON);
+        assert!((trade.onchain_output_amount - output_amount).abs() < f64::EPSILON);
+        assert!((trade.schwab_quantity - schwab_quantity).abs() < f64::EPSILON);
+        assert_eq!(trade.schwab_ticker, "MSFT");
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
+        assert!((trade.onchain_price_per_share_cents - price_per_share_cents).abs() < f64::EPSILON);
+    }
+
     #[tokio::test]
     async fn test_backfill_events_preserves_chronological_order() {
         let order = get_test_order();
@@ -1280,70 +1341,22 @@ mod tests {
             deployment_block: 1,
         };
 
-        // Create logs with different block numbers and log indices
         let tx_hash1 =
             fixed_bytes!("0x1111111111111111111111111111111111111111111111111111111111111111");
         let tx_hash2 =
             fixed_bytes!("0x2222222222222222222222222222222222222222222222222222222222222222");
 
-        let take_event1 = IOrderBookV4::TakeOrderV2 {
-            sender: address!("0x1111111111111111111111111111111111111111"),
-            config: IOrderBookV4::TakeOrderConfigV3 {
-                order: order.clone(),
-                inputIOIndex: U256::from(0),
-                outputIOIndex: U256::from(1),
-                signedContext: Vec::new(),
-            },
-            input: U256::from(100_000_000),
-            output: U256::from_str("1000000000000000000").unwrap(), // 1 share
-        };
+        let take_event1 = create_test_take_event(&order, 100_000_000, "1000000000000000000");
+        let take_event2 = create_test_take_event(&order, 200_000_000, "2000000000000000000");
 
-        let take_event2 = IOrderBookV4::TakeOrderV2 {
-            sender: address!("0x1111111111111111111111111111111111111111"),
-            config: IOrderBookV4::TakeOrderConfigV3 {
-                order: order.clone(),
-                inputIOIndex: U256::from(0),
-                outputIOIndex: U256::from(1),
-                signedContext: Vec::new(),
-            },
-            input: U256::from(200_000_000),
-            output: U256::from_str("2000000000000000000").unwrap(), // 2 shares
-        };
-
-        // Create logs in reverse chronological order to test sorting
-        let take_log2 = Log {
-            inner: alloy::primitives::Log {
-                address: evm_env.orderbook,
-                data: take_event2.to_log_data(),
-            },
-            block_hash: None,
-            block_number: Some(100), // Later block
-            block_timestamp: None,
-            transaction_hash: Some(tx_hash2),
-            transaction_index: None,
-            log_index: Some(1),
-            removed: false,
-        };
-
-        let take_log1 = Log {
-            inner: alloy::primitives::Log {
-                address: evm_env.orderbook,
-                data: take_event1.to_log_data(),
-            },
-            block_hash: None,
-            block_number: Some(50), // Earlier block
-            block_timestamp: None,
-            transaction_hash: Some(tx_hash1),
-            transaction_index: None,
-            log_index: Some(1),
-            removed: false,
-        };
+        let take_log1 = create_test_log(evm_env.orderbook, &take_event1, 50, tx_hash1);
+        let take_log2 = create_test_log(evm_env.orderbook, &take_event2, 100, tx_hash2);
 
         let asserter = Asserter::new();
-        asserter.push_success(&serde_json::Value::from(200u64)); // get_block_number
-        asserter.push_success(&serde_json::json!([])); // clear events (empty)
-        // Take events returned in reverse chronological order (later first)
-        asserter.push_success(&serde_json::json!([take_log2, take_log1])); // take events
+        asserter.push_success(&serde_json::Value::from(200u64));
+        asserter.push_success(&serde_json::json!([]));
+        asserter.push_success(&serde_json::json!([take_log2, take_log1]));
+
         // Symbol calls for both trades
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
@@ -1360,39 +1373,13 @@ mod tests {
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
         let cache = SymbolCache::default();
-
         let trades = super::backfill_events(&provider, &cache, &evm_env)
             .await
             .unwrap();
 
         assert_eq!(trades.len(), 2);
 
-        // Verify chronological order: earlier block (50) should come first
-        let first_trade = &trades[0];
-        let second_trade = &trades[1];
-
-        // First trade (from block 50)
-        assert_eq!(first_trade.tx_hash, tx_hash1);
-        assert_eq!(first_trade.log_index, 1);
-        assert_eq!(first_trade.onchain_input_symbol, "USDC");
-        assert_eq!(first_trade.onchain_output_symbol, "MSFTs1");
-        assert!((first_trade.onchain_input_amount - 100.0).abs() < f64::EPSILON);
-        assert!((first_trade.onchain_output_amount - 1.0).abs() < f64::EPSILON); // 1 share
-        assert!((first_trade.schwab_quantity - 1.0).abs() < f64::EPSILON);
-        assert_eq!(first_trade.schwab_ticker, "MSFT");
-        assert_eq!(first_trade.schwab_instruction, SchwabInstruction::Buy);
-        assert!((first_trade.onchain_price_per_share_cents - 10000.0).abs() < f64::EPSILON); // 100 USDC / 1 share * 100
-
-        // Second trade (from block 100)
-        assert_eq!(second_trade.tx_hash, tx_hash2);
-        assert_eq!(second_trade.log_index, 1);
-        assert_eq!(second_trade.onchain_input_symbol, "USDC");
-        assert_eq!(second_trade.onchain_output_symbol, "MSFTs1");
-        assert!((second_trade.onchain_input_amount - 200.0).abs() < f64::EPSILON);
-        assert!((second_trade.onchain_output_amount - 2.0).abs() < f64::EPSILON); // 2 shares
-        assert!((second_trade.schwab_quantity - 2.0).abs() < f64::EPSILON);
-        assert_eq!(second_trade.schwab_ticker, "MSFT");
-        assert_eq!(second_trade.schwab_instruction, SchwabInstruction::Buy);
-        assert!((second_trade.onchain_price_per_share_cents - 10000.0).abs() < f64::EPSILON); // 200 USDC / 2 shares * 100
+        assert_trade_details(&trades[0], tx_hash1, 100.0, 1.0, 1.0, 10000.0);
+        assert_trade_details(&trades[1], tx_hash2, 200.0, 2.0, 2.0, 10000.0);
     }
 }
