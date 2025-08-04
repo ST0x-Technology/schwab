@@ -8,6 +8,7 @@ use clap::Parser;
 use futures_util::{StreamExt, TryStreamExt, future, stream};
 use itertools::Itertools;
 use std::num::ParseFloatError;
+use tracing::info;
 
 use crate::bindings::IOrderBookV4::{ClearV2, OrderV3, TakeOrderV2};
 use crate::symbol_cache::SymbolCache;
@@ -141,6 +142,12 @@ pub async fn backfill_events<P: Provider + Clone>(
     evm_env: &EvmEnv,
 ) -> Result<Vec<PartialArbTrade>, TradeConversionError> {
     let current_block = provider.get_block_number().await?;
+    let total_blocks = current_block - evm_env.deployment_block + 1;
+
+    info!(
+        "Starting backfill from block {} to {} ({} blocks)",
+        evm_env.deployment_block, current_block, total_blocks
+    );
 
     let clear_filter = Filter::new()
         .address(evm_env.orderbook)
@@ -154,13 +161,25 @@ pub async fn backfill_events<P: Provider + Clone>(
         .to_block(current_block)
         .event_signature(TakeOrderV2::SIGNATURE_HASH);
 
+    debug!("Fetching ClearV2 and TakeOrderV2 event logs...");
+
     let (clear_logs, take_logs) = future::try_join(
         provider.get_logs(&clear_filter),
         provider.get_logs(&take_filter),
     )
     .await?;
 
-    // Convert logs to trades first, then sort the validated trades by block number and log index
+    debug!(
+        "Found {} ClearV2 events and {} TakeOrderV2 events",
+        clear_logs.len(),
+        take_logs.len()
+    );
+
+    debug!(
+        "Processing {} total events into trades...",
+        clear_logs.len() + take_logs.len()
+    );
+
     let trades = stream::iter(clear_logs.into_iter().chain(take_logs))
         .then(|log| async move {
             if let Ok(clear_event_log) = log.log_decode::<ClearV2>() {
@@ -191,6 +210,8 @@ pub async fn backfill_events<P: Provider + Clone>(
         .flatten()
         .sorted_by_key(|trade| (trade.block_number, trade.log_index))
         .collect::<Vec<_>>();
+
+    info!("Backfill completed: {} valid trades found", trades.len());
 
     Ok(trades)
 }
