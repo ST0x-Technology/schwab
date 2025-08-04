@@ -3710,6 +3710,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "httpmock",
+ "itertools 0.14.0",
  "lazy_static",
  "reqwest",
  "serde",

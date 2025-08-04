@@ -118,6 +118,7 @@ mod tests {
             ws_rpc_url: Url::parse("ws://localhost").unwrap(),
             orderbook,
             order_hash,
+            deployment_block: 1,
         }
     }
 

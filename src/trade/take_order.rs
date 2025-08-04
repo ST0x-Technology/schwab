@@ -136,7 +136,7 @@ mod tests {
                 data: alloy::primitives::LogData::empty(),
             },
             block_hash: None,
-            block_number: None,
+            block_number: Some(12345),
             block_timestamp: None,
             transaction_hash: Some(fixed_bytes!(
                 "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"

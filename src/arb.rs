@@ -230,6 +230,7 @@ mod tests {
                 "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             ),
             log_index: 100,
+            block_number: 12345,
             onchain_input_symbol: "USDC".to_string(),
             onchain_input_amount: 500.0,
             onchain_output_symbol: "GOOGs1".to_string(),

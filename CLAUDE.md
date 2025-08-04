@@ -107,6 +107,8 @@ Environment variables (can be set via `.env` file):
 - **Idiomatic Functional Programming**: Prefer iterator-based functional programming patterns over imperative loops unless it increases complexity
 - **Comments**: Follow comprehensive commenting guidelines (see detailed section below)
 - **Spacing**: Leave an empty line in between code blocks to allow vim curly braces jumping between blocks and for easier reading
+- **Import Conventions**: Use qualified imports when they prevent ambiguity (e.g. `contract::Error` for `alloy::contract::Error`), but avoid them when the module is clear (e.g. use `info!` instead of `tracing::info!`). Generally avoid imports inside functions
+- **Error Handling**: Avoid `unwrap()` even post-validation since validation logic changes might leave panics in the codebase
 
 ### Testing Strategy
 
@@ -536,10 +538,3 @@ impl SchwabTokens {
 ```
 
 This preserves argument clarity and avoids losing information about what each field represents.
-
-## Code Best Practices
-
-### Imports and Naming Conventions
-
-- **Use qualified imports when they prevent ambiguity**, e.g. use `contract::Error` for `alloy::contract::Error` to not confuse it with other `Error` types
-- **Don't use qualified imports when it's clear what module something is coming from**, e.g. use `info!` instead of `tracing::info!`

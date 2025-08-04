@@ -1,12 +1,15 @@
 use alloy::primitives::ruint::FromUintError;
 use alloy::primitives::{Address, B256, U256};
 use alloy::providers::Provider;
-use alloy::rpc::types::Log;
+use alloy::rpc::types::{Filter, Log};
+use alloy::sol_types::SolEvent;
 use alloy::transports::{RpcError, TransportErrorKind};
 use clap::Parser;
+use futures_util::{StreamExt, TryStreamExt, future, stream};
+use itertools::Itertools;
 use std::num::ParseFloatError;
 
-use crate::bindings::IOrderBookV4::OrderV3;
+use crate::bindings::IOrderBookV4::{ClearV2, OrderV3, TakeOrderV2};
 use crate::symbol_cache::SymbolCache;
 
 mod clear;
@@ -20,6 +23,8 @@ pub struct EvmEnv {
     pub orderbook: Address,
     #[clap(short, long, env)]
     pub order_hash: B256,
+    #[clap(short = 'd', long, env)]
+    pub deployment_block: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +79,7 @@ impl std::str::FromStr for TradeStatus {
 pub struct PartialArbTrade {
     pub tx_hash: B256,
     pub log_index: u64,
+    pub block_number: u64,
 
     pub onchain_input_symbol: String,
     // TODO: Consider migrating to rust_decimal::Decimal or integer base units for exact precision
@@ -129,6 +135,66 @@ struct OrderFill {
     output_amount: U256,
 }
 
+pub async fn backfill_events<P: Provider + Clone>(
+    provider: &P,
+    cache: &SymbolCache,
+    evm_env: &EvmEnv,
+) -> Result<Vec<PartialArbTrade>, TradeConversionError> {
+    let current_block = provider.get_block_number().await?;
+
+    let clear_filter = Filter::new()
+        .address(evm_env.orderbook)
+        .from_block(evm_env.deployment_block)
+        .to_block(current_block)
+        .event_signature(ClearV2::SIGNATURE_HASH);
+
+    let take_filter = Filter::new()
+        .address(evm_env.orderbook)
+        .from_block(evm_env.deployment_block)
+        .to_block(current_block)
+        .event_signature(TakeOrderV2::SIGNATURE_HASH);
+
+    let (clear_logs, take_logs) = future::try_join(
+        provider.get_logs(&clear_filter),
+        provider.get_logs(&take_filter),
+    )
+    .await?;
+
+    // Convert logs to trades first, then sort the validated trades by block number and log index
+    let trades = stream::iter(clear_logs.into_iter().chain(take_logs))
+        .then(|log| async move {
+            if let Ok(clear_event_log) = log.log_decode::<ClearV2>() {
+                PartialArbTrade::try_from_clear_v2(
+                    evm_env,
+                    cache,
+                    provider.clone(),
+                    clear_event_log.data().clone(),
+                    log,
+                )
+                .await
+            } else if let Ok(take_event_log) = log.log_decode::<TakeOrderV2>() {
+                PartialArbTrade::try_from_take_order_if_target_order(
+                    cache,
+                    provider.clone(),
+                    take_event_log.data().clone(),
+                    log,
+                    evm_env.order_hash,
+                )
+                .await
+            } else {
+                Ok(None)
+            }
+        })
+        .try_collect::<Vec<_>>()
+        .await?
+        .into_iter()
+        .flatten()
+        .sorted_by_key(|trade| (trade.block_number, trade.log_index))
+        .collect::<Vec<_>>();
+
+    Ok(trades)
+}
+
 impl PartialArbTrade {
     async fn try_from_order_and_fill_details<P: Provider>(
         cache: &SymbolCache,
@@ -139,6 +205,9 @@ impl PartialArbTrade {
     ) -> Result<Option<Self>, TradeConversionError> {
         let tx_hash = log.transaction_hash.ok_or(TradeConversionError::NoTxHash)?;
         let log_index = log.log_index.ok_or(TradeConversionError::NoLogIndex)?;
+        let block_number = log
+            .block_number
+            .ok_or(TradeConversionError::NoBlockNumber)?;
 
         let input = order
             .validInputs
@@ -218,6 +287,7 @@ impl PartialArbTrade {
         let trade = Self {
             tx_hash,
             log_index,
+            block_number,
 
             onchain_input_symbol,
             onchain_input_amount,
@@ -261,13 +331,15 @@ fn u256_to_f64(amount: U256, decimals: u8) -> Result<f64, ParseFloatError> {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::{U256, fixed_bytes};
+    use alloy::primitives::{IntoLogData, U256, address, fixed_bytes, keccak256};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
-    use alloy::sol_types::SolCall;
+    use alloy::rpc::types::Log;
+    use alloy::sol_types::{SolCall, SolValue};
     use std::str::FromStr;
 
     use super::*;
     use crate::bindings::IERC20::symbolCall;
+    use crate::bindings::IOrderBookV4;
     use crate::test_utils::{get_test_log, get_test_order};
 
     #[tokio::test]
@@ -305,6 +377,7 @@ mod tests {
                 "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             ),
             log_index: 293,
+            block_number: 12345,
             onchain_input_symbol: "USDC".to_string(),
             onchain_input_amount: 100.0,
             onchain_output_symbol: "FOOs1".to_string(),
@@ -379,6 +452,7 @@ mod tests {
                 "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             ),
             log_index: 293,
+            block_number: 12345,
             onchain_input_symbol: "BARs1".to_string(),
             onchain_input_amount: 9.0,
             onchain_output_symbol: "USDC".to_string(),
@@ -445,6 +519,33 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(err, TradeConversionError::NoLogIndex));
+    }
+
+    #[tokio::test]
+    async fn test_try_from_order_and_fill_details_err_missing_block_number() {
+        let asserter = Asserter::new();
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let order = get_test_order();
+        let mut log = get_test_log();
+        log.block_number = None;
+        let cache = SymbolCache::default();
+
+        let err = PartialArbTrade::try_from_order_and_fill_details(
+            &cache,
+            &provider,
+            order,
+            OrderFill {
+                input_index: 0,
+                input_amount: U256::from(100_000_000),
+                output_index: 1,
+                output_amount: U256::from_str("9000000000000000000").unwrap(),
+            },
+            log,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, TradeConversionError::NoBlockNumber));
     }
 
     #[tokio::test]
@@ -830,5 +931,447 @@ mod tests {
         assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
         assert!((trade.schwab_quantity - 2.75).abs() < f64::EPSILON);
         assert_eq!(trade.schwab_ticker, "TSLA");
+    }
+
+    #[tokio::test]
+    async fn test_backfill_events_empty_results() {
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::Value::from(100u64)); // get_block_number
+        asserter.push_success(&serde_json::json!([])); // clear events
+        asserter.push_success(&serde_json::json!([])); // take events
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let cache = SymbolCache::default();
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            deployment_block: 1,
+        };
+
+        let trades = super::backfill_events(&provider, &cache, &evm_env)
+            .await
+            .unwrap();
+
+        assert_eq!(trades.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_backfill_events_with_clear_v2_events() {
+        let order = get_test_order();
+        let order_hash = keccak256(order.abi_encode());
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash,
+            deployment_block: 1,
+        };
+
+        let tx_hash =
+            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+
+        let clear_config = IOrderBookV4::ClearConfig {
+            aliceInputIOIndex: U256::from(0),
+            aliceOutputIOIndex: U256::from(1),
+            bobInputIOIndex: U256::from(1),
+            bobOutputIOIndex: U256::from(0),
+            aliceBountyVaultId: U256::ZERO,
+            bobBountyVaultId: U256::ZERO,
+        };
+
+        let clear_event = IOrderBookV4::ClearV2 {
+            sender: address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+            alice: order.clone(),
+            bob: order.clone(),
+            clearConfig: clear_config,
+        };
+
+        let clear_log = Log {
+            inner: alloy::primitives::Log {
+                address: evm_env.orderbook,
+                data: clear_event.to_log_data(),
+            },
+            block_hash: None,
+            block_number: Some(50),
+            block_timestamp: None,
+            transaction_hash: Some(tx_hash),
+            transaction_index: None,
+            log_index: Some(1),
+            removed: false,
+        };
+
+        let after_clear_event = IOrderBookV4::AfterClear {
+            sender: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            clearStateChange: IOrderBookV4::ClearStateChange {
+                aliceOutput: U256::from_str("9000000000000000000").unwrap(),
+                bobOutput: U256::from(100_000_000u64),
+                aliceInput: U256::from(100_000_000u64),
+                bobInput: U256::from_str("9000000000000000000").unwrap(),
+            },
+        };
+
+        let after_clear_log = Log {
+            inner: alloy::primitives::Log {
+                address: evm_env.orderbook,
+                data: after_clear_event.to_log_data(),
+            },
+            block_hash: None,
+            block_number: Some(50),
+            block_timestamp: None,
+            transaction_hash: Some(tx_hash),
+            transaction_index: None,
+            log_index: Some(2),
+            removed: false,
+        };
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::Value::from(100u64)); // get_block_number
+        asserter.push_success(&serde_json::json!([clear_log])); // clear events
+        asserter.push_success(&serde_json::json!([])); // take events (empty)
+        asserter.push_success(&serde_json::json!([after_clear_log])); // AfterClear event lookup
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"USDC".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"AAPLs1".to_string(),
+        ));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let cache = SymbolCache::default();
+
+        let trades = super::backfill_events(&provider, &cache, &evm_env)
+            .await
+            .unwrap();
+
+        assert_eq!(trades.len(), 1);
+        let trade = &trades[0];
+        assert_eq!(trade.tx_hash, tx_hash);
+        assert_eq!(trade.log_index, 1);
+        assert_eq!(trade.onchain_input_symbol, "USDC");
+        assert_eq!(trade.onchain_output_symbol, "AAPLs1");
+        assert!((trade.onchain_input_amount - 100.0).abs() < f64::EPSILON);
+        assert!((trade.onchain_output_amount - 9.0).abs() < f64::EPSILON);
+        assert!((trade.onchain_io_ratio - (100.0 / 9.0)).abs() < f64::EPSILON);
+        assert_eq!(trade.schwab_ticker, "AAPL");
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
+        assert!((trade.schwab_quantity - 9.0).abs() < f64::EPSILON);
+        assert!(
+            (trade.onchain_price_per_share_cents - ((100.0 / 9.0) * 100.0)).abs() < f64::EPSILON
+        );
+    }
+
+    #[tokio::test]
+    async fn test_backfill_events_with_take_order_v2_events() {
+        let order = get_test_order();
+        let order_hash = keccak256(order.abi_encode());
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash,
+            deployment_block: 1,
+        };
+
+        let take_event = IOrderBookV4::TakeOrderV2 {
+            sender: address!("0x1111111111111111111111111111111111111111"),
+            config: IOrderBookV4::TakeOrderConfigV3 {
+                order: order.clone(),
+                inputIOIndex: U256::from(0),
+                outputIOIndex: U256::from(1),
+                signedContext: Vec::new(),
+            },
+            input: U256::from(100_000_000),
+            output: U256::from_str("9000000000000000000").unwrap(),
+        };
+
+        let take_log = Log {
+            inner: alloy::primitives::Log {
+                address: evm_env.orderbook,
+                data: take_event.to_log_data(),
+            },
+            block_hash: None,
+            block_number: Some(50),
+            block_timestamp: None,
+            transaction_hash: Some(fixed_bytes!(
+                "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            )),
+            transaction_index: None,
+            log_index: Some(1),
+            removed: false,
+        };
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::Value::from(100u64)); // get_block_number
+        asserter.push_success(&serde_json::json!([])); // clear events (empty)
+        asserter.push_success(&serde_json::json!([take_log])); // take events
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"USDC".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"MSFTs1".to_string(),
+        ));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let cache = SymbolCache::default();
+
+        let trades = super::backfill_events(&provider, &cache, &evm_env)
+            .await
+            .unwrap();
+
+        assert_eq!(trades.len(), 1);
+        let trade = &trades[0];
+        assert_eq!(
+            trade.tx_hash,
+            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
+        );
+        assert_eq!(trade.log_index, 1);
+        assert_eq!(trade.onchain_input_symbol, "USDC");
+        assert_eq!(trade.onchain_output_symbol, "MSFTs1");
+        assert!((trade.onchain_input_amount - 100.0).abs() < f64::EPSILON);
+        assert!((trade.onchain_output_amount - 9.0).abs() < f64::EPSILON);
+        assert!((trade.onchain_io_ratio - (100.0 / 9.0)).abs() < f64::EPSILON);
+        assert_eq!(trade.schwab_ticker, "MSFT");
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
+        assert!((trade.schwab_quantity - 9.0).abs() < f64::EPSILON);
+        assert!(
+            (trade.onchain_price_per_share_cents - ((100.0 / 9.0) * 100.0)).abs() < f64::EPSILON
+        );
+    }
+
+    #[tokio::test]
+    async fn test_backfill_events_filters_non_matching_orders() {
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            deployment_block: 1,
+        };
+
+        let different_order = get_test_order();
+        let clear_event = IOrderBookV4::ClearV2 {
+            sender: address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+            alice: different_order.clone(),
+            bob: different_order.clone(),
+            clearConfig: IOrderBookV4::ClearConfig {
+                aliceInputIOIndex: U256::from(0),
+                aliceOutputIOIndex: U256::from(1),
+                bobInputIOIndex: U256::from(1),
+                bobOutputIOIndex: U256::from(0),
+                aliceBountyVaultId: U256::ZERO,
+                bobBountyVaultId: U256::ZERO,
+            },
+        };
+
+        let clear_log = Log {
+            inner: alloy::primitives::Log {
+                address: evm_env.orderbook,
+                data: clear_event.to_log_data(),
+            },
+            block_hash: None,
+            block_number: Some(50),
+            block_timestamp: None,
+            transaction_hash: Some(fixed_bytes!(
+                "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            )),
+            transaction_index: None,
+            log_index: Some(1),
+            removed: false,
+        };
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::Value::from(100u64)); // get_block_number
+        asserter.push_success(&serde_json::json!([clear_log])); // clear events
+        asserter.push_success(&serde_json::json!([])); // take events (empty)
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let cache = SymbolCache::default();
+
+        let trades = super::backfill_events(&provider, &cache, &evm_env)
+            .await
+            .unwrap();
+
+        assert_eq!(trades.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_backfill_events_handles_rpc_errors() {
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            deployment_block: 1,
+        };
+
+        let asserter = Asserter::new();
+        asserter.push_failure_msg("RPC error");
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let cache = SymbolCache::default();
+
+        let result = super::backfill_events(&provider, &cache, &evm_env).await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            TradeConversionError::RpcTransport(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_backfill_events_block_range() {
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            deployment_block: 50,
+        };
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::Value::from(100u64)); // get_block_number
+        asserter.push_success(&serde_json::json!([])); // clear events
+        asserter.push_success(&serde_json::json!([])); // take events
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let cache = SymbolCache::default();
+
+        let trades = super::backfill_events(&provider, &cache, &evm_env)
+            .await
+            .unwrap();
+
+        assert_eq!(trades.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_backfill_events_preserves_chronological_order() {
+        let order = get_test_order();
+        let order_hash = keccak256(order.abi_encode());
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash,
+            deployment_block: 1,
+        };
+
+        // Create logs with different block numbers and log indices
+        let tx_hash1 =
+            fixed_bytes!("0x1111111111111111111111111111111111111111111111111111111111111111");
+        let tx_hash2 =
+            fixed_bytes!("0x2222222222222222222222222222222222222222222222222222222222222222");
+
+        let take_event1 = IOrderBookV4::TakeOrderV2 {
+            sender: address!("0x1111111111111111111111111111111111111111"),
+            config: IOrderBookV4::TakeOrderConfigV3 {
+                order: order.clone(),
+                inputIOIndex: U256::from(0),
+                outputIOIndex: U256::from(1),
+                signedContext: Vec::new(),
+            },
+            input: U256::from(100_000_000),
+            output: U256::from_str("1000000000000000000").unwrap(), // 1 share
+        };
+
+        let take_event2 = IOrderBookV4::TakeOrderV2 {
+            sender: address!("0x1111111111111111111111111111111111111111"),
+            config: IOrderBookV4::TakeOrderConfigV3 {
+                order: order.clone(),
+                inputIOIndex: U256::from(0),
+                outputIOIndex: U256::from(1),
+                signedContext: Vec::new(),
+            },
+            input: U256::from(200_000_000),
+            output: U256::from_str("2000000000000000000").unwrap(), // 2 shares
+        };
+
+        // Create logs in reverse chronological order to test sorting
+        let take_log2 = Log {
+            inner: alloy::primitives::Log {
+                address: evm_env.orderbook,
+                data: take_event2.to_log_data(),
+            },
+            block_hash: None,
+            block_number: Some(100), // Later block
+            block_timestamp: None,
+            transaction_hash: Some(tx_hash2),
+            transaction_index: None,
+            log_index: Some(1),
+            removed: false,
+        };
+
+        let take_log1 = Log {
+            inner: alloy::primitives::Log {
+                address: evm_env.orderbook,
+                data: take_event1.to_log_data(),
+            },
+            block_hash: None,
+            block_number: Some(50), // Earlier block
+            block_timestamp: None,
+            transaction_hash: Some(tx_hash1),
+            transaction_index: None,
+            log_index: Some(1),
+            removed: false,
+        };
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::Value::from(200u64)); // get_block_number
+        asserter.push_success(&serde_json::json!([])); // clear events (empty)
+        // Take events returned in reverse chronological order (later first)
+        asserter.push_success(&serde_json::json!([take_log2, take_log1])); // take events
+        // Symbol calls for both trades
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"USDC".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"MSFTs1".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"USDC".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"MSFTs1".to_string(),
+        ));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let cache = SymbolCache::default();
+
+        let trades = super::backfill_events(&provider, &cache, &evm_env)
+            .await
+            .unwrap();
+
+        assert_eq!(trades.len(), 2);
+
+        // Verify chronological order: earlier block (50) should come first
+        let first_trade = &trades[0];
+        let second_trade = &trades[1];
+
+        // First trade (from block 50)
+        assert_eq!(first_trade.tx_hash, tx_hash1);
+        assert_eq!(first_trade.log_index, 1);
+        assert_eq!(first_trade.onchain_input_symbol, "USDC");
+        assert_eq!(first_trade.onchain_output_symbol, "MSFTs1");
+        assert!((first_trade.onchain_input_amount - 100.0).abs() < f64::EPSILON);
+        assert!((first_trade.onchain_output_amount - 1.0).abs() < f64::EPSILON); // 1 share
+        assert!((first_trade.schwab_quantity - 1.0).abs() < f64::EPSILON);
+        assert_eq!(first_trade.schwab_ticker, "MSFT");
+        assert_eq!(first_trade.schwab_instruction, SchwabInstruction::Buy);
+        assert!((first_trade.onchain_price_per_share_cents - 10000.0).abs() < f64::EPSILON); // 100 USDC / 1 share * 100
+
+        // Second trade (from block 100)
+        assert_eq!(second_trade.tx_hash, tx_hash2);
+        assert_eq!(second_trade.log_index, 1);
+        assert_eq!(second_trade.onchain_input_symbol, "USDC");
+        assert_eq!(second_trade.onchain_output_symbol, "MSFTs1");
+        assert!((second_trade.onchain_input_amount - 200.0).abs() < f64::EPSILON);
+        assert!((second_trade.onchain_output_amount - 2.0).abs() < f64::EPSILON); // 2 shares
+        assert!((second_trade.schwab_quantity - 2.0).abs() < f64::EPSILON);
+        assert_eq!(second_trade.schwab_ticker, "MSFT");
+        assert_eq!(second_trade.schwab_instruction, SchwabInstruction::Buy);
+        assert!((second_trade.onchain_price_per_share_cents - 10000.0).abs() < f64::EPSILON); // 200 USDC / 2 shares * 100
     }
 }
