@@ -1,15 +1,16 @@
 # CLI Implementation Tasks
 
 ## Task 1. Create CLI module with argument parsing
-- [ ] Create `src/cli.rs` with `clap` derive macros
-- [ ] Implement `buy` and `sell` subcommands
-- [ ] Add `-t/--ticker <SYMBOL>` and `-q/--quantity <AMOUNT>` flags
-- [ ] Handle potential flag conflicts by prioritizing CLI short flags
-- [ ] Add input validation for ticker symbols (uppercase, basic format checking)
-- [ ] Add quantity validation (positive numbers, fractional shares supported)
-- [ ] Run `cargo test`
-- [ ] Run `cargo clippy -- -D clippy::all`
-- [ ] Run `cargo fmt`
+- [x] Create `src/cli.rs` with `clap` derive macros
+- [x] Implement `buy` and `sell` subcommands
+- [x] Add `-t/--ticker <SYMBOL>` and `-q/--quantity <AMOUNT>` flags
+- [x] Handle potential flag conflicts by prioritizing CLI short flags
+- [x] Add input validation for ticker symbols (uppercase, basic format checking)
+- [x] Add quantity validation (positive numbers, fractional shares supported)
+- [x] Run `cargo test`
+- [x] Run `cargo clippy -- -D clippy::all`
+- [x] Run `cargo fmt`
+- [x] Update @TODOs.md
 
 ## Task 2. Create CLI binary entry point
 - [ ] Create `src/bin/cli.rs` with main function
@@ -20,6 +21,7 @@
 - [ ] Run `cargo test`
 - [ ] Run `cargo clippy -- -D clippy::all`
 - [ ] Run `cargo fmt`
+- [ ] Update @TODOs.md
 
 ## Task 3. Implement token refresh and order execution
 - [ ] Add token refresh at startup using `SchwabTokens::get_valid_access_token()`
@@ -28,6 +30,7 @@
 - [ ] Run `cargo test`
 - [ ] Run `cargo clippy -- -D clippy::all`
 - [ ] Run `cargo fmt`
+- [ ] Update @TODOs.md
 
 ## Task 4. Implement OAuth flow for expired refresh tokens
 - [ ] Detect when refresh token has expired during CLI execution
@@ -37,6 +40,7 @@
 - [ ] Run `cargo test`
 - [ ] Run `cargo clippy -- -D clippy::all`
 - [ ] Run `cargo fmt`
+- [ ] Update @TODOs.md
 
 ## Task 5. Implement comprehensive error handling and user feedback
 - [ ] Add contextual error messages for common failure scenarios
@@ -47,6 +51,7 @@
 - [ ] Run `cargo test`
 - [ ] Run `cargo clippy -- -D clippy::all`
 - [ ] Run `cargo fmt`
+- [ ] Update @TODOs.md
 
 ## Task 6. Write unit tests for CLI argument parsing
 - [ ] Test CLI argument parsing validation (invalid tickers, negative quantities, missing args)
@@ -55,6 +60,7 @@
 - [ ] Run `cargo test`
 - [ ] Run `cargo clippy -- -D clippy::all`
 - [ ] Run `cargo fmt`
+- [ ] Update @TODOs.md
 
 ## Task 7. Write integration tests for CLI commands
 - [ ] Mock Schwab API responses for successful orders
@@ -65,3 +71,4 @@
 - [ ] Run `cargo test`
 - [ ] Run `cargo clippy -- -D clippy::all`
 - [ ] Run `cargo fmt`
+- [ ] Update @TODOs.md

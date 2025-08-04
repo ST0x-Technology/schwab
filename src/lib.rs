@@ -8,6 +8,7 @@ use tracing::{Level, info};
 
 pub mod arb;
 mod bindings;
+pub mod cli;
 pub mod schwab;
 mod symbol_cache;
 pub mod trade;
