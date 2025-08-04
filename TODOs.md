@@ -13,23 +13,24 @@
 
 ## Task 3. Error Handling with Exponential Backoff
 
-- [ ] Add `backon` crate dependency for retry mechanisms in @Cargo.toml
-- [ ] Create `BackfillError` enum for better error categorization (RPC failures, parsing errors, etc.) in @src/trade/mod.rs
-- [ ] Implement exponential backoff for RPC failures during batch requests in @src/trade/mod.rs:backfill_events
-- [ ] Consider creating a dedicated `trade::backfill` module to organize this functionality
+- [x] Add `backon` crate dependency for retry mechanisms in @Cargo.toml
+- [x] Create `BackfillError` enum for better error categorization (RPC failures, parsing errors, etc.) in @src/trade/backfill.rs
+- [x] Implement exponential backoff for RPC failures during batch requests in @src/trade/backfill.rs:backfill_events
+- [x] Consider creating a dedicated `trade::backfill` module to organize this functionality
+- [x] Update @TODOs.md to reference the correct module(s) in the remaining tasks
 
 ## Task 4. Code Quality Improvements
 
-- [ ] Extract magic numbers as named constants (batch sizes, retry attempts, concurrent limits, etc.) in @src/trade/mod.rs and @src/lib.rs
+- [ ] Extract magic numbers as named constants (batch sizes, retry attempts, concurrent limits, etc.) in @src/trade/backfill.rs and @src/lib.rs
 - [ ] Improve type safety with more specific error types for better error handling granularity in @src/trade/mod.rs:TradeConversionError
 - [ ] Make error propagation more explicit and typed
 
 ## Task 5. Enhanced Testing
 
-- [ ] Add integration tests with realistic block ranges and data volumes in @src/trade/mod.rs
-- [ ] Test boundary cases like deployment block equals current block in @src/trade/mod.rs
-- [ ] Test scenarios with mixed event types and large datasets in @src/trade/mod.rs
-- [ ] Verify proper error handling, retry mechanisms, and batching logic in @src/trade/mod.rs
+- [ ] Add integration tests with realistic block ranges and data volumes in @src/trade/backfill.rs
+- [ ] Test boundary cases like deployment block equals current block in @src/trade/backfill.rs
+- [ ] Test scenarios with mixed event types and large datasets in @src/trade/backfill.rs
+- [ ] Verify proper error handling, retry mechanisms, and batching logic in @src/trade/backfill.rs
 
 ## Task 6. Queue Integration with Subscription-First Coordination
 
@@ -37,7 +38,7 @@
 - [ ] Use `tokio::sync::mpsc::unbounded_channel` for final trade processing queue in @src/lib.rs
 - [ ] Wait for first subscription event with timeout (30s), use its `block_number` as backfill cutoff in @src/lib.rs:run
 - [ ] If timeout expires with no events, fall back to `provider.get_block_number()` as cutoff in @src/lib.rs:run
-- [ ] Run backfill from `deployment_block` to `cutoff_block - 1` using @src/trade/mod.rs:backfill_events
+- [ ] Run backfill from `deployment_block` to `cutoff_block - 1` using @src/trade/backfill.rs:backfill_events
 - [ ] Process all backfilled trades first (chronologically ordered), then buffered subscription events in @src/lib.rs
 - [ ] Continue processing live subscription events normally in @src/lib.rs:step
 
