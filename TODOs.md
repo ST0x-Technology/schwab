@@ -1,0 +1,67 @@
+# CLI Implementation Tasks
+
+## Task 1. Create CLI module with argument parsing
+- [ ] Create `src/cli.rs` with `clap` derive macros
+- [ ] Implement `buy` and `sell` subcommands
+- [ ] Add `-t/--ticker <SYMBOL>` and `-q/--quantity <AMOUNT>` flags
+- [ ] Handle potential flag conflicts by prioritizing CLI short flags
+- [ ] Add input validation for ticker symbols (uppercase, basic format checking)
+- [ ] Add quantity validation (positive numbers, fractional shares supported)
+- [ ] Run `cargo test`
+- [ ] Run `cargo clippy -- -D clippy::all`
+- [ ] Run `cargo fmt`
+
+## Task 2. Create CLI binary entry point
+- [ ] Create `src/bin/cli.rs` with main function
+- [ ] Parse CLI arguments using the cli module
+- [ ] Load environment variables for Schwab authentication
+- [ ] Set up database connection and run migrations
+- [ ] Add comprehensive logging throughout all operations
+- [ ] Run `cargo test`
+- [ ] Run `cargo clippy -- -D clippy::all`
+- [ ] Run `cargo fmt`
+
+## Task 3. Implement token refresh and order execution
+- [ ] Add token refresh at startup using `SchwabTokens::get_valid_access_token()`
+- [ ] Reuse existing `Order::new()` and `Order::place()` from `src/schwab/order.rs:23,44`
+- [ ] Add success/failure reporting with comprehensive logging
+- [ ] Run `cargo test`
+- [ ] Run `cargo clippy -- -D clippy::all`
+- [ ] Run `cargo fmt`
+
+## Task 4. Implement OAuth flow for expired refresh tokens
+- [ ] Detect when refresh token has expired during CLI execution
+- [ ] Launch interactive OAuth flow using existing auth binary functionality
+- [ ] Guide user through authentication process with clear instructions
+- [ ] Retry the original operation after successful authentication
+- [ ] Run `cargo test`
+- [ ] Run `cargo clippy -- -D clippy::all`
+- [ ] Run `cargo fmt`
+
+## Task 5. Implement comprehensive error handling and user feedback
+- [ ] Add contextual error messages for common failure scenarios
+- [ ] Handle network failures with retry suggestions
+- [ ] Handle invalid ticker symbols with helpful formatting hints
+- [ ] Handle insufficient account permissions with clear explanations
+- [ ] Add progress indicators for long-running operations
+- [ ] Run `cargo test`
+- [ ] Run `cargo clippy -- -D clippy::all`
+- [ ] Run `cargo fmt`
+
+## Task 6. Write unit tests for CLI argument parsing
+- [ ] Test CLI argument parsing validation (invalid tickers, negative quantities, missing args)
+- [ ] Test input sanitization and validation logic
+- [ ] Test error message formatting
+- [ ] Run `cargo test`
+- [ ] Run `cargo clippy -- -D clippy::all`
+- [ ] Run `cargo fmt`
+
+## Task 7. Write integration tests for CLI commands
+- [ ] Mock Schwab API responses for successful orders
+- [ ] Mock authentication failures and token refresh scenarios
+- [ ] Test database integration with in-memory SQLite
+- [ ] Test end-to-end command execution with all components
+- [ ] Test token refresh flow
+- [ ] Run `cargo test`
+- [ ] Run `cargo clippy -- -D clippy::all`
+- [ ] Run `cargo fmt`
