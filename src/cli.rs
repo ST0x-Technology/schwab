@@ -775,9 +775,9 @@ mod tests {
         match buy_args {
             ValidatedCliArgs::Buy { ticker, quantity } => {
                 assert_eq!(ticker, "AAPL");
-                assert_eq!(quantity, 100.0);
+                assert!((quantity - 100.0).abs() < f64::EPSILON);
             }
-            _ => panic!("Expected Buy variant"),
+            ValidatedCliArgs::Sell { .. } => panic!("Expected Buy variant"),
         }
 
         let sell_args = ValidatedCliArgs::Sell {
@@ -788,9 +788,9 @@ mod tests {
         match sell_args {
             ValidatedCliArgs::Sell { ticker, quantity } => {
                 assert_eq!(ticker, "TSLA");
-                assert_eq!(quantity, 50.5);
+                assert!((quantity - 50.5).abs() < f64::EPSILON);
             }
-            _ => panic!("Expected Sell variant"),
+            ValidatedCliArgs::Buy { .. } => panic!("Expected Sell variant"),
         }
     }
 
@@ -916,7 +916,7 @@ mod tests {
                 assert_eq!(ticker, "AAPL");
                 assert!((quantity - 100.0).abs() < f64::EPSILON);
             }
-            _ => panic!("Expected Buy variant"),
+            ValidatedCliArgs::Sell { .. } => panic!("Expected Buy variant"),
         }
     }
 
@@ -944,7 +944,7 @@ mod tests {
                 assert_eq!(ticker, "AAPL");
                 assert!((quantity - 100.5).abs() < f64::EPSILON);
             }
-            _ => panic!("Expected Buy variant"),
+            ValidatedCliArgs::Sell { .. } => panic!("Expected Buy variant"),
         }
     }
 
@@ -966,7 +966,7 @@ mod tests {
                 assert_eq!(ticker, "TSLA");
                 assert!((quantity - 50.0).abs() < f64::EPSILON);
             }
-            _ => panic!("Expected Sell variant"),
+            ValidatedCliArgs::Buy { .. } => panic!("Expected Sell variant"),
         }
     }
 
@@ -988,7 +988,7 @@ mod tests {
     fn test_validate_quantity_edge_cases() {
         assert!((validate_quantity("0.001").unwrap() - 0.001).abs() < f64::EPSILON);
 
-        assert!((validate_quantity("999999.99").unwrap() - 999999.99).abs() < f64::EPSILON);
+        assert!((validate_quantity("999999.99").unwrap() - 999_999.99).abs() < f64::EPSILON);
 
         assert!((validate_quantity("1e2").unwrap() - 100.0).abs() < f64::EPSILON);
 
@@ -1024,9 +1024,7 @@ mod tests {
             .try_get_matches_from(vec!["schwab", "buy", "-t", "AAPL", "-q", "100"]);
         assert!(result.is_ok());
 
-        let result = cmd
-            .clone()
-            .try_get_matches_from(vec!["schwab", "sell", "-t", "TSLA", "-q", "50"]);
+        let result = cmd.try_get_matches_from(vec!["schwab", "sell", "-t", "TSLA", "-q", "50"]);
         assert!(result.is_ok());
     }
 
@@ -1072,7 +1070,7 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_ok(), "CLI command should succeed: {:?}", result);
+        assert!(result.is_ok(), "CLI command should succeed: {result:?}");
         account_mock.assert();
         order_mock.assert();
 
@@ -1121,7 +1119,7 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_ok(), "CLI command should succeed: {:?}", result);
+        assert!(result.is_ok(), "CLI command should succeed: {result:?}");
         account_mock.assert();
         order_mock.assert();
 
@@ -1212,7 +1210,7 @@ mod tests {
                     "token_type": "Bearer",
                     "expires_in": 1800,
                     "refresh_token": "new_refresh_token",
-                    "refresh_token_expires_in": 604800
+                    "refresh_token_expires_in": 604_800
                 }));
         });
 
@@ -1253,8 +1251,7 @@ mod tests {
 
         assert!(
             result.is_ok(),
-            "CLI command should succeed after token refresh: {:?}",
-            result
+            "CLI command should succeed after token refresh: {result:?}"
         );
         token_refresh_mock.assert();
         account_mock.assert();
@@ -1413,7 +1410,7 @@ mod tests {
 
         let result = execute_order_with_writers(
             "INVALID".to_string(),
-            999999.0,
+            999_999.0,
             Instruction::Buy,
             &env,
             &pool,
