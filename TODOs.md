@@ -54,13 +54,15 @@
 - [x] Update @TODOs.md
 
 ## Task 6. Write unit tests for CLI argument parsing
-- [ ] Test CLI argument parsing validation (invalid tickers, negative quantities, missing args)
-- [ ] Test input sanitization and validation logic
-- [ ] Test error message formatting
-- [ ] Run `cargo test`
-- [ ] Run `cargo clippy -- -D clippy::all`
-- [ ] Run `cargo fmt`
-- [ ] Update @TODOs.md
+- [x] Test CLI argument parsing validation (invalid tickers, negative quantities, missing args)
+- [x] Test input sanitization and validation logic  
+- [x] Test error message formatting
+- [x] Add direct tests for `Cli::parse_and_validate()` method
+- [x] Add edge case tests for boundary conditions
+- [x] Run `cargo test`
+- [x] Run `cargo clippy -- -D clippy::all`
+- [x] Run `cargo fmt`
+- [x] Update @TODOs.md
 
 ## Task 7. Write integration tests for CLI commands
 - [ ] Mock Schwab API responses for successful orders

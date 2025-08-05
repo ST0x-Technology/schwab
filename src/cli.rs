@@ -925,4 +925,108 @@ mod tests {
         use clap::CommandFactory;
         Cli::command().debug_assert();
     }
+
+    #[test]
+    fn test_parse_and_validate_buy_command() {
+        let validated_ticker = validate_ticker("aapl").unwrap();
+        let validated_quantity = validate_quantity("100.5").unwrap();
+
+        assert_eq!(validated_ticker, "AAPL");
+        assert!((validated_quantity - 100.5).abs() < f64::EPSILON);
+
+        let validated_args = ValidatedCliArgs::Buy {
+            ticker: validated_ticker,
+            quantity: validated_quantity,
+        };
+
+        match validated_args {
+            ValidatedCliArgs::Buy { ticker, quantity } => {
+                assert_eq!(ticker, "AAPL");
+                assert!((quantity - 100.5).abs() < f64::EPSILON);
+            }
+            _ => panic!("Expected Buy variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_and_validate_sell_command() {
+        let validated_ticker = validate_ticker("TSLA").unwrap();
+        let validated_quantity = validate_quantity("50").unwrap();
+
+        assert_eq!(validated_ticker, "TSLA");
+        assert!((validated_quantity - 50.0).abs() < f64::EPSILON);
+
+        let validated_args = ValidatedCliArgs::Sell {
+            ticker: validated_ticker,
+            quantity: validated_quantity,
+        };
+
+        match validated_args {
+            ValidatedCliArgs::Sell { ticker, quantity } => {
+                assert_eq!(ticker, "TSLA");
+                assert!((quantity - 50.0).abs() < f64::EPSILON);
+            }
+            _ => panic!("Expected Sell variant"),
+        }
+    }
+
+    #[test]
+    fn test_validate_ticker_boundary_conditions() {
+        assert_eq!(validate_ticker("GOOGL").unwrap(), "GOOGL");
+
+        assert!(matches!(
+            validate_ticker("GOOGLE"),
+            Err(CliError::InvalidTicker { .. })
+        ));
+
+        assert_eq!(validate_ticker("   aapl   ").unwrap(), "AAPL");
+
+        assert_eq!(validate_ticker("a").unwrap(), "A");
+    }
+
+    #[test]
+    fn test_validate_quantity_edge_cases() {
+        assert!((validate_quantity("0.001").unwrap() - 0.001).abs() < f64::EPSILON);
+
+        assert!((validate_quantity("999999.99").unwrap() - 999999.99).abs() < f64::EPSILON);
+
+        assert!((validate_quantity("1e2").unwrap() - 100.0).abs() < f64::EPSILON);
+
+        assert!(matches!(
+            validate_quantity("1e999"),
+            Err(CliError::InvalidQuantity { .. })
+        ));
+
+        assert!((validate_quantity("   123.456   ").unwrap() - 123.456).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_cli_command_structure_validation() {
+        use clap::CommandFactory;
+
+        let cmd = Cli::command();
+
+        let result = cmd
+            .clone()
+            .try_get_matches_from(vec!["schwab", "buy", "-t", "AAPL"]);
+        assert!(result.is_err());
+
+        let result = cmd
+            .clone()
+            .try_get_matches_from(vec!["schwab", "sell", "-q", "100"]);
+        assert!(result.is_err());
+
+        let result = cmd.clone().try_get_matches_from(vec!["schwab", "buy"]);
+        assert!(result.is_err());
+
+        let result = cmd
+            .clone()
+            .try_get_matches_from(vec!["schwab", "buy", "-t", "AAPL", "-q", "100"]);
+        assert!(result.is_ok());
+
+        let result = cmd
+            .clone()
+            .try_get_matches_from(vec!["schwab", "sell", "-t", "TSLA", "-q", "50"]);
+        assert!(result.is_ok());
+    }
 }
