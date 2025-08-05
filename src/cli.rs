@@ -4,9 +4,13 @@ use std::io::Write;
 use thiserror::Error;
 use tracing::{error, info};
 
-use crate::Env;
+use crate::schwab::SchwabAuthEnv;
 use crate::schwab::order::{Instruction, Order};
+use crate::schwab::run_oauth_flow;
 use crate::schwab::tokens::SchwabTokens;
+use crate::trade::EvmEnv;
+use crate::{Env, LogLevel};
+use alloy::primitives::{address, fixed_bytes};
 
 #[derive(Debug, Error)]
 pub enum CliError {
@@ -47,6 +51,44 @@ pub enum Commands {
         #[arg(short = 'q', long = "quantity")]
         quantity: String,
     },
+}
+
+#[derive(Debug, Parser)]
+#[command(name = "schwab-cli")]
+#[command(about = "A CLI tool for Charles Schwab stock trading")]
+#[command(version)]
+pub struct CliEnv {
+    #[clap(long = "db", env, default_value = "schwab.db")]
+    pub database_url: String,
+    #[clap(long, env, default_value = "info")]
+    pub log_level: LogLevel,
+    #[clap(flatten)]
+    pub schwab_auth: SchwabAuthEnv,
+    #[command(subcommand)]
+    pub command: Commands,
+}
+
+impl CliEnv {
+    /// Parse CLI arguments and convert to internal Env struct
+    pub fn parse_and_convert() -> anyhow::Result<(Env, Commands)> {
+        let cli_env = Self::parse();
+
+        let env = Env {
+            database_url: cli_env.database_url,
+            log_level: cli_env.log_level,
+            schwab_auth: cli_env.schwab_auth,
+            evm_env: EvmEnv {
+                ws_rpc_url: url::Url::parse("ws://localhost:8545")
+                    .expect("Failed to parse dummy WS URL"),
+                orderbook: address!("0x0000000000000000000000000000000000000000"),
+                order_hash: fixed_bytes!(
+                    "0x0000000000000000000000000000000000000000000000000000000000000000"
+                ),
+            },
+        };
+
+        Ok((env, cli_env.command))
+    }
 }
 
 impl Cli {
@@ -116,42 +158,48 @@ pub async fn run(env: Env) -> anyhow::Result<()> {
     run_with_writers(env, &mut std::io::stdout(), &mut std::io::stderr()).await
 }
 
+pub async fn run_command(env: Env, command: Commands) -> anyhow::Result<()> {
+    run_command_with_writers(env, command, &mut std::io::stdout(), &mut std::io::stderr()).await
+}
+
 async fn run_with_writers<W1: Write, W2: Write>(
     env: Env,
     stdout: &mut W1,
     stderr: &mut W2,
 ) -> anyhow::Result<()> {
     let validated_args = Cli::parse_and_validate()?;
+    let command = match validated_args {
+        ValidatedCliArgs::Buy { ticker, quantity } => Commands::Buy {
+            ticker,
+            quantity: quantity.to_string(),
+        },
+        ValidatedCliArgs::Sell { ticker, quantity } => Commands::Sell {
+            ticker,
+            quantity: quantity.to_string(),
+        },
+    };
+
+    run_command_with_writers(env, command, stdout, stderr).await
+}
+
+async fn run_command_with_writers<W1: Write, W2: Write>(
+    env: Env,
+    command: Commands,
+    stdout: &mut W1,
+    stderr: &mut W2,
+) -> anyhow::Result<()> {
     let pool = env.get_sqlite_pool().await?;
 
-    info!("Refreshing authentication tokens if needed");
-    match SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth).await {
-        Ok(_access_token) => {
-            info!("Authentication tokens are valid, access token obtained");
-        }
-        Err(crate::schwab::SchwabError::RefreshTokenExpired) => {
-            error!("Refresh token has expired, manual re-authentication required");
-            writeln!(
-                stderr,
-                "❌ Authentication failed: Your refresh token has expired."
-            )?;
-            writeln!(stderr, "   Please run the auth binary to re-authenticate:")?;
-            writeln!(stderr, "   cargo run --bin auth")?;
-            return Err(anyhow::anyhow!("Refresh token expired"));
-        }
-        Err(e) => {
-            error!("Failed to obtain valid access token: {e:?}");
-            writeln!(stderr, "❌ Authentication failed: {e}")?;
-            return Err(e.into());
-        }
-    }
+    ensure_authentication(&pool, &env.schwab_auth, stderr).await?;
 
-    match validated_args {
-        ValidatedCliArgs::Buy { ticker, quantity } => {
-            info!("Processing buy order: ticker={ticker}, quantity={quantity}");
+    match command {
+        Commands::Buy { ticker, quantity } => {
+            let validated_ticker = validate_ticker(&ticker)?;
+            let validated_quantity = validate_quantity(&quantity)?;
+            info!("Processing buy order: ticker={validated_ticker}, quantity={validated_quantity}");
             execute_order_with_writers(
-                ticker,
-                quantity,
+                validated_ticker,
+                validated_quantity,
                 Instruction::Buy,
                 &env,
                 &pool,
@@ -160,11 +208,15 @@ async fn run_with_writers<W1: Write, W2: Write>(
             )
             .await?;
         }
-        ValidatedCliArgs::Sell { ticker, quantity } => {
-            info!("Processing sell order: ticker={ticker}, quantity={quantity}");
+        Commands::Sell { ticker, quantity } => {
+            let validated_ticker = validate_ticker(&ticker)?;
+            let validated_quantity = validate_quantity(&quantity)?;
+            info!(
+                "Processing sell order: ticker={validated_ticker}, quantity={validated_quantity}"
+            );
             execute_order_with_writers(
-                ticker,
-                quantity,
+                validated_ticker,
+                validated_quantity,
                 Instruction::Sell,
                 &env,
                 &pool,
@@ -177,6 +229,57 @@ async fn run_with_writers<W1: Write, W2: Write>(
 
     info!("CLI operation completed successfully");
     Ok(())
+}
+
+async fn ensure_authentication<W: Write>(
+    pool: &SqlitePool,
+    schwab_auth: &crate::schwab::SchwabAuthEnv,
+    stderr: &mut W,
+) -> anyhow::Result<()> {
+    info!("Refreshing authentication tokens if needed");
+
+    match SchwabTokens::get_valid_access_token(pool, schwab_auth).await {
+        Ok(_access_token) => {
+            info!("Authentication tokens are valid, access token obtained");
+            return Ok(());
+        }
+        Err(crate::schwab::SchwabError::RefreshTokenExpired) => {
+            info!("Refresh token has expired, launching interactive OAuth flow");
+            writeln!(
+                stderr,
+                "🔄 Your refresh token has expired. Starting authentication process..."
+            )?;
+            writeln!(
+                stderr,
+                "   You will be guided through the Charles Schwab OAuth process."
+            )?;
+        }
+        Err(e) => {
+            error!("Failed to obtain valid access token: {e:?}");
+            writeln!(stderr, "❌ Authentication failed: {e}")?;
+            return Err(e.into());
+        }
+    }
+
+    match run_oauth_flow(pool, schwab_auth).await {
+        Ok(()) => {
+            info!("OAuth flow completed successfully");
+            writeln!(
+                stderr,
+                "✅ Authentication successful! Continuing with your order..."
+            )?;
+            Ok(())
+        }
+        Err(oauth_error) => {
+            error!("OAuth flow failed: {oauth_error:?}");
+            writeln!(stderr, "❌ Authentication failed: {oauth_error}")?;
+            writeln!(
+                stderr,
+                "   Please ensure you have a valid Charles Schwab account and try again."
+            )?;
+            Err(oauth_error.into())
+        }
+    }
 }
 
 async fn execute_order_with_writers<W1: Write, W2: Write>(
@@ -247,7 +350,6 @@ mod tests {
             then.status(201);
         });
 
-        // Test the execute_order function directly since we can't easily mock CLI parsing in lib tests
         execute_order_with_writers(
             "AAPL".to_string(),
             100.0,
@@ -364,7 +466,6 @@ mod tests {
         };
         expired_tokens.store(&pool).await.unwrap();
 
-        // Test that get_valid_access_token fails with expired refresh token
         let result =
             crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
                 .await;
@@ -422,14 +523,12 @@ mod tests {
             then.status(201);
         });
 
-        // Test that get_valid_access_token successfully refreshes tokens
         let access_token =
             crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
                 .await
                 .unwrap();
         assert_eq!(access_token, "refreshed_access_token");
 
-        // Now test that order execution works with refreshed token
         execute_order_with_writers(
             "AAPL".to_string(),
             100.0,
@@ -602,7 +701,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_authentication_error_stderr_output() {
+    async fn test_authentication_with_oauth_flow_on_expired_refresh_token() {
         use chrono::{Duration, Utc};
 
         let server = MockServer::start();
@@ -617,7 +716,6 @@ mod tests {
         };
         expired_tokens.store(&pool).await.unwrap();
 
-        // Test that token refresh failure can be captured in stderr
         let result =
             crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
                 .await;
@@ -627,26 +725,26 @@ mod tests {
             crate::schwab::SchwabError::RefreshTokenExpired
         ));
 
-        // Test the error formatting that would be written to stderr
         let mut stderr_buffer = Vec::new();
         writeln!(
             &mut stderr_buffer,
-            "❌ Authentication failed: Your refresh token has expired."
+            "🔄 Your refresh token has expired. Starting authentication process..."
         )
         .unwrap();
         writeln!(
             &mut stderr_buffer,
-            "   Please run the auth binary to re-authenticate:"
+            "   You will be guided through the Charles Schwab OAuth process."
         )
         .unwrap();
-        writeln!(&mut stderr_buffer, "   cargo run --bin auth").unwrap();
 
         let stderr_output = String::from_utf8(stderr_buffer).unwrap();
         assert!(
-            stderr_output.contains("❌ Authentication failed: Your refresh token has expired.")
+            stderr_output
+                .contains("🔄 Your refresh token has expired. Starting authentication process...")
         );
-        assert!(stderr_output.contains("Please run the auth binary to re-authenticate:"));
-        assert!(stderr_output.contains("cargo run --bin auth"));
+        assert!(
+            stderr_output.contains("You will be guided through the Charles Schwab OAuth process.")
+        );
     }
 
     #[test]

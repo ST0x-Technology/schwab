@@ -33,14 +33,14 @@
 - [x] Update @TODOs.md
 
 ## Task 4. Implement OAuth flow for expired refresh tokens
-- [ ] Detect when refresh token has expired during CLI execution
-- [ ] Launch interactive OAuth flow using existing auth binary functionality
-- [ ] Guide user through authentication process with clear instructions
-- [ ] Retry the original operation after successful authentication
-- [ ] Run `cargo test`
-- [ ] Run `cargo clippy -- -D clippy::all`
-- [ ] Run `cargo fmt`
-- [ ] Update @TODOs.md
+- [x] Detect when refresh token has expired during CLI execution
+- [x] Launch interactive OAuth flow using existing auth binary functionality
+- [x] Guide user through authentication process with clear instructions
+- [x] Retry the original operation after successful authentication
+- [x] Run `cargo test`
+- [x] Run `cargo clippy -- -D clippy::all`
+- [x] Run `cargo fmt`
+- [x] Update @TODOs.md
 
 ## Task 5. Implement comprehensive error handling and user feedback
 - [ ] Add contextual error messages for common failure scenarios

@@ -45,9 +45,9 @@ impl From<LogLevel> for Level {
 
 #[derive(Parser, Debug, Clone)]
 pub struct Env {
-    #[clap(short, long, env)]
+    #[clap(long = "db", env)]
     pub database_url: String,
-    #[clap(short = 'l', long, env, default_value = "debug")]
+    #[clap(long, env, default_value = "debug")]
     pub log_level: LogLevel,
     #[clap(flatten)]
     pub schwab_auth: SchwabAuthEnv,
