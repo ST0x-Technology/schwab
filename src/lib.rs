@@ -162,7 +162,6 @@ where
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,7 +360,6 @@ mod tests {
             .unwrap();
         assert_eq!(count.count, 1);
     }
-
 
     #[tokio::test]
     async fn test_step_creates_and_processes_new_trade() {

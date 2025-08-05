@@ -4,8 +4,8 @@ use thiserror::Error;
 use tracing::{error, info};
 
 use crate::{
-    schwab::order::{Instruction, Order},
     Env,
+    schwab::order::{Instruction, Order},
 };
 
 #[derive(Debug, Error)]
@@ -198,7 +198,9 @@ mod tests {
         });
 
         // Test the execute_order function directly since we can't easily mock CLI parsing in lib tests
-        execute_order("AAPL".to_string(), 100.0, Instruction::Buy, &env, &pool).await.unwrap();
+        execute_order("AAPL".to_string(), 100.0, Instruction::Buy, &env, &pool)
+            .await
+            .unwrap();
 
         account_mock.assert();
         order_mock.assert();
@@ -231,7 +233,9 @@ mod tests {
             then.status(201);
         });
 
-        execute_order("TSLA".to_string(), 50.0, Instruction::Sell, &env, &pool).await.unwrap();
+        execute_order("TSLA".to_string(), 50.0, Instruction::Sell, &env, &pool)
+            .await
+            .unwrap();
 
         account_mock.assert();
         order_mock.assert();
@@ -262,7 +266,8 @@ mod tests {
                 .json_body(json!({"error": "Invalid order"}));
         });
 
-        let result = execute_order("INVALID".to_string(), 100.0, Instruction::Buy, &env, &pool).await;
+        let result =
+            execute_order("INVALID".to_string(), 100.0, Instruction::Buy, &env, &pool).await;
 
         account_mock.assert();
         order_mock.assert();
