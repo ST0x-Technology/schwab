@@ -13,15 +13,15 @@
 - [x] Update @TODOs.md
 
 ## Task 2. Create CLI binary entry point
-- [ ] Create `src/bin/cli.rs` with main function
-- [ ] Parse CLI arguments using the cli module
-- [ ] Load environment variables for Schwab authentication
-- [ ] Set up database connection and run migrations
-- [ ] Add comprehensive logging throughout all operations
-- [ ] Run `cargo test`
-- [ ] Run `cargo clippy -- -D clippy::all`
-- [ ] Run `cargo fmt`
-- [ ] Update @TODOs.md
+- [x] Create `src/bin/cli.rs` with main function
+- [x] Parse CLI arguments using the cli module
+- [x] Load environment variables for Schwab authentication
+- [x] Set up database connection and run migrations
+- [x] Add comprehensive logging throughout all operations
+- [x] Run `cargo test`
+- [x] Run `cargo clippy -- -D clippy::all`
+- [x] Run `cargo fmt`
+- [x] Update @TODOs.md
 
 ## Task 3. Implement token refresh and order execution
 - [ ] Add token refresh at startup using `SchwabTokens::get_valid_access_token()`
