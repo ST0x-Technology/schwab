@@ -1029,4 +1029,411 @@ mod tests {
             .try_get_matches_from(vec!["schwab", "sell", "-t", "TSLA", "-q", "50"]);
         assert!(result.is_ok());
     }
+
+    // Integration tests for complete CLI workflow
+    #[tokio::test]
+    async fn test_integration_buy_command_end_to_end() {
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/trader/v1/accounts/ABC123DEF456/orders")
+                .header("authorization", "Bearer test_access_token")
+                .header("accept", "*/*")
+                .header("content-type", "application/json");
+            then.status(201);
+        });
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let result = execute_order_with_writers(
+            "AAPL".to_string(),
+            100.0,
+            Instruction::Buy,
+            &env,
+            &pool,
+            &mut stdout,
+            &mut stderr,
+        )
+        .await;
+
+        assert!(result.is_ok(), "CLI command should succeed: {:?}", result);
+        account_mock.assert();
+        order_mock.assert();
+
+        let stdout_str = String::from_utf8(stdout).unwrap();
+        assert!(stdout_str.contains("Order placed successfully"));
+    }
+
+    #[tokio::test]
+    async fn test_integration_sell_command_end_to_end() {
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/trader/v1/accounts/ABC123DEF456/orders")
+                .header("authorization", "Bearer test_access_token")
+                .header("accept", "*/*")
+                .header("content-type", "application/json");
+            then.status(201);
+        });
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let result = execute_order_with_writers(
+            "TSLA".to_string(),
+            50.0,
+            Instruction::Sell,
+            &env,
+            &pool,
+            &mut stdout,
+            &mut stderr,
+        )
+        .await;
+
+        assert!(result.is_ok(), "CLI command should succeed: {:?}", result);
+        account_mock.assert();
+        order_mock.assert();
+
+        let stdout_str = String::from_utf8(stdout).unwrap();
+        assert!(stdout_str.contains("Order placed successfully"));
+    }
+
+    #[tokio::test]
+    async fn test_integration_authentication_failure_scenarios() {
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+
+        // Set up expired access token but valid refresh token that will trigger a refresh attempt
+        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+            access_token: "expired_access_token".to_string(),
+            access_token_fetched_at: chrono::Utc::now() - chrono::Duration::minutes(35),
+            refresh_token: "valid_but_rejected_refresh_token".to_string(),
+            refresh_token_fetched_at: chrono::Utc::now() - chrono::Duration::days(1), // Valid refresh token
+        };
+        expired_tokens.store(&pool).await.unwrap();
+
+        // Mock the token refresh to fail
+        let token_refresh_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/v1/oauth/token")
+                .body_contains("grant_type=refresh_token")
+                .body_contains("refresh_token=valid_but_rejected_refresh_token");
+            then.status(400)
+                .header("content-type", "application/json")
+                .json_body(
+                    json!({"error": "invalid_grant", "error_description": "Refresh token expired"}),
+                );
+        });
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let result = execute_order_with_writers(
+            "AAPL".to_string(),
+            100.0,
+            Instruction::Buy,
+            &env,
+            &pool,
+            &mut stdout,
+            &mut stderr,
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "CLI command should fail due to auth issues"
+        );
+        token_refresh_mock.assert();
+
+        let stderr_str = String::from_utf8(stderr).unwrap();
+        assert!(
+            stderr_str.contains("authentication")
+                || stderr_str.contains("refresh token")
+                || stderr_str.contains("expired")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_integration_token_refresh_flow() {
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+
+        // Set up expired tokens
+        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+            access_token: "expired_access_token".to_string(),
+            access_token_fetched_at: chrono::Utc::now() - chrono::Duration::minutes(35),
+            refresh_token: "valid_refresh_token".to_string(),
+            refresh_token_fetched_at: chrono::Utc::now() - chrono::Duration::days(1),
+        };
+        expired_tokens.store(&pool).await.unwrap();
+
+        let token_refresh_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/v1/oauth/token")
+                .body_contains("grant_type=refresh_token")
+                .body_contains("refresh_token=valid_refresh_token");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "access_token": "new_access_token",
+                    "token_type": "Bearer",
+                    "expires_in": 1800,
+                    "refresh_token": "new_refresh_token",
+                    "refresh_token_expires_in": 604800
+                }));
+        });
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers")
+                .header("authorization", "Bearer new_access_token");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/trader/v1/accounts/ABC123DEF456/orders")
+                .header("authorization", "Bearer new_access_token");
+            then.status(201)
+                .header("content-type", "application/json")
+                .json_body(json!({"orderId": "12345"}));
+        });
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let result = execute_order_with_writers(
+            "AAPL".to_string(),
+            100.0,
+            Instruction::Buy,
+            &env,
+            &pool,
+            &mut stdout,
+            &mut stderr,
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "CLI command should succeed after token refresh: {:?}",
+            result
+        );
+        token_refresh_mock.assert();
+        account_mock.assert();
+        order_mock.assert();
+
+        // Verify that new tokens were stored in database
+        let stored_tokens = crate::schwab::tokens::SchwabTokens::load(&pool)
+            .await
+            .unwrap();
+        assert_eq!(stored_tokens.access_token, "new_access_token");
+        assert_eq!(stored_tokens.refresh_token, "new_refresh_token");
+    }
+
+    #[tokio::test]
+    async fn test_integration_database_operations() {
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+
+        // Test that CLI properly handles database without tokens
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let result = execute_order_with_writers(
+            "AAPL".to_string(),
+            100.0,
+            Instruction::Buy,
+            &env,
+            &pool,
+            &mut stdout,
+            &mut stderr,
+        )
+        .await;
+
+        assert!(result.is_err(), "CLI should fail when no tokens are stored");
+        let stderr_str = String::from_utf8(stderr).unwrap();
+        assert!(
+            stderr_str.contains("no rows returned")
+                || stderr_str.contains("Database error")
+                || stderr_str.contains("Failed to place order")
+        );
+
+        // Now add tokens and verify database integration works
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/trader/v1/accounts/ABC123DEF456/orders");
+            then.status(201);
+        });
+
+        let mut stdout2 = Vec::new();
+        let mut stderr2 = Vec::new();
+
+        let result2 = execute_order_with_writers(
+            "AAPL".to_string(),
+            100.0,
+            Instruction::Buy,
+            &env,
+            &pool,
+            &mut stdout2,
+            &mut stderr2,
+        )
+        .await;
+
+        assert!(
+            result2.is_ok(),
+            "CLI should succeed with valid tokens in database"
+        );
+        account_mock.assert();
+        order_mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_integration_network_error_handling() {
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        // Mock network timeout/connection error
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(500)
+                .header("content-type", "application/json")
+                .json_body(json!({"error": "Internal Server Error"}));
+        });
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let result = execute_order_with_writers(
+            "AAPL".to_string(),
+            100.0,
+            Instruction::Buy,
+            &env,
+            &pool,
+            &mut stdout,
+            &mut stderr,
+        )
+        .await;
+
+        assert!(result.is_err(), "CLI should fail on network errors");
+        account_mock.assert();
+
+        let stderr_str = String::from_utf8(stderr).unwrap();
+        assert!(
+            !stderr_str.is_empty(),
+            "Should provide error feedback to user"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_integration_invalid_order_parameters() {
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/trader/v1/accounts/ABC123DEF456/orders");
+            then.status(400)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "error": "Invalid order parameters",
+                    "message": "Insufficient buying power"
+                }));
+        });
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let result = execute_order_with_writers(
+            "INVALID".to_string(),
+            999999.0,
+            Instruction::Buy,
+            &env,
+            &pool,
+            &mut stdout,
+            &mut stderr,
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "CLI should fail on invalid order parameters"
+        );
+        account_mock.assert();
+        order_mock.assert();
+
+        let stderr_str = String::from_utf8(stderr).unwrap();
+        assert!(
+            stderr_str.contains("order")
+                || stderr_str.contains("error")
+                || stderr_str.contains("400")
+        );
+    }
 }

@@ -65,12 +65,12 @@
 - [x] Update @TODOs.md
 
 ## Task 7. Write integration tests for CLI commands
-- [ ] Mock Schwab API responses for successful orders
-- [ ] Mock authentication failures and token refresh scenarios
-- [ ] Test database integration with in-memory SQLite
-- [ ] Test end-to-end command execution with all components
-- [ ] Test token refresh flow
-- [ ] Run `cargo test`
-- [ ] Run `cargo clippy -- -D clippy::all`
-- [ ] Run `cargo fmt`
-- [ ] Update @TODOs.md
+- [x] Mock Schwab API responses for successful orders
+- [x] Mock authentication failures and token refresh scenarios
+- [x] Test database integration with in-memory SQLite
+- [x] Test end-to-end command execution with all components
+- [x] Test token refresh flow
+- [x] Run `cargo test`
+- [x] Run `cargo clippy -- -D clippy::all`
+- [x] Run `cargo fmt`
+- [x] Update @TODOs.md
