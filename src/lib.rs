@@ -43,6 +43,18 @@ impl From<LogLevel> for Level {
     }
 }
 
+impl From<&LogLevel> for Level {
+    fn from(log_level: &LogLevel) -> Self {
+        match log_level {
+            LogLevel::Trace => Self::TRACE,
+            LogLevel::Debug => Self::DEBUG,
+            LogLevel::Info => Self::INFO,
+            LogLevel::Warn => Self::WARN,
+            LogLevel::Error => Self::ERROR,
+        }
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 pub struct Env {
     #[clap(long = "db", env)]
@@ -61,7 +73,7 @@ impl Env {
     }
 }
 
-pub fn setup_tracing(log_level: LogLevel) {
+pub fn setup_tracing(log_level: &LogLevel) {
     let level: Level = log_level.into();
     let default_filter = format!("rain_schwab={level},auth={level},main={level}");
 

@@ -5,7 +5,7 @@ use rain_schwab::{Env, run, setup_tracing};
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv_override().ok();
     let env = Env::try_parse()?;
-    setup_tracing(env.log_level.clone());
+    setup_tracing(&env.log_level);
 
     run(env).await?;
     Ok(())

@@ -168,18 +168,7 @@ async fn run_with_writers<W1: Write, W2: Write>(
     stderr: &mut W2,
 ) -> anyhow::Result<()> {
     let validated_args = Cli::parse_and_validate()?;
-    let command = match validated_args {
-        ValidatedCliArgs::Buy { ticker, quantity } => Commands::Buy {
-            ticker,
-            quantity: quantity.to_string(),
-        },
-        ValidatedCliArgs::Sell { ticker, quantity } => Commands::Sell {
-            ticker,
-            quantity: quantity.to_string(),
-        },
-    };
-
-    run_command_with_writers(env, command, stdout, stderr).await
+    run_validated_command_with_writers(env, validated_args, stdout, stderr).await
 }
 
 async fn run_command_with_writers<W1: Write, W2: Write>(
@@ -217,6 +206,49 @@ async fn run_command_with_writers<W1: Write, W2: Write>(
             execute_order_with_writers(
                 validated_ticker,
                 validated_quantity,
+                Instruction::Sell,
+                &env,
+                &pool,
+                stdout,
+                stderr,
+            )
+            .await?;
+        }
+    }
+
+    info!("CLI operation completed successfully");
+    Ok(())
+}
+
+async fn run_validated_command_with_writers<W1: Write, W2: Write>(
+    env: Env,
+    validated_args: ValidatedCliArgs,
+    stdout: &mut W1,
+    stderr: &mut W2,
+) -> anyhow::Result<()> {
+    let pool = env.get_sqlite_pool().await?;
+
+    ensure_authentication(&pool, &env.schwab_auth, stderr).await?;
+
+    match validated_args {
+        ValidatedCliArgs::Buy { ticker, quantity } => {
+            info!("Processing buy order: ticker={ticker}, quantity={quantity}");
+            execute_order_with_writers(
+                ticker,
+                quantity,
+                Instruction::Buy,
+                &env,
+                &pool,
+                stdout,
+                stderr,
+            )
+            .await?;
+        }
+        ValidatedCliArgs::Sell { ticker, quantity } => {
+            info!("Processing sell order: ticker={ticker}, quantity={quantity}");
+            execute_order_with_writers(
+                ticker,
+                quantity,
                 Instruction::Sell,
                 &env,
                 &pool,
