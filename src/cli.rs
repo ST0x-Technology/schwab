@@ -1,12 +1,12 @@
 use clap::{Parser, Subcommand};
 use sqlx::SqlitePool;
+use std::io::Write;
 use thiserror::Error;
 use tracing::{error, info};
 
-use crate::{
-    Env,
-    schwab::order::{Instruction, Order},
-};
+use crate::Env;
+use crate::schwab::order::{Instruction, Order};
+use crate::schwab::tokens::SchwabTokens;
 
 #[derive(Debug, Error)]
 pub enum CliError {
@@ -113,17 +113,65 @@ fn validate_quantity(quantity_str: &str) -> Result<f64, CliError> {
 }
 
 pub async fn run(env: Env) -> anyhow::Result<()> {
+    run_with_writers(env, &mut std::io::stdout(), &mut std::io::stderr()).await
+}
+
+async fn run_with_writers<W1: Write, W2: Write>(
+    env: Env,
+    stdout: &mut W1,
+    stderr: &mut W2,
+) -> anyhow::Result<()> {
     let validated_args = Cli::parse_and_validate()?;
     let pool = env.get_sqlite_pool().await?;
+
+    info!("Refreshing authentication tokens if needed");
+    match SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth).await {
+        Ok(_access_token) => {
+            info!("Authentication tokens are valid, access token obtained");
+        }
+        Err(crate::schwab::SchwabError::RefreshTokenExpired) => {
+            error!("Refresh token has expired, manual re-authentication required");
+            writeln!(
+                stderr,
+                "❌ Authentication failed: Your refresh token has expired."
+            )?;
+            writeln!(stderr, "   Please run the auth binary to re-authenticate:")?;
+            writeln!(stderr, "   cargo run --bin auth")?;
+            return Err(anyhow::anyhow!("Refresh token expired"));
+        }
+        Err(e) => {
+            error!("Failed to obtain valid access token: {e:?}");
+            writeln!(stderr, "❌ Authentication failed: {e}")?;
+            return Err(e.into());
+        }
+    }
 
     match validated_args {
         ValidatedCliArgs::Buy { ticker, quantity } => {
             info!("Processing buy order: ticker={ticker}, quantity={quantity}");
-            execute_order(ticker, quantity, Instruction::Buy, &env, &pool).await?;
+            execute_order_with_writers(
+                ticker,
+                quantity,
+                Instruction::Buy,
+                &env,
+                &pool,
+                stdout,
+                stderr,
+            )
+            .await?;
         }
         ValidatedCliArgs::Sell { ticker, quantity } => {
             info!("Processing sell order: ticker={ticker}, quantity={quantity}");
-            execute_order(ticker, quantity, Instruction::Sell, &env, &pool).await?;
+            execute_order_with_writers(
+                ticker,
+                quantity,
+                Instruction::Sell,
+                &env,
+                &pool,
+                stdout,
+                stderr,
+            )
+            .await?;
         }
     }
 
@@ -131,12 +179,14 @@ pub async fn run(env: Env) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn execute_order(
+async fn execute_order_with_writers<W1: Write, W2: Write>(
     ticker: String,
     quantity: f64,
     instruction: Instruction,
     env: &Env,
     pool: &SqlitePool,
+    stdout: &mut W1,
+    stderr: &mut W2,
 ) -> anyhow::Result<()> {
     let order = Order::new(ticker.clone(), instruction.clone(), quantity);
 
@@ -147,16 +197,16 @@ async fn execute_order(
             info!(
                 "Order placed successfully: ticker={ticker}, instruction={instruction:?}, quantity={quantity}"
             );
-            println!("✅ Order placed successfully!");
-            println!("   Ticker: {ticker}");
-            println!("   Action: {instruction:?}");
-            println!("   Quantity: {quantity}");
+            writeln!(stdout, "✅ Order placed successfully!")?;
+            writeln!(stdout, "   Ticker: {ticker}")?;
+            writeln!(stdout, "   Action: {instruction:?}")?;
+            writeln!(stdout, "   Quantity: {quantity}")?;
         }
         Err(e) => {
             error!(
                 "Failed to place order: ticker={ticker}, instruction={instruction:?}, quantity={quantity}, error={e:?}"
             );
-            eprintln!("❌ Failed to place order: {e}");
+            writeln!(stderr, "❌ Failed to place order: {e}")?;
             return Err(e.into());
         }
     }
@@ -198,9 +248,17 @@ mod tests {
         });
 
         // Test the execute_order function directly since we can't easily mock CLI parsing in lib tests
-        execute_order("AAPL".to_string(), 100.0, Instruction::Buy, &env, &pool)
-            .await
-            .unwrap();
+        execute_order_with_writers(
+            "AAPL".to_string(),
+            100.0,
+            Instruction::Buy,
+            &env,
+            &pool,
+            &mut std::io::sink(),
+            &mut std::io::sink(),
+        )
+        .await
+        .unwrap();
 
         account_mock.assert();
         order_mock.assert();
@@ -233,9 +291,17 @@ mod tests {
             then.status(201);
         });
 
-        execute_order("TSLA".to_string(), 50.0, Instruction::Sell, &env, &pool)
-            .await
-            .unwrap();
+        execute_order_with_writers(
+            "TSLA".to_string(),
+            50.0,
+            Instruction::Sell,
+            &env,
+            &pool,
+            &mut std::io::sink(),
+            &mut std::io::sink(),
+        )
+        .await
+        .unwrap();
 
         account_mock.assert();
         order_mock.assert();
@@ -266,12 +332,368 @@ mod tests {
                 .json_body(json!({"error": "Invalid order"}));
         });
 
-        let result =
-            execute_order("INVALID".to_string(), 100.0, Instruction::Buy, &env, &pool).await;
+        let result = execute_order_with_writers(
+            "INVALID".to_string(),
+            100.0,
+            Instruction::Buy,
+            &env,
+            &pool,
+            &mut std::io::sink(),
+            &mut std::io::sink(),
+        )
+        .await;
 
         account_mock.assert();
         order_mock.assert();
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_run_with_expired_refresh_token() {
+        use chrono::{Duration, Utc};
+
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+
+        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+            access_token: "expired_access_token".to_string(),
+            access_token_fetched_at: Utc::now() - Duration::minutes(35),
+            refresh_token: "expired_refresh_token".to_string(),
+            refresh_token_fetched_at: Utc::now() - Duration::days(8),
+        };
+        expired_tokens.store(&pool).await.unwrap();
+
+        // Test that get_valid_access_token fails with expired refresh token
+        let result =
+            crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
+                .await;
+
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::schwab::SchwabError::RefreshTokenExpired
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_run_with_successful_token_refresh() {
+        use chrono::{Duration, Utc};
+
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+
+        let tokens_needing_refresh = crate::schwab::tokens::SchwabTokens {
+            access_token: "expired_access_token".to_string(),
+            access_token_fetched_at: Utc::now() - Duration::minutes(35),
+            refresh_token: "valid_refresh_token".to_string(),
+            refresh_token_fetched_at: Utc::now() - Duration::days(1),
+        };
+        tokens_needing_refresh.store(&pool).await.unwrap();
+
+        let refresh_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/v1/oauth/token")
+                .body_contains("grant_type=refresh_token")
+                .body_contains("refresh_token=valid_refresh_token");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "access_token": "refreshed_access_token",
+                    "refresh_token": "new_refresh_token"
+                }));
+        });
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/trader/v1/accounts/ABC123DEF456/orders")
+                .header("authorization", "Bearer refreshed_access_token");
+            then.status(201);
+        });
+
+        // Test that get_valid_access_token successfully refreshes tokens
+        let access_token =
+            crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
+                .await
+                .unwrap();
+        assert_eq!(access_token, "refreshed_access_token");
+
+        // Now test that order execution works with refreshed token
+        execute_order_with_writers(
+            "AAPL".to_string(),
+            100.0,
+            Instruction::Buy,
+            &env,
+            &pool,
+            &mut std::io::sink(),
+            &mut std::io::sink(),
+        )
+        .await
+        .unwrap();
+
+        refresh_mock.assert();
+        account_mock.assert();
+        order_mock.assert();
+
+        let stored_tokens = crate::schwab::tokens::SchwabTokens::load(&pool)
+            .await
+            .unwrap();
+        assert_eq!(stored_tokens.access_token, "refreshed_access_token");
+        assert_eq!(stored_tokens.refresh_token, "new_refresh_token");
+    }
+
+    #[tokio::test]
+    async fn test_run_with_valid_tokens_no_refresh_needed() {
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/trader/v1/accounts/ABC123DEF456/orders")
+                .header("authorization", "Bearer test_access_token");
+            then.status(201);
+        });
+
+        execute_order_with_writers(
+            "TSLA".to_string(),
+            50.0,
+            Instruction::Sell,
+            &env,
+            &pool,
+            &mut std::io::sink(),
+            &mut std::io::sink(),
+        )
+        .await
+        .unwrap();
+
+        account_mock.assert();
+        order_mock.assert();
+
+        let stored_tokens = crate::schwab::tokens::SchwabTokens::load(&pool)
+            .await
+            .unwrap();
+        assert_eq!(stored_tokens.access_token, "test_access_token");
+    }
+
+    #[tokio::test]
+    async fn test_execute_order_success_stdout_output() {
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/trader/v1/accounts/ABC123DEF456/orders");
+            then.status(201);
+        });
+
+        let mut stdout_buffer = Vec::new();
+        let mut stderr_buffer = Vec::new();
+
+        let result = execute_order_with_writers(
+            "AAPL".to_string(),
+            123.45,
+            Instruction::Buy,
+            &env,
+            &pool,
+            &mut stdout_buffer,
+            &mut stderr_buffer,
+        )
+        .await;
+
+        account_mock.assert();
+        order_mock.assert();
+        assert!(result.is_ok());
+
+        let stdout_output = String::from_utf8(stdout_buffer).unwrap();
+        let stderr_output = String::from_utf8(stderr_buffer).unwrap();
+
+        assert!(stdout_output.contains("✅ Order placed successfully!"));
+        assert!(stdout_output.contains("Ticker: AAPL"));
+        assert!(stdout_output.contains("Action: Buy"));
+        assert!(stdout_output.contains("Quantity: 123.45"));
+        assert!(stderr_output.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_execute_order_failure_stderr_output() {
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/trader/v1/accounts/ABC123DEF456/orders");
+            then.status(400)
+                .json_body(json!({"error": "Invalid order parameters"}));
+        });
+
+        let mut stdout_buffer = Vec::new();
+        let mut stderr_buffer = Vec::new();
+
+        let result = execute_order_with_writers(
+            "TSLA".to_string(),
+            50.0,
+            Instruction::Sell,
+            &env,
+            &pool,
+            &mut stdout_buffer,
+            &mut stderr_buffer,
+        )
+        .await;
+
+        account_mock.assert();
+        order_mock.assert();
+        assert!(result.is_err());
+
+        let stdout_output = String::from_utf8(stdout_buffer).unwrap();
+        let stderr_output = String::from_utf8(stderr_buffer).unwrap();
+
+        assert!(stdout_output.is_empty());
+        assert!(stderr_output.contains("❌ Failed to place order:"));
+    }
+
+    #[tokio::test]
+    async fn test_authentication_error_stderr_output() {
+        use chrono::{Duration, Utc};
+
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+
+        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+            access_token: "expired_access_token".to_string(),
+            access_token_fetched_at: Utc::now() - Duration::minutes(35),
+            refresh_token: "expired_refresh_token".to_string(),
+            refresh_token_fetched_at: Utc::now() - Duration::days(8),
+        };
+        expired_tokens.store(&pool).await.unwrap();
+
+        // Test that token refresh failure can be captured in stderr
+        let result =
+            crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
+                .await;
+
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::schwab::SchwabError::RefreshTokenExpired
+        ));
+
+        // Test the error formatting that would be written to stderr
+        let mut stderr_buffer = Vec::new();
+        writeln!(
+            &mut stderr_buffer,
+            "❌ Authentication failed: Your refresh token has expired."
+        )
+        .unwrap();
+        writeln!(
+            &mut stderr_buffer,
+            "   Please run the auth binary to re-authenticate:"
+        )
+        .unwrap();
+        writeln!(&mut stderr_buffer, "   cargo run --bin auth").unwrap();
+
+        let stderr_output = String::from_utf8(stderr_buffer).unwrap();
+        assert!(
+            stderr_output.contains("❌ Authentication failed: Your refresh token has expired.")
+        );
+        assert!(stderr_output.contains("Please run the auth binary to re-authenticate:"));
+        assert!(stderr_output.contains("cargo run --bin auth"));
+    }
+
+    #[test]
+    fn test_cli_error_display_messages() {
+        let ticker_error = CliError::InvalidTicker {
+            symbol: "TOOLONG".to_string(),
+        };
+        let error_msg = ticker_error.to_string();
+        assert!(error_msg.contains("Invalid ticker symbol: TOOLONG"));
+        assert!(error_msg.contains("uppercase letters only"));
+        assert!(error_msg.contains("1-5 characters long"));
+
+        let quantity_error = CliError::InvalidQuantity {
+            value: "-5".to_string(),
+        };
+        let error_msg = quantity_error.to_string();
+        assert!(error_msg.contains("Invalid quantity: -5"));
+        assert!(error_msg.contains("positive number"));
+    }
+
+    #[test]
+    fn test_validated_cli_args_display() {
+        let buy_args = ValidatedCliArgs::Buy {
+            ticker: "AAPL".to_string(),
+            quantity: 100.0,
+        };
+
+        match buy_args {
+            ValidatedCliArgs::Buy { ticker, quantity } => {
+                assert_eq!(ticker, "AAPL");
+                assert_eq!(quantity, 100.0);
+            }
+            _ => panic!("Expected Buy variant"),
+        }
+
+        let sell_args = ValidatedCliArgs::Sell {
+            ticker: "TSLA".to_string(),
+            quantity: 50.5,
+        };
+
+        match sell_args {
+            ValidatedCliArgs::Sell { ticker, quantity } => {
+                assert_eq!(ticker, "TSLA");
+                assert_eq!(quantity, 50.5);
+            }
+            _ => panic!("Expected Sell variant"),
+        }
     }
 
     fn create_test_env_for_cli(mock_server: &MockServer) -> Env {

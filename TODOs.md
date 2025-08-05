@@ -24,13 +24,13 @@
 - [x] Update @TODOs.md
 
 ## Task 3. Implement token refresh and order execution
-- [ ] Add token refresh at startup using `SchwabTokens::get_valid_access_token()`
-- [ ] Reuse existing `Order::new()` and `Order::place()` from `src/schwab/order.rs:23,44`
-- [ ] Add success/failure reporting with comprehensive logging
-- [ ] Run `cargo test`
-- [ ] Run `cargo clippy -- -D clippy::all`
-- [ ] Run `cargo fmt`
-- [ ] Update @TODOs.md
+- [x] Add token refresh at startup using `SchwabTokens::get_valid_access_token()`
+- [x] Reuse existing `Order::new()` and `Order::place()` from `src/schwab/order.rs:23,44`
+- [x] Add success/failure reporting with comprehensive logging
+- [x] Run `cargo test`
+- [x] Run `cargo clippy -- -D clippy::all`
+- [x] Run `cargo fmt`
+- [x] Update @TODOs.md
 
 ## Task 4. Implement OAuth flow for expired refresh tokens
 - [ ] Detect when refresh token has expired during CLI execution
