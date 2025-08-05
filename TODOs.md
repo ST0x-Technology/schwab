@@ -43,15 +43,15 @@
 - [x] Update @TODOs.md
 
 ## Task 5. Implement comprehensive error handling and user feedback
-- [ ] Add contextual error messages for common failure scenarios
-- [ ] Handle network failures with retry suggestions
-- [ ] Handle invalid ticker symbols with helpful formatting hints
-- [ ] Handle insufficient account permissions with clear explanations
-- [ ] Add progress indicators for long-running operations
-- [ ] Run `cargo test`
-- [ ] Run `cargo clippy -- -D clippy::all`
-- [ ] Run `cargo fmt`
-- [ ] Update @TODOs.md
+- [x] Add contextual error messages for common failure scenarios
+- [x] Handle network failures with retry suggestions
+- [x] Handle invalid ticker symbols with helpful formatting hints
+- [x] Handle insufficient account permissions with clear explanations
+- [x] Add progress indicators for long-running operations
+- [x] Run `cargo test`
+- [x] Run `cargo clippy -- -D clippy::all`
+- [x] Run `cargo fmt`
+- [x] Update @TODOs.md
 
 ## Task 6. Write unit tests for CLI argument parsing
 - [ ] Test CLI argument parsing validation (invalid tickers, negative quantities, missing args)
