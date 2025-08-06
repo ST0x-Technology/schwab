@@ -1,6 +1,6 @@
-use alloy::primitives::{Address, B256};
+use alloy::primitives::B256;
 use alloy::providers::Provider;
-use alloy::rpc;
+use alloy::rpc::types::Log;
 use alloy::sol_types::SolEvent;
 
 use super::{EvmEnv, PartialArbTrade, TradeConversionError};
@@ -21,66 +21,45 @@ impl PartialArbTrade {
             .await?
             .ok_or(TradeConversionError::TransactionNotFound(tx_hash))?;
 
-        let matching_logs = extract_matching_logs(&receipt, env.orderbook);
+        let trades: Vec<_> = receipt
+            .inner
+            .logs()
+            .iter()
+            .enumerate()
+            .filter(|(_, log)| {
+                (log.topic0() == Some(&ClearV2::SIGNATURE_HASH)
+                    || log.topic0() == Some(&TakeOrderV2::SIGNATURE_HASH))
+                    && log.address() == env.orderbook
+            })
+            .collect();
 
-        let trades = collect_valid_trades(&matching_logs, &provider, cache, env).await?;
+        if trades.len() > 1 {
+            tracing::warn!(
+                "Found {} potential trades in the tx with hash {tx_hash}, returning first match",
+                trades.len()
+            );
+        }
 
-        match trades.len() {
-            0 => Ok(None),
-            1 => Ok(trades.into_iter().next()),
-            count => {
-                tracing::warn!(
-                    "Found {count} trades in the tx with hash {tx_hash}, returning first match"
-                );
-                Ok(trades.into_iter().next())
+        for (log_index, log) in trades {
+            if let Some(trade) =
+                try_convert_log_to_trade(log, log_index, &provider, cache, env).await?
+            {
+                return Ok(Some(trade));
             }
         }
+
+        Ok(None)
     }
-}
-
-fn extract_matching_logs(
-    receipt: &rpc::types::TransactionReceipt,
-    orderbook_address: Address,
-) -> Vec<(usize, &rpc::types::Log)> {
-    receipt
-        .inner
-        .logs()
-        .iter()
-        .enumerate()
-        .filter(|(_, log)| {
-            log.address() == orderbook_address
-                && (log.topic0() == Some(&ClearV2::SIGNATURE_HASH)
-                    || log.topic0() == Some(&TakeOrderV2::SIGNATURE_HASH))
-        })
-        .collect()
-}
-
-async fn collect_valid_trades<P: Provider>(
-    matching_logs: &[(usize, &rpc::types::Log)],
-    provider: P,
-    cache: &SymbolCache,
-    env: &EvmEnv,
-) -> Result<Vec<PartialArbTrade>, TradeConversionError> {
-    let mut trades = Vec::new();
-
-    for &(log_index, log) in matching_logs {
-        if let Some(trade) = try_convert_log_to_trade(log, log_index, &provider, cache, env).await?
-        {
-            trades.push(trade);
-        }
-    }
-
-    Ok(trades)
 }
 
 async fn try_convert_log_to_trade<P: Provider>(
-    log: &rpc::types::Log,
+    log: &Log,
     log_index: usize,
     provider: P,
     cache: &SymbolCache,
     env: &EvmEnv,
 ) -> Result<Option<PartialArbTrade>, TradeConversionError> {
-    let log_with_metadata = rpc::types::Log {
+    let log_with_metadata = Log {
         inner: log.inner.clone(),
         block_hash: log.block_hash,
         block_number: log.block_number,
@@ -272,7 +251,7 @@ mod tests {
             },
         };
 
-        let after_clear_log = alloy::rpc::types::Log {
+        let after_clear_log = Log {
             inner: alloy::primitives::Log {
                 address: orderbook,
                 data: after_clear_event.into_log_data(),

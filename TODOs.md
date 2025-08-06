@@ -28,6 +28,41 @@ Create new functionality to reconstruct trades from transaction hashes, leveragi
 - [x] Ensure fmt passes: `cargo fmt` ✅ (properly formatted)
 - [x] Update TODOs.md with completion status
 
+**FIXES COMPLETED:**
+- [x] Fix warning logic: only emit warning when multiple trades found, not on every success
+- [x] Add comprehensive test coverage for all scenarios  
+- [x] Reduce nesting by extracting helper functions
+
+**ALL REFINEMENT SUBTASKS COMPLETED:**
+
+**1. Import and Qualification Fixes:**
+- [x] Removed unused `Address` import and simplified imports following CLAUDE.md guidelines
+- [x] Used `alloy::rpc::types::Log` for disambiguation instead of qualifying the full path
+- [x] Ensured consistent import style following CLAUDE.md guidelines
+
+**2. Functional Programming Improvements:**  
+- [x] Refactored `collect_valid_trades` function to use functional programming patterns
+- [x] Replaced imperative for-loop with iterator-based approach while preserving async semantics
+- [x] Inlined the collection logic directly in main function
+
+**3. Logic Optimization:**
+- [x] Modified main logic to short-circuit on first valid trade found instead of collecting all
+- [x] Filter logs by matching selectors (ClearV2/TakeOrderV2) before attempting conversion
+- [x] Only convert the first log that matches rather than processing all matches
+
+**4. Code Simplification:**
+- [x] Inlined log metadata construction directly in `try_convert_log_to_trade` calls
+- [x] Removed the `extract_matching_logs` wrapper function as unnecessary abstraction  
+- [x] Inlined `collect_valid_trades` function into main `try_from_tx_hash` function
+- [x] Simplified iterator expressions without increasing nesting complexity
+
+**5. Quality Assurance:**
+- [x] All existing tests pass after refactoring: `cargo test` ✅ (138 tests passed)
+- [x] No clippy warnings: `cargo clippy` ✅ (clean output)
+- [x] Proper formatting: `cargo fmt` ✅ (properly formatted)
+- [x] Warning logic works correctly (only warns on multiple trades found)
+- [x] Functional programming patterns maintain same semantics as imperative version
+
 ## Task 2. Extend CLI Commands with Transaction Hash Processing
 
 Add new CLI command that processes a transaction hash to create and execute opposite-side trades:
