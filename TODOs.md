@@ -2,15 +2,16 @@
 
 Based on analysis of the existing codebase, this plan extends the current CLI to test the ability to take the opposite side of trades given a transaction hash. The implementation will maximize code reuse by leveraging existing trade logic components.
 
-## Task 1. Extract Core Trade Logic into Shared Module
+## Task 1. Create Transaction Hash to Trade Converter
 
-Create reusable trade processing functions that can be used by both the main bot and CLI:
+Create new functionality to reconstruct trades from transaction hashes, leveraging existing `PartialArbTrade` constructors:
 
-- [ ] Create `@src/trade/processor.rs` module to house shared trade processing logic
-- [ ] Extract transaction hash parsing and trade reconstruction logic from `@src/lib.rs` `step` function
-- [ ] Move `PartialArbTrade` creation logic to shared functions that accept RPC provider and transaction hash
-- [ ] Create `process_transaction_hash` function that takes tx_hash, block_number, and returns `Option<PartialArbTrade>`
-- [ ] Update `@src/lib.rs` to use the extracted shared functions
+- [ ] Create `@src/trade/processor.rs` module to house transaction hash processing logic
+- [ ] Add `try_from_tx_hash` function that takes `tx_hash`, `provider`, `env` and returns `Result<PartialArbTrade, TradeConversionError>` (extend the error type in case no trade is found for tx hash)
+- [ ] Implement transaction receipt lookup and log parsing to find `ClearV2`/`TakeOrderV2` events
+- [ ] Filter logs by orderbook contract address and use existing `try_from_clear_v2`/`try_from_take_order_if_target_order` constructors
+- [ ] Handle edge cases: transaction not found, no relevant logs, multiple relevant events (return first match and emit a warning log)
+- [ ] Add comprehensive unit tests with mocked provider responses covering success and failure scenarios
 - [ ] Ensure tests pass: `cargo test`
 - [ ] Ensure clippy passes: `cargo clippy`
 - [ ] Ensure fmt passes: `cargo fmt`
