@@ -2,20 +2,20 @@
 
 Based on analysis of the existing codebase, this plan extends the current CLI to test the ability to take the opposite side of trades given a transaction hash. The implementation will maximize code reuse by leveraging existing trade logic components.
 
-## Task 1. Create Transaction Hash to Trade Converter
+## Task 1. Create Transaction Hash to Trade Converter ✓
 
 Create new functionality to reconstruct trades from transaction hashes, leveraging existing `PartialArbTrade` constructors:
 
-- [ ] Create `@src/trade/processor.rs` module to house transaction hash processing logic
-- [ ] Add `try_from_tx_hash` function that takes `tx_hash`, `provider`, `env` and returns `Result<PartialArbTrade, TradeConversionError>` (extend the error type in case no trade is found for tx hash)
-- [ ] Implement transaction receipt lookup and log parsing to find `ClearV2`/`TakeOrderV2` events
-- [ ] Filter logs by orderbook contract address and use existing `try_from_clear_v2`/`try_from_take_order_if_target_order` constructors
-- [ ] Handle edge cases: transaction not found, no relevant logs, multiple relevant events (return first match and emit a warning log)
-- [ ] Add comprehensive unit tests with mocked provider responses covering success and failure scenarios
-- [ ] Ensure tests pass: `cargo test`
-- [ ] Ensure clippy passes: `cargo clippy`
-- [ ] Ensure fmt passes: `cargo fmt`
-- [ ] Update TODOs.md with completion status
+- [x] Create @src/trade/processor.rs module to house transaction hash processing logic
+- [x] Add `try_from_tx_hash` function that takes `tx_hash`, `provider`, `env` and returns `Result<PartialArbTrade, TradeConversionError>` (extend the error type in case no trade is found for tx hash)
+- [x] Implement transaction receipt lookup and log parsing to find `ClearV2`/`TakeOrderV2` events
+- [x] Filter logs by orderbook contract address and use existing `try_from_clear_v2`/`try_from_take_order_if_target_order` constructors
+- [x] Handle edge cases: transaction not found, no relevant logs, multiple relevant events (return first match and emit a warning log)
+- [x] Add comprehensive unit tests with mocked provider responses covering success and failure scenarios
+- [x] Ensure tests pass: `cargo test`
+- [x] Ensure clippy passes: `cargo clippy`
+- [x] Ensure fmt passes: `cargo fmt`
+- [x] Update TODOs.md with completion status
 
 ## Task 2. Extend CLI Commands with Transaction Hash Processing
 

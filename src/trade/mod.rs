@@ -10,6 +10,7 @@ use crate::bindings::IOrderBookV4::OrderV3;
 use crate::symbol_cache::SymbolCache;
 
 mod clear;
+mod processor;
 mod take_order;
 
 #[derive(Parser, Debug, Clone)]
@@ -120,6 +121,8 @@ pub enum TradeConversionError {
     RpcTransport(#[from] RpcError<TransportErrorKind>),
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
+    #[error("Transaction not found: {0}")]
+    TransactionNotFound(B256),
 }
 
 struct OrderFill {
