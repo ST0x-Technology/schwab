@@ -229,8 +229,7 @@ async fn execute_order_with_writers<W: Write>(
     pool: &SqlitePool,
     stdout: &mut W,
 ) -> anyhow::Result<()> {
-    #[allow(clippy::cast_precision_loss)]
-    let order = Order::new(ticker.clone(), instruction.clone(), quantity as f64);
+    let order = Order::new(ticker.clone(), instruction.clone(), quantity);
 
     info!("Created order: ticker={ticker}, instruction={instruction:?}, quantity={quantity}");
 

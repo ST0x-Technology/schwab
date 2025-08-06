@@ -15,7 +15,7 @@ CREATE TABLE trades (
 
   schwab_ticker TEXT,
   schwab_instruction TEXT CHECK (schwab_instruction IN ('BUY', 'SELL')),
-  schwab_quantity REAL,
+  schwab_quantity INTEGER,
   schwab_price_per_share_cents REAL,
 
   status TEXT CHECK (status IN ('PENDING', 'COMPLETED', 'FAILED')),
