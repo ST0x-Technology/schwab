@@ -18,8 +18,8 @@ pub enum CliError {
         "Invalid ticker symbol: {symbol}. Ticker symbols must be uppercase letters only and 1-5 characters long"
     )]
     InvalidTicker { symbol: String },
-    #[error("Invalid quantity: {value}. Quantity must be a positive number")]
-    InvalidQuantity { value: String },
+    #[error("Invalid quantity: {value}. Quantity must be greater than zero")]
+    InvalidQuantity { value: u64 },
 }
 
 #[derive(Debug, Parser)]
@@ -38,18 +38,18 @@ pub enum Commands {
         /// Stock ticker symbol (e.g., AAPL, TSLA)
         #[arg(short = 't', long = "ticker")]
         ticker: String,
-        /// Number of shares to buy (fractional shares supported)
+        /// Number of shares to buy (whole shares only)
         #[arg(short = 'q', long = "quantity")]
-        quantity: String,
+        quantity: u64,
     },
     /// Sell shares of a stock
     Sell {
         /// Stock ticker symbol (e.g., AAPL, TSLA)
         #[arg(short = 't', long = "ticker")]
         ticker: String,
-        /// Number of shares to sell (fractional shares supported)
+        /// Number of shares to sell (whole shares only)
         #[arg(short = 'q', long = "quantity")]
-        quantity: String,
+        quantity: u64,
     },
 }
 
@@ -91,38 +91,6 @@ impl CliEnv {
     }
 }
 
-impl Cli {
-    /// Parse and validate CLI arguments
-    pub fn parse_and_validate() -> Result<ValidatedCliArgs, CliError> {
-        let cli = Self::parse();
-
-        match cli.command {
-            Commands::Buy { ticker, quantity } => {
-                let validated_ticker = validate_ticker(&ticker)?;
-                let validated_quantity = validate_quantity(&quantity)?;
-                Ok(ValidatedCliArgs::Buy {
-                    ticker: validated_ticker,
-                    quantity: validated_quantity,
-                })
-            }
-            Commands::Sell { ticker, quantity } => {
-                let validated_ticker = validate_ticker(&ticker)?;
-                let validated_quantity = validate_quantity(&quantity)?;
-                Ok(ValidatedCliArgs::Sell {
-                    ticker: validated_ticker,
-                    quantity: validated_quantity,
-                })
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum ValidatedCliArgs {
-    Buy { ticker: String, quantity: f64 },
-    Sell { ticker: String, quantity: f64 },
-}
-
 fn validate_ticker(ticker: &str) -> Result<String, CliError> {
     let ticker = ticker.trim().to_uppercase();
 
@@ -137,123 +105,62 @@ fn validate_ticker(ticker: &str) -> Result<String, CliError> {
     Ok(ticker)
 }
 
-fn validate_quantity(quantity_str: &str) -> Result<f64, CliError> {
-    let quantity = quantity_str
-        .trim()
-        .parse::<f64>()
-        .map_err(|_| CliError::InvalidQuantity {
-            value: quantity_str.to_string(),
-        })?;
-
-    if quantity <= 0.0 || !quantity.is_finite() {
-        return Err(CliError::InvalidQuantity {
-            value: quantity_str.to_string(),
-        });
-    }
-
-    Ok(quantity)
-}
-
 pub async fn run(env: Env) -> anyhow::Result<()> {
-    run_with_writers(env, &mut std::io::stdout(), &mut std::io::stderr()).await
+    let cli = Cli::parse();
+    run_with_writers(env, cli.command, &mut std::io::stdout()).await
 }
 
 pub async fn run_command(env: Env, command: Commands) -> anyhow::Result<()> {
-    run_command_with_writers(env, command, &mut std::io::stdout(), &mut std::io::stderr()).await
+    run_command_with_writers(env, command, &mut std::io::stdout()).await
 }
 
-async fn run_with_writers<W1: Write, W2: Write>(
-    env: Env,
-    stdout: &mut W1,
-    stderr: &mut W2,
-) -> anyhow::Result<()> {
-    let validated_args = Cli::parse_and_validate()?;
-    run_validated_command_with_writers(env, validated_args, stdout, stderr).await
-}
-
-async fn run_command_with_writers<W1: Write, W2: Write>(
+async fn run_with_writers<W: Write>(
     env: Env,
     command: Commands,
-    stdout: &mut W1,
-    stderr: &mut W2,
+    stdout: &mut W,
+) -> anyhow::Result<()> {
+    run_command_with_writers(env, command, stdout).await
+}
+
+async fn run_command_with_writers<W: Write>(
+    env: Env,
+    command: Commands,
+    stdout: &mut W,
 ) -> anyhow::Result<()> {
     let pool = env.get_sqlite_pool().await?;
 
-    ensure_authentication(&pool, &env.schwab_auth, stderr).await?;
+    ensure_authentication(&pool, &env.schwab_auth, stdout).await?;
 
     match command {
         Commands::Buy { ticker, quantity } => {
             let validated_ticker = validate_ticker(&ticker)?;
-            let validated_quantity = validate_quantity(&quantity)?;
-            info!("Processing buy order: ticker={validated_ticker}, quantity={validated_quantity}");
+            if quantity == 0 {
+                return Err(CliError::InvalidQuantity { value: quantity }.into());
+            }
+            info!("Processing buy order: ticker={validated_ticker}, quantity={quantity}");
             execute_order_with_writers(
                 validated_ticker,
-                validated_quantity,
+                quantity,
                 Instruction::Buy,
                 &env,
                 &pool,
                 stdout,
-                stderr,
             )
             .await?;
         }
         Commands::Sell { ticker, quantity } => {
             let validated_ticker = validate_ticker(&ticker)?;
-            let validated_quantity = validate_quantity(&quantity)?;
-            info!(
-                "Processing sell order: ticker={validated_ticker}, quantity={validated_quantity}"
-            );
+            if quantity == 0 {
+                return Err(CliError::InvalidQuantity { value: quantity }.into());
+            }
+            info!("Processing sell order: ticker={validated_ticker}, quantity={quantity}");
             execute_order_with_writers(
                 validated_ticker,
-                validated_quantity,
-                Instruction::Sell,
-                &env,
-                &pool,
-                stdout,
-                stderr,
-            )
-            .await?;
-        }
-    }
-
-    info!("CLI operation completed successfully");
-    Ok(())
-}
-
-async fn run_validated_command_with_writers<W1: Write, W2: Write>(
-    env: Env,
-    validated_args: ValidatedCliArgs,
-    stdout: &mut W1,
-    stderr: &mut W2,
-) -> anyhow::Result<()> {
-    let pool = env.get_sqlite_pool().await?;
-
-    ensure_authentication(&pool, &env.schwab_auth, stderr).await?;
-
-    match validated_args {
-        ValidatedCliArgs::Buy { ticker, quantity } => {
-            info!("Processing buy order: ticker={ticker}, quantity={quantity}");
-            execute_order_with_writers(
-                ticker,
-                quantity,
-                Instruction::Buy,
-                &env,
-                &pool,
-                stdout,
-                stderr,
-            )
-            .await?;
-        }
-        ValidatedCliArgs::Sell { ticker, quantity } => {
-            info!("Processing sell order: ticker={ticker}, quantity={quantity}");
-            execute_order_with_writers(
-                ticker,
                 quantity,
                 Instruction::Sell,
                 &env,
                 &pool,
                 stdout,
-                stderr,
             )
             .await?;
         }
@@ -266,7 +173,7 @@ async fn run_validated_command_with_writers<W1: Write, W2: Write>(
 async fn ensure_authentication<W: Write>(
     pool: &SqlitePool,
     schwab_auth: &crate::schwab::SchwabAuthEnv,
-    stderr: &mut W,
+    stdout: &mut W,
 ) -> anyhow::Result<()> {
     info!("Refreshing authentication tokens if needed");
 
@@ -278,17 +185,17 @@ async fn ensure_authentication<W: Write>(
         Err(crate::schwab::SchwabError::RefreshTokenExpired) => {
             info!("Refresh token has expired, launching interactive OAuth flow");
             writeln!(
-                stderr,
+                stdout,
                 "🔄 Your refresh token has expired. Starting authentication process..."
             )?;
             writeln!(
-                stderr,
+                stdout,
                 "   You will be guided through the Charles Schwab OAuth process."
             )?;
         }
         Err(e) => {
             error!("Failed to obtain valid access token: {e:?}");
-            writeln!(stderr, "❌ Authentication failed: {e}")?;
+            writeln!(stdout, "❌ Authentication failed: {e}")?;
             return Err(e.into());
         }
     }
@@ -297,16 +204,16 @@ async fn ensure_authentication<W: Write>(
         Ok(()) => {
             info!("OAuth flow completed successfully");
             writeln!(
-                stderr,
+                stdout,
                 "✅ Authentication successful! Continuing with your order..."
             )?;
             Ok(())
         }
         Err(oauth_error) => {
             error!("OAuth flow failed: {oauth_error:?}");
-            writeln!(stderr, "❌ Authentication failed: {oauth_error}")?;
+            writeln!(stdout, "❌ Authentication failed: {oauth_error}")?;
             writeln!(
-                stderr,
+                stdout,
                 "   Please ensure you have a valid Charles Schwab account and try again."
             )?;
             Err(oauth_error.into())
@@ -314,16 +221,16 @@ async fn ensure_authentication<W: Write>(
     }
 }
 
-async fn execute_order_with_writers<W1: Write, W2: Write>(
+async fn execute_order_with_writers<W: Write>(
     ticker: String,
-    quantity: f64,
+    quantity: u64,
     instruction: Instruction,
     env: &Env,
     pool: &SqlitePool,
-    stdout: &mut W1,
-    stderr: &mut W2,
+    stdout: &mut W,
 ) -> anyhow::Result<()> {
-    let order = Order::new(ticker.clone(), instruction.clone(), quantity);
+    #[allow(clippy::cast_precision_loss)]
+    let order = Order::new(ticker.clone(), instruction.clone(), quantity as f64);
 
     info!("Created order: ticker={ticker}, instruction={instruction:?}, quantity={quantity}");
 
@@ -341,7 +248,7 @@ async fn execute_order_with_writers<W1: Write, W2: Write>(
             error!(
                 "Failed to place order: ticker={ticker}, instruction={instruction:?}, quantity={quantity}, error={e:?}"
             );
-            writeln!(stderr, "❌ Failed to place order: {e}")?;
+            writeln!(stdout, "❌ Failed to place order: {e}")?;
             return Err(e.into());
         }
     }
@@ -384,11 +291,10 @@ mod tests {
 
         execute_order_with_writers(
             "AAPL".to_string(),
-            100.0,
+            100,
             Instruction::Buy,
             &env,
             &pool,
-            &mut std::io::sink(),
             &mut std::io::sink(),
         )
         .await
@@ -427,11 +333,10 @@ mod tests {
 
         execute_order_with_writers(
             "TSLA".to_string(),
-            50.0,
+            50,
             Instruction::Sell,
             &env,
             &pool,
-            &mut std::io::sink(),
             &mut std::io::sink(),
         )
         .await
@@ -468,11 +373,10 @@ mod tests {
 
         let result = execute_order_with_writers(
             "INVALID".to_string(),
-            100.0,
+            100,
             Instruction::Buy,
             &env,
             &pool,
-            &mut std::io::sink(),
             &mut std::io::sink(),
         )
         .await;
@@ -563,11 +467,10 @@ mod tests {
 
         execute_order_with_writers(
             "AAPL".to_string(),
-            100.0,
+            100,
             Instruction::Buy,
             &env,
             &pool,
-            &mut std::io::sink(),
             &mut std::io::sink(),
         )
         .await
@@ -611,11 +514,10 @@ mod tests {
 
         execute_order_with_writers(
             "TSLA".to_string(),
-            50.0,
+            50,
             Instruction::Sell,
             &env,
             &pool,
-            &mut std::io::sink(),
             &mut std::io::sink(),
         )
         .await
@@ -655,16 +557,14 @@ mod tests {
         });
 
         let mut stdout_buffer = Vec::new();
-        let mut stderr_buffer = Vec::new();
 
         let result = execute_order_with_writers(
             "AAPL".to_string(),
-            123.45,
+            123,
             Instruction::Buy,
             &env,
             &pool,
             &mut stdout_buffer,
-            &mut stderr_buffer,
         )
         .await;
 
@@ -673,13 +573,11 @@ mod tests {
         assert!(result.is_ok());
 
         let stdout_output = String::from_utf8(stdout_buffer).unwrap();
-        let stderr_output = String::from_utf8(stderr_buffer).unwrap();
 
         assert!(stdout_output.contains("✅ Order placed successfully!"));
         assert!(stdout_output.contains("Ticker: AAPL"));
         assert!(stdout_output.contains("Action: Buy"));
-        assert!(stdout_output.contains("Quantity: 123.45"));
-        assert!(stderr_output.is_empty());
+        assert!(stdout_output.contains("Quantity: 123"));
     }
 
     #[tokio::test]
@@ -708,16 +606,14 @@ mod tests {
         });
 
         let mut stdout_buffer = Vec::new();
-        let mut stderr_buffer = Vec::new();
 
         let result = execute_order_with_writers(
             "TSLA".to_string(),
-            50.0,
+            50,
             Instruction::Sell,
             &env,
             &pool,
             &mut stdout_buffer,
-            &mut stderr_buffer,
         )
         .await;
 
@@ -726,10 +622,8 @@ mod tests {
         assert!(result.is_err());
 
         let stdout_output = String::from_utf8(stdout_buffer).unwrap();
-        let stderr_output = String::from_utf8(stderr_buffer).unwrap();
 
-        assert!(stdout_output.is_empty());
-        assert!(stderr_output.contains("❌ Failed to place order:"));
+        assert!(stdout_output.contains("❌ Failed to place order:"));
     }
 
     #[tokio::test]
@@ -757,25 +651,25 @@ mod tests {
             crate::schwab::SchwabError::RefreshTokenExpired
         ));
 
-        let mut stderr_buffer = Vec::new();
+        let mut stdout_buffer = Vec::new();
         writeln!(
-            &mut stderr_buffer,
+            &mut stdout_buffer,
             "🔄 Your refresh token has expired. Starting authentication process..."
         )
         .unwrap();
         writeln!(
-            &mut stderr_buffer,
+            &mut stdout_buffer,
             "   You will be guided through the Charles Schwab OAuth process."
         )
         .unwrap();
 
-        let stderr_output = String::from_utf8(stderr_buffer).unwrap();
+        let stdout_output = String::from_utf8(stdout_buffer).unwrap();
         assert!(
-            stderr_output
+            stdout_output
                 .contains("🔄 Your refresh token has expired. Starting authentication process...")
         );
         assert!(
-            stderr_output.contains("You will be guided through the Charles Schwab OAuth process.")
+            stdout_output.contains("You will be guided through the Charles Schwab OAuth process.")
         );
     }
 
@@ -789,41 +683,10 @@ mod tests {
         assert!(error_msg.contains("uppercase letters only"));
         assert!(error_msg.contains("1-5 characters long"));
 
-        let quantity_error = CliError::InvalidQuantity {
-            value: "-5".to_string(),
-        };
+        let quantity_error = CliError::InvalidQuantity { value: 0 };
         let error_msg = quantity_error.to_string();
-        assert!(error_msg.contains("Invalid quantity: -5"));
-        assert!(error_msg.contains("positive number"));
-    }
-
-    #[test]
-    fn test_validated_cli_args_display() {
-        let buy_args = ValidatedCliArgs::Buy {
-            ticker: "AAPL".to_string(),
-            quantity: 100.0,
-        };
-
-        match buy_args {
-            ValidatedCliArgs::Buy { ticker, quantity } => {
-                assert_eq!(ticker, "AAPL");
-                assert!((quantity - 100.0).abs() < f64::EPSILON);
-            }
-            ValidatedCliArgs::Sell { .. } => panic!("Expected Buy variant"),
-        }
-
-        let sell_args = ValidatedCliArgs::Sell {
-            ticker: "TSLA".to_string(),
-            quantity: 50.5,
-        };
-
-        match sell_args {
-            ValidatedCliArgs::Sell { ticker, quantity } => {
-                assert_eq!(ticker, "TSLA");
-                assert!((quantity - 50.5).abs() < f64::EPSILON);
-            }
-            ValidatedCliArgs::Buy { .. } => panic!("Expected Sell variant"),
-        }
+        assert!(error_msg.contains("Invalid quantity: 0"));
+        assert!(error_msg.contains("greater than zero"));
     }
 
     fn create_test_env_for_cli(mock_server: &MockServer) -> Env {
@@ -900,59 +763,6 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_quantity_valid() {
-        assert!((validate_quantity("100").unwrap() - 100.0).abs() < f64::EPSILON);
-        assert!((validate_quantity("100.5").unwrap() - 100.5).abs() < f64::EPSILON);
-        assert!((validate_quantity("0.5").unwrap() - 0.5).abs() < f64::EPSILON);
-        assert!((validate_quantity("  25.75  ").unwrap() - 25.75).abs() < f64::EPSILON);
-        assert!((validate_quantity("1.0").unwrap() - 1.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_validate_quantity_invalid() {
-        assert!(matches!(
-            validate_quantity("0"),
-            Err(CliError::InvalidQuantity { .. })
-        ));
-        assert!(matches!(
-            validate_quantity("-5"),
-            Err(CliError::InvalidQuantity { .. })
-        ));
-        assert!(matches!(
-            validate_quantity("abc"),
-            Err(CliError::InvalidQuantity { .. })
-        ));
-        assert!(matches!(
-            validate_quantity(""),
-            Err(CliError::InvalidQuantity { .. })
-        ));
-        assert!(matches!(
-            validate_quantity("inf"),
-            Err(CliError::InvalidQuantity { .. })
-        ));
-        assert!(matches!(
-            validate_quantity("nan"),
-            Err(CliError::InvalidQuantity { .. })
-        ));
-    }
-
-    #[test]
-    fn test_validated_cli_args() {
-        let args = ValidatedCliArgs::Buy {
-            ticker: "AAPL".to_string(),
-            quantity: 100.0,
-        };
-
-        match args {
-            ValidatedCliArgs::Buy { ticker, quantity } => {
-                assert_eq!(ticker, "AAPL");
-                assert!((quantity - 100.0).abs() < f64::EPSILON);
-            }
-            ValidatedCliArgs::Sell { .. } => panic!("Expected Buy variant"),
-        }
-    }
-
-    #[test]
     fn verify_cli() {
         use clap::CommandFactory;
         Cli::command().debug_assert();
@@ -961,45 +771,13 @@ mod tests {
     #[test]
     fn test_parse_and_validate_buy_command() {
         let validated_ticker = validate_ticker("aapl").unwrap();
-        let validated_quantity = validate_quantity("100.5").unwrap();
-
         assert_eq!(validated_ticker, "AAPL");
-        assert!((validated_quantity - 100.5).abs() < f64::EPSILON);
-
-        let validated_args = ValidatedCliArgs::Buy {
-            ticker: validated_ticker,
-            quantity: validated_quantity,
-        };
-
-        match validated_args {
-            ValidatedCliArgs::Buy { ticker, quantity } => {
-                assert_eq!(ticker, "AAPL");
-                assert!((quantity - 100.5).abs() < f64::EPSILON);
-            }
-            ValidatedCliArgs::Sell { .. } => panic!("Expected Buy variant"),
-        }
     }
 
     #[test]
     fn test_parse_and_validate_sell_command() {
         let validated_ticker = validate_ticker("TSLA").unwrap();
-        let validated_quantity = validate_quantity("50").unwrap();
-
         assert_eq!(validated_ticker, "TSLA");
-        assert!((validated_quantity - 50.0).abs() < f64::EPSILON);
-
-        let validated_args = ValidatedCliArgs::Sell {
-            ticker: validated_ticker,
-            quantity: validated_quantity,
-        };
-
-        match validated_args {
-            ValidatedCliArgs::Sell { ticker, quantity } => {
-                assert_eq!(ticker, "TSLA");
-                assert!((quantity - 50.0).abs() < f64::EPSILON);
-            }
-            ValidatedCliArgs::Buy { .. } => panic!("Expected Sell variant"),
-        }
     }
 
     #[test]
@@ -1014,22 +792,6 @@ mod tests {
         assert_eq!(validate_ticker("   aapl   ").unwrap(), "AAPL");
 
         assert_eq!(validate_ticker("a").unwrap(), "A");
-    }
-
-    #[test]
-    fn test_validate_quantity_edge_cases() {
-        assert!((validate_quantity("0.001").unwrap() - 0.001).abs() < f64::EPSILON);
-
-        assert!((validate_quantity("999999.99").unwrap() - 999_999.99).abs() < f64::EPSILON);
-
-        assert!((validate_quantity("1e2").unwrap() - 100.0).abs() < f64::EPSILON);
-
-        assert!(matches!(
-            validate_quantity("1e999"),
-            Err(CliError::InvalidQuantity { .. })
-        ));
-
-        assert!((validate_quantity("   123.456   ").unwrap() - 123.456).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -1089,16 +851,14 @@ mod tests {
         });
 
         let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
 
         let result = execute_order_with_writers(
             "AAPL".to_string(),
-            100.0,
+            100,
             Instruction::Buy,
             &env,
             &pool,
             &mut stdout,
-            &mut stderr,
         )
         .await;
 
@@ -1138,16 +898,14 @@ mod tests {
         });
 
         let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
 
         let result = execute_order_with_writers(
             "TSLA".to_string(),
-            50.0,
+            50,
             Instruction::Sell,
             &env,
             &pool,
             &mut stdout,
-            &mut stderr,
         )
         .await;
 
@@ -1188,16 +946,14 @@ mod tests {
         });
 
         let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
 
         let result = execute_order_with_writers(
             "AAPL".to_string(),
-            100.0,
+            100,
             Instruction::Buy,
             &env,
             &pool,
             &mut stdout,
-            &mut stderr,
         )
         .await;
 
@@ -1207,11 +963,11 @@ mod tests {
         );
         token_refresh_mock.assert();
 
-        let stderr_str = String::from_utf8(stderr).unwrap();
+        let stdout_str = String::from_utf8(stdout).unwrap();
         assert!(
-            stderr_str.contains("authentication")
-                || stderr_str.contains("refresh token")
-                || stderr_str.contains("expired")
+            stdout_str.contains("authentication")
+                || stdout_str.contains("refresh token")
+                || stdout_str.contains("expired")
         );
     }
 
@@ -1268,16 +1024,14 @@ mod tests {
         });
 
         let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
 
         let result = execute_order_with_writers(
             "AAPL".to_string(),
-            100.0,
+            100,
             Instruction::Buy,
             &env,
             &pool,
             &mut stdout,
-            &mut stderr,
         )
         .await;
 
@@ -1305,25 +1059,23 @@ mod tests {
 
         // Test that CLI properly handles database without tokens
         let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
 
         let result = execute_order_with_writers(
             "AAPL".to_string(),
-            100.0,
+            100,
             Instruction::Buy,
             &env,
             &pool,
             &mut stdout,
-            &mut stderr,
         )
         .await;
 
         assert!(result.is_err(), "CLI should fail when no tokens are stored");
-        let stderr_str = String::from_utf8(stderr).unwrap();
+        let stdout_str = String::from_utf8(stdout).unwrap();
         assert!(
-            stderr_str.contains("no rows returned")
-                || stderr_str.contains("Database error")
-                || stderr_str.contains("Failed to place order")
+            stdout_str.contains("no rows returned")
+                || stdout_str.contains("Database error")
+                || stdout_str.contains("Failed to place order")
         );
 
         // Now add tokens and verify database integration works
@@ -1347,16 +1099,14 @@ mod tests {
         });
 
         let mut stdout2 = Vec::new();
-        let mut stderr2 = Vec::new();
 
         let result2 = execute_order_with_writers(
             "AAPL".to_string(),
-            100.0,
+            100,
             Instruction::Buy,
             &env,
             &pool,
             &mut stdout2,
-            &mut stderr2,
         )
         .await;
 
@@ -1385,25 +1135,23 @@ mod tests {
         });
 
         let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
 
         let result = execute_order_with_writers(
             "AAPL".to_string(),
-            100.0,
+            100,
             Instruction::Buy,
             &env,
             &pool,
             &mut stdout,
-            &mut stderr,
         )
         .await;
 
         assert!(result.is_err(), "CLI should fail on network errors");
         account_mock.assert();
 
-        let stderr_str = String::from_utf8(stderr).unwrap();
+        let stdout_str = String::from_utf8(stdout).unwrap();
         assert!(
-            !stderr_str.is_empty(),
+            !stdout_str.is_empty(),
             "Should provide error feedback to user"
         );
     }
@@ -1438,16 +1186,14 @@ mod tests {
         });
 
         let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
 
         let result = execute_order_with_writers(
             "INVALID".to_string(),
-            999_999.0,
+            999_999,
             Instruction::Buy,
             &env,
             &pool,
             &mut stdout,
-            &mut stderr,
         )
         .await;
 
@@ -1458,11 +1204,11 @@ mod tests {
         account_mock.assert();
         order_mock.assert();
 
-        let stderr_str = String::from_utf8(stderr).unwrap();
+        let stdout_str = String::from_utf8(stdout).unwrap();
         assert!(
-            stderr_str.contains("order")
-                || stderr_str.contains("error")
-                || stderr_str.contains("400")
+            stdout_str.contains("order")
+                || stdout_str.contains("error")
+                || stdout_str.contains("400")
         );
     }
 }
