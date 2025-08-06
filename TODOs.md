@@ -2,19 +2,30 @@
 
 Based on analysis of the existing codebase, this plan extends the current CLI to test the ability to take the opposite side of trades given a transaction hash. The implementation will maximize code reuse by leveraging existing trade logic components.
 
-## Task 1. Create Transaction Hash to Trade Converter ✓
+## Task 1. Create Transaction Hash to Trade Converter ✅
 
 Create new functionality to reconstruct trades from transaction hashes, leveraging existing `PartialArbTrade` constructors:
 
+**FIXES COMPLETED:**
+- [x] Fix warning logic: only emit warning when multiple trades found, not on every success
+- [x] Refactor to use functional programming patterns (iterator chains instead of imperative loops)
+- [x] Add comprehensive test coverage for all scenarios
+- [x] Reduce nesting by extracting helper functions
+
+**Implementation Tasks:**
 - [x] Create @src/trade/processor.rs module to house transaction hash processing logic
 - [x] Add `try_from_tx_hash` function that takes `tx_hash`, `provider`, `env` and returns `Result<PartialArbTrade, TradeConversionError>` (extend the error type in case no trade is found for tx hash)
-- [x] Implement transaction receipt lookup and log parsing to find `ClearV2`/`TakeOrderV2` events
-- [x] Filter logs by orderbook contract address and use existing `try_from_clear_v2`/`try_from_take_order_if_target_order` constructors
-- [x] Handle edge cases: transaction not found, no relevant logs, multiple relevant events (return first match and emit a warning log)
-- [x] Add comprehensive unit tests with mocked provider responses covering success and failure scenarios
-- [x] Ensure tests pass: `cargo test`
-- [x] Ensure clippy passes: `cargo clippy`
-- [x] Ensure fmt passes: `cargo fmt`
+- [x] **FIXED**: Implement transaction receipt lookup using functional patterns (filter_map, find_map)
+- [x] **FIXED**: Extract log processing into separate functions to reduce nesting
+- [x] **FIXED**: Only warn when multiple valid trades are found, not on every success  
+- [x] **FIXED**: Use iterator chains instead of imperative for loops
+- [x] Filter logs by orderbook contract address and use existing constructors
+- [x] **ADDED**: Test cases for ClearV2 events with successful trade conversion
+- [x] **ADDED**: Test cases for orderbook events that don't match target order
+- [x] Handle edge cases: transaction not found, no relevant logs
+- [x] Ensure tests pass: `cargo test` ✅ (4 comprehensive tests)
+- [x] Ensure clippy passes: `cargo clippy` ✅ (no warnings/errors)
+- [x] Ensure fmt passes: `cargo fmt` ✅ (properly formatted)
 - [x] Update TODOs.md with completion status
 
 ## Task 2. Extend CLI Commands with Transaction Hash Processing
