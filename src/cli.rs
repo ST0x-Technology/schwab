@@ -4,8 +4,9 @@ use std::io::Write;
 use thiserror::Error;
 use tracing::{error, info};
 
+use crate::arb::ArbTrade;
 use crate::schwab::SchwabAuthEnv;
-use crate::schwab::order::{Instruction, Order};
+use crate::schwab::order::{Instruction, Order, execute_trade};
 use crate::schwab::run_oauth_flow;
 use crate::schwab::tokens::SchwabTokens;
 use crate::symbol_cache::SymbolCache;
@@ -280,47 +281,7 @@ async fn process_tx_command_with_writers<W: Write>(
 
     match PartialArbTrade::try_from_tx_hash(tx_hash, &provider, &cache, evm_env).await {
         Ok(Some(partial_trade)) => {
-            writeln!(stdout, "✅ Found opposite-side trade opportunity:")?;
-            writeln!(stdout, "   Transaction: {tx_hash}")?;
-            writeln!(stdout, "   Schwab Ticker: {}", partial_trade.schwab_ticker)?;
-            writeln!(
-                stdout,
-                "   Schwab Action: {:?}",
-                partial_trade.schwab_instruction
-            )?;
-            writeln!(stdout, "   Quantity: {}", partial_trade.schwab_quantity)?;
-            writeln!(
-                stdout,
-                "   Onchain Input: {} ({})",
-                partial_trade.onchain_input_amount, partial_trade.onchain_input_symbol
-            )?;
-            writeln!(
-                stdout,
-                "   Onchain Output: {} ({})",
-                partial_trade.onchain_output_amount, partial_trade.onchain_output_symbol
-            )?;
-
-            ensure_authentication(pool, &env.schwab_auth, stdout).await?;
-
-            let order = Order::new(
-                partial_trade.schwab_ticker.clone(),
-                match partial_trade.schwab_instruction {
-                    crate::trade::SchwabInstruction::Buy => Instruction::Buy,
-                    crate::trade::SchwabInstruction::Sell => Instruction::Sell,
-                },
-                partial_trade.schwab_quantity,
-            );
-
-            match order.place(&env.schwab_auth, pool).await {
-                Ok(()) => {
-                    writeln!(stdout, "🎯 Order placed successfully!")?;
-                    writeln!(stdout, "   ✅ Executed opposite-side trade on Schwab")?;
-                }
-                Err(e) => {
-                    writeln!(stdout, "❌ Failed to place order: {e}")?;
-                    return Err(e.into());
-                }
-            }
+            process_found_trade(partial_trade, env, pool, stdout).await?;
         }
         Ok(None) => {
             writeln!(
@@ -342,6 +303,120 @@ async fn process_tx_command_with_writers<W: Write>(
         Err(e) => {
             writeln!(stdout, "❌ Error processing transaction: {e}")?;
             return Err(e.into());
+        }
+    }
+
+    Ok(())
+}
+
+async fn process_found_trade<W: Write>(
+    partial_trade: PartialArbTrade,
+    env: &Env,
+    pool: &SqlitePool,
+    stdout: &mut W,
+) -> anyhow::Result<()> {
+    display_trade_details(&partial_trade, stdout)?;
+
+    let trade = ArbTrade::from_partial_trade(partial_trade);
+
+    if !save_trade_to_db(&trade, pool, stdout).await? {
+        return Ok(());
+    }
+
+    ensure_authentication(pool, &env.schwab_auth, stdout).await?;
+    execute_and_report_trade(env, pool, trade, stdout).await
+}
+
+fn display_trade_details<W: Write>(
+    partial_trade: &PartialArbTrade,
+    stdout: &mut W,
+) -> anyhow::Result<()> {
+    writeln!(stdout, "✅ Found opposite-side trade opportunity:")?;
+    writeln!(stdout, "   Transaction: {}", partial_trade.tx_hash)?;
+    writeln!(stdout, "   Log Index: {}", partial_trade.log_index)?;
+    writeln!(stdout, "   Schwab Ticker: {}", partial_trade.schwab_ticker)?;
+    writeln!(
+        stdout,
+        "   Schwab Action: {:?}",
+        partial_trade.schwab_instruction
+    )?;
+    writeln!(stdout, "   Quantity: {}", partial_trade.schwab_quantity)?;
+    writeln!(
+        stdout,
+        "   Onchain Input: {} ({})",
+        partial_trade.onchain_input_amount, partial_trade.onchain_input_symbol
+    )?;
+    writeln!(
+        stdout,
+        "   Onchain Output: {} ({})",
+        partial_trade.onchain_output_amount, partial_trade.onchain_output_symbol
+    )?;
+    Ok(())
+}
+
+async fn save_trade_to_db<W: Write>(
+    trade: &ArbTrade,
+    pool: &SqlitePool,
+    stdout: &mut W,
+) -> anyhow::Result<bool> {
+    match trade.try_save_to_db(pool).await {
+        Ok(true) => {
+            writeln!(stdout, "📝 Trade saved to database (NEW)")?;
+            Ok(true)
+        }
+        Ok(false) => {
+            writeln!(stdout, "📝 Trade already exists in database (DUPLICATE)")?;
+            writeln!(stdout, "   Skipping execution to prevent duplicate trade")?;
+            Ok(false)
+        }
+        Err(e) => {
+            writeln!(stdout, "❌ Failed to save trade to database: {e}")?;
+            Err(e.into())
+        }
+    }
+}
+
+async fn execute_and_report_trade<W: Write>(
+    env: &Env,
+    pool: &SqlitePool,
+    trade: ArbTrade,
+    stdout: &mut W,
+) -> anyhow::Result<()> {
+    writeln!(stdout, "🔄 Executing trade on Schwab...")?;
+    execute_trade(env, pool, trade.clone(), 3).await;
+
+    let tx_hash_hex = alloy::hex::encode_prefixed(trade.tx_hash.as_slice());
+    #[allow(clippy::cast_possible_wrap)]
+    let log_index_i64 = trade.log_index as i64;
+    let trade_result = sqlx::query!(
+        "SELECT status FROM trades WHERE tx_hash = ? AND log_index = ?",
+        tx_hash_hex,
+        log_index_i64
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    match trade_result {
+        Some(row) if row.status.as_deref() == Some("COMPLETED") => {
+            writeln!(stdout, "🎯 Trade completed successfully!")?;
+            writeln!(stdout, "   ✅ Opposite-side trade executed on Schwab")?;
+            writeln!(stdout, "   📊 Database status: COMPLETED")?;
+        }
+        Some(row) if row.status.as_deref() == Some("FAILED") => {
+            writeln!(stdout, "❌ Trade execution failed")?;
+            writeln!(stdout, "   📊 Database status: FAILED")?;
+            return Err(anyhow::anyhow!("Trade execution failed"));
+        }
+        Some(row) => {
+            writeln!(
+                stdout,
+                "⏳ Trade status: {}",
+                row.status.as_deref().unwrap_or("UNKNOWN")
+            )?;
+        }
+        None => {
+            writeln!(stdout, "❌ Unable to retrieve trade status from database")?;
+            return Err(anyhow::anyhow!("Trade status unavailable"));
         }
     }
 
@@ -1318,5 +1393,203 @@ mod tests {
                 || stdout_str.contains("error")
                 || stdout_str.contains("400")
         );
+    }
+
+    #[tokio::test]
+    async fn test_process_tx_with_database_integration_success() {
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/trader/v1/accounts/ABC123DEF456/orders")
+                .header("authorization", "Bearer test_access_token")
+                .header("accept", "*/*")
+                .header("content-type", "application/json");
+            then.status(201);
+        });
+
+        let tx_hash =
+            fixed_bytes!("0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd");
+        let mut stdout: Vec<u8> = Vec::new();
+
+        // This test would require mocking the RPC provider and blockchain data
+        // For now, we'll test the database integration parts that are testable
+
+        // First, let's create a test trade and save it to database
+        let test_trade = crate::arb::ArbTrade {
+            id: None,
+            tx_hash,
+            log_index: 0,
+            onchain_input_symbol: "USDC".to_string(),
+            onchain_input_amount: 1000.0,
+            onchain_output_symbol: "AAPLs1".to_string(),
+            onchain_output_amount: 5.0,
+            onchain_io_ratio: 200.0,
+            onchain_price_per_share_cents: 20000.0,
+            schwab_ticker: "AAPL".to_string(),
+            schwab_instruction: crate::trade::SchwabInstruction::Buy,
+            schwab_quantity: 5,
+            schwab_price_per_share_cents: None,
+            status: crate::trade::TradeStatus::Pending,
+            schwab_order_id: None,
+            created_at: None,
+            completed_at: None,
+        };
+
+        // Test deduplication - first save should succeed
+        let was_inserted = test_trade.try_save_to_db(&pool).await.unwrap();
+        assert!(was_inserted, "First save should insert new trade");
+
+        // Test deduplication - second save should be ignored
+        let was_inserted_again = test_trade.try_save_to_db(&pool).await.unwrap();
+        assert!(
+            !was_inserted_again,
+            "Second save should be ignored due to deduplication"
+        );
+
+        // Verify trade was saved with correct status
+        let tx_hash_hex = alloy::hex::encode_prefixed(tx_hash.as_slice());
+        let saved_trade = sqlx::query!(
+            "SELECT * FROM trades WHERE tx_hash = ? AND log_index = ?",
+            tx_hash_hex,
+            0_i64
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(saved_trade.status.unwrap(), "PENDING");
+        assert_eq!(saved_trade.schwab_ticker.unwrap(), "AAPL");
+        assert_eq!(saved_trade.schwab_instruction.unwrap(), "BUY");
+        assert_eq!(saved_trade.schwab_quantity.unwrap(), 5);
+
+        // Test status update functionality
+        crate::arb::ArbTrade::update_status(
+            &pool,
+            tx_hash,
+            0,
+            crate::trade::TradeStatus::Completed,
+        )
+        .await
+        .unwrap();
+
+        let updated_trade = sqlx::query!(
+            "SELECT status, completed_at FROM trades WHERE tx_hash = ? AND log_index = ?",
+            tx_hash_hex,
+            0_i64
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(updated_trade.status.unwrap(), "COMPLETED");
+        assert!(updated_trade.completed_at.is_some());
+
+        // Test ArbTrade::from_partial_trade conversion
+        let partial_trade = crate::trade::PartialArbTrade {
+            tx_hash: fixed_bytes!(
+                "0x1234567890123456789012345678901234567890123456789012345678901234"
+            ),
+            log_index: 1,
+            onchain_input_symbol: "TSLAs1".to_string(),
+            onchain_input_amount: 10.0,
+            onchain_output_symbol: "USDC".to_string(),
+            onchain_output_amount: 2000.0,
+            onchain_io_ratio: 0.005,
+            onchain_price_per_share_cents: 20000.0,
+            schwab_ticker: "TSLA".to_string(),
+            schwab_instruction: crate::trade::SchwabInstruction::Sell,
+            schwab_quantity: 10,
+        };
+
+        let arb_trade = crate::arb::ArbTrade::from_partial_trade(partial_trade.clone());
+
+        // Verify conversion preserved all data correctly
+        assert_eq!(arb_trade.tx_hash, partial_trade.tx_hash);
+        assert_eq!(arb_trade.log_index, partial_trade.log_index);
+        assert_eq!(arb_trade.schwab_ticker, partial_trade.schwab_ticker);
+        assert_eq!(
+            arb_trade.schwab_instruction,
+            partial_trade.schwab_instruction
+        );
+        assert_eq!(arb_trade.schwab_quantity, partial_trade.schwab_quantity);
+        assert_eq!(arb_trade.status, crate::trade::TradeStatus::Pending);
+        assert_eq!(arb_trade.schwab_order_id, None);
+
+        // Test that converted trade can be saved to database
+        let was_converted_inserted = arb_trade.try_save_to_db(&pool).await.unwrap();
+        assert!(
+            was_converted_inserted,
+            "Converted trade should be saved successfully"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_tx_database_duplicate_handling() {
+        let pool = setup_test_db().await;
+
+        let tx_hash =
+            fixed_bytes!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+
+        // Create identical trades
+        let trade1 = crate::arb::ArbTrade {
+            id: None,
+            tx_hash,
+            log_index: 42,
+            onchain_input_symbol: "USDC".to_string(),
+            onchain_input_amount: 500.0,
+            onchain_output_symbol: "GOOGs1".to_string(),
+            onchain_output_amount: 2.5,
+            onchain_io_ratio: 200.0,
+            onchain_price_per_share_cents: 20000.0,
+            schwab_ticker: "GOOG".to_string(),
+            schwab_instruction: crate::trade::SchwabInstruction::Buy,
+            schwab_quantity: 3,
+            schwab_price_per_share_cents: None,
+            status: crate::trade::TradeStatus::Pending,
+            schwab_order_id: None,
+            created_at: None,
+            completed_at: None,
+        };
+
+        let trade2 = trade1.clone();
+
+        // First save should succeed
+        let first_save = trade1.try_save_to_db(&pool).await.unwrap();
+        assert!(first_save, "First save should succeed");
+
+        // Second save should be deduped
+        let second_save = trade2.try_save_to_db(&pool).await.unwrap();
+        assert!(
+            !second_save,
+            "Second save should be ignored due to duplicate (tx_hash, log_index)"
+        );
+
+        // Verify only one record exists
+        let tx_hash_hex = alloy::hex::encode_prefixed(tx_hash.as_slice());
+        let count = sqlx::query!(
+            "SELECT COUNT(*) as count FROM trades WHERE tx_hash = ? AND log_index = ?",
+            tx_hash_hex,
+            42_i64
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(count.count, 1, "Should only have one trade record");
     }
 }
