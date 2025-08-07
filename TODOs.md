@@ -2,9 +2,11 @@
 
 Based on the design decision that Schwab API doesn't support fractional shares but our onchain tokenized stocks do, this plan implements a focused trade accumulation and batching system integrated directly into the existing trade processing flow.
 
-## Task 1. Design Minimal Database Schema for Trade Accumulation
+## Task 1. Design Minimal Database Schema for Trade Accumulation ✅ COMPLETED
 
 Create minimal database schema to track running net positions per symbol and ensure proper trade linkage:
+
+**Migration Created:** `migrations/20250807153331_add_trade_batching_support.sql`
 
 **Database Schema Design:**
 - Create `trade_accumulator` table to track running net positions per symbol
@@ -13,7 +15,7 @@ Create minimal database schema to track running net positions per symbol and ens
 - Track trade processing status to prevent double-accumulation
 
 **Implementation Tasks:**
-- [ ] Create single SQLx migration file using naming pattern:
+- [x] Create single SQLx migration file using naming pattern:
   - Run: `touch "migrations/$(date -u +%Y%m%d%H%M%S)_add_trade_batching_support.sql"`
   - Add `trade_accumulator` table with columns:
     - `symbol: TEXT PRIMARY KEY` (e.g., "AAPL") 
@@ -28,11 +30,12 @@ Create minimal database schema to track running net positions per symbol and ens
     - `executed_at: TIMESTAMP`
   - Add `batch_execution_id: INTEGER` foreign key to existing `trades` table
   - Extend existing `trades` table status to include "ACCUMULATED" status
-- [ ] Create basic database indexes for efficient position lookups
-- [ ] Ensure tests pass: `cargo test`
-- [ ] Ensure clippy passes: `cargo clippy`
-- [ ] Ensure fmt passes: `cargo fmt`
-- [ ] Update TODOs.md with completion status
+- [x] Create basic database indexes for efficient position lookups
+- [x] Ensure tests pass: `cargo test`
+- [x] Ensure clippy passes: `cargo clippy`
+- [x] Ensure fmt passes: `cargo fmt`
+- [x] Update @TODOs.md to take account implementation details of this task in subsequent tasks
+- [x] Update @TODOs.md with completion status
 
 ```sql
 -- Example schema additions
@@ -86,6 +89,7 @@ Integrate position accumulation directly into the existing trade processing flow
 - [ ] Ensure tests pass: `cargo test`
 - [ ] Ensure clippy passes: `cargo clippy` 
 - [ ] Ensure fmt passes: `cargo fmt`
+- [ ] Update @TODOs.md to take account implementation details of this task in subsequent tasks
 - [ ] Update TODOs.md with completion status
 
 **Trade Processing Flow:**
@@ -122,6 +126,7 @@ Add batch execution logic that properly links trades to their batch executions:
   - `execute_batch_if_ready(pool: &SqlitePool, schwab_env: &SchwabEnv, symbol: &str) -> Result<Option<BatchResult>, BatchError>`
   - `record_batch_execution(pool: &SqlitePool, symbol: &str, shares: i32, direction: &str, order_id: &str) -> Result<i64, sqlx::Error>`
   - `link_trades_to_batch(pool: &SqlitePool, symbol: &str, batch_id: i64) -> Result<Vec<i64>, sqlx::Error>`
+  - Query trades with status "ACCUMULATED" for given symbol to find batch participants
 - [ ] Implement `BatchResult` struct to represent completed batch operations with trade IDs
 - [ ] Modify `process_trade` function to call batch execution check after position accumulation
 - [ ] Handle batch execution results:
@@ -131,10 +136,11 @@ Add batch execution logic that properly links trades to their batch executions:
 - [ ] Add comprehensive error handling for Schwab API failures, database errors
 - [ ] Handle edge cases: order rejections, insufficient buying power
 - [ ] Add integration tests using httpmock for Schwab API and in-memory database
-- [ ] Add unit tests for batch logic with mocked dependencies  
+- [ ] Add unit tests for batch logic with mocked dependencies
 - [ ] Ensure tests pass: `cargo test`
 - [ ] Ensure clippy passes: `cargo clippy`
 - [ ] Ensure fmt passes: `cargo fmt` 
+- [ ] Update @TODOs.md to take account implementation details and any missing bits
 - [ ] Update TODOs.md with completion status
 
 **Batch Execution Example with Trade Tracking:**
