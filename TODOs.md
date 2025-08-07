@@ -1,187 +1,146 @@
-# Implementation Plan: CLI Extension for Opposite-Side Trade Testing
+# Implementation Plan: Trade Accumulation and Batching for Fractional Shares
 
-Based on analysis of the existing codebase, this plan extends the current CLI to test the ability to take the opposite side of trades given a transaction hash. The implementation will maximize code reuse by leveraging existing trade logic components.
+Based on the design decision that Schwab API doesn't support fractional shares but our onchain tokenized stocks do, this plan implements a focused trade accumulation and batching system integrated directly into the existing trade processing flow.
 
-## Task 1. Create Transaction Hash to Trade Converter ✅
+## Task 1. Design Minimal Database Schema for Trade Accumulation
 
-Create new functionality to reconstruct trades from transaction hashes, leveraging existing `PartialArbTrade` constructors:
+Create minimal database schema to track running net positions per symbol:
 
-**FIXES COMPLETED:**
-- [x] Fix warning logic: only emit warning when multiple trades found, not on every success
-- [x] Refactor to use functional programming patterns (iterator chains instead of imperative loops)
-- [x] Add comprehensive test coverage for all scenarios
-- [x] Reduce nesting by extracting helper functions
+**Database Schema Design:**
+- Create `trade_accumulator` table to track running net positions per symbol
+- Add `batch_executions` table to record when accumulated positions are executed as batches
+- Link individual trades to their contributing batch execution
 
 **Implementation Tasks:**
-- [x] Create @src/trade/processor.rs module to house transaction hash processing logic
-- [x] Add `try_from_tx_hash` function that takes `tx_hash`, `provider`, `env` and returns `Result<PartialArbTrade, TradeConversionError>` (extend the error type in case no trade is found for tx hash)
-- [x] **FIXED**: Implement transaction receipt lookup using functional patterns (filter_map, find_map)
-- [x] **FIXED**: Extract log processing into separate functions to reduce nesting
-- [x] **FIXED**: Only warn when multiple valid trades are found, not on every success  
-- [x] **FIXED**: Use iterator chains instead of imperative for loops
-- [x] Filter logs by orderbook contract address and use existing constructors
-- [x] **ADDED**: Test cases for ClearV2 events with successful trade conversion
-- [x] **ADDED**: Test cases for orderbook events that don't match target order
-- [x] Handle edge cases: transaction not found, no relevant logs
-- [x] Ensure tests pass: `cargo test` ✅ (4 comprehensive tests)
-- [x] Ensure clippy passes: `cargo clippy` ✅ (no warnings/errors)
-- [x] Ensure fmt passes: `cargo fmt` ✅ (properly formatted)
-- [x] Update TODOs.md with completion status
+- [ ] Create SQLx migration for `trade_accumulator` table with columns:
+  - `symbol: TEXT PRIMARY KEY` (e.g., "AAPL") 
+  - `net_position: REAL` (running sum, can be positive/negative)
+  - `last_updated: TIMESTAMP`
+- [ ] Create SQLx migration for `batch_executions` table with columns:
+  - `id: INTEGER PRIMARY KEY`
+  - `symbol: TEXT`
+  - `executed_shares: INTEGER` (whole shares executed on Schwab)
+  - `direction: TEXT` (BUY/SELL)
+  - `schwab_order_id: TEXT`
+  - `executed_at: TIMESTAMP`
+- [ ] Add `batch_execution_id: INTEGER` foreign key to existing `trades` table
+- [ ] Create basic database indexes for efficient position lookups
+- [ ] Ensure tests pass: `cargo test`
+- [ ] Ensure clippy passes: `cargo clippy`
+- [ ] Ensure fmt passes: `cargo fmt`
+- [ ] Update TODOs.md with completion status
 
-**FIXES COMPLETED:**
-- [x] Fix warning logic: only emit warning when multiple trades found, not on every success
-- [x] Add comprehensive test coverage for all scenarios  
-- [x] Reduce nesting by extracting helper functions
+```sql
+-- Example schema additions
+CREATE TABLE trade_accumulator (
+  symbol TEXT PRIMARY KEY,
+  net_position REAL NOT NULL DEFAULT 0.0,
+  last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
-**ALL REFINEMENT SUBTASKS COMPLETED:**
+CREATE TABLE batch_executions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol TEXT NOT NULL,
+  executed_shares INTEGER NOT NULL,
+  direction TEXT NOT NULL CHECK(direction IN ('BUY', 'SELL')),
+  schwab_order_id TEXT,
+  executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
-**1. Import and Qualification Fixes:**
-- [x] Removed unused `Address` import and simplified imports following CLAUDE.md guidelines
-- [x] Used `alloy::rpc::types::Log` for disambiguation instead of qualifying the full path
-- [x] Ensured consistent import style following CLAUDE.md guidelines
+-- Add to existing trades table
+ALTER TABLE trades ADD COLUMN batch_execution_id INTEGER REFERENCES batch_executions(id);
+```
 
-**2. Functional Programming Improvements:**  
-- [x] Refactored `collect_valid_trades` function to use functional programming patterns
-- [x] Replaced imperative for-loop with iterator-based approach while preserving async semantics
-- [x] Inlined the collection logic directly in main function
+## Task 2. Add Position Accumulation Logic to Trade Processing
 
-**3. Logic Optimization:**
-- [x] Modified main logic to short-circuit on first valid trade found instead of collecting all
-- [x] Filter logs by matching selectors (ClearV2/TakeOrderV2) before attempting conversion
-- [x] Only convert the first log that matches rather than processing all matches
+Integrate position accumulation directly into the existing trade processing flow in `@src/lib.rs`:
 
-**4. Code Simplification:**
-- [x] Inlined log metadata construction directly in `try_convert_log_to_trade` calls
-- [x] Removed the `extract_matching_logs` wrapper function as unnecessary abstraction  
-- [x] Inlined `collect_valid_trades` function into main `try_from_tx_hash` function
-- [x] Simplified iterator expressions without increasing nesting complexity
+**Core Logic:**
+- Before executing Schwab trade, update accumulated position for the symbol
+- Calculate position delta based on onchain trade direction and quantity
+- Atomically update `trade_accumulator` table with new net position
+- Determine if accumulated position is ready for batch execution (>= 1 whole share)
 
-**5. Quality Assurance:**
-- [x] All existing tests pass after refactoring: `cargo test` ✅ (138 tests passed)
-- [x] No clippy warnings: `cargo clippy` ✅ (clean output)
-- [x] Proper formatting: `cargo fmt` ✅ (properly formatted)
-- [x] Warning logic works correctly (only warns on multiple trades found)
-- [x] Functional programming patterns maintain same semantics as imperative version
+**Implementation Tasks:**
+- [ ] Add position accumulation functions to existing trade processing:
+  - `update_accumulated_position(pool: &SqlitePool, symbol: &str, delta: f64) -> Result<f64, sqlx::Error>`
+  - `get_executable_batch(pool: &SqlitePool, symbol: &str) -> Result<Option<(i32, String)>, sqlx::Error>`
+  - Extract symbol from `ArbTrade` (remove "s1" suffix to get base symbol like "AAPL")
+  - Calculate position delta based on onchain trade direction and quantity
+- [ ] Modify `process_trade` function in `@src/lib.rs` to call accumulation before Schwab execution
+- [ ] Add database transaction handling to ensure atomic position updates
+- [ ] Add comprehensive error handling for database operations
+- [ ] Add unit tests for position accumulation functions with in-memory SQLite
+- [ ] Ensure tests pass: `cargo test`
+- [ ] Ensure clippy passes: `cargo clippy` 
+- [ ] Ensure fmt passes: `cargo fmt`
+- [ ] Update TODOs.md with completion status
 
-## Task 2. Extend CLI Commands with Transaction Hash Processing ✅
+**Key Design Patterns:**
+- Use existing SQLite connection patterns from `@src/arb.rs`
+- Follow existing error handling patterns
+- Implement atomic database operations using transactions
 
-Add new CLI command that processes a transaction hash to create and execute opposite-side trades:
+## Task 3. Implement Batch Execution Check Before Schwab Trade
 
-- [x] Add new `ProcessTx` variant to `Commands` enum in `@src/cli.rs`
-- [x] Add tx_hash parameter, RPC URL parameter to CLI args (removed block number as not needed)
-- [x] Create `process_tx_command` function that validates transaction hash format
-- [x] Implement transaction lookup using existing `EvmEnv` and provider setup patterns
-- [x] Add comprehensive validation for transaction hash format (0x prefixed, 64 hex chars)
-- [x] Update `@src/cli.rs` command matching to handle new `ProcessTx` variant
-- [x] Add integration tests for new command in CLI test module
-- [x] Ensure tests pass: `cargo test` ✅ (143 tests passed)
-- [x] Ensure clippy passes: `cargo clippy` ✅ (no warnings)
-- [x] Ensure fmt passes: `cargo fmt` ✅ (properly formatted)
-- [x] Update TODOs.md with completion status
+Add batch execution logic that checks accumulated positions before executing individual Schwab trades:
 
-**IMPLEMENTATION COMPLETED:**
-- [x] **New CLI Command**: Added `process-tx` subcommand with `--tx-hash` parameter (B256 type)
-- [x] **Proper Type Parsing**: Uses clap's built-in type parsing for B256 and f64 instead of manual string validation
-- [x] **Provider Support**: Smart provider connection supporting both WebSocket and HTTP RPC endpoints from EvmEnv
-- [x] **Trade Processing**: Full integration with existing `PartialArbTrade::try_from_tx_hash` from Task 1
-- [x] **Schwab Integration**: Automatic opposite-side trade execution using existing authentication and order placement logic
-- [x] **Error Handling**: Comprehensive error messages for transaction not found, no tradeable events, and network issues
-- [x] **EVM Environment**: Leverages existing `EvmEnv` with properly typed `url::Url`, `Address`, and `B256` fields
-- [x] **Code Quality**: Follows project patterns - no duplicate arguments, proper type usage, simplified validation
-- [x] **Test Coverage**: Unit tests for validation functions and integration test for transaction processing
-- [x] **Quality Assurance**: All tests pass (139), no clippy warnings, properly formatted code
+**Batch Execution Flow:**
+- After updating accumulated position, check if >= 1 whole share is ready
+- If yes, execute batch trade for whole shares and update accumulated position
+- If no, skip Schwab execution and just record the accumulated trade
+- Record batch execution details for audit
 
-**Key Improvements Made:**
-- **Eliminated Manual Validation**: Removed string parsing for `tx_hash` and `quantity` - clap handles type conversion
-- **Removed Duplicate Arguments**: Uses existing `EvmEnv.ws_rpc_url` instead of separate `--rpc-url` parameter  
-- **Proper Type Usage**: `B256` for transaction hashes, `f64` for quantities, following existing patterns
-- **Cleaner Code**: Removed unnecessary validation functions and error types
+**Implementation Tasks:**
+- [ ] Add batch execution functions:
+  - `execute_batch_if_ready(pool: &SqlitePool, schwab_env: &SchwabEnv, symbol: &str) -> Result<Option<BatchResult>, BatchError>`
+  - `record_batch_execution(pool: &SqlitePool, symbol: &str, shares: i32, direction: &str, order_id: &str) -> Result<i64, sqlx::Error>`
+- [ ] Implement `BatchResult` struct to represent completed batch operations
+- [ ] Modify `process_trade` function to call batch execution check after position accumulation
+- [ ] Handle batch execution results: update accumulated positions and link trades to batches
+- [ ] Add comprehensive error handling for Schwab API failures, database errors
+- [ ] Handle edge cases: order rejections, insufficient buying power
+- [ ] Add integration tests using httpmock for Schwab API and in-memory database
+- [ ] Add unit tests for batch logic with mocked dependencies  
+- [ ] Ensure tests pass: `cargo test`
+- [ ] Ensure clippy passes: `cargo clippy`
+- [ ] Ensure fmt passes: `cargo fmt` 
+- [ ] Update TODOs.md with completion status
 
-## Task 3. Create Transaction Hash to Trade Conversion Logic ✅
-
-Implement the core logic to convert a transaction hash into a tradeable `PartialArbTrade`:
-
-- [x] Add `try_from_tx_hash` function to `@src/trade/processor.rs` (implemented with proper async signature)
-- [x] Implement transaction receipt lookup using alloy provider with proper error handling
-- [x] Parse transaction logs for `ClearV2` and `TakeOrderV2` events from the orderbook
-- [x] Filter logs by orderbook contract address from `EvmEnv` and event signatures
-- [x] Use existing `PartialArbTrade::try_from_clear_v2` and `try_from_take_order_if_target_order` methods
-- [x] Handle case where transaction contains multiple relevant logs (warns and returns first match)
-- [x] Add comprehensive error handling for invalid transaction hash, network issues, no relevant events
-- [x] Add unit tests with mocked provider responses (4 comprehensive test cases)
-- [x] Ensure tests pass: `cargo test` ✅ (all tests passing)
-- [x] Ensure clippy passes: `cargo clippy` ✅ (no warnings)
-- [x] Ensure fmt passes: `cargo fmt` ✅ (properly formatted)
-- [x] Update TODOs.md with completion status
-
-**IMPLEMENTATION COMPLETED:**
-- [x] **Function Implementation**: `try_from_tx_hash` function fully implemented with proper async/await patterns
-- [x] **Transaction Receipt Lookup**: Uses alloy provider to fetch transaction receipts with error handling for not found cases
-- [x] **Event Filtering**: Filters logs by both event signatures (ClearV2/TakeOrderV2) and orderbook contract address
-- [x] **Trade Conversion**: Leverages existing conversion methods with proper log metadata construction
-- [x] **Multiple Logs Handling**: Returns first valid trade found and warns when multiple trades exist
-- [x] **Comprehensive Testing**: 4 test cases covering transaction not found, no relevant events, successful conversion, and non-target order scenarios
-- [x] **Code Quality**: All quality checks pass (tests, clippy, fmt) following project standards
-
-## Task 4. Add Database Integration for CLI Transaction Processing ✅
-
-Connect the CLI transaction processing with database persistence to match main bot behavior:
-
-- [x] Modify `process_tx_command_with_writers` to save `ArbTrade` to database before executing
-- [x] Convert `PartialArbTrade` to `ArbTrade` using `ArbTrade::from_partial_trade()` 
-- [x] Add database deduplication check using `ArbTrade::try_save_to_db()` like main bot does
-- [x] Use existing `execute_trade` function from `@src/schwab/order.rs` instead of direct `Order::place()`
-- [x] Add database status tracking (PENDING → COMPLETED/FAILED) for CLI trades
-- [x] Update CLI output to show database trade ID and status information
-- [x] Add integration tests for database persistence in CLI workflow
-- [x] Ensure tests pass: `cargo test` ✅ (136 tests passed)
-- [x] Ensure clippy passes: `cargo clippy` ✅ (no errors after refactoring)
-- [x] Ensure fmt passes: `cargo fmt` ✅ (properly formatted)
-- [x] Update TODOs.md with completion status
-
-**IMPLEMENTATION COMPLETED:**
-
-**Database Integration Enhancements:**
-- **Full Database Persistence**: CLI now saves `ArbTrade` records to database before execution, matching main bot behavior
-- **Deduplication Logic**: Uses `ArbTrade::try_save_to_db()` to prevent duplicate trades based on `(tx_hash, log_index)` unique constraint
-- **Status Tracking**: Implements full PENDING → COMPLETED/FAILED status lifecycle with database persistence
-- **Trade Execution**: Uses existing `execute_trade` function with retry logic and proper error handling
-- **Enhanced CLI Output**: Shows database save status, execution progress, and final trade status from database
-
-**Code Quality Improvements:**
-- **Function Refactoring**: Broke down 106-line function into smaller, focused functions for better maintainability
-- **Comprehensive Testing**: Added 2 new integration tests covering database persistence and deduplication scenarios
-- **Clean Code**: All clippy issues resolved, proper error handling, consistent with existing patterns
-
-**Key Features Added:**
-- **Database-First Approach**: Trade records created before Schwab execution to ensure data integrity
-- **Duplicate Prevention**: Skips execution if trade already exists in database (prevents duplicate orders)
-- **Status Verification**: Queries database after execution to confirm trade status and report to user
-- **Error Resilience**: Proper error handling for database failures, network issues, and execution problems
-
-**Quality Assurance:**
-- **136 tests passing**: All existing functionality preserved, new features thoroughly tested
-- **Clippy clean**: No linting warnings after proper function extraction and cast annotations
-- **Formatted code**: Consistent formatting following project style guidelines
+**Batch Execution Example:**
+```rust
+// Example flow:
+// 1. Trade 1: 0.3 AAPL → accumulate, no execution (total: 0.3)
+// 2. Trade 2: 0.5 AAPL → accumulate, no execution (total: 0.8) 
+// 3. Trade 3: 0.4 AAPL → accumulate, execute 1 AAPL batch (remaining: 0.2)
+```
 
 ## Implementation Notes
 
-### Reusable Components Identified:
-- **Symbol Cache**: `@src/symbol_cache.rs` - Thread-safe ERC20 symbol caching
-- **Trade Conversion**: `@src/trade/mod.rs` - `PartialArbTrade` conversion logic from blockchain events
-- **Order Execution**: `@src/schwab/order.rs` - Schwab API integration and order placement
-- **Authentication**: `@src/schwab/tokens.rs` - OAuth token management
-- **Database Integration**: `@src/arb.rs` - Trade persistence and status tracking
+### Architecture Overview
 
-### Key Architecture Decisions:
-1. **Shared Logic**: Extract transaction processing logic into `@src/trade/processor.rs` to be used by both main bot and CLI
-2. **Provider Reuse**: Leverage existing alloy provider setup patterns from `@src/lib.rs`
-3. **Error Consistency**: Use existing error types (`TradeConversionError`, `SchwabError`) for consistent error handling
-4. **Database Integration**: Reuse existing `ArbTrade` struct and database schema for consistency
-5. **CLI Patterns**: Follow existing CLI command patterns for authentication, validation, and output formatting
+**Integration Approach:**
+- No separate services - accumulation logic integrated directly into existing `process_trade` function
+- Event-driven batching - check for executable positions after each trade accumulation
+- Database-centric approach - all position state persisted in SQLite
 
-### Testing Strategy:
-- **Unit Tests**: Mock all external dependencies (blockchain RPC, Schwab API) using existing test patterns
-- **Integration Tests**: Test complete flow from transaction hash to trade execution using httpmock for Schwab API
-- **Error Handling**: Comprehensive test coverage for all failure scenarios (invalid tx, network errors, auth failures)
-- **Edge Cases**: Test edge cases like transactions with multiple orderbook events, invalid order configurations
+### Key Design Decisions
+
+1. **Minimal Integration**: Add accumulation logic directly to existing trade processing flow
+2. **Event-Driven Batching**: Check for executable positions after each trade instead of background processing  
+3. **Database-Centric Approach**: All position state persisted in SQLite for crash recovery
+4. **Preserve Existing Architecture**: Maintain current async processing, only add accumulation step
+5. **Backward Compatibility**: All existing functionality (CLI, auth) remains unchanged
+
+### Risk Mitigation
+
+- **Maximum Fractional Exposure**: Limited to <1 share per symbol (worst case: N symbols × 0.99 shares each)
+- **Position Persistence**: All positions survive bot restarts via database persistence
+- **Audit Trail**: Complete linkage from individual trades to batch executions
+- **Error Recovery**: Failed batch executions don't lose position data
+
+### Testing Strategy
+
+- **Unit Tests**: Mock database for position accumulation and batch logic testing
+- **Integration Tests**: Full workflow testing with httpmock for Schwab API  
+- **Realistic Scenarios**: Test scenarios matching README.md examples (0.3 + 0.5 + 0.4 = 1.2 AAPL)
