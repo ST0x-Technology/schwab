@@ -123,17 +123,17 @@ Implement the core logic to convert a transaction hash into a tradeable `Partial
 - [x] **Comprehensive Testing**: 4 test cases covering transaction not found, no relevant events, successful conversion, and non-target order scenarios
 - [x] **Code Quality**: All quality checks pass (tests, clippy, fmt) following project standards
 
-## Task 4. Integrate Trade Execution with Existing Schwab Logic
+## Task 4. Add Database Integration for CLI Transaction Processing
 
-Connect the new transaction processing with existing Schwab order execution:
+Connect the CLI transaction processing with database persistence to match main bot behavior:
 
-- [ ] Modify `execute_order_with_writers` in `@src/cli.rs` to accept `PartialArbTrade` instead of raw ticker/quantity
-- [ ] Create `execute_trade_from_partial` function that converts `PartialArbTrade` to Schwab order
-- [ ] Reuse existing authentication, order validation, and execution logic from current CLI
-- [ ] Add proper error propagation from trade conversion to CLI output
-- [ ] Ensure database integration works (save `ArbTrade` to database like main bot)
-- [ ] Add success/failure output messages showing onchain vs offchain trade details
-- [ ] Test end-to-end flow with mock Schwab API responses
+- [ ] Modify `process_tx_command_with_writers` to save `ArbTrade` to database before executing
+- [ ] Convert `PartialArbTrade` to `ArbTrade` using `ArbTrade::from_partial_trade()` 
+- [ ] Add database deduplication check using `ArbTrade::try_save_to_db()` like main bot does
+- [ ] Use existing `execute_trade` function from `@src/schwab/order.rs` instead of direct `Order::place()`
+- [ ] Add database status tracking (PENDING → COMPLETED/FAILED) for CLI trades
+- [ ] Update CLI output to show database trade ID and status information
+- [ ] Add integration tests for database persistence in CLI workflow
 - [ ] Ensure tests pass: `cargo test`
 - [ ] Ensure clippy passes: `cargo clippy`
 - [ ] Ensure fmt passes: `cargo fmt`
@@ -153,7 +153,7 @@ Ensure the new command has proper help text, validation, and error handling:
 - [ ] Ensure tests pass: `cargo test`
 - [ ] Ensure clippy passes: `cargo clippy`
 - [ ] Ensure fmt passes: `cargo fmt`  
-- [ ] Update TODOs.md with completion status
+- [ ] Update TODOs.md with completion status and any relevant changes to subsequent tasks
 
 ## Task 6. Update CLI Binary and Documentation
 
@@ -169,7 +169,7 @@ Update the CLI entry point and provide clear usage documentation:
 - [ ] Ensure tests pass: `cargo test`
 - [ ] Ensure clippy passes: `cargo clippy`
 - [ ] Ensure fmt passes: `cargo fmt`
-- [ ] Update TODOs.md with completion status
+- [ ] Update TODOs.md with completion status and any relevant changes to subsequent tasks
 
 ## Implementation Notes
 
