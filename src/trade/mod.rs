@@ -7,6 +7,7 @@ use clap::Parser;
 use std::num::ParseFloatError;
 
 use crate::bindings::IOrderBookV4::OrderV3;
+use crate::schwab::SchwabInstruction;
 use crate::symbol_cache::SymbolCache;
 
 mod clear;
@@ -24,28 +25,10 @@ pub struct EvmEnv {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SchwabInstruction {
-    Buy,
-    Sell,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TradeStatus {
     Pending,
     Completed,
     Failed,
-}
-
-impl serde::Serialize for SchwabInstruction {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(match self {
-            Self::Buy => "BUY",
-            Self::Sell => "SELL",
-        })
-    }
 }
 
 impl TradeStatus {
@@ -123,6 +106,10 @@ pub enum TradeConversionError {
     Database(#[from] sqlx::Error),
     #[error("Transaction not found: {0}")]
     TransactionNotFound(B256),
+    #[error("Invalid Schwab instruction in database: {0}")]
+    InvalidSchwabInstruction(String),
+    #[error("Invalid trade status in database: {0}")]
+    InvalidTradeStatus(String),
 }
 
 struct OrderFill {
@@ -652,15 +639,6 @@ mod tests {
 
         let amount = U256::from(999u64);
         assert!((u256_to_f64(amount, 0).unwrap() - 999.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_schwab_instruction_serialize() {
-        let buy_json = serde_json::to_string(&SchwabInstruction::Buy).unwrap();
-        assert_eq!(buy_json, "\"BUY\"");
-
-        let sell_json = serde_json::to_string(&SchwabInstruction::Sell).unwrap();
-        assert_eq!(sell_json, "\"SELL\"");
     }
 
     #[tokio::test]

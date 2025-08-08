@@ -177,7 +177,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trade::{SchwabInstruction, TradeStatus};
+    use crate::schwab::SchwabInstruction;
+    use crate::trade::TradeStatus;
     use alloy::primitives::{IntoLogData, U256, address, fixed_bytes, keccak256};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
     use alloy::rpc::types::Log;
@@ -259,11 +260,8 @@ mod tests {
         .await
         .unwrap();
 
-        let count = sqlx::query!("SELECT COUNT(*) as count FROM trades")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(count.count, 0);
+        let count = ArbTrade::db_count(&pool).await.unwrap();
+        assert_eq!(count, 0);
     }
 
     #[tokio::test]
@@ -297,11 +295,8 @@ mod tests {
         let was_inserted = duplicate_trade.try_save_to_db(&pool).await.unwrap();
         assert!(!was_inserted);
 
-        let count = sqlx::query!("SELECT COUNT(*) as count FROM trades")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(count.count, 1);
+        let count = ArbTrade::db_count(&pool).await.unwrap();
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]
@@ -366,11 +361,8 @@ mod tests {
         .await
         .unwrap();
 
-        let count = sqlx::query!("SELECT COUNT(*) as count FROM trades")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(count.count, 1);
+        let count = ArbTrade::db_count(&pool).await.unwrap();
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]
@@ -466,21 +458,17 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
-        let count = sqlx::query!("SELECT COUNT(*) as count FROM trades")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(count.count, 1);
+        let count = ArbTrade::db_count(&pool).await.unwrap();
+        assert_eq!(count, 1);
 
-        let trade = sqlx::query!("SELECT * FROM trades LIMIT 1")
-            .fetch_one(&pool)
+        let trade = ArbTrade::find_by_tx_hash_and_log_index(&pool, tx_hash, 1)
             .await
             .unwrap();
-        assert_eq!(trade.onchain_input_symbol.unwrap(), "USDC");
-        assert_eq!(trade.onchain_output_symbol.unwrap(), "AAPLs1");
-        assert_eq!(trade.schwab_ticker.unwrap(), "AAPL");
-        assert_eq!(trade.schwab_instruction.unwrap(), "BUY");
+        assert_eq!(trade.onchain_input_symbol, "USDC");
+        assert_eq!(trade.onchain_output_symbol, "AAPLs1");
+        assert_eq!(trade.schwab_ticker, "AAPL");
+        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
         assert!(trade.schwab_price_per_share_cents.is_none());
-        assert_eq!(trade.status.unwrap(), "PENDING");
+        assert_eq!(trade.status, TradeStatus::Pending);
     }
 }

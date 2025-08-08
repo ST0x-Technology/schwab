@@ -124,6 +124,13 @@ impl SchwabTokens {
         Ok(new_tokens.access_token)
     }
 
+    pub async fn db_count(pool: &SqlitePool) -> Result<i64, SchwabError> {
+        let count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_auth")
+            .fetch_one(pool)
+            .await?;
+        Ok(count.count)
+    }
+
     pub fn spawn_automatic_token_refresh(pool: SqlitePool, env: SchwabAuthEnv) {
         tokio::spawn(async move {
             if let Err(e) = Self::start_automatic_token_refresh_loop(pool, env).await {
@@ -271,11 +278,7 @@ mod tests {
 
         updated_tokens.store(&pool).await.unwrap();
 
-        let count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_auth")
-            .fetch_one(&pool)
-            .await
-            .unwrap()
-            .count;
+        let count = SchwabTokens::db_count(&pool).await.unwrap();
         assert_eq!(count, 1);
 
         let stored_tokens = SchwabTokens::load(&pool).await.unwrap();

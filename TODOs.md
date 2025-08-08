@@ -6,14 +6,15 @@ Based on the design decision that Schwab API doesn't support fractional shares b
 
 The previous approach of replacing the entire schema at once caused too many breaking changes. This revised plan moves database queries out of tests into helper functions, then implements clean cut-over to new schema without dual writes.
 
-## Task 0. Move Database Queries Out of Tests (Foundation)
+## Task 0. Move Database Queries Out of Tests (Foundation) ✅ COMPLETED
 
 **Strategy:** Ensure tests don't contain direct SQL queries, but instead use helper functions/methods. This allows schema changes without breaking all tests.
 
 - [x] Identify all tests that contain direct `sqlx::query!` calls
 - [x] Create helper functions or extend existing struct methods to encapsulate database operations:
   - `ArbTrade::db_count()`, `ArbTrade::find_by_tx_hash_and_log_index()`, etc.
-  - `ArbTrade::get_status_by_tx_hash_and_log_index()`, `SchwabTokens::db_count()`, etc.
+  - `SchwabTokens::db_count()`, etc.
+  - Removed overly specific helper methods that weren't reusable
 - [x] Update all tests to use these helper functions instead of direct SQL
 - [x] Ensure all business logic already uses struct methods (most already does)
 - [x] Ensure test/clippy/fmt pass: `cargo test -q && cargo clippy -- -D clippy::all && cargo fmt`
@@ -83,7 +84,7 @@ The previous approach of replacing the entire schema at once caused too many bre
 
 ## Current Status
 
-**Current State:** Working codebase with both old and new schemas available. All existing functionality works (136 tests passing), and new tables are ready for incremental implementation.
+**Current State:** Working codebase with both old and new schemas available. All existing functionality works (138 tests passing), and new tables are ready for incremental implementation.
 
 **Next Step:** Begin Task 2 - Create new schema structs with database methods. The foundation from Task 0 is complete, making the schema cut-over much easier.
 

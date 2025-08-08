@@ -10,6 +10,42 @@ pub mod tokens;
 pub use auth::{AccountNumbers, SchwabAuthEnv, SchwabAuthResponse};
 pub use tokens::SchwabTokens;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchwabInstruction {
+    Buy,
+    Sell,
+}
+
+impl SchwabInstruction {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Buy => "BUY",
+            Self::Sell => "SELL",
+        }
+    }
+}
+
+impl std::str::FromStr for SchwabInstruction {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "BUY" => Ok(Self::Buy),
+            "SELL" => Ok(Self::Sell),
+            _ => Err(format!("Invalid Schwab instruction: {s}")),
+        }
+    }
+}
+
+impl serde::Serialize for SchwabInstruction {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum SchwabError {
     #[error("Failed to create header value: {0}")]
@@ -229,5 +265,36 @@ mod tests {
         assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
 
         mock.assert();
+    }
+
+    #[test]
+    fn test_schwab_instruction_as_str() {
+        assert_eq!(SchwabInstruction::Buy.as_str(), "BUY");
+        assert_eq!(SchwabInstruction::Sell.as_str(), "SELL");
+    }
+
+    #[test]
+    fn test_schwab_instruction_from_str() {
+        assert_eq!(
+            "BUY".parse::<SchwabInstruction>().unwrap(),
+            SchwabInstruction::Buy
+        );
+        assert_eq!(
+            "SELL".parse::<SchwabInstruction>().unwrap(),
+            SchwabInstruction::Sell
+        );
+
+        let result = "INVALID".parse::<SchwabInstruction>();
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Invalid Schwab instruction: INVALID");
+    }
+
+    #[test]
+    fn test_schwab_instruction_serialize() {
+        let buy_json = serde_json::to_string(&SchwabInstruction::Buy).unwrap();
+        assert_eq!(buy_json, "\"BUY\"");
+
+        let sell_json = serde_json::to_string(&SchwabInstruction::Sell).unwrap();
+        assert_eq!(sell_json, "\"SELL\"");
     }
 }

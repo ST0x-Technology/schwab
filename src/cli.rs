@@ -6,11 +6,12 @@ use tracing::{error, info};
 
 use crate::arb::ArbTrade;
 use crate::schwab::SchwabAuthEnv;
+use crate::schwab::SchwabInstruction;
 use crate::schwab::order::{Instruction, Order, execute_trade};
 use crate::schwab::run_oauth_flow;
 use crate::schwab::tokens::SchwabTokens;
 use crate::symbol_cache::SymbolCache;
-use crate::trade::{EvmEnv, PartialArbTrade, TradeConversionError};
+use crate::trade::{EvmEnv, PartialArbTrade, TradeConversionError, TradeStatus};
 use crate::{Env, LogLevel};
 use alloy::primitives::B256;
 use alloy::providers::{ProviderBuilder, WsConnect};
@@ -385,38 +386,22 @@ async fn execute_and_report_trade<W: Write>(
     writeln!(stdout, "🔄 Executing trade on Schwab...")?;
     execute_trade(env, pool, trade.clone(), 3).await;
 
-    let tx_hash_hex = alloy::hex::encode_prefixed(trade.tx_hash.as_slice());
-    #[allow(clippy::cast_possible_wrap)]
-    let log_index_i64 = trade.log_index as i64;
-    let trade_result = sqlx::query!(
-        "SELECT status FROM trades WHERE tx_hash = ? AND log_index = ?",
-        tx_hash_hex,
-        log_index_i64
-    )
-    .fetch_optional(pool)
-    .await?;
+    let updated_trade =
+        ArbTrade::find_by_tx_hash_and_log_index(pool, trade.tx_hash, trade.log_index).await?;
 
-    match trade_result {
-        Some(row) if row.status.as_deref() == Some("COMPLETED") => {
+    match updated_trade.status {
+        TradeStatus::Completed => {
             writeln!(stdout, "🎯 Trade completed successfully!")?;
             writeln!(stdout, "   ✅ Opposite-side trade executed on Schwab")?;
             writeln!(stdout, "   📊 Database status: COMPLETED")?;
         }
-        Some(row) if row.status.as_deref() == Some("FAILED") => {
+        TradeStatus::Failed => {
             writeln!(stdout, "❌ Trade execution failed")?;
             writeln!(stdout, "   📊 Database status: FAILED")?;
             return Err(anyhow::anyhow!("Trade execution failed"));
         }
-        Some(row) => {
-            writeln!(
-                stdout,
-                "⏳ Trade status: {}",
-                row.status.as_deref().unwrap_or("UNKNOWN")
-            )?;
-        }
-        None => {
-            writeln!(stdout, "❌ Unable to retrieve trade status from database")?;
-            return Err(anyhow::anyhow!("Trade status unavailable"));
+        TradeStatus::Pending => {
+            writeln!(stdout, "⏳ Trade status: {}", TradeStatus::Pending.as_str())?;
         }
     }
 
@@ -1441,7 +1426,7 @@ mod tests {
             onchain_io_ratio: 200.0,
             onchain_price_per_share_cents: 20000.0,
             schwab_ticker: "AAPL".to_string(),
-            schwab_instruction: crate::trade::SchwabInstruction::Buy,
+            schwab_instruction: SchwabInstruction::Buy,
             schwab_quantity: 5,
             schwab_price_per_share_cents: None,
             status: crate::trade::TradeStatus::Pending,
@@ -1462,45 +1447,29 @@ mod tests {
         );
 
         // Verify trade was saved with correct status
-        let tx_hash_hex = alloy::hex::encode_prefixed(tx_hash.as_slice());
-        let saved_trade = sqlx::query!(
-            "SELECT * FROM trades WHERE tx_hash = ? AND log_index = ?",
-            tx_hash_hex,
-            0_i64
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let saved_trade = ArbTrade::find_by_tx_hash_and_log_index(&pool, tx_hash, 0)
+            .await
+            .unwrap();
 
-        assert_eq!(saved_trade.status.unwrap(), "PENDING");
-        assert_eq!(saved_trade.schwab_ticker.unwrap(), "AAPL");
-        assert_eq!(saved_trade.schwab_instruction.unwrap(), "BUY");
-        assert_eq!(saved_trade.schwab_quantity.unwrap(), 5);
+        assert_eq!(saved_trade.status, TradeStatus::Pending);
+        assert_eq!(saved_trade.schwab_ticker, "AAPL");
+        assert_eq!(saved_trade.schwab_instruction, SchwabInstruction::Buy);
+        assert_eq!(saved_trade.schwab_quantity, 5);
 
         // Test status update functionality
-        crate::arb::ArbTrade::update_status(
-            &pool,
-            tx_hash,
-            0,
-            crate::trade::TradeStatus::Completed,
-        )
-        .await
-        .unwrap();
+        ArbTrade::update_status(&pool, tx_hash, 0, TradeStatus::Completed)
+            .await
+            .unwrap();
 
-        let updated_trade = sqlx::query!(
-            "SELECT status, completed_at FROM trades WHERE tx_hash = ? AND log_index = ?",
-            tx_hash_hex,
-            0_i64
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let updated_trade = ArbTrade::find_by_tx_hash_and_log_index(&pool, tx_hash, 0)
+            .await
+            .unwrap();
 
-        assert_eq!(updated_trade.status.unwrap(), "COMPLETED");
+        assert_eq!(updated_trade.status, TradeStatus::Completed);
         assert!(updated_trade.completed_at.is_some());
 
         // Test ArbTrade::from_partial_trade conversion
-        let partial_trade = crate::trade::PartialArbTrade {
+        let partial_trade = PartialArbTrade {
             tx_hash: fixed_bytes!(
                 "0x1234567890123456789012345678901234567890123456789012345678901234"
             ),
@@ -1512,11 +1481,11 @@ mod tests {
             onchain_io_ratio: 0.005,
             onchain_price_per_share_cents: 20000.0,
             schwab_ticker: "TSLA".to_string(),
-            schwab_instruction: crate::trade::SchwabInstruction::Sell,
+            schwab_instruction: SchwabInstruction::Sell,
             schwab_quantity: 10,
         };
 
-        let arb_trade = crate::arb::ArbTrade::from_partial_trade(partial_trade.clone());
+        let arb_trade = ArbTrade::from_partial_trade(partial_trade.clone());
 
         // Verify conversion preserved all data correctly
         assert_eq!(arb_trade.tx_hash, partial_trade.tx_hash);
@@ -1527,7 +1496,7 @@ mod tests {
             partial_trade.schwab_instruction
         );
         assert_eq!(arb_trade.schwab_quantity, partial_trade.schwab_quantity);
-        assert_eq!(arb_trade.status, crate::trade::TradeStatus::Pending);
+        assert_eq!(arb_trade.status, TradeStatus::Pending);
         assert_eq!(arb_trade.schwab_order_id, None);
 
         // Test that converted trade can be saved to database
@@ -1545,8 +1514,7 @@ mod tests {
         let tx_hash =
             fixed_bytes!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
 
-        // Create identical trades
-        let trade1 = crate::arb::ArbTrade {
+        let trade1 = ArbTrade {
             id: None,
             tx_hash,
             log_index: 42,
@@ -1557,10 +1525,10 @@ mod tests {
             onchain_io_ratio: 200.0,
             onchain_price_per_share_cents: 20000.0,
             schwab_ticker: "GOOG".to_string(),
-            schwab_instruction: crate::trade::SchwabInstruction::Buy,
+            schwab_instruction: SchwabInstruction::Buy,
             schwab_quantity: 3,
             schwab_price_per_share_cents: None,
-            status: crate::trade::TradeStatus::Pending,
+            status: TradeStatus::Pending,
             schwab_order_id: None,
             created_at: None,
             completed_at: None,
@@ -1568,28 +1536,20 @@ mod tests {
 
         let trade2 = trade1.clone();
 
-        // First save should succeed
         let first_save = trade1.try_save_to_db(&pool).await.unwrap();
         assert!(first_save, "First save should succeed");
 
-        // Second save should be deduped
         let second_save = trade2.try_save_to_db(&pool).await.unwrap();
         assert!(
             !second_save,
             "Second save should be ignored due to duplicate (tx_hash, log_index)"
         );
 
-        // Verify only one record exists
-        let tx_hash_hex = alloy::hex::encode_prefixed(tx_hash.as_slice());
-        let count = sqlx::query!(
-            "SELECT COUNT(*) as count FROM trades WHERE tx_hash = ? AND log_index = ?",
-            tx_hash_hex,
-            42_i64
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let trade = ArbTrade::find_by_tx_hash_and_log_index(&pool, tx_hash, 42)
+            .await
+            .unwrap();
 
-        assert_eq!(count.count, 1, "Should only have one trade record");
+        assert_eq!(trade.tx_hash, tx_hash);
+        assert_eq!(trade.log_index, 42);
     }
 }

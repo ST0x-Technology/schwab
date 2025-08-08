@@ -56,6 +56,55 @@ impl ArbTrade {
         }
     }
 
+    pub async fn find_by_tx_hash_and_log_index(
+        pool: &SqlitePool,
+        tx_hash: B256,
+        log_index: u64,
+    ) -> Result<Self, TradeConversionError> {
+        let tx_hash_hex = hex::encode_prefixed(tx_hash.as_slice());
+        #[allow(clippy::cast_possible_wrap)]
+        let log_index_i64 = log_index as i64;
+
+        let row = sqlx::query!(
+            "SELECT * FROM trades WHERE tx_hash = ? AND log_index = ?",
+            tx_hash_hex,
+            log_index_i64
+        )
+        .fetch_one(pool)
+        .await?;
+
+        let schwab_instruction = row
+            .schwab_instruction
+            .parse()
+            .map_err(TradeConversionError::InvalidSchwabInstruction)?;
+
+        let status = row
+            .status
+            .parse()
+            .map_err(TradeConversionError::InvalidTradeStatus)?;
+
+        Ok(Self {
+            id: row.id,
+            tx_hash,
+            log_index,
+            onchain_input_symbol: row.onchain_input_symbol,
+            onchain_input_amount: row.onchain_input_amount,
+            onchain_output_symbol: row.onchain_output_symbol,
+            onchain_output_amount: row.onchain_output_amount,
+            onchain_io_ratio: row.onchain_io_ratio,
+            onchain_price_per_share_cents: row.onchain_price_per_share_cents,
+            schwab_ticker: row.schwab_ticker,
+            schwab_instruction,
+            #[allow(clippy::cast_sign_loss)]
+            schwab_quantity: row.schwab_quantity as u64,
+            schwab_price_per_share_cents: row.schwab_price_per_share_cents,
+            status,
+            schwab_order_id: row.schwab_order_id,
+            created_at: Some(row.created_at.and_utc()),
+            completed_at: row.completed_at.map(|dt| dt.and_utc()),
+        })
+    }
+
     pub async fn db_count(pool: &SqlitePool) -> Result<i64, TradeConversionError> {
         let count = sqlx::query!("SELECT COUNT(*) as count FROM trades")
             .fetch_one(pool)
