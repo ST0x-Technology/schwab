@@ -12,12 +12,13 @@ This is a Rust-based arbitrage bot for tokenized equities that monitors onchain 
 - `cargo build` - Build the project
 - `cargo run --bin main` - Run the main arbitrage bot
 - `cargo run --bin auth` - Run the authentication flow for Charles Schwab OAuth setup
+- `cargo run --bin cli` - Run the command-line interface for manual operations
 
 ### Testing
-- `cargo test` - Run all tests
-- `cargo test --lib` - Run library tests only
-- `cargo test --bin <binary>` - Run tests for specific binary
-- `cargo test <test_name>` - Run specific test
+- `cargo test -q` - Run all tests
+- `cargo test -q --lib` - Run library tests only
+- `cargo test -q --bin <binary>` - Run tests for specific binary
+- `cargo test -q <test_name>` - Run specific test
 
 ### Database Management
 - `sqlx db create` - Apply database migrations
@@ -27,7 +28,7 @@ This is a Rust-based arbitrage bot for tokenized equities that monitors onchain 
 
 ### Development Tools
 - `rainix-rs-static` - Run Rust static analysis
-- `cargo clippy` or `cargo-clippy` in Direnv - Run Clippy for linting
+- `cargo clippy -- -D clippy::all` - Run Clippy for linting
 - `cargo fmt` - Format code
 - `cargo-tarpaulin --skip-clean --out Html` - Generate test coverage report
 
