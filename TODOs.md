@@ -42,6 +42,10 @@ The previous approach of replacing the entire schema at once caused too many bre
   - `OnchainTrade::save()`, `OnchainTrade::find()`, `OnchainTrade::count()`, etc.
   - `SchwabExecution::save()`, `SchwabExecution::find()`, etc.
   - Position accumulator helper functions
+  - **CRITICAL: Apply same strict parsing patterns as `ArbTrade::find_by_tx_hash_and_log_index()`:**
+    - No `.unwrap_or()` default values for status/direction parsing
+    - Return proper `TradeConversionError` variants for invalid data
+    - Fail fast on database corruption instead of masking with defaults
 - [ ] Add unit tests for new structs using helper functions (not direct SQL)
 - [ ] Ensure test/clippy/fmt pass: `cargo test -q && cargo clippy -- -D clippy::all && cargo fmt`
 
@@ -103,8 +107,8 @@ CREATE TABLE onchain_trades (
   symbol TEXT NOT NULL,
   amount REAL NOT NULL,
   price_usdc REAL NOT NULL,
-  status TEXT CHECK (status IN ('PENDING', 'ACCUMULATED', 'EXECUTED')),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  status TEXT CHECK (status IN ('PENDING', 'ACCUMULATED', 'EXECUTED')) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
   UNIQUE (tx_hash, log_index)
 );
 
@@ -112,17 +116,17 @@ CREATE TABLE schwab_executions (
   id INTEGER PRIMARY KEY,
   symbol TEXT NOT NULL,
   shares INTEGER NOT NULL,
-  direction TEXT CHECK (direction IN ('BUY', 'SELL')),
+  direction TEXT CHECK (direction IN ('BUY', 'SELL')) NOT NULL,
   order_id TEXT,
   price_cents INTEGER,
-  status TEXT CHECK (status IN ('PENDING', 'COMPLETED', 'FAILED')),
-  executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  status TEXT CHECK (status IN ('PENDING', 'COMPLETED', 'FAILED')) NOT NULL,
+  executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
 CREATE TABLE position_accumulator (
   symbol TEXT PRIMARY KEY,
   net_position REAL NOT NULL DEFAULT 0.0,
-  last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
 CREATE TABLE trade_executions (
