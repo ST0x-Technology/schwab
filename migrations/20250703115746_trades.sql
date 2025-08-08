@@ -4,18 +4,18 @@ CREATE TABLE trades (
   tx_hash TEXT NOT NULL,
   log_index INTEGER NOT NULL,
 
-  onchain_input_symbol TEXT,
+  onchain_input_symbol TEXT NOT NULL,
   -- TODO: Consider migrating to INTEGER (base units) or DECIMAL for exact precision
   -- Current REAL type may lose precision for 18-decimal tokenized stocks and financial calculations
   -- Will need to change for V5 orderbook upgrade (custom Float types)
-  onchain_input_amount REAL,
-  onchain_output_symbol TEXT,
-  onchain_output_amount REAL,
+  onchain_input_amount REAL NOT NULL,
+  onchain_output_symbol TEXT NOT NULL,
+  onchain_output_amount REAL NOT NULL,
   onchain_io_ratio REAL,
   onchain_price_per_share_cents REAL,
 
-  schwab_ticker TEXT,
-  schwab_instruction TEXT CHECK (schwab_instruction IN ('BUY', 'SELL')),
+  schwab_ticker TEXT NOT NULL,
+  schwab_instruction TEXT CHECK (schwab_instruction IN ('BUY', 'SELL')) NOT NULL,
   schwab_quantity INTEGER,
   schwab_price_per_share_cents REAL,
 

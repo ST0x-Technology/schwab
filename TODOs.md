@@ -10,15 +10,17 @@ The previous approach of replacing the entire schema at once caused too many bre
 
 **Strategy:** Ensure tests don't contain direct SQL queries, but instead use helper functions/methods. This allows schema changes without breaking all tests.
 
-- [ ] Identify all tests that contain direct `sqlx::query!` calls
-- [ ] Create helper functions or extend existing struct methods to encapsulate database operations:
-  - `ArbTrade::db_count()`, `ArbTrade::find_by_status()`, etc.
-  - Helper functions for common test queries like `get_trade_count()`, `get_test_trade()`
-- [ ] Update all tests to use these helper functions instead of direct SQL
-- [ ] Ensure all business logic already uses struct methods (most already does)
-- [ ] Ensure test/clippy/fmt pass: `cargo test -q && cargo clippy -- -D clippy::all && cargo fmt`
+- [x] Identify all tests that contain direct `sqlx::query!` calls
+- [x] Create helper functions or extend existing struct methods to encapsulate database operations:
+  - `ArbTrade::db_count()`, `ArbTrade::find_by_tx_hash_and_log_index()`, etc.
+  - `ArbTrade::get_status_by_tx_hash_and_log_index()`, `SchwabTokens::db_count()`, etc.
+- [x] Update all tests to use these helper functions instead of direct SQL
+- [x] Ensure all business logic already uses struct methods (most already does)
+- [x] Ensure test/clippy/fmt pass: `cargo test -q && cargo clippy -- -D clippy::all && cargo fmt`
 
 ## Task 1. Add New Tables Alongside Existing Schema ✅ COMPLETED
+
+**NOTE: We modify the existing migration file directly instead of creating new migrations for simplicity**
 
 - [x] Create migration that ADDS new tables without touching existing `trades` table:
   - `onchain_trades` table for blockchain events
@@ -26,7 +28,7 @@ The previous approach of replacing the entire schema at once caused too many bre
   - `position_accumulator` table for running positions
   - `trade_executions` linkage table for many-to-one relationships
 - [x] Verify migration runs successfully: `sqlx migrate run`
-- [ ] Ensure test/clippy/fmt pass: `cargo test -q && cargo clippy -- -D clippy::all && cargo fmt`
+- [x] Ensure test/clippy/fmt pass: `cargo test -q && cargo clippy -- -D clippy::all && cargo fmt`
 
 ## Task 2. Create New Schema Structs and Methods
 
@@ -55,6 +57,8 @@ The previous approach of replacing the entire schema at once caused too many bre
 
 ## Task 4. Schema Cleanup
 
+**NOTE: We modify the existing migration file directly instead of creating new migrations for simplicity**
+
 - [ ] Modify existing migration to remove old `trades` table definition
 - [ ] Remove old struct definitions and database methods
 - [ ] Clean up any temporary configuration options
@@ -81,7 +85,7 @@ The previous approach of replacing the entire schema at once caused too many bre
 
 **Current State:** Working codebase with both old and new schemas available. All existing functionality works (136 tests passing), and new tables are ready for incremental implementation.
 
-**Next Step:** Begin Task 0 - Move database queries out of tests into helper functions/methods. This foundation will make the schema cut-over much easier.
+**Next Step:** Begin Task 2 - Create new schema structs with database methods. The foundation from Task 0 is complete, making the schema cut-over much easier.
 
 ---
 

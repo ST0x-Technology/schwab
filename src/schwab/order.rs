@@ -4,10 +4,10 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tracing::{error, info};
 
-use super::{SchwabAuthEnv, SchwabError, SchwabTokens};
+use super::{SchwabAuthEnv, SchwabError, SchwabInstruction, SchwabTokens};
 use crate::Env;
 use crate::arb::ArbTrade;
-use crate::trade::{SchwabInstruction, TradeStatus};
+use crate::trade::TradeStatus;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -586,16 +586,12 @@ mod tests {
         account_mock.assert();
         order_mock.assert();
 
-        let updated_trade = sqlx::query!(
-            "SELECT status FROM trades WHERE tx_hash = ? AND log_index = ?",
-            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-            123_i64
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let trade_status =
+            ArbTrade::find_by_tx_hash_and_log_index(&pool, trade.tx_hash, trade.log_index)
+                .await
+                .unwrap();
 
-        assert_eq!(updated_trade.status.unwrap(), "COMPLETED");
+        assert_eq!(trade_status.status, TradeStatus::Completed);
     }
 
     #[tokio::test]
@@ -631,16 +627,12 @@ mod tests {
         account_mock.assert();
         order_mock.assert();
 
-        let updated_trade = sqlx::query!(
-            "SELECT status FROM trades WHERE tx_hash = ? AND log_index = ?",
-            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-            123_i64
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let trade_status =
+            ArbTrade::find_by_tx_hash_and_log_index(&pool, trade.tx_hash, trade.log_index)
+                .await
+                .unwrap();
 
-        assert_eq!(updated_trade.status.unwrap(), "FAILED");
+        assert_eq!(trade_status.status, TradeStatus::Failed);
     }
 
     #[tokio::test]
@@ -678,16 +670,12 @@ mod tests {
         account_mock.assert_hits(3);
         order_mock.assert_hits(3);
 
-        let updated_trade = sqlx::query!(
-            "SELECT status FROM trades WHERE tx_hash = ? AND log_index = ?",
-            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-            123_i64
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let trade_status =
+            ArbTrade::find_by_tx_hash_and_log_index(&pool, trade.tx_hash, trade.log_index)
+                .await
+                .unwrap();
 
-        assert_eq!(updated_trade.status.unwrap(), "FAILED");
+        assert_eq!(trade_status.status, TradeStatus::Failed);
     }
 
     #[tokio::test]
@@ -698,16 +686,12 @@ mod tests {
 
         handle_order_success(&trade, &pool).await;
 
-        let updated_trade = sqlx::query!(
-            "SELECT status FROM trades WHERE tx_hash = ? AND log_index = ?",
-            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-            123_i64
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let trade_status =
+            ArbTrade::find_by_tx_hash_and_log_index(&pool, trade.tx_hash, trade.log_index)
+                .await
+                .unwrap();
 
-        assert_eq!(updated_trade.status.unwrap(), "COMPLETED");
+        assert_eq!(trade_status.status, TradeStatus::Completed);
     }
 
     #[tokio::test]
@@ -724,16 +708,12 @@ mod tests {
 
         handle_order_failure(&trade, &pool, error).await;
 
-        let updated_trade = sqlx::query!(
-            "SELECT status FROM trades WHERE tx_hash = ? AND log_index = ?",
-            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-            123_i64
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let trade_status =
+            ArbTrade::find_by_tx_hash_and_log_index(&pool, trade.tx_hash, trade.log_index)
+                .await
+                .unwrap();
 
-        assert_eq!(updated_trade.status.unwrap(), "FAILED");
+        assert_eq!(trade_status.status, TradeStatus::Failed);
     }
 
     fn create_test_env_for_execute_trade(mock_server: &httpmock::MockServer) -> crate::Env {
@@ -762,10 +742,7 @@ mod tests {
     }
 
     fn create_test_trade() -> crate::arb::ArbTrade {
-        use crate::{
-            arb::ArbTrade,
-            trade::{SchwabInstruction, TradeStatus},
-        };
+        use crate::{arb::ArbTrade, schwab::SchwabInstruction, trade::TradeStatus};
         use alloy::primitives::fixed_bytes;
 
         ArbTrade {

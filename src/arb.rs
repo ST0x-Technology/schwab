@@ -3,7 +3,8 @@ use alloy::primitives::B256;
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 
-use crate::trade::{PartialArbTrade, SchwabInstruction, TradeConversionError, TradeStatus};
+use crate::schwab::SchwabInstruction;
+use crate::trade::{PartialArbTrade, TradeConversionError, TradeStatus};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArbTrade {
@@ -55,16 +56,20 @@ impl ArbTrade {
         }
     }
 
+    pub async fn db_count(pool: &SqlitePool) -> Result<i64, TradeConversionError> {
+        let count = sqlx::query!("SELECT COUNT(*) as count FROM trades")
+            .fetch_one(pool)
+            .await?;
+        Ok(count.count)
+    }
+
     pub async fn try_save_to_db(&self, pool: &SqlitePool) -> Result<bool, TradeConversionError> {
         let tx_hash_hex = hex::encode_prefixed(self.tx_hash.as_slice());
         #[allow(clippy::cast_possible_wrap)]
         let log_index_i64 = self.log_index as i64;
         #[allow(clippy::cast_possible_wrap)]
         let schwab_quantity_i64 = self.schwab_quantity as i64;
-        let schwab_instruction_str = match self.schwab_instruction {
-            SchwabInstruction::Buy => "BUY",
-            SchwabInstruction::Sell => "SELL",
-        };
+        let schwab_instruction_str = self.schwab_instruction.as_str();
         let status_str = self.status.as_str();
 
         let result = sqlx::query!(
@@ -166,28 +171,22 @@ mod tests {
         let was_inserted = trade.try_save_to_db(&pool).await.unwrap();
         assert!(was_inserted);
 
-        let saved_trade = sqlx::query!(
-            "SELECT * FROM trades WHERE tx_hash = ? AND log_index = ?",
-            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-            123_i64
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let saved_trade =
+            ArbTrade::find_by_tx_hash_and_log_index(&pool, trade.tx_hash, trade.log_index)
+                .await
+                .unwrap();
 
-        assert_eq!(saved_trade.onchain_input_symbol.unwrap(), "USDC");
-        assert!((saved_trade.onchain_input_amount.unwrap() - 1000.0).abs() < f64::EPSILON);
-        assert_eq!(saved_trade.onchain_output_symbol.unwrap(), "AAPLs1");
-        assert!((saved_trade.onchain_output_amount.unwrap() - 5.0).abs() < f64::EPSILON);
-        assert!((saved_trade.onchain_io_ratio.unwrap() - 200.0).abs() < f64::EPSILON);
-        assert_eq!(saved_trade.schwab_ticker.unwrap(), "AAPL");
-        assert_eq!(saved_trade.schwab_instruction.unwrap(), "BUY");
-        assert_eq!(saved_trade.schwab_quantity.unwrap(), 5);
-        assert!(
-            (saved_trade.onchain_price_per_share_cents.unwrap() - 20000.0).abs() < f64::EPSILON
-        );
+        assert_eq!(saved_trade.onchain_input_symbol, "USDC");
+        assert!((saved_trade.onchain_input_amount - 1000.0).abs() < f64::EPSILON);
+        assert_eq!(saved_trade.onchain_output_symbol, "AAPLs1");
+        assert!((saved_trade.onchain_output_amount - 5.0).abs() < f64::EPSILON);
+        assert!((saved_trade.onchain_io_ratio - 200.0).abs() < f64::EPSILON);
+        assert_eq!(saved_trade.schwab_ticker, "AAPL");
+        assert_eq!(saved_trade.schwab_instruction, SchwabInstruction::Buy);
+        assert_eq!(saved_trade.schwab_quantity, 5);
+        assert!((saved_trade.onchain_price_per_share_cents - 20000.0).abs() < f64::EPSILON);
         assert!(saved_trade.schwab_price_per_share_cents.is_none());
-        assert_eq!(saved_trade.status.unwrap(), "PENDING");
+        assert_eq!(saved_trade.status, TradeStatus::Pending);
     }
 
     #[tokio::test]
@@ -318,16 +317,12 @@ mod tests {
         .await
         .unwrap();
 
-        let updated_trade = sqlx::query!(
-            "SELECT status, completed_at FROM trades WHERE tx_hash = ? AND log_index = ?",
-            "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-            789_i64
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let updated_trade =
+            ArbTrade::find_by_tx_hash_and_log_index(&pool, trade.tx_hash, trade.log_index)
+                .await
+                .unwrap();
 
-        assert_eq!(updated_trade.status.unwrap(), "COMPLETED");
+        assert_eq!(updated_trade.status, TradeStatus::Completed);
         assert!(updated_trade.completed_at.is_some());
     }
 }
