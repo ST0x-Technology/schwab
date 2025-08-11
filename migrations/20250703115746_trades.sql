@@ -29,7 +29,7 @@ CREATE TABLE trades (
 
 -- New schema for batching functionality (Phase 1A: Additive)
 CREATE TABLE onchain_trades (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
   tx_hash TEXT NOT NULL,
   log_index INTEGER NOT NULL,
   symbol TEXT NOT NULL,
@@ -41,7 +41,7 @@ CREATE TABLE onchain_trades (
 );
 
 CREATE TABLE schwab_executions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
   symbol TEXT NOT NULL,
   shares INTEGER NOT NULL, -- Whole shares only
   direction TEXT CHECK (direction IN ('BUY', 'SELL')) NOT NULL,
@@ -52,7 +52,7 @@ CREATE TABLE schwab_executions (
 );
 
 CREATE TABLE position_accumulator (
-  symbol TEXT PRIMARY KEY,
+  symbol TEXT PRIMARY KEY NOT NULL,
   net_position REAL NOT NULL DEFAULT 0.0,
   last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
