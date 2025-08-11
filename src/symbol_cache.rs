@@ -3,7 +3,7 @@ use backon::{ExponentialBuilder, Retryable};
 use std::{collections::BTreeMap, sync::RwLock};
 
 use crate::bindings::{IERC20::IERC20Instance, IOrderBookV4::IO};
-use crate::trade::TradeConversionError;
+use crate::onchain::TradeConversionError;
 
 #[derive(Debug, Default)]
 pub struct SymbolCache {

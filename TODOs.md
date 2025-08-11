@@ -31,23 +31,25 @@ The previous approach of replacing the entire schema at once caused too many bre
 - [x] Verify migration runs successfully: `sqlx migrate run`
 - [x] Ensure test/clippy/fmt pass: `cargo test -q && cargo clippy -- -D clippy::all && cargo fmt`
 
-## Task 2. Create New Schema Structs and Methods
+## Task 2. Create New Schema Structs and Methods ✅ COMPLETED
 
-- [ ] Create new Rust data structures for new tables:
-  - `OnchainTrade` struct with database methods
-  - `SchwabExecution` struct with database methods
-  - `ExecutablePosition` struct for batching logic
+- [x] Create new Rust data structures for new tables:
+  - `OnchainTrade` struct with database methods in `src/onchain/trade.rs`
+  - `SchwabExecution` struct with database methods in `src/schwab/execution.rs`
+  - `ExecutablePosition` struct for batching logic in `src/onchain/position_accumulator.rs`
   - `position_accumulator` module with helper functions
-- [ ] Implement database methods for new structs (similar to existing `ArbTrade` methods):
-  - `OnchainTrade::save()`, `OnchainTrade::find()`, `OnchainTrade::count()`, etc.
-  - `SchwabExecution::save()`, `SchwabExecution::find()`, etc.
-  - Position accumulator helper functions
-  - **CRITICAL: Apply same strict parsing patterns as `ArbTrade::find_by_tx_hash_and_log_index()`:**
+  - `TradeExecutionLink` struct for many-to-one relationships in `src/onchain/trade_executions.rs`
+- [x] Implement database methods for new structs (similar to existing `ArbTrade` methods):
+  - `OnchainTrade::save()`, `OnchainTrade::try_save()`, `OnchainTrade::find_by_tx_hash_and_log_index()`, `OnchainTrade::find_by_symbol_and_status()`, `OnchainTrade::update_status()`, `OnchainTrade::db_count()`
+  - `SchwabExecution::save()`, `SchwabExecution::find_by_id()`, `SchwabExecution::find_by_symbol_and_status()`, `SchwabExecution::update_status_and_order_id()`, `SchwabExecution::db_count()`
+  - Position accumulator helper functions: `PositionAccumulator::get_or_create()`, `PositionAccumulator::update_position()`, `PositionAccumulator::should_execute()`, `accumulate_onchain_trade()`
+  - Trade execution linkage: `TradeExecutionLink::create_link()`, `TradeExecutionLink::find_onchain_trades_for_execution()`, `TradeExecutionLink::find_executions_for_onchain_trade()`
+  - **CRITICAL: Applied same strict parsing patterns as `ArbTrade::find_by_tx_hash_and_log_index()`:**
     - No `.unwrap_or()` default values for status/direction parsing
     - Return proper `TradeConversionError` variants for invalid data
     - Fail fast on database corruption instead of masking with defaults
-- [ ] Add unit tests for new structs using helper functions (not direct SQL)
-- [ ] Ensure test/clippy/fmt pass: `cargo test -q && cargo clippy -- -D clippy::all && cargo fmt`
+- [x] Add comprehensive unit tests for new structs using helper functions (not direct SQL)
+- [x] Ensure test/clippy/fmt pass: `cargo test -q && cargo clippy -- -D clippy::all && cargo fmt` - All 156 tests passing
 
 ## Task 3. Replace Old System with New System
 
