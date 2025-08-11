@@ -9,9 +9,13 @@ use tracing::{Level, info};
 pub mod arb;
 mod bindings;
 pub mod cli;
+pub mod onchain_trade;
+pub mod position_accumulator;
 pub mod schwab;
+pub mod schwab_execution;
 mod symbol_cache;
 pub mod trade;
+pub mod trade_executions;
 
 #[cfg(test)]
 pub mod test_utils;

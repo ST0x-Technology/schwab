@@ -5,11 +5,10 @@ use thiserror::Error;
 use tracing::{error, info};
 
 use crate::arb::ArbTrade;
-use crate::schwab::SchwabAuthEnv;
-use crate::schwab::SchwabInstruction;
 use crate::schwab::order::{Instruction, Order, execute_trade};
 use crate::schwab::run_oauth_flow;
 use crate::schwab::tokens::SchwabTokens;
+use crate::schwab::{SchwabAuthEnv, SchwabInstruction};
 use crate::symbol_cache::SymbolCache;
 use crate::trade::{EvmEnv, PartialArbTrade, TradeConversionError, TradeStatus};
 use crate::{Env, LogLevel};
