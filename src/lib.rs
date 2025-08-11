@@ -9,22 +9,18 @@ use tracing::{Level, info};
 pub mod arb;
 mod bindings;
 pub mod cli;
-pub mod onchain_trade;
-pub mod position_accumulator;
+pub mod onchain;
 pub mod schwab;
-pub mod schwab_execution;
 mod symbol_cache;
-pub mod trade;
-pub mod trade_executions;
 
 #[cfg(test)]
 pub mod test_utils;
 
 use arb::ArbTrade;
 use bindings::IOrderBookV4::{ClearV2, IOrderBookV4Instance, TakeOrderV2};
+use onchain::{EvmEnv, PartialArbTrade};
 use schwab::{SchwabAuthEnv, order::execute_trade};
 use symbol_cache::SymbolCache;
-use trade::{EvmEnv, PartialArbTrade};
 
 #[derive(clap::ValueEnum, Debug, Clone)]
 pub enum LogLevel {
@@ -181,8 +177,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::onchain::TradeStatus;
     use crate::schwab::SchwabInstruction;
-    use crate::trade::TradeStatus;
     use alloy::primitives::{IntoLogData, U256, address, fixed_bytes, keccak256};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
     use alloy::rpc::types::Log;

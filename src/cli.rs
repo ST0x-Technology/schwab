@@ -5,12 +5,14 @@ use thiserror::Error;
 use tracing::{error, info};
 
 use crate::arb::ArbTrade;
+use crate::onchain::{EvmEnv, PartialArbTrade, TradeConversionError, TradeStatus};
+use crate::schwab::SchwabAuthEnv;
+#[cfg(test)]
+use crate::schwab::SchwabInstruction;
 use crate::schwab::order::{Instruction, Order, execute_trade};
 use crate::schwab::run_oauth_flow;
 use crate::schwab::tokens::SchwabTokens;
-use crate::schwab::{SchwabAuthEnv, SchwabInstruction};
 use crate::symbol_cache::SymbolCache;
-use crate::trade::{EvmEnv, PartialArbTrade, TradeConversionError, TradeStatus};
 use crate::{Env, LogLevel};
 use alloy::primitives::B256;
 use alloy::providers::{ProviderBuilder, WsConnect};
@@ -842,7 +844,7 @@ mod tests {
     }
 
     fn create_test_env_for_cli(mock_server: &MockServer) -> Env {
-        use crate::{LogLevel, schwab::SchwabAuthEnv, trade::EvmEnv};
+        use crate::{LogLevel, onchain::EvmEnv, schwab::SchwabAuthEnv};
         use alloy::primitives::{address, fixed_bytes};
 
         Env {
@@ -1408,7 +1410,6 @@ mod tests {
 
         let tx_hash =
             fixed_bytes!("0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd");
-        let mut stdout: Vec<u8> = Vec::new();
 
         // This test would require mocking the RPC provider and blockchain data
         // For now, we'll test the database integration parts that are testable
@@ -1428,7 +1429,7 @@ mod tests {
             schwab_instruction: SchwabInstruction::Buy,
             schwab_quantity: 5,
             schwab_price_per_share_cents: None,
-            status: crate::trade::TradeStatus::Pending,
+            status: TradeStatus::Pending,
             schwab_order_id: None,
             created_at: None,
             completed_at: None,

@@ -3,8 +3,8 @@ use alloy::primitives::B256;
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 
+use crate::onchain::{PartialArbTrade, TradeConversionError, TradeStatus};
 use crate::schwab::SchwabInstruction;
-use crate::trade::{PartialArbTrade, TradeConversionError, TradeStatus};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArbTrade {
