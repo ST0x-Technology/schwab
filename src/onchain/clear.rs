@@ -107,8 +107,8 @@ mod tests {
     use url::Url;
 
     use crate::bindings::IERC20::symbolCall;
+    use crate::schwab::SchwabInstruction;
     use crate::test_utils::get_test_order;
-    use crate::trade::SchwabInstruction;
 
     fn get_env(
         orderbook: alloy::primitives::Address,

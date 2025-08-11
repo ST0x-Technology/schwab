@@ -108,8 +108,8 @@ mod tests {
 
     use crate::bindings::IERC20::symbolCall;
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange};
+    use crate::schwab::SchwabInstruction;
     use crate::test_utils::get_test_order;
-    use crate::trade::SchwabInstruction;
 
     fn get_test_env(orderbook: Address, order_hash: B256) -> EvmEnv {
         EvmEnv {

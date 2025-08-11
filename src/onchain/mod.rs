@@ -11,8 +11,17 @@ use crate::schwab::SchwabInstruction;
 use crate::symbol_cache::SymbolCache;
 
 mod clear;
+pub mod coordinator;
+mod position_accumulator;
 mod processor;
 mod take_order;
+pub mod trade;
+pub mod trade_executions;
+
+pub use coordinator::TradeCoordinator;
+pub use position_accumulator::{ExecutablePosition, PositionAccumulator, accumulate_onchain_trade};
+pub use trade::{OnchainTrade, OnchainTradeStatus};
+pub use trade_executions::TradeExecutionLink;
 
 #[derive(Parser, Debug, Clone)]
 pub struct EvmEnv {

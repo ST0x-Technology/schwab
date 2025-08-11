@@ -7,7 +7,7 @@ use tracing::{error, info};
 use super::{SchwabAuthEnv, SchwabError, SchwabInstruction, SchwabTokens};
 use crate::Env;
 use crate::arb::ArbTrade;
-use crate::trade::TradeStatus;
+use crate::onchain::TradeStatus;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -717,7 +717,7 @@ mod tests {
     }
 
     fn create_test_env_for_execute_trade(mock_server: &httpmock::MockServer) -> crate::Env {
-        use crate::{Env, LogLevel, trade::EvmEnv};
+        use crate::{Env, LogLevel, onchain::EvmEnv};
         use alloy::primitives::{address, fixed_bytes};
         use url::Url;
 
@@ -742,7 +742,7 @@ mod tests {
     }
 
     fn create_test_trade() -> crate::arb::ArbTrade {
-        use crate::{arb::ArbTrade, schwab::SchwabInstruction, trade::TradeStatus};
+        use crate::{arb::ArbTrade, onchain::TradeStatus, schwab::SchwabInstruction};
         use alloy::primitives::fixed_bytes;
 
         ArbTrade {

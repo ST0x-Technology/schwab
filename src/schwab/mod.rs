@@ -4,10 +4,12 @@ use std::io::{self, Write};
 use thiserror::Error;
 
 pub mod auth;
+pub mod execution;
 pub mod order;
 pub mod tokens;
 
 pub use auth::{AccountNumbers, SchwabAuthEnv, SchwabAuthResponse};
+pub use execution::SchwabExecution;
 pub use tokens::SchwabTokens;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
