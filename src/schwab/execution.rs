@@ -608,3 +608,33 @@ mod tests {
         assert_eq!(count, 0); // No invalid data should have been inserted
     }
 
+
+    #[tokio::test]
+    async fn test_db_count() {
+        let pool = setup_test_db().await;
+
+        let count = SchwabExecution::db_count(&pool).await.unwrap();
+        assert_eq!(count, 0);
+
+        let execution = SchwabExecution {
+            id: None,
+            symbol: "NVDA".to_string(),
+            shares: 5,
+            direction: SchwabInstruction::Buy,
+            order_id: None,
+            price_cents: None,
+            status: TradeStatus::Pending,
+            executed_at: None,
+        };
+
+        let mut sql_tx = pool.begin().await.unwrap();
+        execution
+            .save_within_transaction(&mut sql_tx)
+            .await
+            .unwrap();
+        sql_tx.commit().await.unwrap();
+
+        let count = SchwabExecution::db_count(&pool).await.unwrap();
+        assert_eq!(count, 1);
+    }
+}
