@@ -48,7 +48,7 @@ CREATE TABLE schwab_executions (
   order_id TEXT,
   price_cents INTEGER,
   status TEXT CHECK (status IN ('PENDING', 'COMPLETED', 'FAILED')) NOT NULL DEFAULT 'PENDING',
-  executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  executed_at TIMESTAMP
 );
 
 CREATE TABLE position_accumulator (

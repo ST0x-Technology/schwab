@@ -78,7 +78,6 @@ impl SchwabExecution {
         Ok(result.last_insert_rowid())
     }
 
-
     pub async fn find_by_symbol_and_status(
         pool: &SqlitePool,
         symbol: &str,
@@ -88,7 +87,7 @@ impl SchwabExecution {
 
         if symbol.is_empty() {
             let rows = sqlx::query!(
-                "SELECT * FROM schwab_executions WHERE status = ?1 ORDER BY executed_at ASC",
+                "SELECT * FROM schwab_executions WHERE status = ?1 ORDER BY id ASC",
                 status_str
             )
             .fetch_all(pool)
@@ -97,7 +96,7 @@ impl SchwabExecution {
             convert_rows_to_executions!(rows)
         } else {
             let rows = sqlx::query!(
-                "SELECT * FROM schwab_executions WHERE symbol = ?1 AND status = ?2 ORDER BY executed_at ASC",
+                "SELECT * FROM schwab_executions WHERE symbol = ?1 AND status = ?2 ORDER BY id ASC",
                 symbol,
                 status_str
             )
@@ -107,7 +106,6 @@ impl SchwabExecution {
             convert_rows_to_executions!(rows)
         }
     }
-
 
     pub async fn update_status_within_transaction(
         sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -257,5 +255,356 @@ mod tests {
         assert_eq!(completed_aapl[0].direction, SchwabInstruction::Sell);
         assert_eq!(completed_aapl[0].order_id, Some("ORDER123".to_string()));
         assert_eq!(completed_aapl[0].price_cents, Some(15025));
+    }
+
+    #[tokio::test]
+    async fn test_find_by_symbol_and_status_empty_database() {
+        let pool = setup_test_db().await;
+
+        // Test with empty database
+        let result =
+            SchwabExecution::find_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
+                .await
+                .unwrap();
+        assert_eq!(result.len(), 0);
+
+        // Test with empty symbol (should find all with status)
+        let result = SchwabExecution::find_by_symbol_and_status(&pool, "", TradeStatus::Pending)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_find_by_symbol_and_status_nonexistent_matches() {
+        let pool = setup_test_db().await;
+
+        // Add some test data
+        let execution = SchwabExecution {
+            id: None,
+            symbol: "AAPL".to_string(),
+            shares: 100,
+            direction: SchwabInstruction::Buy,
+            order_id: None,
+            price_cents: None,
+            status: TradeStatus::Pending,
+            executed_at: None,
+        };
+
+        let mut sql_tx = pool.begin().await.unwrap();
+        execution
+            .save_within_transaction(&mut sql_tx)
+            .await
+            .unwrap();
+        sql_tx.commit().await.unwrap();
+
+        // Test non-existent symbol
+        let result =
+            SchwabExecution::find_by_symbol_and_status(&pool, "NONEXISTENT", TradeStatus::Pending)
+                .await
+                .unwrap();
+        assert_eq!(result.len(), 0);
+
+        // Test existing symbol with non-existent status combination
+        let result =
+            SchwabExecution::find_by_symbol_and_status(&pool, "AAPL", TradeStatus::Completed)
+                .await
+                .unwrap();
+        assert_eq!(result.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_find_by_symbol_and_status_empty_string_symbol() {
+        let pool = setup_test_db().await;
+
+        // Add executions with different symbols and statuses
+        let executions = vec![
+            SchwabExecution {
+                id: None,
+                symbol: "AAPL".to_string(),
+                shares: 100,
+                direction: SchwabInstruction::Buy,
+                order_id: None,
+                price_cents: None,
+                status: TradeStatus::Pending,
+                executed_at: None,
+            },
+            SchwabExecution {
+                id: None,
+                symbol: "MSFT".to_string(),
+                shares: 50,
+                direction: SchwabInstruction::Sell,
+                order_id: None,
+                price_cents: None,
+                status: TradeStatus::Pending,
+                executed_at: None,
+            },
+            SchwabExecution {
+                id: None,
+                symbol: "AAPL".to_string(),
+                shares: 200,
+                direction: SchwabInstruction::Buy,
+                order_id: Some("ORDER123".to_string()),
+                price_cents: Some(15000),
+                status: TradeStatus::Completed,
+                executed_at: None,
+            },
+        ];
+
+        let mut sql_tx = pool.begin().await.unwrap();
+        for execution in executions {
+            execution
+                .save_within_transaction(&mut sql_tx)
+                .await
+                .unwrap();
+        }
+        sql_tx.commit().await.unwrap();
+
+        // Empty symbol should find all executions with the specified status
+        let pending_all =
+            SchwabExecution::find_by_symbol_and_status(&pool, "", TradeStatus::Pending)
+                .await
+                .unwrap();
+        assert_eq!(pending_all.len(), 2); // AAPL and MSFT pending
+
+        let completed_all =
+            SchwabExecution::find_by_symbol_and_status(&pool, "", TradeStatus::Completed)
+                .await
+                .unwrap();
+        assert_eq!(completed_all.len(), 1); // Only AAPL completed
+
+        let failed_all = SchwabExecution::find_by_symbol_and_status(&pool, "", TradeStatus::Failed)
+            .await
+            .unwrap();
+        assert_eq!(failed_all.len(), 0); // None failed
+    }
+
+    #[tokio::test]
+    async fn test_find_by_symbol_and_status_ordering() {
+        let pool = setup_test_db().await;
+
+        // Add executions in a single transaction to test ordering by id
+        let executions = vec![
+            SchwabExecution {
+                id: None,
+                symbol: "AAPL".to_string(),
+                shares: 100,
+                direction: SchwabInstruction::Buy,
+                order_id: None,
+                price_cents: None,
+                status: TradeStatus::Pending,
+                executed_at: None,
+            },
+            SchwabExecution {
+                id: None,
+                symbol: "AAPL".to_string(),
+                shares: 200,
+                direction: SchwabInstruction::Sell,
+                order_id: None,
+                price_cents: None,
+                status: TradeStatus::Pending,
+                executed_at: None,
+            },
+            SchwabExecution {
+                id: None,
+                symbol: "AAPL".to_string(),
+                shares: 300,
+                direction: SchwabInstruction::Buy,
+                order_id: None,
+                price_cents: None,
+                status: TradeStatus::Pending,
+                executed_at: None,
+            },
+        ];
+
+        let mut sql_tx = pool.begin().await.unwrap();
+        for execution in executions {
+            execution
+                .save_within_transaction(&mut sql_tx)
+                .await
+                .unwrap();
+        }
+        sql_tx.commit().await.unwrap();
+
+        let result =
+            SchwabExecution::find_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
+                .await
+                .unwrap();
+
+        // Should be ordered by id ASC, so first saved should be first
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].shares, 100); // First saved
+        assert_eq!(result[1].shares, 200); // Second saved  
+        assert_eq!(result[2].shares, 300); // Third saved
+    }
+
+    #[tokio::test]
+    async fn test_find_by_symbol_and_status_case_sensitivity() {
+        let pool = setup_test_db().await;
+
+        let execution = SchwabExecution {
+            id: None,
+            symbol: "AAPL".to_string(), // Uppercase
+            shares: 100,
+            direction: SchwabInstruction::Buy,
+            order_id: None,
+            price_cents: None,
+            status: TradeStatus::Pending,
+            executed_at: None,
+        };
+
+        let mut sql_tx = pool.begin().await.unwrap();
+        execution
+            .save_within_transaction(&mut sql_tx)
+            .await
+            .unwrap();
+        sql_tx.commit().await.unwrap();
+
+        // Test exact match
+        let result =
+            SchwabExecution::find_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
+                .await
+                .unwrap();
+        assert_eq!(result.len(), 1);
+
+        // Test case mismatch (should not find anything - symbols are case-sensitive)
+        let result =
+            SchwabExecution::find_by_symbol_and_status(&pool, "aapl", TradeStatus::Pending)
+                .await
+                .unwrap();
+        assert_eq!(result.len(), 0);
+
+        let result =
+            SchwabExecution::find_by_symbol_and_status(&pool, "Aapl", TradeStatus::Pending)
+                .await
+                .unwrap();
+        assert_eq!(result.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_find_by_symbol_and_status_special_characters() {
+        let pool = setup_test_db().await;
+
+        // Test symbols with special characters
+        let symbols = vec!["BRK.B", "BF-B", "TEST123", "A-B_C.D"];
+
+        let mut sql_tx = pool.begin().await.unwrap();
+        for symbol in symbols {
+            let execution = SchwabExecution {
+                id: None,
+                symbol: symbol.to_string(),
+                shares: 100,
+                direction: SchwabInstruction::Buy,
+                order_id: None,
+                price_cents: None,
+                status: TradeStatus::Pending,
+                executed_at: None,
+            };
+
+            execution
+                .save_within_transaction(&mut sql_tx)
+                .await
+                .unwrap();
+        }
+        sql_tx.commit().await.unwrap();
+
+        // Test each symbol can be found
+        for symbol in ["BRK.B", "BF-B", "TEST123", "A-B_C.D"] {
+            let result =
+                SchwabExecution::find_by_symbol_and_status(&pool, symbol, TradeStatus::Pending)
+                    .await
+                    .unwrap();
+            assert_eq!(result.len(), 1, "Failed to find symbol: {}", symbol);
+            assert_eq!(result[0].symbol, symbol);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_find_by_symbol_and_status_data_integrity() {
+        let pool = setup_test_db().await;
+
+        let execution = SchwabExecution {
+            id: None,
+            symbol: "TEST".to_string(),
+            shares: 12345,
+            direction: SchwabInstruction::Sell,
+            order_id: Some("ORDER789".to_string()),
+            price_cents: Some(98765),
+            status: TradeStatus::Completed,
+            executed_at: None,
+        };
+
+        let mut sql_tx = pool.begin().await.unwrap();
+        execution
+            .save_within_transaction(&mut sql_tx)
+            .await
+            .unwrap();
+        sql_tx.commit().await.unwrap();
+
+        let result =
+            SchwabExecution::find_by_symbol_and_status(&pool, "TEST", TradeStatus::Completed)
+                .await
+                .unwrap();
+
+        assert_eq!(result.len(), 1);
+        let found = &result[0];
+
+        // Verify all fields are correctly preserved and converted
+        assert_eq!(found.symbol, "TEST");
+        assert_eq!(found.shares, 12345);
+        assert_eq!(found.direction, SchwabInstruction::Sell);
+        assert_eq!(found.order_id, Some("ORDER789".to_string()));
+        assert_eq!(found.price_cents, Some(98765));
+        assert_eq!(found.status, TradeStatus::Completed);
+        assert!(found.id.is_some());
+        assert!(found.executed_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_find_by_symbol_and_status_database_constraints() {
+        let pool = setup_test_db().await;
+
+        // Test that database constraints prevent invalid data insertion
+        // This verifies our database design is robust
+
+        // Try to insert execution with invalid direction - should be prevented by CHECK constraint
+        let result = sqlx::query!(
+            "INSERT INTO schwab_executions (symbol, shares, direction, order_id, price_cents, status) VALUES (?, ?, ?, ?, ?, ?)",
+            "TEST",
+            100i64,
+            "INVALID_DIRECTION", // This should be rejected by CHECK constraint
+            None::<String>,
+            None::<i64>,
+            "PENDING"
+        )
+        .execute(&pool)
+        .await;
+
+        // Should fail due to CHECK constraint
+        assert!(result.is_err());
+
+        // Verify the constraint error
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("CHECK constraint failed"));
+
+        // Try to insert with invalid status - should also be prevented
+        let result = sqlx::query!(
+            "INSERT INTO schwab_executions (symbol, shares, direction, order_id, price_cents, status) VALUES (?, ?, ?, ?, ?, ?)",
+            "TEST",
+            100i64,
+            "BUY",
+            None::<String>,
+            None::<i64>,
+            "INVALID_STATUS" // This should be rejected by CHECK constraint
+        )
+        .execute(&pool)
+        .await;
+
+        // Should fail due to CHECK constraint
+        assert!(result.is_err());
+
+        // Verify our database maintains data integrity
+        let count = SchwabExecution::db_count(&pool).await.unwrap();
+        assert_eq!(count, 0); // No invalid data should have been inserted
     }
 
