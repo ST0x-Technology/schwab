@@ -137,3 +137,64 @@ CREATE TABLE trade_executions (
   PRIMARY KEY (onchain_trade_id, schwab_execution_id)
 );
 ```
+
+## Task 5. Refactor TradeStatus to Sophisticated Enum
+
+**Strategy:** Replace the current simple `TradeStatus` enum with sophisticated variants that bundle related data, improving type safety without requiring database schema changes.
+
+**Current State:**
+```rust
+pub enum TradeStatus {
+    Pending,
+    Completed,
+    Failed,
+}
+
+pub struct SchwabExecution {
+    // ... other fields
+    pub status: TradeStatus,
+    pub order_id: Option<String>,      // Separate nullable field
+    pub price_cents: Option<u64>,      // Separate nullable field  
+    pub executed_at: Option<String>,   // Separate nullable field
+}
+```
+
+**Target State:**
+```rust
+pub enum TradeStatus {
+    Pending,
+    Completed { 
+        executed_at: DateTime<Utc>, 
+        order_id: String, 
+        price_cents: u64 
+    },
+    Failed { 
+        failed_at: DateTime<Utc>, 
+        error_reason: Option<String> 
+    },
+}
+
+pub struct SchwabExecution {
+    // ... other fields
+    pub status: TradeStatus,  // Contains all status-related data
+    // Remove: order_id, price_cents, executed_at fields
+}
+```
+
+- [ ] Update TradeStatus enum in `src/onchain/mod.rs` with sophisticated variants
+- [ ] Update SchwabExecution struct in `src/schwab/execution.rs` to remove separate status fields  
+- [ ] Implement custom SQLx serialization to map enum variants to database columns:
+  - `Pending` → `status="PENDING"`, other fields NULL
+  - `Completed{...}` → `status="COMPLETED"` + field values
+  - `Failed{...}` → `status="FAILED"` + timestamp
+- [ ] Update all usage sites in `src/onchain/coordinator.rs` to use pattern matching instead of field access
+- [ ] Update database operations (`save_within_transaction`, `update_status_within_transaction`) to extract/construct enum variants properly
+- [ ] Update all test files using SchwabExecution to use pattern matching in assertions
+- [ ] Ensure test/clippy/fmt pass: `cargo test -q && cargo clippy -- -D clippy::all && cargo fmt`
+
+**Benefits of Sophisticated Enum:**
+- ✅ **Type Safety**: Impossible to have `Completed` status without required data (order_id, price_cents, executed_at)
+- ✅ **Cleaner API**: Single status field contains all relevant data instead of separate nullable fields
+- ✅ **Better Semantics**: Business rules enforced by type system at compile time
+- ✅ **No Schema Changes**: Uses existing database columns with custom serialization
+- ✅ **Impossible States**: Cannot represent invalid combinations like `Pending` with `order_id`

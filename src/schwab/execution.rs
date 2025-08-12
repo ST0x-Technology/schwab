@@ -608,6 +608,54 @@ mod tests {
         assert_eq!(count, 0); // No invalid data should have been inserted
     }
 
+    #[tokio::test]
+    async fn test_update_status_within_transaction() {
+        let pool = setup_test_db().await;
+
+        let execution = SchwabExecution {
+            id: None,
+            symbol: "TSLA".to_string(),
+            shares: 15,
+            direction: SchwabInstruction::Sell,
+            order_id: None,
+            price_cents: None,
+            status: TradeStatus::Pending,
+            executed_at: None,
+        };
+
+        let mut sql_tx = pool.begin().await.unwrap();
+        let id = execution
+            .save_within_transaction(&mut sql_tx)
+            .await
+            .unwrap();
+        sql_tx.commit().await.unwrap();
+
+        // Update using the transaction method
+        let mut sql_tx = pool.begin().await.unwrap();
+        SchwabExecution::update_status_within_transaction(
+            &mut sql_tx,
+            id,
+            TradeStatus::Completed,
+            Some("ORDER456".to_string()),
+            Some(20050),
+        )
+        .await
+        .unwrap();
+        sql_tx.commit().await.unwrap();
+
+        // Verify the update persisted by finding executions with the new status
+        let completed_executions =
+            SchwabExecution::find_by_symbol_and_status(&pool, "TSLA", TradeStatus::Completed)
+                .await
+                .unwrap();
+
+        assert_eq!(completed_executions.len(), 1);
+        assert_eq!(
+            completed_executions[0].order_id,
+            Some("ORDER456".to_string())
+        );
+        assert_eq!(completed_executions[0].price_cents, Some(20050));
+    }
 
     #[tokio::test]
     async fn test_db_count() {
