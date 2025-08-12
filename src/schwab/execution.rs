@@ -108,3 +108,36 @@ impl SchwabExecution {
         }
     }
 
+
+    pub async fn update_status_within_transaction(
+        sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        execution_id: i64,
+        new_status: TradeStatus,
+        order_id: Option<String>,
+        price_cents: Option<u64>,
+    ) -> Result<(), sqlx::Error> {
+        let status_str = new_status.as_str();
+        #[allow(clippy::cast_possible_wrap)]
+        let price_cents_i64 = price_cents.map(|p| p as i64);
+        sqlx::query!(
+            "UPDATE schwab_executions SET status = ?1, order_id = ?2, price_cents = ?3 WHERE id = ?4",
+            status_str,
+            order_id,
+            price_cents_i64,
+            execution_id
+        )
+        .execute(&mut **sql_tx)
+        .await?;
+
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub async fn db_count(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+        let row = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+            .fetch_one(pool)
+            .await?;
+        Ok(row.count)
+    }
+}
+
