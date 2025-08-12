@@ -31,7 +31,7 @@ The previous approach of replacing the entire schema at once caused too many bre
 - [x] Verify migration runs successfully: `sqlx migrate run`
 - [x] Ensure test/clippy/fmt pass: `cargo test -q && cargo clippy -- -D clippy::all && cargo fmt`
 
-## Task 2. Create New Schema Structs and Methods ✅ COMPLETED
+## Task 2. Create New Schema Structs and Methods
 
 - [x] Create new Rust data structures for new tables:
   - `OnchainTrade` struct with database methods in `src/onchain/trade.rs`
@@ -49,7 +49,135 @@ The previous approach of replacing the entire schema at once caused too many bre
     - Return proper `TradeConversionError` variants for invalid data
     - Fail fast on database corruption instead of masking with defaults
 - [x] Add comprehensive unit tests for new structs using helper functions (not direct SQL)
-- [x] Ensure test/clippy/fmt pass: `cargo test -q && cargo clippy -- -D clippy::all && cargo fmt` - All 156 tests passing
+- [x] **Fix test quality issues identified during code review (PROPER APPROACH):**
+  - [x] Refactor `process_tx_command_with_writers` to accept an alloy Provider parameter for proper dependency injection via new `process_tx_with_provider` function
+  - [x] Fix `test_process_tx_with_database_integration_success` - now uses Alloy's mock Provider to properly test successful blockchain data retrieval, trade processing, and Schwab API calls
+  - [x] Fix `test_process_tx_database_duplicate_handling` - now uses Alloy's mock Provider to test duplicate transaction handling with proper trade saving and detection
+  - [x] Fix `test_integration_buy_command_end_to_end` - properly tests full CLI argument parsing → `run_command_with_writers` → order execution workflow with HTTP mocking
+  - [x] Fix `test_integration_sell_command_end_to_end` - properly tests full CLI argument parsing → `run_command_with_writers` → order execution workflow with HTTP mocking
+  - [x] **Key architectural improvements:** 
+    - Refactored `run_command_with_writers` to accept database connection parameter, enabling proper dependency injection for tests
+    - Created `process_tx_with_provider` function that accepts Provider and SymbolCache for proper mocking
+    - Removed redundant `run_with_writers` function
+  - **NOTE: Tests now properly test what their names claim to test, with no shortcuts - using Alloy's built-in Provider mocking**
+- [x] Ensure test/clippy/fmt pass: `cargo test -q && cargo clippy -- -D clippy::all && cargo fmt` - All 163 tests passing with proper mocking
+
+### 2A. Fix Fundamental Schema Design Issues ✅ COMPLETED (BUT STILL WRONG!)
+
+**CRITICAL: The "corrected" schema is still fundamentally flawed for fractional shares:**
+
+**Problem with Current "Fixed" Schema:**
+The current direct foreign key approach assumes 1:1 relationship between onchain trades and Schwab executions, but **fractional onchain trades require many-to-one relationship** with whole-share Schwab executions.
+
+**Example showing the problem:**
+- Onchain trade 1: 1.1 AAPL → Should create Schwab execution for 1 share + leave 0.1 unexecuted
+- Onchain trade 2: 0.8 AAPL → Should accumulate to 0.9 total unexecuted + still wait  
+- Onchain trade 3: 0.2 AAPL → Should accumulate to 1.1 total + create another 1-share execution
+
+**Wrong current approach:** Each onchain trade gets linked to exactly one execution
+**Correct approach:** Multiple onchain trades can contribute fractional amounts to one execution
+
+### 2B. Fix Schema for Proper Fractional Share Handling ✅ COMPLETED (BUT NEEDS REFACTORING)
+
+**CRITICAL: Junction table approach was implemented but creates architectural problems:**
+
+**What was completed:**
+- [x] **Restored `trade_executions` junction table** with `executed_amount` field
+- [x] **Removed direct `schwab_execution_id` foreign key** from onchain_trades
+- [x] **Updated database methods** to handle partial execution of trades
+- [x] **Implemented fractional accumulation logic** in position accumulator
+- [x] **Updated coordinator** to handle partial executions with complex allocation logic
+
+**Problem Identified:** The current architecture separates database linking logic (`TradeExecutionLink`) from business logic (accumulation and batching), creating cognitive overhead and making the code harder to reason about. The coordinator contains complex nested logic for finding trades, calculating unexecuted amounts, and creating links.
+
+### 2C. Refactor to Batch-Centric Architecture (NEW PRIORITY)
+
+**Goal:** Replace fragmented architecture with a `TradeBatch` domain model that encapsulates fractional share accumulation and execution logic in a single, coherent concept.
+
+**Root Cause of Current Issues:**
+- Database operations divorced from business logic
+- Complex coordinator with nested allocation logic  
+- Need to understand 3 separate components (TradeExecutionLink, PositionAccumulator, TradeCoordinator) to understand fractional shares
+- Missing domain model for "batch of trades that accumulate to whole-share execution"
+
+**New Architecture Requirements:**
+
+- [ ] **Create TradeBatch domain model** with business methods and clear state transitions
+- [ ] **Replace TradeExecutionLink** with TradeBatch-centric database operations
+- [ ] **Update database schema** to use `trade_batches` and `batch_trades` tables
+- [ ] **Simplify coordinator logic** to work with batch operations instead of complex allocation
+- [ ] **Update position accumulator** to only handle threshold checking, not execution tracking
+- [ ] **Implement clear state machine**: New → Accumulating → Ready → Executing → Completed
+
+**New Batch-Centric Schema Design:**
+```sql
+-- Onchain trades remain immutable facts
+CREATE TABLE onchain_trades (
+  id INTEGER PRIMARY KEY,
+  tx_hash TEXT NOT NULL,
+  log_index INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  amount REAL NOT NULL,  -- Can be fractional (e.g., 1.1 shares)
+  price_usdc REAL NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  UNIQUE (tx_hash, log_index)
+);
+
+-- Schwab executions are whole-share API calls
+CREATE TABLE schwab_executions (
+  id INTEGER PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  shares INTEGER NOT NULL,  -- Always whole numbers (Schwab limitation)
+  direction TEXT CHECK (direction IN ('BUY', 'SELL')) NOT NULL,
+  order_id TEXT,
+  price_cents INTEGER,
+  status TEXT CHECK (status IN ('PENDING', 'COMPLETED', 'FAILED')) NOT NULL,
+  executed_at TIMESTAMP
+);
+
+-- Trade batches represent accumulations of fractional trades toward whole-share executions
+CREATE TABLE trade_batches (
+  id INTEGER PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  target_shares INTEGER NOT NULL,  -- Whole shares this batch will execute
+  direction TEXT CHECK (direction IN ('BUY', 'SELL')) NOT NULL,
+  current_amount REAL NOT NULL DEFAULT 0.0,  -- Current accumulated fractional amount
+  status TEXT CHECK (status IN ('ACCUMULATING', 'READY', 'EXECUTING', 'COMPLETED', 'FAILED')) NOT NULL DEFAULT 'ACCUMULATING',
+  schwab_execution_id INTEGER REFERENCES schwab_executions(id),  -- Set when executed
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  completed_at TIMESTAMP
+);
+
+-- Junction table tracking which trades contribute to which batches
+CREATE TABLE batch_trades (
+  batch_id INTEGER REFERENCES trade_batches(id),
+  onchain_trade_id INTEGER REFERENCES onchain_trades(id),
+  contributed_amount REAL NOT NULL,  -- How much of the trade was contributed to this batch
+  PRIMARY KEY (batch_id, onchain_trade_id)
+);
+
+-- Position tracking simplified to just threshold checking
+CREATE TABLE position_accumulator (
+  symbol TEXT PRIMARY KEY,
+  net_position REAL NOT NULL DEFAULT 0.0,  -- For threshold checking only
+  last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+```
+
+**Example Flow for Fractional Shares:**
+1. Onchain trade: 1.1 AAPL → position_accumulator shows +1.1
+2. Threshold reached → Create Schwab execution for 1 share
+3. Junction table: links trade to execution with executed_amount=1.0
+4. Position accumulator updated to +0.1 (remaining fraction)
+5. Later onchain trade: 0.8 AAPL → position accumulator shows +0.9
+6. Another trade: 0.2 AAPL → position accumulator shows +1.1 → trigger new execution
+
+**Benefits of Corrected Design:**
+- ✅ **Handles fractional shares correctly**: Multiple trades can contribute to one execution
+- ✅ **Tracks partial executions**: Each trade can be partially executed across multiple Schwab calls
+- ✅ **Maintains audit trail**: Junction table shows exactly how much of each trade was executed when
+- ✅ **Supports accumulation**: Fractional remainders properly accumulate for future executions
+- ✅ **Database integrity**: Proper foreign key relationships without incorrect 1:1 assumptions
 
 ## Task 3. Replace Old System with New System
 
@@ -90,53 +218,69 @@ The previous approach of replacing the entire schema at once caused too many bre
 
 ## Current Status
 
-**Current State:** Working codebase with both old and new schemas available. All existing functionality works (138 tests passing), and new tables are ready for incremental implementation.
+**Current State:** Task 2A was completed but revealed a deeper design flaw. The schema was "corrected" to use direct foreign keys, but this is still wrong for fractional shares. All 167 tests pass with the current approach, but it cannot handle partial execution of fractional onchain trades.
 
-**Next Step:** Begin Task 2 - Create new schema structs with database methods. The foundation from Task 0 is complete, making the schema cut-over much easier.
+**Critical Realization:** The original junction table approach was actually correct! The problem wasn't the many-to-many relationship - it was the status-based thinking. We need the junction table to track partial execution of fractional shares, but WITHOUT status transitions on onchain trades.
+
+**Next Step:** Complete Task 2B - Implement proper fractional share handling by restoring the junction table with `executed_amount` field, removing the direct foreign key, and implementing proper partial execution logic.
 
 ---
 
 ## Schema Design (Target Architecture)
 
-The new schema properly separates onchain trades from Schwab executions:
+The corrected schema properly handles fractional shares with many-to-one relationships:
 
 ```sql
--- New tables to be added (Phase 1A)
+-- FINAL CORRECT SCHEMA for fractional share accumulation
+
+-- Onchain trades are immutable blockchain facts
 CREATE TABLE onchain_trades (
   id INTEGER PRIMARY KEY,
   tx_hash TEXT NOT NULL,
   log_index INTEGER NOT NULL,
   symbol TEXT NOT NULL,
-  amount REAL NOT NULL,
+  amount REAL NOT NULL,  -- Can be fractional (e.g., 1.1 shares)
   price_usdc REAL NOT NULL,
-  status TEXT CHECK (status IN ('PENDING', 'ACCUMULATED', 'EXECUTED')) NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
   UNIQUE (tx_hash, log_index)
+  -- No status field - these are immutable blockchain facts
+  -- No direct foreign key - multiple trades can contribute to one execution
 );
 
+-- Schwab executions are whole-share API calls
 CREATE TABLE schwab_executions (
   id INTEGER PRIMARY KEY,
   symbol TEXT NOT NULL,
-  shares INTEGER NOT NULL,
+  shares INTEGER NOT NULL,  -- Always whole numbers (Schwab API limitation)
   direction TEXT CHECK (direction IN ('BUY', 'SELL')) NOT NULL,
   order_id TEXT,
   price_cents INTEGER,
   status TEXT CHECK (status IN ('PENDING', 'COMPLETED', 'FAILED')) NOT NULL,
-  executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+  executed_at TIMESTAMP
+  -- No DEFAULT CURRENT_TIMESTAMP - set only when actually executed
 );
 
-CREATE TABLE position_accumulator (
-  symbol TEXT PRIMARY KEY,
-  net_position REAL NOT NULL DEFAULT 0.0,
-  last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
-);
-
+-- Junction table tracking fractional contributions
 CREATE TABLE trade_executions (
   onchain_trade_id INTEGER REFERENCES onchain_trades(id),
   schwab_execution_id INTEGER REFERENCES schwab_executions(id),
+  executed_amount REAL NOT NULL,  -- How much of the onchain trade was used
   PRIMARY KEY (onchain_trade_id, schwab_execution_id)
 );
+
+-- Position tracking with fractional precision
+CREATE TABLE position_accumulator (
+  symbol TEXT PRIMARY KEY,
+  net_position REAL NOT NULL DEFAULT 0.0,  -- Includes unexecuted fractions
+  last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
 ```
+
+**Key Design Principles:**
+- **Onchain trades are immutable facts** - no status changes, no direct execution links
+- **Schwab executions handle whole shares only** - API limitation drives design
+- **Junction table enables fractional tracking** - one trade can contribute to multiple executions
+- **Position accumulator tracks remainders** - fractional amounts accumulate until executable
 
 ## Task 5. Refactor TradeStatus to Sophisticated Enum
 

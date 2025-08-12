@@ -27,15 +27,14 @@ CREATE TABLE trades (
   UNIQUE (tx_hash, log_index)
 );
 
--- New schema for batching functionality (Phase 1A: Additive)
+-- Onchain trades are immutable blockchain facts
 CREATE TABLE onchain_trades (
   id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
   tx_hash TEXT NOT NULL,
   log_index INTEGER NOT NULL,
   symbol TEXT NOT NULL,
-  amount REAL NOT NULL,
+  amount REAL NOT NULL,  -- Can be fractional (e.g., 1.1 shares)
   price_usdc REAL NOT NULL,
-  status TEXT CHECK (status IN ('PENDING', 'ACCUMULATED', 'EXECUTED')) NOT NULL DEFAULT 'PENDING',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE (tx_hash, log_index)
 );
@@ -51,21 +50,23 @@ CREATE TABLE schwab_executions (
   executed_at TIMESTAMP
 );
 
+-- Junction table tracking which onchain trades contributed to which executions
+CREATE TABLE trade_executions (
+  onchain_trade_id INTEGER REFERENCES onchain_trades(id),
+  schwab_execution_id INTEGER REFERENCES schwab_executions(id),
+  executed_amount REAL NOT NULL,  -- How much of the onchain trade was executed
+  PRIMARY KEY (onchain_trade_id, schwab_execution_id)
+);
+
 CREATE TABLE position_accumulator (
   symbol TEXT PRIMARY KEY NOT NULL,
   net_position REAL NOT NULL DEFAULT 0.0,
   last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE trade_executions (
-  onchain_trade_id INTEGER REFERENCES onchain_trades(id),
-  schwab_execution_id INTEGER REFERENCES schwab_executions(id),
-  PRIMARY KEY (onchain_trade_id, schwab_execution_id)
-);
 
 -- Indexes for new tables
 CREATE INDEX idx_onchain_trades_symbol ON onchain_trades(symbol);
-CREATE INDEX idx_onchain_trades_status ON onchain_trades(status);
 CREATE INDEX idx_schwab_executions_symbol ON schwab_executions(symbol);
 CREATE INDEX idx_schwab_executions_status ON schwab_executions(status);
 
