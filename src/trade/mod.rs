@@ -87,7 +87,7 @@ pub struct PartialArbTrade {
 
     pub schwab_ticker: String,
     pub schwab_instruction: SchwabInstruction,
-    pub schwab_quantity: f64,
+    pub schwab_quantity: u64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -210,9 +210,13 @@ impl PartialArbTrade {
         let onchain_price_per_share_cents = onchain_price_per_share_usdc * 100.0;
 
         let schwab_quantity = if schwab_instruction == SchwabInstruction::Buy {
-            onchain_output_amount
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let quantity = onchain_output_amount.round() as u64;
+            quantity
         } else {
-            onchain_input_amount
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let quantity = onchain_input_amount.round() as u64;
+            quantity
         };
 
         let trade = Self {
@@ -313,7 +317,7 @@ mod tests {
             onchain_price_per_share_cents: (100.0 / 9.0) * 100.0,
             schwab_ticker: "FOO".to_string(),
             schwab_instruction: SchwabInstruction::Buy,
-            schwab_quantity: 9.0,
+            schwab_quantity: 9,
         };
 
         assert_eq!(trade, expected_trade);
@@ -341,7 +345,7 @@ mod tests {
         assert_eq!(trade.onchain_output_symbol, "FOOs1");
         assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
         assert_eq!(trade.schwab_ticker, "FOO");
-        assert!((trade.schwab_quantity - 9.0).abs() < f64::EPSILON);
+        assert_eq!(trade.schwab_quantity, 9);
     }
 
     #[tokio::test]
@@ -387,7 +391,7 @@ mod tests {
             onchain_price_per_share_cents: (100.0 / 9.0) * 100.0,
             schwab_ticker: "BAR".to_string(),
             schwab_instruction: SchwabInstruction::Sell,
-            schwab_quantity: 9.0,
+            schwab_quantity: 9,
         };
 
         assert_eq!(trade, expected_trade);
@@ -689,7 +693,7 @@ mod tests {
         assert!((result.onchain_input_amount - 0.0).abs() < f64::EPSILON);
         assert_eq!(result.schwab_instruction, SchwabInstruction::Sell);
         assert!(result.onchain_price_per_share_cents.is_infinite());
-        assert!((result.schwab_quantity - 0.0).abs() < f64::EPSILON);
+        assert_eq!(result.schwab_quantity, 0);
     }
 
     #[tokio::test]
@@ -724,7 +728,7 @@ mod tests {
 
         assert_eq!(trade.schwab_ticker, "");
         assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
-        assert!((trade.schwab_quantity - 9.0).abs() < f64::EPSILON);
+        assert_eq!(trade.schwab_quantity, 9);
     }
 
     #[tokio::test]
@@ -759,7 +763,7 @@ mod tests {
 
         assert_eq!(trade.schwab_ticker, "");
         assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
-        assert!((trade.schwab_quantity - 9.0).abs() < f64::EPSILON);
+        assert_eq!(trade.schwab_quantity, 9);
     }
 
     #[tokio::test]
@@ -793,7 +797,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
-        assert!((trade.schwab_quantity - 1.25).abs() < f64::EPSILON);
+        assert_eq!(trade.schwab_quantity, 1);
         assert_eq!(trade.schwab_ticker, "MSFT");
     }
 
@@ -828,7 +832,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
-        assert!((trade.schwab_quantity - 2.75).abs() < f64::EPSILON);
+        assert_eq!(trade.schwab_quantity, 3);
         assert_eq!(trade.schwab_ticker, "TSLA");
     }
 }

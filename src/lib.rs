@@ -8,6 +8,7 @@ use tracing::{Level, info};
 
 pub mod arb;
 mod bindings;
+pub mod cli;
 pub mod schwab;
 mod symbol_cache;
 pub mod trade;
@@ -42,11 +43,23 @@ impl From<LogLevel> for Level {
     }
 }
 
+impl From<&LogLevel> for Level {
+    fn from(log_level: &LogLevel) -> Self {
+        match log_level {
+            LogLevel::Trace => Self::TRACE,
+            LogLevel::Debug => Self::DEBUG,
+            LogLevel::Info => Self::INFO,
+            LogLevel::Warn => Self::WARN,
+            LogLevel::Error => Self::ERROR,
+        }
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 pub struct Env {
-    #[clap(short, long, env)]
+    #[clap(long = "db", env)]
     pub database_url: String,
-    #[clap(short = 'l', long, env, default_value = "debug")]
+    #[clap(long, env, default_value = "debug")]
     pub log_level: LogLevel,
     #[clap(flatten)]
     pub schwab_auth: SchwabAuthEnv,
@@ -60,7 +73,7 @@ impl Env {
     }
 }
 
-pub fn setup_tracing(log_level: LogLevel) {
+pub fn setup_tracing(log_level: &LogLevel) {
     let level: Level = log_level.into();
     let default_filter = format!("rain_schwab={level},auth={level},main={level}");
 
@@ -269,7 +282,7 @@ mod tests {
             onchain_io_ratio: 200.0,
             schwab_ticker: "AAPL".to_string(),
             schwab_instruction: SchwabInstruction::Buy,
-            schwab_quantity: 5.0,
+            schwab_quantity: 5,
             onchain_price_per_share_cents: 20000.0,
             schwab_price_per_share_cents: None,
             status: TradeStatus::Pending,
@@ -309,7 +322,7 @@ mod tests {
             onchain_io_ratio: 200.0,
             schwab_ticker: "AAPL".to_string(),
             schwab_instruction: SchwabInstruction::Buy,
-            schwab_quantity: 5.0,
+            schwab_quantity: 5,
             onchain_price_per_share_cents: 20000.0,
             schwab_price_per_share_cents: None,
             status: TradeStatus::Pending,

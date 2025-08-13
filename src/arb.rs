@@ -23,7 +23,7 @@ pub struct ArbTrade {
 
     pub schwab_ticker: String,
     pub schwab_instruction: SchwabInstruction,
-    pub schwab_quantity: f64,
+    pub schwab_quantity: u64,
     pub schwab_price_per_share_cents: Option<i64>,
 
     pub status: TradeStatus,
@@ -59,6 +59,8 @@ impl ArbTrade {
         let tx_hash_hex = hex::encode_prefixed(self.tx_hash.as_slice());
         #[allow(clippy::cast_possible_wrap)]
         let log_index_i64 = self.log_index as i64;
+        #[allow(clippy::cast_possible_wrap)]
+        let schwab_quantity_i64 = self.schwab_quantity as i64;
         let schwab_instruction_str = match self.schwab_instruction {
             SchwabInstruction::Buy => "BUY",
             SchwabInstruction::Sell => "SELL",
@@ -85,7 +87,7 @@ impl ArbTrade {
             self.onchain_io_ratio,
             self.schwab_ticker,
             schwab_instruction_str,
-            self.schwab_quantity,
+            schwab_quantity_i64,
             self.onchain_price_per_share_cents,
             self.schwab_price_per_share_cents,
             status_str,
@@ -151,7 +153,7 @@ mod tests {
             onchain_io_ratio: 200.0,
             schwab_ticker: "AAPL".to_string(),
             schwab_instruction: SchwabInstruction::Buy,
-            schwab_quantity: 5.0,
+            schwab_quantity: 5,
             onchain_price_per_share_cents: 20000.0,
             schwab_price_per_share_cents: None,
             status: TradeStatus::Pending,
@@ -180,7 +182,7 @@ mod tests {
         assert!((saved_trade.onchain_io_ratio.unwrap() - 200.0).abs() < f64::EPSILON);
         assert_eq!(saved_trade.schwab_ticker.unwrap(), "AAPL");
         assert_eq!(saved_trade.schwab_instruction.unwrap(), "BUY");
-        assert!((saved_trade.schwab_quantity.unwrap() - 5.0).abs() < f64::EPSILON);
+        assert_eq!(saved_trade.schwab_quantity.unwrap(), 5);
         assert!(
             (saved_trade.onchain_price_per_share_cents.unwrap() - 20000.0).abs() < f64::EPSILON
         );
@@ -206,7 +208,7 @@ mod tests {
             onchain_io_ratio: 0.005,
             schwab_ticker: "BAR".to_string(),
             schwab_instruction: SchwabInstruction::Sell,
-            schwab_quantity: 10.0,
+            schwab_quantity: 10,
             onchain_price_per_share_cents: 20000.0,
             schwab_price_per_share_cents: None,
             status: TradeStatus::Pending,
@@ -238,7 +240,7 @@ mod tests {
             onchain_price_per_share_cents: 20000.0,
             schwab_ticker: "GOOG".to_string(),
             schwab_instruction: SchwabInstruction::Buy,
-            schwab_quantity: 2.5,
+            schwab_quantity: 3,
         };
 
         let arb_trade = ArbTrade::from_partial_trade(partial_trade.clone());
@@ -272,7 +274,7 @@ mod tests {
             arb_trade.schwab_instruction,
             partial_trade.schwab_instruction
         );
-        assert!((arb_trade.schwab_quantity - partial_trade.schwab_quantity).abs() < f64::EPSILON);
+        assert_eq!(arb_trade.schwab_quantity, partial_trade.schwab_quantity);
         assert_eq!(arb_trade.status, TradeStatus::Pending);
         assert_eq!(arb_trade.schwab_order_id, None);
     }
@@ -295,7 +297,7 @@ mod tests {
             onchain_io_ratio: 0.005,
             schwab_ticker: "TSLA".to_string(),
             schwab_instruction: SchwabInstruction::Sell,
-            schwab_quantity: 50.0,
+            schwab_quantity: 50,
             onchain_price_per_share_cents: 20000.0,
             schwab_price_per_share_cents: None,
             status: TradeStatus::Pending,
