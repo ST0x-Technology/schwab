@@ -209,7 +209,101 @@ The **core arbitrage bot functionality** now runs on the unified TradeAccumulato
 - Core bot functionality (the primary business value) is fully migrated
 - Old and new systems can coexist during transition period
 
-## Task 4. Schema Cleanup
+## Task 4. Code Quality and Architecture Refactoring
+
+**Strategy:** Address code quality issues and CLAUDE.md principle violations identified in comprehensive review to improve maintainability and reduce complexity.
+
+### 4.1 Refactor TradeAccumulator God Object
+**Problem:** Single 530+ line class handles business logic, database persistence, and execution triggering, violating single responsibility principle.
+
+- [ ] **Extract Position Calculator**: Create separate `PositionCalculator` struct for threshold logic and position tracking
+  - `should_execute_long()`, `should_execute_short()` methods
+  - Position validation and threshold checking
+- [ ] **Extract Database Repository**: Move all SQL operations to `TradeAccumulatorRepository`
+  - `save_within_transaction()`, `get_or_create_within_transaction()`, `find_by_symbol()`
+  - All database-specific logic separated from business rules
+- [ ] **Extract Business Logic**: Keep only pure business logic in `TradeAccumulator`
+  - Trade accumulation calculations
+  - Execution decision logic without database coupling
+- [ ] **Create Domain Services**: Separate orchestration logic from business rules
+  - `TradeExecutionService` for coordinating between components
+  - Clear interfaces between domain objects
+
+### 4.2 Fix Deep Nesting and Control Flow
+**Problem:** Complex nested logic in `try_execute_position` (lines 145-185) violates CLAUDE.md "avoid deep nesting" principle.
+
+- [ ] **Flatten Nested Logic**: Replace nested match/if statements with early returns
+- [ ] **Extract Helper Functions**: Break down complex methods into smaller, focused functions
+- [ ] **Use Pattern Matching with Guards**: Replace nested conditionals with pattern matching
+- [ ] **Apply Functional Programming**: Use iterator chains and map/filter operations where appropriate
+
+### 4.3 Improve Error Handling Architecture
+**Problem:** `TradeConversionError` mixes database, business logic, and external API errors creating confusing error types.
+
+- [ ] **Create Domain-Specific Errors**: Separate error types by concern
+  - `TradeValidationError` for business rule violations
+  - `PersistenceError` for database operations
+  - `ExecutionError` for Schwab API failures
+- [ ] **Implement Error Mapping**: Clear boundaries between layers with proper error conversion
+- [ ] **Add Error Context**: Use anyhow for error chaining where appropriate
+- [ ] **Remove Error Conflation**: Stop using single error type across multiple domains
+
+### 4.4 Address Number Type and Casting Issues
+**Problem:** Extensive use of `#[allow(clippy::cast_precision_loss)]` and `#[allow(clippy::cast_possible_truncation)]` suggests design issues.
+
+- [ ] **Review Number Type Choices**: Evaluate whether f64 is appropriate for financial calculations
+- [ ] **Consider Decimal Types**: Investigate rust_decimal crate for exact precision
+- [ ] **Fix Root Causes**: Address underlying issues instead of suppressing warnings
+- [ ] **Document Precision Decisions**: Where precision loss is acceptable, document rationale
+
+### 4.5 Clean Up Comments and Documentation
+**Problem:** Many comments violate CLAUDE.md principles by restating obvious code instead of explaining business logic.
+
+- [ ] **Remove Redundant Comments**: Eliminate comments that restate what code obviously does
+  - "Save the trade as immutable fact" (line 54-55 trade_accumulator.rs)
+  - "Get or create accumulator for this symbol" (obvious from method name)
+- [ ] **Keep Business Logic Explanations**: Retain comments explaining complex domain rules
+  - Fractional share accumulation logic explanations
+  - Symbol suffix validation rationale
+- [ ] **Update Method Documentation**: Focus on "why" rather than "what" in doc comments
+- [ ] **Remove Obvious Test Comments**: Clean up test setup descriptions that add no value
+
+### 4.6 Improve Testing Architecture
+**Problem:** Tests mix unit testing with database integration and have extensive setup duplication.
+
+- [ ] **Separate Unit from Integration Tests**: Clear boundaries between business logic and database tests
+  - Pure unit tests for business logic (no database)
+  - Integration tests for database operations
+- [ ] **Create Test Builders**: Reduce test setup duplication with builder patterns
+  - `OnchainTradeBuilder`, `SchwabExecutionBuilder` for test data
+- [ ] **Mock External Dependencies**: Proper mocking for Schwab API interactions
+  - Extract interfaces for testability
+- [ ] **Simplify Test Database Setup**: Reusable test utilities for database initialization
+
+### 4.7 Standardize Struct Field Access Patterns
+**Problem:** Inconsistent field access patterns between direct access and getter-like complexity.
+
+- [ ] **Review Field Access Consistency**: Ensure consistent approach across codebase
+- [ ] **Simplify Database Conversion Logic**: Remove unnecessary complexity in `convert_rows_to_executions!` macro
+- [ ] **Apply CLAUDE.md Field Access Guidelines**: Direct access for simple data, methods only when adding logic
+
+**Acceptance Criteria:**
+- [ ] All clippy warnings resolved without suppress directives
+- [ ] Tests maintain current coverage (159+ tests passing)
+- [ ] Code follows CLAUDE.md principles consistently
+- [ ] Reduced complexity metrics (cyclomatic complexity, nesting depth)
+- [ ] Clear separation of concerns between components
+- [ ] Ensure test/clippy/fmt pass: `cargo test -q && cargo clippy -- -D clippy::all && cargo fmt`
+
+**Benefits of This Refactoring:**
+- ✅ **Maintainability**: Easier to understand and modify code with clear responsibilities
+- ✅ **Testability**: Separated concerns enable better unit testing
+- ✅ **Code Quality**: Adherence to established architectural principles
+- ✅ **Reduced Complexity**: Flattened control flow and focused components
+- ✅ **Better Error Handling**: Clear error types and proper error propagation
+- ✅ **Consistency**: Uniform patterns throughout codebase
+
+## Task 5. Schema Cleanup
 
 **NOTE: We modify the existing migration file directly instead of creating new migrations for simplicity**
 
@@ -255,8 +349,9 @@ The **core arbitrage bot functionality** now runs on the unified TradeAccumulato
 The **core arbitrage functionality** - monitoring blockchain events and executing offsetting Schwab trades - now operates on the clean, unified architecture. This is the primary business value delivery mechanism.
 
 **Next Steps:** 
-- Task 4: Schema cleanup (remove old `trades` table)  
-- Task 5: Refactor TradeStatus enum
+- Task 4: Code Quality and Architecture Refactoring (address CLAUDE.md violations)
+- Task 5: Schema cleanup (remove old `trades` table)  
+- Task 6: Refactor TradeStatus enum
 - CLI updates (non-critical - manual operations only)
 
 ---
@@ -327,7 +422,7 @@ CREATE TABLE position_accumulator (
 - **Single conceptual model** - "trades accumulate in batches until executable"
 - **Simplified coordinator** - just find/create batch, add trade, execute if ready
 
-## Task 5. Refactor TradeStatus to Sophisticated Enum
+## Task 6. Refactor TradeStatus to Sophisticated Enum
 
 **Strategy:** Replace the current simple `TradeStatus` enum with sophisticated variants that bundle related data, improving type safety without requiring database schema changes.
 

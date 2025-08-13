@@ -37,6 +37,9 @@ This is a Rust-based arbitrage bot for tokenized equities that monitors onchain 
 - `nix run .#prepSolArtifacts` - Build Solidity artifacts for orderbook interface
 - `nix run .#checkTestCoverage` - Generate test coverage report
 
+## Development Workflow Notes
+- When running `git diff`, make sure to add `--no-pager` to avoid opening it in the interactive view
+
 ## Architecture Overview
 
 ### Core Event Processing Flow
