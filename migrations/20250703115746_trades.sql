@@ -57,7 +57,6 @@ CREATE TABLE trade_accumulators (
   accumulated_long REAL NOT NULL DEFAULT 0.0,  -- Fractional shares accumulated for buying
   accumulated_short REAL NOT NULL DEFAULT 0.0,  -- Fractional shares accumulated for selling
   pending_execution_id INTEGER REFERENCES schwab_executions(id),  -- Current pending execution if any
-  threshold_amount REAL NOT NULL DEFAULT 1.0,  -- Minimum position to trigger execution
   last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 

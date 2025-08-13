@@ -4,7 +4,7 @@ use alloy::sol_types;
 use clap::Parser;
 use futures_util::{Stream, StreamExt};
 use sqlx::SqlitePool;
-use tracing::{Level, info};
+use tracing::{Level, error, info};
 
 pub mod arb;
 mod bindings;
@@ -16,10 +16,9 @@ mod symbol_cache;
 #[cfg(test)]
 pub mod test_utils;
 
-use arb::ArbTrade;
 use bindings::IOrderBookV4::{ClearV2, IOrderBookV4Instance, TakeOrderV2};
-use onchain::{EvmEnv, PartialArbTrade};
-use schwab::{SchwabAuthEnv, order::execute_trade};
+use onchain::{EvmEnv, PartialArbTrade, coordinator::TradeCoordinator, trade::OnchainTrade};
+use schwab::{SchwabAuthEnv, execution::SchwabExecution};
 use symbol_cache::SymbolCache;
 
 #[derive(clap::ValueEnum, Debug, Clone)]

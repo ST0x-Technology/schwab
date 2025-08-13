@@ -11,6 +11,29 @@ use crate::schwab::SchwabInstruction;
 use crate::symbol_cache::SymbolCache;
 
 mod clear;
+pub mod execution_trades;
+mod processor;
+mod take_order;
+pub mod trade;
+pub mod trade_accumulator;
+
+pub use execution_trades::ExecutionTrade;
+pub use trade::OnchainTrade;
+pub use trade_accumulator::TradeAccumulator;
+
+/// Extracts the base symbol and Schwab instruction from a tokenized symbol.
+/// This logic is shared between PartialArbTrade conversion and TradeAccumulator.
+pub fn parse_symbol_for_schwab(symbol: &str) -> (String, SchwabInstruction) {
+    if symbol.ends_with("s1") {
+        let base = symbol.strip_suffix("s1").unwrap_or(symbol);
+        (base.to_string(), SchwabInstruction::Sell) // s1 tokens sold onchain → sell on Schwab
+    } else {
+        // Assume USDC trades
+        (symbol.to_string(), SchwabInstruction::Buy) // USDC spent onchain → buy on Schwab  
+    }
+}
+
+mod clear;
 pub mod coordinator;
 mod position_accumulator;
 mod processor;
