@@ -102,24 +102,6 @@ impl TradeAccumulatorRepository {
         Ok(execution_with_id)
     }
 
-    pub async fn record_execution_within_transaction(
-        sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        execution_id: i64,
-        trade_id: i64,
-        executed_amount: f64,
-    ) -> Result<(), OnChainError> {
-        sqlx::query!(
-            "INSERT INTO execution_trades (schwab_execution_id, onchain_trade_id, executed_amount) VALUES (?1, ?2, ?3)",
-            execution_id,
-            trade_id,
-            executed_amount
-        )
-        .execute(&mut **sql_tx)
-        .await?;
-
-        Ok(())
-    }
-
     #[cfg(test)]
     pub async fn db_count(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
         let row = sqlx::query!("SELECT COUNT(*) as count FROM trade_accumulators")

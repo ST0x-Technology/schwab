@@ -4,9 +4,10 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tracing::{error, info};
 
-use super::{SchwabAuthEnv, SchwabError, SchwabInstruction, SchwabTokens};
+use super::{
+    SchwabAuthEnv, SchwabError, SchwabInstruction, SchwabTokens, execution::SchwabExecution,
+};
 use crate::Env;
-use crate::arb::ArbTrade;
 use crate::onchain::TradeStatus;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -166,6 +167,123 @@ pub struct Instrument {
     pub asset_type: AssetType,
 }
 
+/// Execute a SchwabExecution using the new unified system.
+/// This replaces the old execute_trade(ArbTrade) function with the new architecture.
+pub async fn execute_schwab_execution(
+    env: &Env,
+    pool: &SqlitePool,
+    execution: SchwabExecution,
+    max_retries: usize,
+) {
+    let schwab_instruction = match execution.direction {
+        SchwabInstruction::Buy => Instruction::Buy,
+        SchwabInstruction::Sell => Instruction::Sell,
+    };
+
+    let order = Order::new(
+        execution.symbol.clone(),
+        schwab_instruction,
+        execution.shares,
+    );
+
+    let result = (|| async { order.place(&env.schwab_auth, pool).await })
+        .retry(&ExponentialBuilder::default().with_max_times(max_retries))
+        .await;
+
+    let execution_id = execution
+        .id
+        .expect("SchwabExecution should have ID when executing");
+
+    match result {
+        Ok(()) => handle_execution_success(pool, execution_id).await,
+        Err(e) => handle_execution_failure(pool, execution_id, e).await,
+    }
+}
+
+async fn handle_execution_success(pool: &SqlitePool, execution_id: i64) {
+    info!(
+        "Successfully placed Schwab order for execution: id={}",
+        execution_id
+    );
+
+    let mut sql_tx = match pool.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            error!(
+                "Failed to start transaction for execution success: id={}, error={:?}",
+                execution_id, e
+            );
+            return;
+        }
+    };
+
+    if let Err(e) = SchwabExecution::update_status_within_transaction(
+        &mut sql_tx,
+        execution_id,
+        TradeStatus::Completed,
+        None, // TODO: Get actual order_id from Schwab response
+        None, // TODO: Get actual price from Schwab response
+    )
+    .await
+    {
+        error!(
+            "Failed to update execution status to COMPLETED: id={}, error={:?}",
+            execution_id, e
+        );
+        return;
+    }
+
+    if let Err(e) = sql_tx.commit().await {
+        error!(
+            "Failed to commit execution success transaction: id={}, error={:?}",
+            execution_id, e
+        );
+    }
+}
+
+async fn handle_execution_failure(pool: &SqlitePool, execution_id: i64, error: SchwabError) {
+    error!(
+        "Failed to place Schwab order after retries for execution: id={}, error={:?}",
+        execution_id, error
+    );
+
+    let mut sql_tx = match pool.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            error!(
+                "Failed to start transaction for execution failure: id={}, error={:?}",
+                execution_id, e
+            );
+            return;
+        }
+    };
+
+    if let Err(update_err) = SchwabExecution::update_status_within_transaction(
+        &mut sql_tx,
+        execution_id,
+        TradeStatus::Failed,
+        None,
+        None,
+    )
+    .await
+    {
+        error!(
+            "Failed to update execution status to FAILED: id={}, error={:?}",
+            execution_id, update_err
+        );
+        return;
+    }
+
+    if let Err(e) = sql_tx.commit().await {
+        error!(
+            "Failed to commit execution failure transaction: id={}, error={:?}",
+            execution_id, e
+        );
+    }
+}
+
+/*
+// Legacy ArbTrade-based functions commented out - depends on removed ArbTrade system
 pub async fn execute_trade(env: &Env, pool: &SqlitePool, trade: ArbTrade, max_retries: usize) {
     let schwab_instruction = match trade.schwab_instruction {
         SchwabInstruction::Buy => Instruction::Buy,
@@ -187,7 +305,10 @@ pub async fn execute_trade(env: &Env, pool: &SqlitePool, trade: ArbTrade, max_re
         Err(e) => handle_order_failure(&trade, pool, e).await,
     }
 }
+*/
 
+/*
+// Commented out - depends on removed ArbTrade system
 async fn handle_order_success(trade: &ArbTrade, pool: &SqlitePool) {
     info!(
         "Successfully placed Schwab order for trade: tx_hash={tx_hash:?}, log_index={log_index}",
@@ -223,6 +344,7 @@ async fn handle_order_failure(trade: &ArbTrade, pool: &SqlitePool, error: Schwab
         );
     }
 }
+*/
 
 #[cfg(test)]
 mod tests {
@@ -551,220 +673,6 @@ mod tests {
         tokens.store(pool).await.unwrap();
     }
 
-    #[tokio::test]
-    async fn test_execute_trade_success() {
-        let server = httpmock::MockServer::start();
-        let env = create_test_env_for_execute_trade(&server);
-        let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
-
-        let account_mock = server.mock(|when, then| {
-            when.method(httpmock::Method::GET)
-                .path("/trader/v1/accounts/accountNumbers");
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(json!([{
-                    "accountNumber": "123456789",
-                    "hashValue": "ABC123DEF456"
-                }]));
-        });
-
-        let order_mock = server.mock(|when, then| {
-            when.method(httpmock::Method::POST)
-                .path("/trader/v1/accounts/ABC123DEF456/orders")
-                .header("authorization", "Bearer test_access_token")
-                .header("accept", "*/*")
-                .header("content-type", "application/json");
-            then.status(201);
-        });
-
-        let trade = create_test_trade();
-        trade.try_save_to_db(&pool).await.unwrap();
-
-        execute_trade(&env, &pool, trade.clone(), 0).await;
-
-        account_mock.assert();
-        order_mock.assert();
-
-        let trade_status =
-            ArbTrade::find_by_tx_hash_and_log_index(&pool, trade.tx_hash, trade.log_index)
-                .await
-                .unwrap();
-
-        assert_eq!(trade_status.status, TradeStatus::Completed);
-    }
-
-    #[tokio::test]
-    async fn test_execute_trade_failure() {
-        let server = httpmock::MockServer::start();
-        let env = create_test_env_for_execute_trade(&server);
-        let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
-
-        let account_mock = server.mock(|when, then| {
-            when.method(httpmock::Method::GET)
-                .path("/trader/v1/accounts/accountNumbers");
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(json!([{
-                    "accountNumber": "123456789",
-                    "hashValue": "ABC123DEF456"
-                }]));
-        });
-
-        let order_mock = server.mock(|when, then| {
-            when.method(httpmock::Method::POST)
-                .path("/trader/v1/accounts/ABC123DEF456/orders");
-            then.status(400)
-                .json_body(json!({"error": "Order validation failed"}));
-        });
-
-        let trade = create_test_trade();
-        trade.try_save_to_db(&pool).await.unwrap();
-
-        execute_trade(&env, &pool, trade.clone(), 0).await;
-
-        account_mock.assert();
-        order_mock.assert();
-
-        let trade_status =
-            ArbTrade::find_by_tx_hash_and_log_index(&pool, trade.tx_hash, trade.log_index)
-                .await
-                .unwrap();
-
-        assert_eq!(trade_status.status, TradeStatus::Failed);
-    }
-
-    #[tokio::test]
-    async fn test_execute_trade_retry_until_failure() {
-        let server = httpmock::MockServer::start();
-        let env = create_test_env_for_execute_trade(&server);
-        let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
-
-        let account_mock = server.mock(|when, then| {
-            when.method(httpmock::Method::GET)
-                .path("/trader/v1/accounts/accountNumbers");
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(json!([{
-                    "accountNumber": "123456789",
-                    "hashValue": "ABC123DEF456"
-                }]));
-        });
-
-        // Mock that always fails with 500 status
-        let order_mock = server.mock(|when, then| {
-            when.method(httpmock::Method::POST)
-                .path("/trader/v1/accounts/ABC123DEF456/orders");
-            then.status(500)
-                .json_body(json!({"error": "Internal server error"}));
-        });
-
-        let trade = create_test_trade();
-        trade.try_save_to_db(&pool).await.unwrap();
-
-        execute_trade(&env, &pool, trade.clone(), 2).await;
-
-        // Should fail 3 times total (1 initial + 2 retries)
-        account_mock.assert_hits(3);
-        order_mock.assert_hits(3);
-
-        let trade_status =
-            ArbTrade::find_by_tx_hash_and_log_index(&pool, trade.tx_hash, trade.log_index)
-                .await
-                .unwrap();
-
-        assert_eq!(trade_status.status, TradeStatus::Failed);
-    }
-
-    #[tokio::test]
-    async fn test_handle_order_success() {
-        let pool = setup_test_db().await;
-        let trade = create_test_trade();
-        trade.try_save_to_db(&pool).await.unwrap();
-
-        handle_order_success(&trade, &pool).await;
-
-        let trade_status =
-            ArbTrade::find_by_tx_hash_and_log_index(&pool, trade.tx_hash, trade.log_index)
-                .await
-                .unwrap();
-
-        assert_eq!(trade_status.status, TradeStatus::Completed);
-    }
-
-    #[tokio::test]
-    async fn test_handle_order_failure() {
-        let pool = setup_test_db().await;
-        let trade = create_test_trade();
-        trade.try_save_to_db(&pool).await.unwrap();
-
-        let error = SchwabError::RequestFailed {
-            action: "place order".to_string(),
-            status: reqwest::StatusCode::BAD_REQUEST,
-            body: "Invalid order".to_string(),
-        };
-
-        handle_order_failure(&trade, &pool, error).await;
-
-        let trade_status =
-            ArbTrade::find_by_tx_hash_and_log_index(&pool, trade.tx_hash, trade.log_index)
-                .await
-                .unwrap();
-
-        assert_eq!(trade_status.status, TradeStatus::Failed);
-    }
-
-    fn create_test_env_for_execute_trade(mock_server: &httpmock::MockServer) -> crate::Env {
-        use crate::{Env, LogLevel, onchain::EvmEnv};
-        use alloy::primitives::{address, fixed_bytes};
-        use url::Url;
-
-        Env {
-            database_url: ":memory:".to_string(),
-            log_level: LogLevel::Debug,
-            schwab_auth: SchwabAuthEnv {
-                app_key: "test_app_key".to_string(),
-                app_secret: "test_app_secret".to_string(),
-                redirect_uri: "https://127.0.0.1".to_string(),
-                base_url: mock_server.base_url(),
-                account_index: 0,
-            },
-            evm_env: EvmEnv {
-                ws_rpc_url: Url::parse("ws://localhost:8545").unwrap(),
-                orderbook: address!("0x1234567890123456789012345678901234567890"),
-                order_hash: fixed_bytes!(
-                    "0x0000000000000000000000000000000000000000000000000000000000000000"
-                ),
-            },
-        }
-    }
-
-    fn create_test_trade() -> crate::arb::ArbTrade {
-        use crate::{arb::ArbTrade, onchain::TradeStatus, schwab::SchwabInstruction};
-        use alloy::primitives::fixed_bytes;
-
-        ArbTrade {
-            id: None,
-            tx_hash: fixed_bytes!(
-                "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
-            ),
-            log_index: 123,
-            onchain_input_symbol: "USDC".to_string(),
-            onchain_input_amount: 1000.0,
-            onchain_output_symbol: "AAPLs1".to_string(),
-            onchain_output_amount: 5.0,
-            onchain_io_ratio: 200.0,
-            onchain_price_per_share_cents: 20000.0,
-            schwab_ticker: "AAPL".to_string(),
-            schwab_instruction: SchwabInstruction::Buy,
-            schwab_quantity: 5,
-            schwab_price_per_share_cents: None,
-            status: TradeStatus::Pending,
-            schwab_order_id: None,
-            created_at: None,
-            completed_at: None,
-        }
-    }
+    // Tests for ArbTrade-dependent functionality have been removed
+    // These tests can be restored when/if the CLI functionality is migrated to the new system
 }

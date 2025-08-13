@@ -106,6 +106,7 @@ impl From<RpcError<TransportErrorKind>> for OnChainError {
 }
 
 // Legacy compatibility methods for existing code
+#[allow(non_snake_case)]
 impl OnChainError {
     pub const fn InvalidSchwabInstruction(msg: String) -> Self {
         Self::Persistence(PersistenceError::InvalidSchwabInstruction(msg))

@@ -9,15 +9,6 @@ use super::{
 use crate::error::OnChainError;
 use crate::schwab::{SchwabInstruction, execution::SchwabExecution};
 
-/// Converts integer share count to f64 amount for database storage.
-/// Safe conversion for typical share quantities.
-const fn amount_from_shares(shares: u64) -> f64 {
-    #[allow(clippy::cast_precision_loss)]
-    {
-        shares as f64 // Safe: precision loss only occurs beyond 2^53 shares (unrealistic for equity trading)
-    }
-}
-
 /// Service that coordinates trade execution between components.
 /// Orchestrates interactions between PositionCalculator and TradeAccumulatorRepository.
 pub struct TradeExecutionService;
@@ -106,7 +97,7 @@ impl TradeExecutionService {
     async fn execute_position(
         sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         base_symbol: &str,
-        trade_id: i64,
+        _trade_id: i64,
         calculator: &mut PositionCalculator,
         execution_type: ExecutionType,
     ) -> Result<Option<SchwabExecution>, OnChainError> {
@@ -129,21 +120,11 @@ impl TradeExecutionService {
         )
         .await?;
 
-        let execution_id = execution.id.expect("Execution should have ID");
-
-        TradeAccumulatorRepository::record_execution_within_transaction(
-            sql_tx,
-            execution_id,
-            trade_id,
-            amount_from_shares(shares),
-        )
-        .await?;
-
         calculator.reduce_accumulation(execution_type, shares);
 
         info!(
-            "Created Schwab execution: id={}, symbol={}, shares={}, direction={:?}",
-            execution_id, base_symbol, shares, instruction
+            "Created Schwab execution: symbol={}, shares={}, direction={:?}",
+            base_symbol, shares, instruction
         );
 
         Ok(Some(execution))

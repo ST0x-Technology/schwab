@@ -6,7 +6,6 @@ use futures_util::{Stream, StreamExt};
 use sqlx::SqlitePool;
 use tracing::{Level, error, info};
 
-pub mod arb;
 mod bindings;
 pub mod cli;
 pub mod error;
@@ -18,13 +17,8 @@ mod symbol_cache;
 pub mod test_utils;
 
 use bindings::IOrderBookV4::{ClearV2, IOrderBookV4Instance, TakeOrderV2};
-use onchain::TradeStatus;
 use onchain::{EvmEnv, PartialArbTrade, trade::OnchainTrade, trade_accumulator::TradeAccumulator};
-use schwab::{
-    SchwabAuthEnv,
-    execution::SchwabExecution,
-    order::{Instruction, Order},
-};
+use schwab::{SchwabAuthEnv, execution::SchwabExecution, order::execute_schwab_execution};
 use symbol_cache::SymbolCache;
 
 #[derive(clap::ValueEnum, Debug, Clone)]
@@ -204,42 +198,9 @@ async fn execute_pending_schwab_execution(
 
     info!("Executing Schwab order: {:?}", execution);
 
-    let instruction = match execution.direction {
-        schwab::SchwabInstruction::Buy => Instruction::Buy,
-        schwab::SchwabInstruction::Sell => Instruction::Sell,
-    };
+    // Use the new unified execute_schwab_execution function with retry logic
+    execute_schwab_execution(env, pool, execution, 3).await;
 
-    let order = Order::new(execution.symbol.clone(), instruction, execution.shares);
-
-    match order.place(&env.schwab_auth, pool).await {
-        Ok(()) => {
-            update_execution_status(pool, execution_id, TradeStatus::Completed).await?;
-            info!("Successfully completed Schwab execution {}", execution_id);
-        }
-        Err(e) => {
-            update_execution_status(pool, execution_id, TradeStatus::Failed).await?;
-            error!("Failed Schwab execution {}: {}", execution_id, e);
-        }
-    }
-
-    Ok(())
-}
-
-async fn update_execution_status(
-    pool: &SqlitePool,
-    execution_id: i64,
-    status: TradeStatus,
-) -> anyhow::Result<()> {
-    let mut sql_tx = pool.begin().await?;
-    SchwabExecution::update_status_within_transaction(
-        &mut sql_tx,
-        execution_id,
-        status,
-        None,
-        None,
-    )
-    .await?;
-    sql_tx.commit().await?;
     Ok(())
 }
 

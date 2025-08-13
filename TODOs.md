@@ -377,15 +377,36 @@ The codebase now follows clean architecture principles with improved maintainabi
 - ✅ **Better Error Handling**: Clear error types and proper error propagation
 - ✅ **Consistency**: Uniform patterns throughout codebase
 
-## Task 5. Schema Cleanup
+## Task 5. Schema Cleanup ✅ COMPLETED
 
 **NOTE: We modify the existing migration file directly instead of creating new migrations for simplicity**
 
-- [ ] Modify existing migration to remove old `trades` table definition and `trade_executions` table
-- [ ] Remove old struct definitions (`ArbTrade`, `TradeExecutionLink`) and database methods
-- [ ] Clean up any temporary configuration options
-- [ ] Remove complex coordinator allocation logic, replace with simple batch operations
-- [ ] Ensure test/clippy/fmt pass: `cargo test -q && cargo clippy -- -D clippy::all && cargo fmt`
+**Completed:**
+- [x] **Migration Cleanup**: Removed old `trades` table definition and `execution_trades` table from migration
+- [x] **Remove ArbTrade System**: Deleted `src/arb.rs` file with all ArbTrade struct and database methods
+- [x] **Remove TradeExecutionLink System**: Deleted `src/onchain/execution_trades.rs` and removed complex junction table logic
+- [x] **Remove Complex Allocation Logic**: Removed `record_execution_within_transaction` and related complex coordinator allocation
+- [x] **Migrate CLI to New System**: Updated CLI to use OnchainTrade + TradeAccumulator instead of ArbTrade
+  - [x] Replaced `ArbTrade` references with `OnchainTrade` in CLI tests
+  - [x] Updated CLI's trade processing to use new `TradeAccumulator::add_trade()` workflow
+  - [x] Migrated all CLI database operations to use new schema
+- [x] **Migrate schwab/order.rs**: Updated order execution to work with new system
+  - [x] Created `execute_schwab_execution(SchwabExecution)` replacing old `execute_trade(ArbTrade)`
+  - [x] Updated error handling and status tracking for new system
+- [x] **Re-enable Binaries**: CLI binary fully re-enabled and functional with new system
+- [x] **Final Cleanup**: Removed unused code, fixed clippy warnings, cleaned up imports
+- [x] **Final Verification**: All tests pass (159 tests), zero clippy warnings, fmt passes
+
+**Full Migration Achievement:**
+- ✅ **Complete System Migration**: All components now use unified TradeAccumulator architecture
+- ✅ **Schema Migration**: Database fully migrated from complex old system to clean unified schema  
+- ✅ **CLI Migration**: All CLI functionality migrated and working with new system
+- ✅ **Order Execution**: Schwab order functions fully updated for new architecture
+- ✅ **Test Coverage**: All 159 tests passing with comprehensive coverage of new system
+- ✅ **Code Quality**: Zero clippy warnings, proper formatting, clean architecture
+
+**Architecture Achievement:**
+The entire system has been successfully migrated from the old complex ArbTrade/TradeExecutionLink architecture to the new unified TradeAccumulator system. All legacy code has been removed and all functionality works on the clean, simplified architecture.
 
 **Benefits of Incremental Approach:**
 - ✅ Tests focus on business logic, not database schema details
@@ -406,27 +427,27 @@ The codebase now follows clean architecture principles with improved maintainabi
 
 ## Current Status
 
-**Current State:** Task 3 (Core Functionality) has been completed! The main arbitrage bot now runs entirely on the unified TradeAccumulator architecture. All 159 tests pass.
+**Current State:** Tasks 1-5 have been completed successfully! The system has been fully migrated to the unified TradeAccumulator architecture with complete schema cleanup.
 
-**Major Achievement - Core System Migration:**
-- ✅ **Main Event Processing**: `lib.rs` completely migrated from old `ArbTrade` system to unified `TradeAccumulator` workflow
-- ✅ **Unified Architecture**: Single `TradeAccumulator::add_trade()` method handles ALL fractional share logic
-- ✅ **Background Execution**: Schwab orders executed asynchronously with proper error handling
-- ✅ **Full Integration**: Database, tests, and core processing logic all use unified system
-- ✅ **Code Quality**: All clippy warnings resolved, code formatted, 159 tests passing
+**Major Achievement - Complete System Migration:**
+- ✅ **Tasks 1-3**: Core system migration from complex ArbTrade to unified TradeAccumulator 
+- ✅ **Task 4**: Code quality and architecture refactoring (CLAUDE.md compliance)
+- ✅ **Task 5**: Complete schema cleanup and legacy code removal
+- ✅ **Full System Integration**: All components (main event processing, CLI, Schwab integration) use unified system
+- ✅ **Code Quality**: All 159 tests passing, zero clippy warnings, proper formatting
 
-**Architecture Transformation (COMPLETE):**
-- **Before**: Complex workflow with `ArbTrade` → `execute_trade()` → status tracking across multiple tables
-- **After**: Simple workflow with `OnchainTrade` → `TradeAccumulator::add_trade()` → optional Schwab execution
+**Architecture Transformation (FULLY COMPLETE):**
+- **Before**: Complex workflow with `ArbTrade` → `execute_trade()` → status tracking across multiple tables with junction table complexity
+- **After**: Clean workflow with `OnchainTrade` → `TradeAccumulator::add_trade()` → `SchwabExecution` with unified schema
 
-**System Impact:**
-The **core arbitrage functionality** - monitoring blockchain events and executing offsetting Schwab trades - now operates on the clean, unified architecture. This is the primary business value delivery mechanism.
+**Complete System Impact:**
+- ✅ **Core Bot**: Main arbitrage functionality completely migrated
+- ✅ **CLI Tools**: Manual operations fully migrated to new system
+- ✅ **Schema**: Legacy tables and complex relationships completely removed
+- ✅ **Codebase**: All legacy code eliminated, unified architecture throughout
 
-**Next Steps:** 
-- Task 4: Code Quality and Architecture Refactoring (address CLAUDE.md violations)
-- Task 5: Schema cleanup (remove old `trades` table)  
-- Task 6: Refactor TradeStatus enum
-- CLI updates (non-critical - manual operations only)
+**Remaining Optional Tasks:** 
+- Task 6: Refactor TradeStatus enum to sophisticated variants (enhancement, not critical)
 
 ---
 

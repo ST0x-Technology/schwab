@@ -1,31 +1,3 @@
--- Original schema (keep existing Rust code working)
-CREATE TABLE trades (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  tx_hash TEXT NOT NULL,
-  log_index INTEGER NOT NULL,
-
-  onchain_input_symbol TEXT NOT NULL,
-  -- TODO: Consider migrating to INTEGER (base units) or DECIMAL for exact precision
-  -- Current REAL type may lose precision for 18-decimal tokenized stocks and financial calculations
-  -- Will need to change for V5 orderbook upgrade (custom Float types)
-  onchain_input_amount REAL NOT NULL,
-  onchain_output_symbol TEXT NOT NULL,
-  onchain_output_amount REAL NOT NULL,
-  onchain_io_ratio REAL NOT NULL,
-  onchain_price_per_share_cents REAL NOT NULL,
-
-  schwab_ticker TEXT NOT NULL,
-  schwab_instruction TEXT CHECK (schwab_instruction IN ('BUY', 'SELL')) NOT NULL,
-  schwab_quantity INTEGER NOT NULL,
-  schwab_price_per_share_cents INTEGER,
-
-  status TEXT CHECK (status IN ('PENDING', 'COMPLETED', 'FAILED')) NOT NULL,
-  schwab_order_id TEXT,
-  created_at DATETIME NOT NULL,
-  completed_at DATETIME,
-
-  UNIQUE (tx_hash, log_index)
-);
 
 -- Onchain trades are immutable blockchain facts
 CREATE TABLE onchain_trades (
@@ -60,21 +32,12 @@ CREATE TABLE trade_accumulators (
   last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
--- Simple junction table tracking which trades went into which executions
-CREATE TABLE execution_trades (
-  schwab_execution_id INTEGER REFERENCES schwab_executions(id),
-  onchain_trade_id INTEGER REFERENCES onchain_trades(id),
-  executed_amount REAL NOT NULL,  -- How much of the trade was executed
-  PRIMARY KEY (schwab_execution_id, onchain_trade_id)
-);
 
 
 -- Indexes for new tables
 CREATE INDEX idx_onchain_trades_symbol ON onchain_trades(symbol);
 CREATE INDEX idx_schwab_executions_symbol ON schwab_executions(symbol);
 CREATE INDEX idx_schwab_executions_status ON schwab_executions(status);
-CREATE INDEX idx_execution_trades_execution_id ON execution_trades(schwab_execution_id);
-CREATE INDEX idx_execution_trades_trade_id ON execution_trades(onchain_trade_id);
 
 /* NOTE: Storing underlying Schwab auth tokens is sensitive.
  * Ensure that this table is secured and access is controlled.

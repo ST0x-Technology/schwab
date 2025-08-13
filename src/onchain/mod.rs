@@ -10,7 +10,6 @@ use crate::schwab::SchwabInstruction;
 use crate::symbol_cache::SymbolCache;
 
 mod clear;
-pub mod execution_trades;
 pub mod position_calculator;
 mod processor;
 mod take_order;
@@ -19,9 +18,6 @@ pub mod trade_accumulator;
 pub mod trade_accumulator_repository;
 pub mod trade_execution_service;
 
-pub use execution_trades::{
-    ExecutionTrade, ExecutionTradeQueries, ExecutionWithTrades, OnchainTradeWithAmount,
-};
 pub use trade::OnchainTrade;
 pub use trade_accumulator::TradeAccumulator;
 
