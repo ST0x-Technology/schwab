@@ -5,7 +5,8 @@ use thiserror::Error;
 use tracing::{error, info};
 
 use crate::arb::ArbTrade;
-use crate::onchain::{EvmEnv, PartialArbTrade, TradeConversionError, TradeStatus};
+use crate::error::OnChainError;
+use crate::onchain::{EvmEnv, PartialArbTrade, TradeStatus};
 use crate::schwab::SchwabAuthEnv;
 use crate::schwab::order::{Instruction, Order, execute_trade};
 use crate::schwab::run_oauth_flow;
@@ -283,7 +284,9 @@ async fn process_tx_with_provider<W: Write, P: Provider + Clone>(
                 "   This transaction may not contain orderbook events matching the configured order hash."
             )?;
         }
-        Err(TradeConversionError::TransactionNotFound(hash)) => {
+        Err(OnChainError::Validation(crate::error::TradeValidationError::TransactionNotFound(
+            hash,
+        ))) => {
             writeln!(stdout, "❌ Transaction not found: {hash}")?;
             writeln!(
                 stdout,

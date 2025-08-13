@@ -1,39 +1,64 @@
 use sqlx::SqlitePool;
 
-use crate::onchain::{TradeConversionError, TradeStatus};
+use crate::error::OnChainError;
+use crate::onchain::TradeStatus;
 use crate::schwab::SchwabInstruction;
 
-macro_rules! convert_rows_to_executions {
-    ($rows:expr) => {{
-        let mut executions = Vec::new();
+/// Converts database row data to a SchwabExecution instance.
+/// Centralizes the conversion logic and casting operations.
+#[allow(clippy::too_many_arguments)]
+fn row_to_execution(
+    id: i64,
+    symbol: String,
+    shares: i64,
+    direction: &str,
+    order_id: Option<String>,
+    price_cents: Option<i64>,
+    status: &str,
+    executed_at: Option<chrono::NaiveDateTime>,
+) -> Result<SchwabExecution, OnChainError> {
+    let parsed_direction = direction
+        .parse()
+        .map_err(OnChainError::InvalidSchwabInstruction)?;
 
-        for row in $rows {
-            let direction = row
-                .direction
-                .parse()
-                .map_err(TradeConversionError::InvalidSchwabInstruction)?;
+    let parsed_status = status.parse().map_err(OnChainError::InvalidTradeStatus)?;
 
-            let status = row
-                .status
-                .parse()
-                .map_err(TradeConversionError::InvalidTradeStatus)?;
+    Ok(SchwabExecution {
+        id: Some(id),
+        symbol,
+        shares: shares_from_db_i64(shares),
+        direction: parsed_direction,
+        order_id,
+        price_cents: price_cents.map(shares_from_db_i64),
+        status: parsed_status,
+        executed_at: executed_at.map(|dt| dt.to_string()),
+    })
+}
 
-            executions.push(SchwabExecution {
-                id: Some(row.id),
-                symbol: row.symbol,
-                #[allow(clippy::cast_sign_loss)]
-                shares: row.shares as u64,
-                direction,
-                order_id: row.order_id,
-                #[allow(clippy::cast_sign_loss)]
-                price_cents: row.price_cents.map(|p| p as u64),
-                status,
-                executed_at: row.executed_at.map(|dt| dt.to_string()),
-            });
+/// Converts database i64 to u64 for share quantities.
+/// Database stores as i64 but shares are always positive quantities.
+const fn shares_from_db_i64(db_value: i64) -> u64 {
+    if db_value < 0 {
+        0 // Defensive programming: negative shares shouldn't exist in our domain
+    } else {
+        #[allow(clippy::cast_sign_loss)]
+        {
+            db_value as u64 // Safe: non-negative value, sign loss is intentional
         }
+    }
+}
 
-        Ok(executions)
-    }};
+/// Converts u64 share quantity to i64 for database storage.
+/// Share quantities are always within i64 range for realistic trading scenarios.
+const fn shares_to_db_i64(shares: u64) -> i64 {
+    if shares > i64::MAX as u64 {
+        i64::MAX // Defensive cap at maximum database value
+    } else {
+        #[allow(clippy::cast_possible_wrap)]
+        {
+            shares as i64 // Safe: within i64 range, wrap is prevented by check
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,11 +78,9 @@ impl SchwabExecution {
         &self,
         sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     ) -> Result<i64, sqlx::Error> {
-        #[allow(clippy::cast_possible_wrap)]
-        let shares_i64 = self.shares as i64;
+        let shares_i64 = shares_to_db_i64(self.shares);
         let direction_str = self.direction.as_str();
-        #[allow(clippy::cast_possible_wrap)]
-        let price_cents_i64 = self.price_cents.map(|p| p as i64);
+        let price_cents_i64 = self.price_cents.map(shares_to_db_i64);
         let status_str = self.status.as_str();
 
         let result = sqlx::query!(
@@ -78,11 +101,50 @@ impl SchwabExecution {
         Ok(result.last_insert_rowid())
     }
 
+    pub async fn find_by_id(
+        pool: &SqlitePool,
+        execution_id: i64,
+    ) -> Result<Option<Self>, OnChainError> {
+        let row = sqlx::query!(
+            "SELECT * FROM schwab_executions WHERE id = ?1",
+            execution_id
+        )
+        .fetch_optional(pool)
+        .await?;
+
+        if let Some(row) = row {
+            let direction = row
+                .direction
+                .parse()
+                .map_err(OnChainError::InvalidSchwabInstruction)?;
+
+            let status = row
+                .status
+                .parse()
+                .map_err(OnChainError::InvalidTradeStatus)?;
+
+            Ok(Some(Self {
+                id: Some(row.id),
+                symbol: row.symbol,
+                #[allow(clippy::cast_sign_loss)]
+                shares: row.shares as u64,
+                direction,
+                order_id: row.order_id,
+                #[allow(clippy::cast_sign_loss)]
+                price_cents: row.price_cents.map(|p| p as u64),
+                status,
+                executed_at: row.executed_at.map(|dt| dt.to_string()),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub async fn find_by_symbol_and_status(
         pool: &SqlitePool,
         symbol: &str,
         status: TradeStatus,
-    ) -> Result<Vec<Self>, TradeConversionError> {
+    ) -> Result<Vec<Self>, OnChainError> {
         let status_str = status.as_str();
 
         if symbol.is_empty() {
@@ -93,7 +155,20 @@ impl SchwabExecution {
             .fetch_all(pool)
             .await?;
 
-            convert_rows_to_executions!(rows)
+            rows.into_iter()
+                .map(|row| {
+                    row_to_execution(
+                        row.id,
+                        row.symbol,
+                        row.shares,
+                        &row.direction,
+                        row.order_id,
+                        row.price_cents,
+                        &row.status,
+                        row.executed_at,
+                    )
+                })
+                .collect()
         } else {
             let rows = sqlx::query!(
                 "SELECT * FROM schwab_executions WHERE symbol = ?1 AND status = ?2 ORDER BY id ASC",
@@ -103,7 +178,20 @@ impl SchwabExecution {
             .fetch_all(pool)
             .await?;
 
-            convert_rows_to_executions!(rows)
+            rows.into_iter()
+                .map(|row| {
+                    row_to_execution(
+                        row.id,
+                        row.symbol,
+                        row.shares,
+                        &row.direction,
+                        row.order_id,
+                        row.price_cents,
+                        &row.status,
+                        row.executed_at,
+                    )
+                })
+                .collect()
         }
     }
 
@@ -115,8 +203,7 @@ impl SchwabExecution {
         price_cents: Option<u64>,
     ) -> Result<(), sqlx::Error> {
         let status_str = new_status.as_str();
-        #[allow(clippy::cast_possible_wrap)]
-        let price_cents_i64 = price_cents.map(|p| p as i64);
+        let price_cents_i64 = price_cents.map(shares_to_db_i64);
         sqlx::query!(
             "UPDATE schwab_executions SET status = ?1, order_id = ?2, price_cents = ?3 WHERE id = ?4",
             status_str,
@@ -142,28 +229,13 @@ impl SchwabExecution {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::SqlitePool;
-
-    async fn setup_test_db() -> SqlitePool {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
-        sqlx::migrate!().run(&pool).await.unwrap();
-        pool
-    }
+    use crate::test_utils::{SchwabExecutionBuilder, setup_test_db};
 
     #[tokio::test]
     async fn test_schwab_execution_save_and_find() {
         let pool = setup_test_db().await;
 
-        let execution = SchwabExecution {
-            id: None,
-            symbol: "AAPL".to_string(),
-            shares: 100,
-            direction: SchwabInstruction::Buy,
-            order_id: None,
-            price_cents: None,
-            status: TradeStatus::Pending,
-            executed_at: None,
-        };
+        let execution = SchwabExecutionBuilder::new().build();
 
         let mut sql_tx = pool.begin().await.unwrap();
         let id = execution
@@ -261,14 +333,12 @@ mod tests {
     async fn test_find_by_symbol_and_status_empty_database() {
         let pool = setup_test_db().await;
 
-        // Test with empty database
         let result =
             SchwabExecution::find_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
                 .await
                 .unwrap();
         assert_eq!(result.len(), 0);
 
-        // Test with empty symbol (should find all with status)
         let result = SchwabExecution::find_by_symbol_and_status(&pool, "", TradeStatus::Pending)
             .await
             .unwrap();
@@ -279,17 +349,7 @@ mod tests {
     async fn test_find_by_symbol_and_status_nonexistent_matches() {
         let pool = setup_test_db().await;
 
-        // Add some test data
-        let execution = SchwabExecution {
-            id: None,
-            symbol: "AAPL".to_string(),
-            shares: 100,
-            direction: SchwabInstruction::Buy,
-            order_id: None,
-            price_cents: None,
-            status: TradeStatus::Pending,
-            executed_at: None,
-        };
+        let execution = SchwabExecutionBuilder::new().build();
 
         let mut sql_tx = pool.begin().await.unwrap();
         execution
@@ -298,14 +358,12 @@ mod tests {
             .unwrap();
         sql_tx.commit().await.unwrap();
 
-        // Test non-existent symbol
         let result =
             SchwabExecution::find_by_symbol_and_status(&pool, "NONEXISTENT", TradeStatus::Pending)
                 .await
                 .unwrap();
         assert_eq!(result.len(), 0);
 
-        // Test existing symbol with non-existent status combination
         let result =
             SchwabExecution::find_by_symbol_and_status(&pool, "AAPL", TradeStatus::Completed)
                 .await
@@ -460,14 +518,12 @@ mod tests {
             .unwrap();
         sql_tx.commit().await.unwrap();
 
-        // Test exact match
         let result =
             SchwabExecution::find_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
                 .await
                 .unwrap();
         assert_eq!(result.len(), 1);
 
-        // Test case mismatch (should not find anything - symbols are case-sensitive)
         let result =
             SchwabExecution::find_by_symbol_and_status(&pool, "aapl", TradeStatus::Pending)
                 .await

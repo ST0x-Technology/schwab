@@ -3,7 +3,8 @@ use alloy::primitives::B256;
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 
-use crate::onchain::{PartialArbTrade, TradeConversionError, TradeStatus};
+use crate::error::OnChainError;
+use crate::onchain::{PartialArbTrade, TradeStatus};
 use crate::schwab::SchwabInstruction;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,7 +61,7 @@ impl ArbTrade {
         pool: &SqlitePool,
         tx_hash: B256,
         log_index: u64,
-    ) -> Result<Self, TradeConversionError> {
+    ) -> Result<Self, OnChainError> {
         let tx_hash_hex = hex::encode_prefixed(tx_hash.as_slice());
         #[allow(clippy::cast_possible_wrap)]
         let log_index_i64 = log_index as i64;
@@ -76,12 +77,12 @@ impl ArbTrade {
         let schwab_instruction = row
             .schwab_instruction
             .parse()
-            .map_err(TradeConversionError::InvalidSchwabInstruction)?;
+            .map_err(OnChainError::InvalidSchwabInstruction)?;
 
         let status = row
             .status
             .parse()
-            .map_err(TradeConversionError::InvalidTradeStatus)?;
+            .map_err(OnChainError::InvalidTradeStatus)?;
 
         Ok(Self {
             id: row.id,
@@ -105,14 +106,14 @@ impl ArbTrade {
         })
     }
 
-    pub async fn db_count(pool: &SqlitePool) -> Result<i64, TradeConversionError> {
+    pub async fn db_count(pool: &SqlitePool) -> Result<i64, OnChainError> {
         let count = sqlx::query!("SELECT COUNT(*) as count FROM trades")
             .fetch_one(pool)
             .await?;
         Ok(count.count)
     }
 
-    pub async fn try_save_to_db(&self, pool: &SqlitePool) -> Result<bool, TradeConversionError> {
+    pub async fn try_save_to_db(&self, pool: &SqlitePool) -> Result<bool, OnChainError> {
         let tx_hash_hex = hex::encode_prefixed(self.tx_hash.as_slice());
         #[allow(clippy::cast_possible_wrap)]
         let log_index_i64 = self.log_index as i64;
@@ -159,7 +160,7 @@ impl ArbTrade {
         tx_hash: B256,
         log_index: u64,
         status: TradeStatus,
-    ) -> Result<(), TradeConversionError> {
+    ) -> Result<(), OnChainError> {
         let tx_hash_hex = hex::encode_prefixed(tx_hash.as_slice());
         #[allow(clippy::cast_possible_wrap)]
         let log_index_i64 = log_index as i64;

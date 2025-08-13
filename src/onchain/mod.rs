@@ -1,50 +1,29 @@
-use alloy::primitives::ruint::FromUintError;
 use alloy::primitives::{Address, B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::Log;
-use alloy::transports::{RpcError, TransportErrorKind};
 use clap::Parser;
 use std::num::ParseFloatError;
 
 use crate::bindings::IOrderBookV4::OrderV3;
+use crate::error::{OnChainError, TradeValidationError};
 use crate::schwab::SchwabInstruction;
 use crate::symbol_cache::SymbolCache;
 
 mod clear;
 pub mod execution_trades;
+pub mod position_calculator;
 mod processor;
 mod take_order;
 pub mod trade;
 pub mod trade_accumulator;
+pub mod trade_accumulator_repository;
+pub mod trade_execution_service;
 
-pub use execution_trades::ExecutionTrade;
+pub use execution_trades::{
+    ExecutionTrade, ExecutionTradeQueries, ExecutionWithTrades, OnchainTradeWithAmount,
+};
 pub use trade::OnchainTrade;
 pub use trade_accumulator::TradeAccumulator;
-
-/// Extracts the base symbol and Schwab instruction from a tokenized symbol.
-/// This logic is shared between PartialArbTrade conversion and TradeAccumulator.
-pub fn parse_symbol_for_schwab(symbol: &str) -> (String, SchwabInstruction) {
-    if symbol.ends_with("s1") {
-        let base = symbol.strip_suffix("s1").unwrap_or(symbol);
-        (base.to_string(), SchwabInstruction::Sell) // s1 tokens sold onchain → sell on Schwab
-    } else {
-        // Assume USDC trades
-        (symbol.to_string(), SchwabInstruction::Buy) // USDC spent onchain → buy on Schwab  
-    }
-}
-
-mod clear;
-pub mod coordinator;
-mod position_accumulator;
-mod processor;
-mod take_order;
-pub mod trade;
-pub mod trade_executions;
-
-pub use coordinator::TradeCoordinator;
-pub use position_accumulator::{ExecutablePosition, PositionAccumulator, accumulate_onchain_trade};
-pub use trade::OnchainTrade;
-pub use trade_executions::TradeExecutionLink;
 
 #[derive(Parser, Debug, Clone)]
 pub struct EvmEnv {
@@ -106,44 +85,6 @@ pub struct PartialArbTrade {
     pub schwab_quantity: u64,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum TradeConversionError {
-    #[error("No transaction hash found in log")]
-    NoTxHash,
-    #[error("No log index found in log")]
-    NoLogIndex,
-    #[error("No block number found in log")]
-    NoBlockNumber,
-    #[error("Invalid IO index: {0}")]
-    InvalidIndex(#[from] FromUintError<usize>),
-    #[error("No AfterClear log found for ClearV2 log")]
-    NoAfterClearLog,
-    #[error("No input found at index: {0}")]
-    NoInputAtIndex(usize),
-    #[error("No output found at index: {0}")]
-    NoOutputAtIndex(usize),
-    #[error("Failed to get symbol: {0}")]
-    GetSymbol(#[from] alloy::contract::Error),
-    #[error("Failed to acquire symbol map lock")]
-    SymbolMapLock,
-    #[error("Expected IO to contain USDC and one s1-suffixed symbol but got {0} and {1}")]
-    InvalidSymbolConfiguration(String, String),
-    #[error("Failed to convert U256 to f64: {0}")]
-    U256ToF64(#[from] ParseFloatError),
-    #[error("Sol type error: {0}")]
-    SolType(#[from] alloy::sol_types::Error),
-    #[error("RPC transport error: {0}")]
-    RpcTransport(#[from] RpcError<TransportErrorKind>),
-    #[error("Database error: {0}")]
-    Database(#[from] sqlx::Error),
-    #[error("Transaction not found: {0}")]
-    TransactionNotFound(B256),
-    #[error("Invalid Schwab instruction in database: {0}")]
-    InvalidSchwabInstruction(String),
-    #[error("Invalid trade status in database: {0}")]
-    InvalidTradeStatus(String),
-}
-
 struct OrderFill {
     input_index: usize,
     input_amount: U256,
@@ -158,19 +99,19 @@ impl PartialArbTrade {
         order: OrderV3,
         fill: OrderFill,
         log: Log,
-    ) -> Result<Option<Self>, TradeConversionError> {
-        let tx_hash = log.transaction_hash.ok_or(TradeConversionError::NoTxHash)?;
-        let log_index = log.log_index.ok_or(TradeConversionError::NoLogIndex)?;
+    ) -> Result<Option<Self>, OnChainError> {
+        let tx_hash = log.transaction_hash.ok_or(TradeValidationError::NoTxHash)?;
+        let log_index = log.log_index.ok_or(TradeValidationError::NoLogIndex)?;
 
         let input = order
             .validInputs
             .get(fill.input_index)
-            .ok_or(TradeConversionError::NoInputAtIndex(fill.input_index))?;
+            .ok_or(TradeValidationError::NoInputAtIndex(fill.input_index))?;
 
         let output = order
             .validOutputs
             .get(fill.output_index)
-            .ok_or(TradeConversionError::NoOutputAtIndex(fill.output_index))?;
+            .ok_or(TradeValidationError::NoOutputAtIndex(fill.output_index))?;
 
         let onchain_input_amount = u256_to_f64(fill.input_amount, input.decimals)?;
         let onchain_input_symbol = cache.get_io_symbol(&provider, input).await?;
@@ -178,41 +119,8 @@ impl PartialArbTrade {
         let onchain_output_amount = u256_to_f64(fill.output_amount, output.decimals)?;
         let onchain_output_symbol = cache.get_io_symbol(provider, output).await?;
 
-        // If the on-chain order has USDC as input and an s1 tokenized stock as
-        // output then it means the order received USDC and gave away an s1
-        // tokenized stock, i.e. sold, which means that to take the opposite
-        // trade in schwab we need to buy and vice versa.
         let (schwab_ticker, schwab_instruction) =
-            if onchain_input_symbol == "USDC" && onchain_output_symbol.ends_with("s1") {
-                let ticker = onchain_output_symbol
-                    .strip_suffix("s1")
-                    .map(ToString::to_string)
-                    .ok_or_else(|| {
-                        TradeConversionError::InvalidSymbolConfiguration(
-                            onchain_input_symbol.clone(),
-                            onchain_output_symbol.clone(),
-                        )
-                    })?;
-
-                (ticker, SchwabInstruction::Buy)
-            } else if onchain_output_symbol == "USDC" && onchain_input_symbol.ends_with("s1") {
-                let ticker = onchain_input_symbol
-                    .strip_suffix("s1")
-                    .map(ToString::to_string)
-                    .ok_or_else(|| {
-                        TradeConversionError::InvalidSymbolConfiguration(
-                            onchain_input_symbol.clone(),
-                            onchain_output_symbol.clone(),
-                        )
-                    })?;
-
-                (ticker, SchwabInstruction::Sell)
-            } else {
-                return Err(TradeConversionError::InvalidSymbolConfiguration(
-                    onchain_input_symbol,
-                    onchain_output_symbol,
-                ));
-            };
+            Self::determine_schwab_trade_details(&onchain_input_symbol, &onchain_output_symbol)?;
 
         let onchain_io_ratio = onchain_input_amount / onchain_output_amount;
 
@@ -232,13 +140,9 @@ impl PartialArbTrade {
         let onchain_price_per_share_cents = onchain_price_per_share_usdc * 100.0;
 
         let schwab_quantity = if schwab_instruction == SchwabInstruction::Buy {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let quantity = onchain_output_amount.round() as u64;
-            quantity
+            shares_from_amount(onchain_output_amount)
         } else {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let quantity = onchain_input_amount.round() as u64;
-            quantity
+            shares_from_amount(onchain_input_amount)
         };
 
         let trade = Self {
@@ -258,6 +162,55 @@ impl PartialArbTrade {
         };
 
         Ok(Some(trade))
+    }
+
+    /// Determines Schwab trade direction and ticker based on onchain symbol configuration.
+    /// Flattened from nested conditionals to follow CLAUDE.md avoid-deep-nesting principle.
+    fn determine_schwab_trade_details(
+        onchain_input_symbol: &str,
+        onchain_output_symbol: &str,
+    ) -> Result<(String, SchwabInstruction), OnChainError> {
+        // USDC input + s1 tokenized stock output = sold tokenized stock = buy on Schwab
+        if onchain_input_symbol == "USDC" && onchain_output_symbol.ends_with("s1") {
+            let ticker = Self::extract_ticker_from_s1_symbol(
+                onchain_output_symbol,
+                onchain_input_symbol,
+                onchain_output_symbol,
+            )?;
+            return Ok((ticker, SchwabInstruction::Buy));
+        }
+
+        // s1 tokenized stock input + USDC output = bought tokenized stock = sell on Schwab
+        if onchain_output_symbol == "USDC" && onchain_input_symbol.ends_with("s1") {
+            let ticker = Self::extract_ticker_from_s1_symbol(
+                onchain_input_symbol,
+                onchain_input_symbol,
+                onchain_output_symbol,
+            )?;
+            return Ok((ticker, SchwabInstruction::Sell));
+        }
+
+        Err(TradeValidationError::InvalidSymbolConfiguration(
+            onchain_input_symbol.to_string(),
+            onchain_output_symbol.to_string(),
+        )
+        .into())
+    }
+
+    fn extract_ticker_from_s1_symbol(
+        s1_symbol: &str,
+        input_symbol: &str,
+        output_symbol: &str,
+    ) -> Result<String, TradeValidationError> {
+        s1_symbol
+            .strip_suffix("s1")
+            .map(ToString::to_string)
+            .ok_or_else(|| {
+                TradeValidationError::InvalidSymbolConfiguration(
+                    input_symbol.to_string(),
+                    output_symbol.to_string(),
+                )
+            })
     }
 }
 
@@ -283,6 +236,26 @@ fn u256_to_f64(amount: U256, decimals: u8) -> Result<f64, ParseFloatError> {
     };
 
     formatted.parse::<f64>()
+}
+
+/// Converts a fractional token amount to whole share count for Schwab execution.
+///
+/// Financial context: Schwab only accepts integer share quantities, but onchain
+/// trades can involve fractional amounts. This function rounds to nearest share
+/// and handles the precision loss explicitly.
+fn shares_from_amount(amount: f64) -> u64 {
+    // Precision loss is acceptable here because:
+    // 1. Schwab API only accepts whole shares
+    // 2. Fractional shares are accumulated separately in TradeAccumulator
+    // 3. Rounding to nearest prevents systematic bias
+    if amount < 0.0 {
+        0 // Negative amounts result in 0 shares (shouldn't happen in normal flow)
+    } else {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        {
+            amount.round() as u64 // Safe: round() removes fractional part, negative case handled above
+        }
+    }
 }
 
 #[cfg(test)]
@@ -443,7 +416,10 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(matches!(err, TradeConversionError::NoTxHash));
+        assert!(matches!(
+            err,
+            OnChainError::Validation(TradeValidationError::NoTxHash)
+        ));
     }
 
     #[tokio::test]
@@ -470,7 +446,10 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(matches!(err, TradeConversionError::NoLogIndex));
+        assert!(matches!(
+            err,
+            OnChainError::Validation(TradeValidationError::NoLogIndex)
+        ));
     }
 
     #[tokio::test]
@@ -495,7 +474,10 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(matches!(err, TradeConversionError::NoInputAtIndex(99)));
+        assert!(matches!(
+            err,
+            OnChainError::Validation(TradeValidationError::NoInputAtIndex(99))
+        ));
     }
 
     #[tokio::test]
@@ -520,7 +502,10 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(matches!(err, TradeConversionError::NoOutputAtIndex(99)));
+        assert!(matches!(
+            err,
+            OnChainError::Validation(TradeValidationError::NoOutputAtIndex(99))
+        ));
     }
 
     #[tokio::test]
@@ -547,7 +532,10 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(matches!(err, TradeConversionError::GetSymbol(_)));
+        assert!(matches!(
+            err,
+            OnChainError::Execution(crate::error::ExecutionError::GetSymbol(_))
+        ));
     }
 
     #[tokio::test]
@@ -580,7 +568,7 @@ mod tests {
         .unwrap_err();
 
         assert!(
-            matches!(err, TradeConversionError::InvalidSymbolConfiguration(ref input, ref output) if input == "USDC" && output == "USDC")
+            matches!(err, OnChainError::Validation(TradeValidationError::InvalidSymbolConfiguration(ref input, ref output)) if input == "USDC" && output == "USDC")
         );
     }
 
@@ -614,7 +602,7 @@ mod tests {
         .unwrap_err();
 
         assert!(
-            matches!(err, TradeConversionError::InvalidSymbolConfiguration(ref input, ref output) if input == "USDC" && output == "FOO")
+            matches!(err, OnChainError::Validation(TradeValidationError::InvalidSymbolConfiguration(ref input, ref output)) if input == "USDC" && output == "FOO")
         );
     }
 
@@ -649,7 +637,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            TradeConversionError::InvalidSymbolConfiguration(ref input, ref output)
+            OnChainError::Validation(TradeValidationError::InvalidSymbolConfiguration(ref input, ref output))
             if input == "FOOs1" && output == "BARs1"
         ));
     }

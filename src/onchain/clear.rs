@@ -3,8 +3,9 @@ use alloy::providers::Provider;
 use alloy::rpc::types::{Filter, Log};
 use alloy::sol_types::{SolEvent, SolValue};
 
-use super::{EvmEnv, OrderFill, PartialArbTrade, TradeConversionError};
+use super::{EvmEnv, OrderFill, PartialArbTrade};
 use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
+use crate::error::OnChainError;
 use crate::symbol_cache::SymbolCache;
 
 impl PartialArbTrade {
@@ -14,7 +15,7 @@ impl PartialArbTrade {
         provider: P,
         event: ClearV2,
         log: Log,
-    ) -> Result<Option<Self>, TradeConversionError> {
+    ) -> Result<Option<Self>, OnChainError> {
         let ClearV2 {
             sender: _,
             alice: alice_order,
@@ -41,9 +42,7 @@ impl PartialArbTrade {
         // contain the amounts. so we query the same block number, filter out
         // logs with index lower than the ClearV2 log index and with tx hashes
         // that don't match the ClearV2 tx hash.
-        let block_number = log
-            .block_number
-            .ok_or(TradeConversionError::NoBlockNumber)?;
+        let block_number = log.block_number.ok_or(OnChainError::NoBlockNumber())?;
 
         let filter = Filter::new()
             .select(block_number)
@@ -57,7 +56,7 @@ impl PartialArbTrade {
                 after_clear_log.transaction_hash == log.transaction_hash
                     && after_clear_log.log_index > log.log_index
             })
-            .ok_or(TradeConversionError::NoAfterClearLog)?;
+            .ok_or(OnChainError::NoAfterClearLog())?;
 
         let after_clear = after_clear_log.log_decode::<AfterClear>()?;
 
@@ -99,6 +98,7 @@ impl PartialArbTrade {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::TradeValidationError;
     use alloy::primitives::{IntoLogData as _, U256, address, fixed_bytes};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
     use alloy::sol_types::SolCall;
@@ -255,7 +255,10 @@ mod tests {
                 .unwrap_err();
 
         assert!(
-            matches!(err, TradeConversionError::NoAfterClearLog),
+            matches!(
+                err,
+                OnChainError::Validation(TradeValidationError::NoAfterClearLog)
+            ),
             "got an unexpected error: {err:?}",
         );
     }
@@ -340,7 +343,10 @@ mod tests {
                 .await
                 .unwrap_err();
 
-        assert!(matches!(err, TradeConversionError::NoBlockNumber));
+        assert!(matches!(
+            err,
+            OnChainError::Validation(TradeValidationError::NoBlockNumber)
+        ));
     }
 
     #[tokio::test]
@@ -485,6 +491,9 @@ mod tests {
                 .await
                 .unwrap_err();
 
-        assert!(matches!(err, TradeConversionError::InvalidIndex(_)));
+        assert!(matches!(
+            err,
+            OnChainError::Validation(TradeValidationError::InvalidIndex(_))
+        ));
     }
 }

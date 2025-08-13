@@ -3,8 +3,9 @@ use alloy::providers::Provider;
 use alloy::rpc::types::Log;
 use alloy::sol_types::SolEvent;
 
-use super::{EvmEnv, PartialArbTrade, TradeConversionError};
+use super::{EvmEnv, PartialArbTrade};
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
+use crate::error::OnChainError;
 use crate::symbol_cache::SymbolCache;
 
 impl PartialArbTrade {
@@ -15,11 +16,11 @@ impl PartialArbTrade {
         provider: P,
         cache: &SymbolCache,
         env: &EvmEnv,
-    ) -> Result<Option<Self>, TradeConversionError> {
+    ) -> Result<Option<Self>, OnChainError> {
         let receipt = provider
             .get_transaction_receipt(tx_hash)
             .await?
-            .ok_or(TradeConversionError::TransactionNotFound(tx_hash))?;
+            .ok_or_else(|| OnChainError::TransactionNotFound(tx_hash))?;
 
         let trades: Vec<_> = receipt
             .inner
@@ -58,7 +59,7 @@ async fn try_convert_log_to_trade<P: Provider>(
     provider: P,
     cache: &SymbolCache,
     env: &EvmEnv,
-) -> Result<Option<PartialArbTrade>, TradeConversionError> {
+) -> Result<Option<PartialArbTrade>, OnChainError> {
     let log_with_metadata = Log {
         inner: log.inner.clone(),
         block_hash: log.block_hash,
@@ -98,6 +99,7 @@ async fn try_convert_log_to_trade<P: Provider>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::TradeValidationError;
     use alloy::hex;
     use alloy::primitives::{Address, IntoLogData, U256, address, fixed_bytes, keccak256};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
@@ -138,7 +140,9 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(err, TradeConversionError::TransactionNotFound(hash) if hash == tx_hash));
+        assert!(
+            matches!(err, OnChainError::Validation(TradeValidationError::TransactionNotFound(hash)) if hash == tx_hash)
+        );
     }
 
     #[tokio::test]

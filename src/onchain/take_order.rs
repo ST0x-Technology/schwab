@@ -3,8 +3,9 @@ use alloy::providers::Provider;
 use alloy::rpc::types::Log;
 use alloy::sol_types::SolValue;
 
-use super::{OrderFill, PartialArbTrade, TradeConversionError};
+use super::{OrderFill, PartialArbTrade};
 use crate::bindings::IOrderBookV4::{TakeOrderConfigV3, TakeOrderV2};
+use crate::error::OnChainError;
 use crate::symbol_cache::SymbolCache;
 
 impl PartialArbTrade {
@@ -14,7 +15,7 @@ impl PartialArbTrade {
         event: TakeOrderV2,
         log: Log,
         target_order_hash: B256,
-    ) -> Result<Option<Self>, TradeConversionError> {
+    ) -> Result<Option<Self>, OnChainError> {
         let event_order_hash = keccak256(event.config.order.abi_encode());
         if event_order_hash != target_order_hash {
             return Ok(None);
