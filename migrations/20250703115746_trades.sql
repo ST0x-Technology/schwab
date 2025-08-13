@@ -50,18 +50,23 @@ CREATE TABLE schwab_executions (
   executed_at TIMESTAMP
 );
 
--- Junction table tracking which onchain trades contributed to which executions
-CREATE TABLE trade_executions (
-  onchain_trade_id INTEGER REFERENCES onchain_trades(id),
-  schwab_execution_id INTEGER REFERENCES schwab_executions(id),
-  executed_amount REAL NOT NULL,  -- How much of the onchain trade was executed
-  PRIMARY KEY (onchain_trade_id, schwab_execution_id)
+-- Unified trade accumulator - ONE table that tracks everything
+CREATE TABLE trade_accumulators (
+  symbol TEXT PRIMARY KEY NOT NULL,
+  net_position REAL NOT NULL DEFAULT 0.0,  -- Running position for threshold checking
+  accumulated_long REAL NOT NULL DEFAULT 0.0,  -- Fractional shares accumulated for buying
+  accumulated_short REAL NOT NULL DEFAULT 0.0,  -- Fractional shares accumulated for selling
+  pending_execution_id INTEGER REFERENCES schwab_executions(id),  -- Current pending execution if any
+  threshold_amount REAL NOT NULL DEFAULT 1.0,  -- Minimum position to trigger execution
+  last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
-CREATE TABLE position_accumulator (
-  symbol TEXT PRIMARY KEY NOT NULL,
-  net_position REAL NOT NULL DEFAULT 0.0,
-  last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+-- Simple junction table tracking which trades went into which executions
+CREATE TABLE execution_trades (
+  schwab_execution_id INTEGER REFERENCES schwab_executions(id),
+  onchain_trade_id INTEGER REFERENCES onchain_trades(id),
+  executed_amount REAL NOT NULL,  -- How much of the trade was executed
+  PRIMARY KEY (schwab_execution_id, onchain_trade_id)
 );
 
 
@@ -69,6 +74,8 @@ CREATE TABLE position_accumulator (
 CREATE INDEX idx_onchain_trades_symbol ON onchain_trades(symbol);
 CREATE INDEX idx_schwab_executions_symbol ON schwab_executions(symbol);
 CREATE INDEX idx_schwab_executions_status ON schwab_executions(status);
+CREATE INDEX idx_execution_trades_execution_id ON execution_trades(schwab_execution_id);
+CREATE INDEX idx_execution_trades_trade_id ON execution_trades(onchain_trade_id);
 
 /* NOTE: Storing underlying Schwab auth tokens is sensitive.
  * Ensure that this table is secured and access is controlled.
