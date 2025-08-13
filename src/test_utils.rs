@@ -158,10 +158,7 @@ impl SchwabExecutionBuilder {
                 symbol: "AAPL".to_string(),
                 shares: 100,
                 direction: SchwabInstruction::Buy,
-                order_id: None,
-                price_cents: None,
                 status: TradeStatus::Pending,
-                executed_at: None,
             },
         }
     }

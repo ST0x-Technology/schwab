@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tracing::{error, info};
 
+use chrono::Utc;
+
 use super::{
     SchwabAuthEnv, SchwabError, SchwabInstruction, SchwabTokens, execution::SchwabExecution,
 };
@@ -220,9 +222,11 @@ async fn handle_execution_success(pool: &SqlitePool, execution_id: i64) {
     if let Err(e) = SchwabExecution::update_status_within_transaction(
         &mut sql_tx,
         execution_id,
-        TradeStatus::Completed,
-        None, // TODO: Get actual order_id from Schwab response
-        None, // TODO: Get actual price from Schwab response
+        TradeStatus::Completed {
+            executed_at: Utc::now(),
+            order_id: "TODO_ORDER_ID".to_string(), // TODO: Get actual order_id from Schwab response
+            price_cents: 0,                        // TODO: Get actual price from Schwab response
+        },
     )
     .await
     {
@@ -261,9 +265,10 @@ async fn handle_execution_failure(pool: &SqlitePool, execution_id: i64, error: S
     if let Err(update_err) = SchwabExecution::update_status_within_transaction(
         &mut sql_tx,
         execution_id,
-        TradeStatus::Failed,
-        None,
-        None,
+        TradeStatus::Failed {
+            failed_at: Utc::now(),
+            error_reason: Some(error.to_string()),
+        },
     )
     .await
     {

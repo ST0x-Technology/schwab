@@ -1,6 +1,7 @@
 use alloy::primitives::{Address, B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::Log;
+use chrono::{DateTime, Utc};
 use clap::Parser;
 use std::num::ParseFloatError;
 
@@ -31,19 +32,26 @@ pub struct EvmEnv {
     pub order_hash: B256,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TradeStatus {
     Pending,
-    Completed,
-    Failed,
+    Completed {
+        executed_at: DateTime<Utc>,
+        order_id: String,
+        price_cents: u64,
+    },
+    Failed {
+        failed_at: DateTime<Utc>,
+        error_reason: Option<String>,
+    },
 }
 
 impl TradeStatus {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Pending => "PENDING",
-            Self::Completed => "COMPLETED",
-            Self::Failed => "FAILED",
+            Self::Completed { .. } => "COMPLETED",
+            Self::Failed { .. } => "FAILED",
         }
     }
 }
@@ -54,8 +62,8 @@ impl std::str::FromStr for TradeStatus {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "PENDING" => Ok(Self::Pending),
-            "COMPLETED" => Ok(Self::Completed),
-            "FAILED" => Ok(Self::Failed),
+            "COMPLETED" => Err("Cannot create Completed status without required data".to_string()),
+            "FAILED" => Err("Cannot create Failed status without required data".to_string()),
             _ => Err(format!("Invalid trade status: {s}")),
         }
     }

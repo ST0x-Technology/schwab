@@ -89,10 +89,7 @@ impl TradeAccumulatorRepository {
             symbol: symbol.to_string(),
             shares,
             direction,
-            order_id: None,
-            price_cents: None,
             status: TradeStatus::Pending,
-            executed_at: None,
         };
 
         let execution_id = execution.save_within_transaction(sql_tx).await?;

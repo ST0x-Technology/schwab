@@ -1559,10 +1559,9 @@ mod tests {
         assert_eq!(trade.amount, 9.0); // Amount from the test data
 
         // Verify SchwabExecution was created (due to TradeAccumulator)
-        let executions =
-            SchwabExecution::find_by_symbol_and_status(&pool, "AAPL", TradeStatus::Completed)
-                .await
-                .unwrap();
+        let executions = SchwabExecution::find_completed_by_symbol(&pool, "AAPL")
+            .await
+            .unwrap();
         assert_eq!(executions.len(), 1);
         assert_eq!(executions[0].shares, 9);
         assert_eq!(executions[0].direction, SchwabInstruction::Sell);

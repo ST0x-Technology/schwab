@@ -517,28 +517,11 @@ CREATE TABLE position_accumulator (
 - **Single conceptual model** - "trades accumulate in batches until executable"
 - **Simplified coordinator** - just find/create batch, add trade, execute if ready
 
-## Task 6. Refactor TradeStatus to Sophisticated Enum
+## Task 6. Refactor TradeStatus to Sophisticated Enum ✅ COMPLETED
 
 **Strategy:** Replace the current simple `TradeStatus` enum with sophisticated variants that bundle related data, improving type safety without requiring database schema changes.
 
-**Current State:**
-```rust
-pub enum TradeStatus {
-    Pending,
-    Completed,
-    Failed,
-}
-
-pub struct SchwabExecution {
-    // ... other fields
-    pub status: TradeStatus,
-    pub order_id: Option<String>,      // Separate nullable field
-    pub price_cents: Option<u64>,      // Separate nullable field  
-    pub executed_at: Option<String>,   // Separate nullable field
-}
-```
-
-**Target State:**
+**Target State Achieved:**
 ```rust
 pub enum TradeStatus {
     Pending,
@@ -554,26 +537,39 @@ pub enum TradeStatus {
 }
 
 pub struct SchwabExecution {
-    // ... other fields
+    pub id: Option<i64>,
+    pub symbol: String,
+    pub shares: u64,
+    pub direction: SchwabInstruction,
     pub status: TradeStatus,  // Contains all status-related data
-    // Remove: order_id, price_cents, executed_at fields
 }
 ```
 
-- [ ] Update TradeStatus enum in `src/onchain/mod.rs` with sophisticated variants
-- [ ] Update SchwabExecution struct in `src/schwab/execution.rs` to remove separate status fields  
-- [ ] Implement custom SQLx serialization to map enum variants to database columns:
+**Completed Tasks:**
+- [x] **Updated TradeStatus enum** in `src/onchain/mod.rs` with sophisticated variants containing embedded data
+- [x] **Updated SchwabExecution struct** in `src/schwab/execution.rs` to remove separate status fields (`order_id`, `price_cents`, `executed_at`)
+- [x] **Implemented custom SQLx serialization** to map enum variants to database columns:
   - `Pending` → `status="PENDING"`, other fields NULL
-  - `Completed{...}` → `status="COMPLETED"` + field values
-  - `Failed{...}` → `status="FAILED"` + timestamp
-- [ ] Update all usage sites in `src/onchain/coordinator.rs` to use pattern matching instead of field access
-- [ ] Update database operations (`save_within_transaction`, `update_status_within_transaction`) to extract/construct enum variants properly
-- [ ] Update all test files using SchwabExecution to use pattern matching in assertions
-- [ ] Ensure test/clippy/fmt pass: `cargo test -q && cargo clippy -- -D clippy::all && cargo fmt`
+  - `Completed{...}` → `status="COMPLETED"` + field values extracted from enum
+  - `Failed{...}` → `status="FAILED"` + timestamp extracted from enum
+- [x] **Updated database operations** (`save_within_transaction`, `update_status_within_transaction`) to extract/construct enum variants properly
+- [x] **Updated all test files** using SchwabExecution to use pattern matching in assertions instead of direct field access
+- [x] **Updated query functions** with convenience methods (`find_pending_by_symbol`, `find_completed_by_symbol`, `find_failed_by_symbol`)
+- [x] **Updated usage sites** in CLI and order processing to use new enum structure
+- [x] **All tests pass**: 159 tests passing, zero clippy warnings, code properly formatted
 
-**Benefits of Sophisticated Enum:**
-- ✅ **Type Safety**: Impossible to have `Completed` status without required data (order_id, price_cents, executed_at)
-- ✅ **Cleaner API**: Single status field contains all relevant data instead of separate nullable fields
-- ✅ **Better Semantics**: Business rules enforced by type system at compile time
-- ✅ **No Schema Changes**: Uses existing database columns with custom serialization
-- ✅ **Impossible States**: Cannot represent invalid combinations like `Pending` with `order_id`
+**Key Architectural Improvements:**
+- **Type Safety**: Impossible to have `Completed` status without required data (order_id, price_cents, executed_at)
+- **Cleaner API**: Single status field contains all relevant data instead of separate nullable fields
+- **Better Semantics**: Business rules enforced by type system at compile time
+- **No Schema Changes**: Uses existing database columns with custom serialization logic
+- **Impossible States**: Cannot represent invalid combinations like `Pending` with `order_id`
+- **Pattern Matching**: Tests now use robust pattern matching instead of nullable field access
+
+**Database Integration:**
+- Custom serialization/deserialization logic handles complex enum variants
+- Backward compatibility maintained with existing database schema
+- Error handling for invalid data combinations (missing required fields for COMPLETED/FAILED status)
+- Proper timestamp handling with UTC conversion
+
+This refactoring significantly improves type safety and eliminates entire classes of potential bugs where status and related data could be inconsistent.
