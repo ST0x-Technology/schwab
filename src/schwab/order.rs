@@ -312,7 +312,6 @@ async fn handle_execution_success(pool: &SqlitePool, execution_id: i64, order_id
 
     if let Err(e) = sql_tx.commit().await {
         error!("Failed to commit execution success transaction: id={execution_id}, error={e:?}",);
-        let _ = sql_tx.rollback().await;
     }
 }
 
@@ -350,7 +349,6 @@ async fn handle_execution_failure(pool: &SqlitePool, execution_id: i64, error: S
 
     if let Err(e) = sql_tx.commit().await {
         error!("Failed to commit execution failure transaction: id={execution_id}, error={e:?}",);
-        let _ = sql_tx.rollback().await;
     }
 }
 

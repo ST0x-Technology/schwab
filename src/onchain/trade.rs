@@ -2,6 +2,7 @@ use alloy::primitives::{B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::Log;
 use alloy::sol_types::SolEvent;
+use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 use std::num::ParseFloatError;
 
@@ -20,7 +21,7 @@ pub struct OnchainTrade {
     pub amount: f64,
     pub direction: Direction,
     pub price_usdc: f64,
-    pub created_at: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 impl OnchainTrade {
@@ -90,7 +91,9 @@ impl OnchainTrade {
             amount: row.amount,
             direction,
             price_usdc: row.price_usdc,
-            created_at: row.created_at.map(|dt| dt.to_string()),
+            created_at: row
+                .created_at
+                .map(|naive_dt| DateTime::from_naive_utc_and_offset(naive_dt, Utc)),
         })
     }
 

@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 
 use crate::error::OnChainError;
@@ -12,7 +13,7 @@ pub struct TradeExecutionLink {
     pub trade_id: i64,
     pub execution_id: i64,
     pub contributed_shares: f64,
-    pub created_at: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 impl TradeExecutionLink {
@@ -82,7 +83,7 @@ impl TradeExecutionLink {
                     execution_total_shares: shares_from_db_i64(row.shares),
                     execution_direction: row.direction,
                     execution_status: row.status,
-                    created_at: Some(row.created_at.to_string()),
+                    created_at: Some(DateTime::from_naive_utc_and_offset(row.created_at, Utc)),
                 })
             })
             .collect()
@@ -128,7 +129,7 @@ impl TradeExecutionLink {
                     trade_total_amount: row.amount,
                     trade_direction: row.direction,
                     trade_price_usdc: row.price_usdc,
-                    created_at: Some(row.created_at.to_string()),
+                    created_at: Some(DateTime::from_naive_utc_and_offset(row.created_at, Utc)),
                 })
             })
             .collect()
@@ -176,20 +177,27 @@ impl TradeExecutionLink {
                 Ok(AuditTrailEntry {
                     link_id: row.link_id,
                     contributed_shares: row.contributed_shares,
-                    link_created_at: Some(row.link_created_at.to_string()),
+                    link_created_at: Some(DateTime::from_naive_utc_and_offset(
+                        row.link_created_at,
+                        Utc,
+                    )),
                     trade_id: row.trade_id,
                     trade_tx_hash: row.tx_hash,
                     trade_log_index: shares_from_db_i64(row.log_index),
                     trade_amount: row.trade_amount,
                     trade_direction: row.trade_direction,
                     trade_price_usdc: row.price_usdc,
-                    trade_created_at: row.trade_created_at.map(|dt| dt.to_string()),
+                    trade_created_at: row
+                        .trade_created_at
+                        .map(|naive_dt| DateTime::from_naive_utc_and_offset(naive_dt, Utc)),
                     execution_id: row.execution_id,
                     execution_shares: shares_from_db_i64(row.execution_shares),
                     execution_direction: row.execution_direction,
                     execution_status: row.status,
                     execution_order_id: row.order_id,
-                    execution_executed_at: row.executed_at.map(|dt| dt.to_string()),
+                    execution_executed_at: row
+                        .executed_at
+                        .map(|naive_dt| DateTime::from_naive_utc_and_offset(naive_dt, Utc)),
                 })
             })
             .collect()
@@ -214,7 +222,7 @@ pub struct ExecutionContribution {
     pub execution_total_shares: u64,
     pub execution_direction: String,
     pub execution_status: String,
-    pub created_at: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 /// Represents a trade that contributed to an execution, with trade details
@@ -229,7 +237,7 @@ pub struct TradeContribution {
     pub trade_total_amount: f64,
     pub trade_direction: String,
     pub trade_price_usdc: f64,
-    pub created_at: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 /// Complete audit trail entry linking trade and execution with all relevant details
@@ -237,7 +245,7 @@ pub struct TradeContribution {
 pub struct AuditTrailEntry {
     pub link_id: i64,
     pub contributed_shares: f64,
-    pub link_created_at: Option<String>,
+    pub link_created_at: Option<DateTime<Utc>>,
 
     // Trade details
     pub trade_id: i64,
@@ -246,7 +254,7 @@ pub struct AuditTrailEntry {
     pub trade_amount: f64,
     pub trade_direction: String,
     pub trade_price_usdc: f64,
-    pub trade_created_at: Option<String>,
+    pub trade_created_at: Option<DateTime<Utc>>,
 
     // Execution details
     pub execution_id: i64,
@@ -254,7 +262,7 @@ pub struct AuditTrailEntry {
     pub execution_direction: String,
     pub execution_status: String,
     pub execution_order_id: Option<String>,
-    pub execution_executed_at: Option<String>,
+    pub execution_executed_at: Option<DateTime<Utc>>,
 }
 
 /// Helper function to convert database i64 to u64 for share quantities
