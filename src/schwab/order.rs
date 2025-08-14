@@ -276,26 +276,27 @@ pub async fn execute_schwab_order(
     })?;
 
     match result {
-        Ok(response) => handle_execution_success(pool, execution_id, response.order_id).await,
-        Err(e) => handle_execution_failure(pool, execution_id, e).await,
+        Ok(response) => handle_execution_success(pool, execution_id, response.order_id).await?,
+        Err(e) => handle_execution_failure(pool, execution_id, e).await?,
     }
 
     Ok(())
 }
 
-async fn handle_execution_success(pool: &SqlitePool, execution_id: i64, order_id: String) {
+async fn handle_execution_success(
+    pool: &SqlitePool,
+    execution_id: i64,
+    order_id: String,
+) -> Result<(), SchwabError> {
     info!("Successfully placed Schwab order for execution: id={execution_id}, order_id={order_id}");
 
-    let mut sql_tx = match pool.begin().await {
-        Ok(tx) => tx,
-        Err(e) => {
-            error!(
-                "Failed to start transaction for execution success: id={}, error={:?}",
-                execution_id, e
-            );
-            return;
-        }
-    };
+    let mut sql_tx = pool.begin().await.map_err(|e| {
+        error!(
+            "Failed to start transaction for execution success: id={}, error={:?}",
+            execution_id, e
+        );
+        e
+    })?;
 
     if let Err(e) = update_execution_status_within_transaction(
         &mut sql_tx,
@@ -310,28 +311,33 @@ async fn handle_execution_success(pool: &SqlitePool, execution_id: i64, order_id
     {
         error!("Failed to update execution status to COMPLETED: id={execution_id}, error={e:?}",);
         let _ = sql_tx.rollback().await;
-        return;
+        return Err(SchwabError::Sqlx(e));
     }
 
-    if let Err(e) = sql_tx.commit().await {
+    sql_tx.commit().await.map_err(|e| {
         error!("Failed to commit execution success transaction: id={execution_id}, error={e:?}",);
-    }
+        e
+    })?;
+
+    Ok(())
 }
 
-async fn handle_execution_failure(pool: &SqlitePool, execution_id: i64, error: SchwabError) {
+async fn handle_execution_failure(
+    pool: &SqlitePool,
+    execution_id: i64,
+    error: SchwabError,
+) -> Result<(), SchwabError> {
     error!(
         "Failed to place Schwab order after retries for execution: id={execution_id}, error={error:?}",
     );
 
-    let mut sql_tx = match pool.begin().await {
-        Ok(tx) => tx,
-        Err(e) => {
+    let mut sql_tx =
+        pool.begin().await.map_err(|e| {
             error!(
                 "Failed to start transaction for execution failure: id={execution_id}, error={e:?}",
             );
-            return;
-        }
-    };
+            e
+        })?;
 
     if let Err(update_err) = update_execution_status_within_transaction(
         &mut sql_tx,
@@ -347,12 +353,15 @@ async fn handle_execution_failure(pool: &SqlitePool, execution_id: i64, error: S
             "Failed to update execution status to FAILED: id={execution_id}, error={update_err:?}",
         );
         let _ = sql_tx.rollback().await;
-        return;
+        return Err(SchwabError::Sqlx(update_err));
     }
 
-    if let Err(e) = sql_tx.commit().await {
+    sql_tx.commit().await.map_err(|e| {
         error!("Failed to commit execution failure transaction: id={execution_id}, error={e:?}",);
-    }
+        e
+    })?;
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -901,7 +910,9 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Test successful execution handling
-        handle_execution_success(&pool, execution_id, "ORDER123".to_string()).await;
+        handle_execution_success(&pool, execution_id, "ORDER123".to_string())
+            .await
+            .unwrap();
 
         // Verify execution status was updated
         let updated_execution = find_execution_by_id(&pool, execution_id)
@@ -952,7 +963,9 @@ mod tests {
             body: "Test error body".to_string(),
         };
 
-        handle_execution_failure(&pool, execution_id, test_error).await;
+        handle_execution_failure(&pool, execution_id, test_error)
+            .await
+            .unwrap();
 
         // Verify execution status was updated to failed
         let updated_execution = find_execution_by_id(&pool, execution_id)
