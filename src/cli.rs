@@ -388,7 +388,7 @@ mod tests {
     use super::*;
     use crate::bindings::IERC20::symbolCall;
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
-    use crate::onchain::{TradeStatus, trade::OnchainTrade};
+    use crate::onchain::trade::OnchainTrade;
     use crate::schwab::SchwabInstruction;
     use crate::schwab::execution::SchwabExecution;
     use crate::test_utils::get_test_order;
