@@ -6,18 +6,6 @@ pub async fn try_acquire_execution_lease(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     symbol: &str,
 ) -> Result<bool, OnChainError> {
-    // Create symbol_locks table if it doesn't exist (for tests)
-    sqlx::query(
-        r"
-        CREATE TABLE IF NOT EXISTS symbol_locks (
-            symbol TEXT PRIMARY KEY NOT NULL,
-            locked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
-        )
-        ",
-    )
-    .execute(sql_tx.as_mut())
-    .await?;
-
     // Clean up old locks first (older than 5 minutes)
     sqlx::query("DELETE FROM symbol_locks WHERE locked_at < datetime('now', '-5 minutes')")
         .execute(sql_tx.as_mut())
