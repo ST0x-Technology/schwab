@@ -80,24 +80,18 @@ pub async fn db_count(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
 }
 
 fn extract_base_symbol(symbol: &str) -> Result<String, OnChainError> {
-    if !symbol.ends_with("s1") {
+    if symbol.is_empty() {
         return Err(OnChainError::Validation(
             TradeValidationError::InvalidSymbolConfiguration(
                 symbol.to_string(),
-                "TradeAccumulator only processes tokenized equity symbols (s1 suffix)".to_string(),
+                "Symbol cannot be empty".to_string(),
             ),
         ));
     }
 
-    symbol
+    Ok(symbol
         .strip_suffix("s1")
-        .map(ToString::to_string)
-        .ok_or_else(|| {
-            OnChainError::Validation(TradeValidationError::InvalidSymbolConfiguration(
-                symbol.to_string(),
-                "Failed to extract base symbol from s1 suffix".to_string(),
-            ))
-        })
+        .map_or_else(|| symbol.to_string(), ToString::to_string))
 }
 
 async fn get_or_create_within_transaction(
@@ -495,8 +489,9 @@ mod tests {
     #[tokio::test]
     async fn test_extract_base_symbol() {
         assert_eq!(extract_base_symbol("AAPLs1").unwrap(), "AAPL");
+        assert_eq!(extract_base_symbol("AAPL").unwrap(), "AAPL");
 
-        let result = extract_base_symbol("INVALID");
+        let result = extract_base_symbol("");
         assert!(result.is_err());
     }
 
