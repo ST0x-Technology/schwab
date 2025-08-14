@@ -1,7 +1,7 @@
 //! Domain-specific error types following clean error handling architecture.
 //! Separates concerns instead of mixing database, business logic, and external API errors.
 
-use alloy::primitives::{B256, ruint::FromUintError};
+use alloy::primitives::{ruint::FromUintError, B256};
 use alloy::transports::{RpcError, TransportErrorKind};
 use std::num::ParseFloatError;
 
@@ -68,7 +68,6 @@ pub enum OnChainError {
     Execution(#[from] ExecutionError),
 }
 
-// Convenience conversions to maintain backward compatibility
 impl From<sqlx::Error> for OnChainError {
     fn from(err: sqlx::Error) -> Self {
         Self::Persistence(PersistenceError::Database(err))
