@@ -84,3 +84,9 @@ CREATE TABLE schwab_auth (
   refresh_token TEXT NOT NULL,
   refresh_token_fetched_at DATETIME NOT NULL
 );
+
+-- Symbol locks table for per-symbol execution concurrency control
+CREATE TABLE symbol_locks (
+  symbol TEXT PRIMARY KEY NOT NULL,
+  locked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);

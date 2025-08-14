@@ -3,6 +3,7 @@ use tracing::info;
 
 use super::{OnchainTrade, trade_execution_link::TradeExecutionLink};
 use crate::error::{OnChainError, TradeValidationError};
+use crate::lock::{clear_execution_lease, set_pending_execution_id, try_acquire_execution_lease};
 use crate::onchain::position_calculator::{ExecutionType, PositionCalculator};
 use crate::schwab::TradeStatus;
 use crate::schwab::{Direction, execution::SchwabExecution};
@@ -44,8 +45,29 @@ pub async fn add_trade(
         "Updated calculator"
     );
 
-    let execution =
-        try_create_execution_if_ready(&mut sql_tx, &base_symbol, trade_id, &mut calculator).await?;
+    let execution = if try_acquire_execution_lease(&mut sql_tx, &base_symbol).await? {
+        let result =
+            try_create_execution_if_ready(&mut sql_tx, &base_symbol, trade_id, &mut calculator)
+                .await?;
+
+        match &result {
+            Some(execution) => {
+                let execution_id = execution.id.expect("Execution should have ID after save");
+                set_pending_execution_id(&mut sql_tx, &base_symbol, execution_id).await?;
+            }
+            None => {
+                clear_execution_lease(&mut sql_tx, &base_symbol).await?;
+            }
+        }
+
+        result
+    } else {
+        info!(
+            symbol = %base_symbol,
+            "Another worker holds execution lease, skipping execution creation"
+        );
+        None
+    };
 
     save_within_transaction(&mut sql_tx, &base_symbol, &calculator, None).await?;
 
@@ -139,7 +161,7 @@ async fn save_within_transaction(
         calculator.accumulated_short,
         pending_execution_id
     )
-    .execute(&mut **sql_tx)
+    .execute(sql_tx.as_mut())
     .await?;
 
     Ok(())
@@ -695,10 +717,10 @@ mod tests {
             (None, None) => 0,
         };
 
-        // Symbol-level locking should ensure only one execution is created
+        // Per-symbol lease mechanism should prevent duplicate executions
         assert_eq!(
             executions_created, 1,
-            "Expected exactly 1 execution to be created, but got {executions_created}"
+            "Per-symbol lease should prevent duplicate executions, but got {executions_created}"
         );
 
         // Verify database state: 2 trades saved, 1 execution created

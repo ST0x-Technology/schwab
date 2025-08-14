@@ -296,6 +296,43 @@ impl SchwabExecution {
         Ok(())
     }
 
+    /// Updates execution status and clears pending execution lease atomically
+    pub async fn update_status_and_clear_lease(
+        pool: &SqlitePool,
+        execution_id: i64,
+        new_status: TradeStatus,
+    ) -> Result<(), OnChainError> {
+        // Get the symbol for this execution first
+        let execution = Self::find_by_id(pool, execution_id).await?;
+
+        if let Some(execution) = execution {
+            // Update the execution status and clear lease in a single transaction
+            let mut sql_tx = pool.begin().await?;
+
+            Self::update_status_within_transaction(&mut sql_tx, execution_id, new_status.clone())
+                .await?;
+
+            // Clear the pending execution lease if status is completed or failed
+            match new_status {
+                TradeStatus::Completed { .. } | TradeStatus::Failed { .. } => {
+                    crate::lock::clear_pending_execution_within_transaction(
+                        &mut sql_tx,
+                        &execution.symbol,
+                        execution_id,
+                    )
+                    .await?;
+                }
+                TradeStatus::Pending => {
+                    // No need to clear lease for pending status
+                }
+            }
+
+            sql_tx.commit().await?;
+        }
+
+        Ok(())
+    }
+
     #[cfg(test)]
     pub async fn db_count(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
         let row = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")

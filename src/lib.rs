@@ -13,6 +13,7 @@ use tracing::{Level, error, info};
 mod bindings;
 pub mod cli;
 pub mod error;
+mod lock;
 pub mod onchain;
 pub mod schwab;
 mod symbol_cache;

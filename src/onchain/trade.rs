@@ -144,9 +144,9 @@ impl OnchainTrade {
 
         // Calculate trade amount based on direction
         let trade_amount = if schwab_direction == Direction::Buy {
-            shares_from_amount(onchain_output_amount)
+            onchain_output_amount.max(0.0)
         } else {
-            shares_from_amount(onchain_input_amount)
+            onchain_input_amount.max(0.0)
         };
 
         if trade_amount == 0.0 {
@@ -344,11 +344,6 @@ fn u256_to_f64(amount: U256, decimals: u8) -> Result<f64, ParseFloatError> {
     };
 
     formatted.parse::<f64>()
-}
-
-/// Converts a fractional token amount to whole share count for Schwab execution.
-fn shares_from_amount(amount: f64) -> f64 {
-    if amount < 0.0 { 0.0 } else { amount }
 }
 
 #[cfg(test)]
