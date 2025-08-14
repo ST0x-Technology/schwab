@@ -12,9 +12,6 @@ pub struct ArbTrade {
     pub log_index: u64,
 
     pub onchain_input_symbol: String,
-    // TODO: Consider migrating to rust_decimal::Decimal or integer base units for exact precision
-    // Current f64 may lose precision for 18-decimal tokenized stocks (USDC=6 decimals, stocks=18 decimals)
-    // Will need to change for V5 orderbook upgrade (custom Float types)
     pub onchain_input_amount: f64,
     pub onchain_output_symbol: String,
     pub onchain_output_amount: f64,

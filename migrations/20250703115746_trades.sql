@@ -35,5 +35,13 @@ CREATE TABLE schwab_auth (
   access_token TEXT NOT NULL,
   access_token_fetched_at DATETIME NOT NULL,
   refresh_token TEXT NOT NULL,
-  refresh_token_fetched_at DATETIME NOT NULL
+  refresh_token_fetched_at DATETIME NOT NULL,
+  last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TRIGGER schwab_auth_update_last_updated
+AFTER UPDATE OF access_token, access_token_fetched_at, refresh_token, refresh_token_fetched_at ON schwab_auth
+FOR EACH ROW
+BEGIN
+  UPDATE schwab_auth SET last_updated = CURRENT_TIMESTAMP WHERE id = NEW.id;
+END;
