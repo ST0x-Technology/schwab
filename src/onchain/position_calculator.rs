@@ -122,9 +122,9 @@ mod tests {
     #[test]
     fn test_position_calculator_new() {
         let calc = PositionCalculator::new();
-        assert_eq!(calc.net_position, 0.0);
-        assert_eq!(calc.accumulated_long, 0.0);
-        assert_eq!(calc.accumulated_short, 0.0);
+        assert!((calc.net_position - 0.0).abs() < f64::EPSILON);
+        assert!((calc.accumulated_long - 0.0).abs() < f64::EPSILON);
+        assert!((calc.accumulated_short - 0.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -147,18 +147,18 @@ mod tests {
     fn test_add_trade_amount() {
         let mut calc = PositionCalculator::new();
         calc.add_trade_amount(1.5);
-        assert_eq!(calc.accumulated_short, 1.5);
-        assert_eq!(calc.net_position, 1.5);
+        assert!((calc.accumulated_short - 1.5).abs() < f64::EPSILON);
+        assert!((calc.net_position - 1.5).abs() < f64::EPSILON);
     }
 
     #[test]
     fn test_reduce_accumulation() {
         let mut calc = PositionCalculator::with_positions(0.0, 2.5, 3.0);
         calc.reduce_accumulation(ExecutionType::Long, 2);
-        assert_eq!(calc.accumulated_long, 0.5);
+        assert!((calc.accumulated_long - 0.5).abs() < f64::EPSILON);
 
         calc.reduce_accumulation(ExecutionType::Short, 1);
-        assert_eq!(calc.accumulated_short, 2.0);
+        assert!((calc.accumulated_short - 2.0).abs() < f64::EPSILON);
     }
 
     #[test]

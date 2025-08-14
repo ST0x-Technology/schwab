@@ -95,6 +95,13 @@ pub struct OnchainTradeBuilder {
 }
 
 #[cfg(test)]
+impl Default for OnchainTradeBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
 impl OnchainTradeBuilder {
     pub fn new() -> Self {
         Self {
@@ -112,26 +119,31 @@ impl OnchainTradeBuilder {
         }
     }
 
+    #[must_use]
     pub fn with_symbol(mut self, symbol: impl Into<String>) -> Self {
         self.trade.symbol = symbol.into();
         self
     }
 
+    #[must_use]
     pub fn with_amount(mut self, amount: f64) -> Self {
         self.trade.amount = amount;
         self
     }
 
+    #[must_use]
     pub fn with_price(mut self, price: f64) -> Self {
         self.trade.price_usdc = price;
         self
     }
 
+    #[must_use]
     pub fn with_tx_hash(mut self, hash: alloy::primitives::B256) -> Self {
         self.trade.tx_hash = hash;
         self
     }
 
+    #[must_use]
     pub fn with_log_index(mut self, index: u64) -> Self {
         self.trade.log_index = index;
         self
@@ -150,6 +162,13 @@ pub struct SchwabExecutionBuilder {
 }
 
 #[cfg(test)]
+impl Default for SchwabExecutionBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
 impl SchwabExecutionBuilder {
     pub fn new() -> Self {
         Self {
@@ -163,21 +182,25 @@ impl SchwabExecutionBuilder {
         }
     }
 
+    #[must_use]
     pub fn with_symbol(mut self, symbol: impl Into<String>) -> Self {
         self.execution.symbol = symbol.into();
         self
     }
 
+    #[must_use]
     pub fn with_shares(mut self, shares: u64) -> Self {
         self.execution.shares = shares;
         self
     }
 
+    #[must_use]
     pub fn with_direction(mut self, direction: SchwabInstruction) -> Self {
         self.execution.direction = direction;
         self
     }
 
+    #[must_use]
     pub fn with_status(mut self, status: TradeStatus) -> Self {
         self.execution.status = status;
         self

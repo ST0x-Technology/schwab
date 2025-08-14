@@ -131,9 +131,9 @@ mod tests {
 
         sql_tx.commit().await.unwrap();
 
-        assert_eq!(calculator.net_position, 0.0);
-        assert_eq!(calculator.accumulated_long, 0.0);
-        assert_eq!(calculator.accumulated_short, 0.0);
+        assert!((calculator.net_position - 0.0).abs() < f64::EPSILON);
+        assert!((calculator.accumulated_long - 0.0).abs() < f64::EPSILON);
+        assert!((calculator.accumulated_short - 0.0).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
@@ -159,9 +159,9 @@ mod tests {
             .unwrap();
 
         let (found_calculator, pending_execution_id) = result;
-        assert_eq!(found_calculator.net_position, 1.5);
-        assert_eq!(found_calculator.accumulated_long, 2.0);
-        assert_eq!(found_calculator.accumulated_short, 3.0);
+        assert!((found_calculator.net_position - 1.5).abs() < f64::EPSILON);
+        assert!((found_calculator.accumulated_long - 2.0).abs() < f64::EPSILON);
+        assert!((found_calculator.accumulated_short - 3.0).abs() < f64::EPSILON);
         assert_eq!(pending_execution_id, None);
     }
 }

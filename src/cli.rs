@@ -1556,7 +1556,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(trade.symbol, "AAPLs1"); // Tokenized symbol
-        assert_eq!(trade.amount, 9.0); // Amount from the test data
+        assert!((trade.amount - 9.0).abs() < f64::EPSILON); // Amount from the test data
 
         // Verify SchwabExecution was created (due to TradeAccumulator)
         let executions = SchwabExecution::find_completed_by_symbol(&pool, "AAPL")
@@ -1646,7 +1646,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(trade.symbol, "TSLAs1"); // Tokenized symbol
-        assert_eq!(trade.amount, 5.0); // Amount from the test data
+        assert!((trade.amount - 5.0).abs() < f64::EPSILON); // Amount from the test data
 
         // Verify stdout output for first call
         let stdout_str1 = String::from_utf8(stdout1).unwrap();
@@ -1739,7 +1739,7 @@ mod tests {
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 42);
         assert_eq!(trade.symbol, "GOOGs1");
-        assert_eq!(trade.amount, 2.5);
-        assert_eq!(trade.price_usdc, 20000.0);
+        assert!((trade.amount - 2.5).abs() < f64::EPSILON);
+        assert!((trade.price_usdc - 20000.0).abs() < f64::EPSILON);
     }
 }

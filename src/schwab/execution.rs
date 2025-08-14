@@ -613,7 +613,7 @@ mod tests {
             let result = SchwabExecution::find_pending_by_symbol(&pool, symbol)
                 .await
                 .unwrap();
-            assert_eq!(result.len(), 1, "Failed to find symbol: {}", symbol);
+            assert_eq!(result.len(), 1, "Failed to find symbol: {symbol}");
             assert_eq!(result[0].symbol, symbol);
         }
     }
