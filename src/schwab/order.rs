@@ -240,9 +240,9 @@ pub struct Instrument {
     pub asset_type: AssetType,
 }
 
-/// Execute a SchwabExecution using the new unified system.
-/// This replaces the old execute_trade(ArbTrade) function with the new architecture.
-pub async fn execute_schwab_execution(
+/// Execute a Schwab order using the unified system.
+/// Takes a SchwabExecution and places the corresponding order via Schwab API.
+pub async fn execute_schwab_order(
     env: &Env,
     pool: &SqlitePool,
     execution: SchwabExecution,
@@ -357,70 +357,6 @@ async fn handle_execution_failure(pool: &SqlitePool, execution_id: i64, error: S
         );
     }
 }
-
-/*
-// Legacy ArbTrade-based functions commented out - depends on removed ArbTrade system
-pub async fn execute_trade(env: &Env, pool: &SqlitePool, trade: ArbTrade, max_retries: usize) {
-    let schwab_instruction = match trade.schwab_instruction {
-        SchwabInstruction::Buy => Instruction::Buy,
-        SchwabInstruction::Sell => Instruction::Sell,
-    };
-
-    let order = Order::new(
-        trade.schwab_ticker.clone(),
-        schwab_instruction,
-        trade.schwab_quantity,
-    );
-
-    let result = (|| async { order.place(&env.schwab_auth, pool).await })
-        .retry(ExponentialBuilder::new().with_max_times(max_retries))
-        .await;
-
-    match result {
-        Ok(()) => handle_order_success(&trade, pool).await,
-        Err(e) => handle_order_failure(&trade, pool, e).await,
-    }
-}
-*/
-
-/*
-// Commented out - depends on removed ArbTrade system
-async fn handle_order_success(trade: &ArbTrade, pool: &SqlitePool) {
-    info!(
-        "Successfully placed Schwab order for trade: tx_hash={tx_hash:?}, log_index={log_index}",
-        tx_hash = trade.tx_hash,
-        log_index = trade.log_index
-    );
-
-    if let Err(e) =
-        ArbTrade::update_status(pool, trade.tx_hash, trade.log_index, TradeStatus::Completed).await
-    {
-        error!(
-            "Failed to update trade status to COMPLETED: tx_hash={tx_hash:?}, log_index={log_index}, error={e:?}",
-            tx_hash = trade.tx_hash,
-            log_index = trade.log_index
-        );
-    }
-}
-
-async fn handle_order_failure(trade: &ArbTrade, pool: &SqlitePool, error: SchwabError) {
-    error!(
-        "Failed to place Schwab order after retries for trade: tx_hash={tx_hash:?}, log_index={log_index}, error={error:?}",
-        tx_hash = trade.tx_hash,
-        log_index = trade.log_index
-    );
-
-    if let Err(update_err) =
-        ArbTrade::update_status(pool, trade.tx_hash, trade.log_index, TradeStatus::Failed).await
-    {
-        error!(
-            "Failed to update trade status to FAILED: tx_hash={tx_hash:?}, log_index={log_index}, error={update_err:?}",
-            tx_hash = trade.tx_hash,
-            log_index = trade.log_index
-        );
-    }
-}
-*/
 
 #[cfg(test)]
 mod tests {

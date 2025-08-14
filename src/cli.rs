@@ -7,7 +7,7 @@ use tracing::{error, info};
 use crate::error::OnChainError;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
 use crate::schwab::SchwabAuthEnv;
-use crate::schwab::order::{Instruction, Order, execute_schwab_execution};
+use crate::schwab::order::{Instruction, Order, execute_schwab_order};
 use crate::schwab::run_oauth_flow;
 use crate::schwab::tokens::SchwabTokens;
 use crate::symbol_cache::SymbolCache;
@@ -323,7 +323,7 @@ async fn process_found_trade<W: Write>(
         )?;
         ensure_authentication(pool, &env.schwab_auth, stdout).await?;
         writeln!(stdout, "🔄 Executing Schwab order...")?;
-        execute_schwab_execution(env, pool, execution, 3).await;
+        execute_schwab_order(env, pool, execution, 3).await;
         writeln!(stdout, "🎯 Trade processing completed!")?;
     } else {
         writeln!(
@@ -351,7 +351,7 @@ fn display_trade_details<W: Write>(
     writeln!(stdout, "✅ Found opposite-side trade opportunity:")?;
     writeln!(stdout, "   Transaction: {}", onchain_trade.tx_hash)?;
     writeln!(stdout, "   Log Index: {}", onchain_trade.log_index)?;
-    writeln!(stdout, "   Schwab Ticker: {}", schwab_ticker)?;
+    writeln!(stdout, "   Schwab Ticker: {schwab_ticker}")?;
     writeln!(stdout, "   Schwab Action: {:?}", onchain_trade.direction)?;
     writeln!(stdout, "   Quantity: {}", onchain_trade.amount)?;
     writeln!(

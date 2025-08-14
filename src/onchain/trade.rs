@@ -137,7 +137,7 @@ impl OnchainTrade {
         }
 
         // Use schwab_ticker + "s1" to create consistent tokenized symbol
-        let tokenized_symbol = format!("{}s1", schwab_ticker);
+        let tokenized_symbol = format!("{schwab_ticker}s1");
 
         // Calculate trade amount based on direction
         let trade_amount = if schwab_direction == Direction::Buy {

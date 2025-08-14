@@ -22,7 +22,7 @@ pub mod test_utils;
 
 use bindings::IOrderBookV4::{ClearV2, IOrderBookV4Instance, TakeOrderV2};
 use onchain::{EvmEnv, OnchainTrade, accumulator};
-use schwab::{SchwabAuthEnv, execution::SchwabExecution, order::execute_schwab_execution};
+use schwab::{SchwabAuthEnv, execution::SchwabExecution, order::execute_schwab_order};
 use symbol_cache::SymbolCache;
 
 /// Global symbol-level locks to prevent race conditions during concurrent trade processing.
@@ -220,8 +220,8 @@ async fn execute_pending_schwab_execution(
 
     info!("Executing Schwab order: {:?}", execution);
 
-    // Use the new unified execute_schwab_execution function with retry logic
-    execute_schwab_execution(env, pool, execution, 3).await;
+    // Use the unified execute_schwab_order function with retry logic
+    execute_schwab_order(env, pool, execution, 3).await;
 
     Ok(())
 }
