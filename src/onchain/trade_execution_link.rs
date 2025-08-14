@@ -80,7 +80,7 @@ impl TradeExecutionLink {
                     execution_id: row.execution_id,
                     contributed_shares: row.contributed_shares,
                     execution_symbol: row.symbol,
-                    execution_total_shares: shares_from_db_i64(row.shares),
+                    execution_total_shares: shares_from_db_i64(row.shares)?,
                     execution_direction: row.direction,
                     execution_status: row.status,
                     created_at: Some(DateTime::from_naive_utc_and_offset(row.created_at, Utc)),
@@ -124,7 +124,7 @@ impl TradeExecutionLink {
                     trade_id: row.trade_id,
                     contributed_shares: row.contributed_shares,
                     trade_tx_hash: row.tx_hash,
-                    trade_log_index: shares_from_db_i64(row.log_index),
+                    trade_log_index: shares_from_db_i64(row.log_index)?,
                     trade_symbol: row.symbol,
                     trade_total_amount: row.amount,
                     trade_direction: row.direction,
@@ -183,7 +183,7 @@ impl TradeExecutionLink {
                     )),
                     trade_id: row.trade_id,
                     trade_tx_hash: row.tx_hash,
-                    trade_log_index: shares_from_db_i64(row.log_index),
+                    trade_log_index: shares_from_db_i64(row.log_index)?,
                     trade_amount: row.trade_amount,
                     trade_direction: row.trade_direction,
                     trade_price_usdc: row.price_usdc,
@@ -191,7 +191,7 @@ impl TradeExecutionLink {
                         .trade_created_at
                         .map(|naive_dt| DateTime::from_naive_utc_and_offset(naive_dt, Utc)),
                     execution_id: row.execution_id,
-                    execution_shares: shares_from_db_i64(row.execution_shares),
+                    execution_shares: shares_from_db_i64(row.execution_shares)?,
                     execution_direction: row.execution_direction,
                     execution_status: row.status,
                     execution_order_id: row.order_id,
@@ -266,14 +266,16 @@ pub struct AuditTrailEntry {
 }
 
 /// Helper function to convert database i64 to u64 for share quantities
-const fn shares_from_db_i64(db_value: i64) -> u64 {
+// Cannot be const due to error construction in non-const context
+#[allow(clippy::missing_const_for_fn)]
+fn shares_from_db_i64(db_value: i64) -> Result<u64, OnChainError> {
     if db_value < 0 {
-        0
+        Err(OnChainError::Persistence(
+            crate::error::PersistenceError::InvalidShareQuantity(db_value),
+        ))
     } else {
         #[allow(clippy::cast_sign_loss)]
-        {
-            db_value as u64
-        }
+        Ok(db_value as u64)
     }
 }
 
