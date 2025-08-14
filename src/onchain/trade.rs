@@ -247,8 +247,7 @@ impl OnchainTrade {
             .inner
             .logs()
             .iter()
-            .enumerate()
-            .filter(|(_, log)| {
+            .filter(|log| {
                 (log.topic0() == Some(&ClearV2::SIGNATURE_HASH)
                     || log.topic0() == Some(&TakeOrderV2::SIGNATURE_HASH))
                     && log.address() == env.orderbook
@@ -262,9 +261,9 @@ impl OnchainTrade {
             );
         }
 
-        for (log_index, log) in trades {
+        for log in trades {
             if let Some(trade) =
-                try_convert_log_to_onchain_trade(log, log_index, &provider, cache, env).await?
+                try_convert_log_to_onchain_trade(log, &provider, cache, env).await?
             {
                 return Ok(Some(trade));
             }
@@ -284,7 +283,6 @@ pub struct OrderFill {
 
 async fn try_convert_log_to_onchain_trade<P: Provider>(
     log: &Log,
-    log_index: usize,
     provider: P,
     cache: &SymbolCache,
     env: &EvmEnv,
@@ -296,7 +294,7 @@ async fn try_convert_log_to_onchain_trade<P: Provider>(
         block_timestamp: log.block_timestamp,
         transaction_hash: log.transaction_hash,
         transaction_index: log.transaction_index,
-        log_index: Some(log_index as u64),
+        log_index: log.log_index,
         removed: false,
     };
 
