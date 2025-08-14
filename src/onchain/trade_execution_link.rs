@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 
 use crate::error::OnChainError;
+use crate::schwab::{Direction, TradeStatus};
 
 /// Links individual onchain trades to their contributing Schwab executions.
 ///
@@ -62,7 +63,10 @@ impl TradeExecutionLink {
                 se.symbol,
                 se.shares,
                 se.direction,
-                se.status
+                se.status,
+                se.order_id,
+                se.price_cents,
+                se.executed_at
             FROM trade_execution_links tel
             JOIN schwab_executions se ON tel.execution_id = se.id
             WHERE tel.trade_id = ?1
@@ -75,14 +79,27 @@ impl TradeExecutionLink {
 
         rows.into_iter()
             .map(|row| {
+                let execution_direction = row.direction.parse::<Direction>().map_err(|e| {
+                    OnChainError::Persistence(
+                        crate::error::PersistenceError::InvalidSchwabInstruction(e),
+                    )
+                })?;
+
+                let execution_status = parse_trade_status_from_db(
+                    &row.status,
+                    row.order_id.as_deref(),
+                    row.price_cents,
+                    row.executed_at,
+                )?;
+
                 Ok(ExecutionContribution {
                     link_id: row.id,
                     execution_id: row.execution_id,
                     contributed_shares: row.contributed_shares,
                     execution_symbol: row.symbol,
                     execution_total_shares: shares_from_db_i64(row.shares)?,
-                    execution_direction: row.direction,
-                    execution_status: row.status,
+                    execution_direction,
+                    execution_status,
                     created_at: Some(DateTime::from_naive_utc_and_offset(row.created_at, Utc)),
                 })
             })
@@ -220,8 +237,8 @@ pub struct ExecutionContribution {
     pub contributed_shares: f64,
     pub execution_symbol: String,
     pub execution_total_shares: u64,
-    pub execution_direction: String,
-    pub execution_status: String,
+    pub execution_direction: Direction,
+    pub execution_status: TradeStatus,
     pub created_at: Option<DateTime<Utc>>,
 }
 
@@ -276,6 +293,64 @@ fn shares_from_db_i64(db_value: i64) -> Result<u64, OnChainError> {
     } else {
         #[allow(clippy::cast_sign_loss)]
         Ok(db_value as u64)
+    }
+}
+
+fn parse_trade_status_from_db(
+    status: &str,
+    order_id: Option<&str>,
+    price_cents: Option<i64>,
+    executed_at: Option<chrono::NaiveDateTime>,
+) -> Result<TradeStatus, OnChainError> {
+    match status {
+        "PENDING" => Ok(TradeStatus::Pending),
+        "COMPLETED" => {
+            let order_id = order_id.ok_or(OnChainError::Persistence(
+                crate::error::PersistenceError::InvalidTradeStatus(
+                    "COMPLETED status missing order_id".to_string(),
+                ),
+            ))?;
+            let price_cents = price_cents.ok_or(OnChainError::Persistence(
+                crate::error::PersistenceError::InvalidTradeStatus(
+                    "COMPLETED status missing price_cents".to_string(),
+                ),
+            ))?;
+            let executed_at = executed_at.ok_or(OnChainError::Persistence(
+                crate::error::PersistenceError::InvalidTradeStatus(
+                    "COMPLETED status missing executed_at".to_string(),
+                ),
+            ))?;
+
+            if price_cents < 0 {
+                return Err(OnChainError::Persistence(
+                    crate::error::PersistenceError::InvalidTradeStatus(format!(
+                        "COMPLETED status has negative price_cents: {price_cents}"
+                    )),
+                ));
+            }
+
+            #[allow(clippy::cast_sign_loss)]
+            Ok(TradeStatus::Completed {
+                executed_at: DateTime::from_naive_utc_and_offset(executed_at, Utc),
+                order_id: order_id.to_string(),
+                price_cents: price_cents as u64,
+            })
+        }
+        "FAILED" => {
+            let executed_at = executed_at.ok_or(OnChainError::Persistence(
+                crate::error::PersistenceError::InvalidTradeStatus(
+                    "FAILED status missing executed_at".to_string(),
+                ),
+            ))?;
+
+            Ok(TradeStatus::Failed {
+                failed_at: DateTime::from_naive_utc_and_offset(executed_at, Utc),
+                error_reason: None, // Database doesn't store error reason currently
+            })
+        }
+        _ => Err(OnChainError::Persistence(
+            crate::error::PersistenceError::InvalidTradeStatus(format!("Invalid status: {status}")),
+        )),
     }
 }
 
