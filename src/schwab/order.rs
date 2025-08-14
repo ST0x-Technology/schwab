@@ -306,11 +306,13 @@ async fn handle_execution_success(pool: &SqlitePool, execution_id: i64, order_id
     .await
     {
         error!("Failed to update execution status to COMPLETED: id={execution_id}, error={e:?}",);
+        let _ = sql_tx.rollback().await;
         return;
     }
 
     if let Err(e) = sql_tx.commit().await {
         error!("Failed to commit execution success transaction: id={execution_id}, error={e:?}",);
+        let _ = sql_tx.rollback().await;
     }
 }
 
@@ -342,11 +344,13 @@ async fn handle_execution_failure(pool: &SqlitePool, execution_id: i64, error: S
         error!(
             "Failed to update execution status to FAILED: id={execution_id}, error={update_err:?}",
         );
+        let _ = sql_tx.rollback().await;
         return;
     }
 
     if let Err(e) = sql_tx.commit().await {
         error!("Failed to commit execution failure transaction: id={execution_id}, error={e:?}",);
+        let _ = sql_tx.rollback().await;
     }
 }
 
