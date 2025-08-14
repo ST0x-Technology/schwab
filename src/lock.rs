@@ -337,7 +337,7 @@ mod tests {
                 assert_eq!(expected, wrong_execution_id);
                 assert_eq!(current, Some(execution_id));
             }
-            other => panic!("Expected ExecutionIdMismatch error, got: {:?}", other),
+            other => panic!("Expected ExecutionIdMismatch error, got: {other:?}"),
         }
 
         sql_tx.rollback().await.unwrap();
