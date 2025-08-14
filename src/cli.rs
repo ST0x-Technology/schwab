@@ -240,13 +240,15 @@ async fn execute_order_with_writers<W: Write>(
     info!("Created order: ticker={ticker}, instruction={instruction:?}, quantity={quantity}");
 
     match order.place(&env.schwab_auth, pool).await {
-        Ok(()) => {
+        Ok(response) => {
             info!(
-                "Order placed successfully: ticker={ticker}, instruction={instruction:?}, quantity={quantity}"
+                "Order placed successfully: ticker={ticker}, instruction={instruction:?}, quantity={quantity}, order_id={}",
+                response.order_id
             );
             writeln!(stdout, "✅ Order placed successfully!")?;
             writeln!(stdout, "   Ticker: {ticker}")?;
             writeln!(stdout, "   Action: {instruction:?}")?;
+            writeln!(stdout, "   Order ID: {}", response.order_id)?;
             writeln!(stdout, "   Quantity: {quantity}")?;
         }
         Err(e) => {
@@ -427,7 +429,8 @@ mod tests {
                 .header("authorization", "Bearer test_access_token")
                 .header("accept", "*/*")
                 .header("content-type", "application/json");
-            then.status(201);
+            then.status(201)
+                .header("location", "/trader/v1/accounts/ABC123DEF456/orders/12345");
         });
 
         execute_order_with_writers(
@@ -469,7 +472,8 @@ mod tests {
                 .header("authorization", "Bearer test_access_token")
                 .header("accept", "*/*")
                 .header("content-type", "application/json");
-            then.status(201);
+            then.status(201)
+                .header("location", "/trader/v1/accounts/ABC123DEF456/orders/12345");
         });
 
         execute_order_with_writers(
@@ -593,7 +597,8 @@ mod tests {
             when.method(httpmock::Method::POST)
                 .path("/trader/v1/accounts/ABC123DEF456/orders")
                 .header("authorization", "Bearer refreshed_access_token");
-            then.status(201);
+            then.status(201)
+                .header("location", "/trader/v1/accounts/ABC123DEF456/orders/12345");
         });
 
         let access_token =
@@ -646,7 +651,8 @@ mod tests {
             when.method(httpmock::Method::POST)
                 .path("/trader/v1/accounts/ABC123DEF456/orders")
                 .header("authorization", "Bearer test_access_token");
-            then.status(201);
+            then.status(201)
+                .header("location", "/trader/v1/accounts/ABC123DEF456/orders/12345");
         });
 
         execute_order_with_writers(
@@ -690,7 +696,8 @@ mod tests {
         let order_mock = server.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/trader/v1/accounts/ABC123DEF456/orders");
-            then.status(201);
+            then.status(201)
+                .header("location", "/trader/v1/accounts/ABC123DEF456/orders/12345");
         });
 
         let mut stdout_buffer = Vec::new();
@@ -994,7 +1001,8 @@ mod tests {
                 .header("authorization", "Bearer test_access_token")
                 .header("accept", "*/*")
                 .header("content-type", "application/json");
-            then.status(201);
+            then.status(201)
+                .header("location", "/trader/v1/accounts/ABC123DEF456/orders/12345");
         });
 
         (account_mock, order_mock)
@@ -1115,7 +1123,8 @@ mod tests {
                 .header("authorization", "Bearer test_access_token")
                 .header("accept", "*/*")
                 .header("content-type", "application/json");
-            then.status(201);
+            then.status(201)
+                .header("location", "/trader/v1/accounts/ABC123DEF456/orders/12345");
         });
 
         let mut stdout = Vec::new();
@@ -1162,7 +1171,8 @@ mod tests {
                 .header("authorization", "Bearer test_access_token")
                 .header("accept", "*/*")
                 .header("content-type", "application/json");
-            then.status(201);
+            then.status(201)
+                .header("location", "/trader/v1/accounts/ABC123DEF456/orders/12345");
         });
 
         let mut stdout = Vec::new();
@@ -1287,8 +1297,7 @@ mod tests {
                 .path("/trader/v1/accounts/ABC123DEF456/orders")
                 .header("authorization", "Bearer new_access_token");
             then.status(201)
-                .header("content-type", "application/json")
-                .json_body(json!({"orderId": "12345"}));
+                .header("location", "/trader/v1/accounts/ABC123DEF456/orders/12345");
         });
 
         let mut stdout = Vec::new();
@@ -1363,7 +1372,8 @@ mod tests {
         let order_mock = server.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/trader/v1/accounts/ABC123DEF456/orders");
-            then.status(201);
+            then.status(201)
+                .header("location", "/trader/v1/accounts/ABC123DEF456/orders/12345");
         });
 
         let mut stdout2 = Vec::new();
@@ -1617,7 +1627,8 @@ mod tests {
                 .header("authorization", "Bearer test_access_token")
                 .header("accept", "*/*")
                 .header("content-type", "application/json");
-            then.status(201);
+            then.status(201)
+                .header("location", "/trader/v1/accounts/ABC123DEF456/orders/12345");
         });
 
         // Set up the mock provider for first call

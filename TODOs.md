@@ -611,3 +611,62 @@ After analyzing the diff with master branch, several critical gaps and missing l
 
 **Result**: All 160 tests passing. Race conditions eliminated while maintaining system performance.
 
+### 7.2 Complete Schwab API Response Parsing ✅ COMPLETED
+**Problem**: `execute_schwab_execution` function uses TODO placeholders instead of parsing actual Schwab API responses.
+
+**Implementation Completed**:
+- [x] **Parse Schwab order placement responses to extract real order IDs**:
+  - Created `OrderPlacementResponse` struct to capture order placement results
+  - Modified `Order::place()` to return order ID extracted from Location header according to Schwab OpenAPI spec
+  - Added `extract_order_id_from_location_header()` function with robust validation
+  - Updated `handle_execution_success()` to use real order IDs instead of "TODO_ORDER_ID" placeholder
+- [x] **Handle Schwab API error responses properly**:
+  - Added comprehensive error handling for missing Location header
+  - Added validation for invalid Location header format
+  - Proper error messages that include the invalid header content for debugging
+- [x] **Updated TradeStatus with real execution data**:
+  - Removed "TODO_ORDER_ID" placeholder, now uses actual order ID from Schwab API
+  - Added structured logging with order ID for better traceability
+  - CLI now displays actual order ID to users after successful order placement
+- [x] **Comprehensive test coverage**:
+  - Added tests for successful order placement with Location header parsing
+  - Added tests for missing Location header error handling
+  - Added tests for invalid Location header format error handling
+  - Updated all existing CLI tests to include proper Location headers in mocks
+  - Removed redundant tests that only tested language features instead of business logic
+
+**Key Architectural Improvements**:
+- **Real Order Tracking**: System now captures actual Schwab order IDs for audit trails and order status tracking
+- **Production Ready**: Proper error handling for various Schwab API response scenarios
+- **Better User Experience**: CLI displays actual order IDs to users for reference
+- **Test Quality**: Eliminated tests that only verified language features, focused on business logic testing
+
+**Remaining Work**: 
+- **Order Execution Prices**: Still using placeholder `price_cents: 0` - requires order status polling (Task 7.7) to get actual fill prices from Schwab
+
+**Result**: All 159 tests passing. Order placement now captures real order IDs from Schwab API Location header according to official API specification.
+
+### 7.3 Add Missing Database Constraints ⚠️ MEDIUM PRIORITY
+**Problem**: Database schema lacks important constraints that could lead to data corruption:
+
+**Missing Constraints**:
+- [ ] Add CHECK constraints ensuring accumulated_long >= 0 and accumulated_short >= 0
+- [ ] Add foreign key CASCADE/SET NULL behavior for pending_execution_id references
+- [ ] Add unique constraint preventing multiple pending executions per symbol  
+- [ ] Add database migration to apply these constraints to existing schema
+
+
+```rust
+TradeStatus::Completed {
+    executed_at: Utc::now(),
+    order_id: "TODO_ORDER_ID".to_string(), // Missing actual order_id parsing
+    price_cents: 0,                        // Missing actual price parsing
+}
+```
+
+**Required Implementation**:
+- [ ] Parse Schwab order placement responses to extract real order IDs
+- [ ] Capture actual execution prices from Schwab API responses
+- [ ] Handle Schwab API error responses properly
+- [ ] Update TradeStatus with real execution data instead of placeholders
+

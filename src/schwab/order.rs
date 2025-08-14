@@ -12,6 +12,14 @@ use super::{
 use crate::Env;
 use crate::onchain::TradeStatus;
 
+/// Response from Schwab order placement API.
+/// According to Schwab OpenAPI spec, successful order placement (201) returns
+/// empty body with order ID in the Location header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderPlacementResponse {
+    pub order_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Order {
@@ -44,7 +52,11 @@ impl Order {
         }
     }
 
-    pub async fn place(&self, env: &SchwabAuthEnv, pool: &SqlitePool) -> Result<(), SchwabError> {
+    pub async fn place(
+        &self,
+        env: &SchwabAuthEnv,
+        pool: &SqlitePool,
+    ) -> Result<OrderPlacementResponse, SchwabError> {
         let access_token = SchwabTokens::get_valid_access_token(pool, env).await?;
         let account_hash = env.get_account_hash(pool).await?;
 
@@ -89,8 +101,67 @@ impl Order {
             });
         }
 
-        Ok(())
+        // Extract order ID from Location header according to Schwab OpenAPI spec
+        let order_id = extract_order_id_from_location_header(&response)?;
+
+        Ok(OrderPlacementResponse { order_id })
     }
+}
+
+/// Extracts order ID from the Location header in Schwab order placement response.
+///
+/// According to Schwab OpenAPI spec, successful order placement returns Location header
+/// containing link to the newly created order. The order ID is extracted from this URL.
+/// Expected format: "/trader/v1/accounts/{accountHash}/orders/{orderId}"
+fn extract_order_id_from_location_header(
+    response: &reqwest::Response,
+) -> Result<String, SchwabError> {
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .ok_or_else(|| SchwabError::RequestFailed {
+            action: "extract order ID".to_string(),
+            status: response.status(),
+            body: "Missing Location header in order placement response".to_string(),
+        })?
+        .to_str()
+        .map_err(|_| SchwabError::RequestFailed {
+            action: "extract order ID".to_string(),
+            status: response.status(),
+            body: "Invalid Location header value".to_string(),
+        })?;
+
+    // Extract order ID from URL path: "/trader/v1/accounts/{accountHash}/orders/{orderId}"
+    // Must contain the expected path structure
+    if !location.contains("/trader/v1/accounts/") || !location.contains("/orders/") {
+        return Err(SchwabError::RequestFailed {
+            action: "extract order ID".to_string(),
+            status: response.status(),
+            body: format!(
+                "Invalid Location header format, expected '/trader/v1/accounts/{{accountHash}}/orders/{{orderId}}': {location}"
+            ),
+        });
+    }
+
+    let order_id = location
+        .split('/')
+        .next_back()
+        .ok_or_else(|| SchwabError::RequestFailed {
+            action: "extract order ID".to_string(),
+            status: response.status(),
+            body: format!("Cannot extract order ID from Location header: {location}"),
+        })?
+        .to_string();
+
+    if order_id.is_empty() {
+        return Err(SchwabError::RequestFailed {
+            action: "extract order ID".to_string(),
+            status: response.status(),
+            body: format!("Empty order ID extracted from Location header: {location}"),
+        });
+    }
+
+    Ok(order_id)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -197,15 +268,15 @@ pub async fn execute_schwab_execution(
         .expect("SchwabExecution should have ID when executing");
 
     match result {
-        Ok(()) => handle_execution_success(pool, execution_id).await,
+        Ok(response) => handle_execution_success(pool, execution_id, response.order_id).await,
         Err(e) => handle_execution_failure(pool, execution_id, e).await,
     }
 }
 
-async fn handle_execution_success(pool: &SqlitePool, execution_id: i64) {
+async fn handle_execution_success(pool: &SqlitePool, execution_id: i64, order_id: String) {
     info!(
-        "Successfully placed Schwab order for execution: id={}",
-        execution_id
+        "Successfully placed Schwab order for execution: id={}, order_id={}",
+        execution_id, order_id
     );
 
     let mut sql_tx = match pool.begin().await {
@@ -224,8 +295,8 @@ async fn handle_execution_success(pool: &SqlitePool, execution_id: i64) {
         execution_id,
         TradeStatus::Completed {
             executed_at: Utc::now(),
-            order_id: "TODO_ORDER_ID".to_string(), // TODO: Get actual order_id from Schwab response
-            price_cents: 0,                        // TODO: Get actual price from Schwab response
+            order_id,
+            price_cents: 0, // TODO: Implement order status polling to get actual execution price
         },
     )
     .await
@@ -483,102 +554,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_enum_serialization_values() {
-        assert_eq!(serde_json::to_value(OrderType::Market).unwrap(), "MARKET");
-        assert_eq!(serde_json::to_value(OrderType::Limit).unwrap(), "LIMIT");
-        assert_eq!(serde_json::to_value(OrderType::Stop).unwrap(), "STOP");
-        assert_eq!(
-            serde_json::to_value(OrderType::StopLimit).unwrap(),
-            "STOP_LIMIT"
-        );
-
-        assert_eq!(serde_json::to_value(Instruction::Buy).unwrap(), "BUY");
-        assert_eq!(serde_json::to_value(Instruction::Sell).unwrap(), "SELL");
-        assert_eq!(
-            serde_json::to_value(Instruction::SellShort).unwrap(),
-            "SELL_SHORT"
-        );
-        assert_eq!(
-            serde_json::to_value(Instruction::BuyToCover).unwrap(),
-            "BUY_TO_COVER"
-        );
-
-        assert_eq!(serde_json::to_value(Session::Normal).unwrap(), "NORMAL");
-        assert_eq!(serde_json::to_value(Session::Am).unwrap(), "AM");
-        assert_eq!(serde_json::to_value(Session::Pm).unwrap(), "PM");
-
-        assert_eq!(serde_json::to_value(OrderDuration::Day).unwrap(), "DAY");
-        assert_eq!(
-            serde_json::to_value(OrderDuration::GoodTillCancel).unwrap(),
-            "GOOD_TILL_CANCEL"
-        );
-
-        assert_eq!(serde_json::to_value(AssetType::Equity).unwrap(), "EQUITY");
-        assert_eq!(serde_json::to_value(AssetType::Option).unwrap(), "OPTION");
-    }
-
-    #[test]
-    fn test_enum_deserialization() {
-        let order_type: OrderType = serde_json::from_str("\"MARKET\"").unwrap();
-        assert_eq!(order_type, OrderType::Market);
-
-        let instruction: Instruction = serde_json::from_str("\"SELL_SHORT\"").unwrap();
-        assert_eq!(instruction, Instruction::SellShort);
-        let json = r#"{
-            "orderType": "MARKET",
-            "session": "NORMAL", 
-            "duration": "DAY",
-            "orderStrategyType": "SINGLE",
-            "orderLegCollection": [{
-                "instruction": "BUY",
-                "quantity": 100,
-                "instrument": {
-                    "symbol": "AAPL",
-                    "assetType": "EQUITY"
-                }
-            }]
-        }"#;
-
-        let order: Order = serde_json::from_str(json).unwrap();
-        assert_eq!(order.order_type, OrderType::Market);
-        assert_eq!(order.order_leg_collection[0].instruction, Instruction::Buy);
-        assert_eq!(
-            order.order_leg_collection[0].instrument.asset_type,
-            AssetType::Equity
-        );
-    }
-
-    #[test]
-    fn test_instrument_creation() {
-        let instrument = Instrument {
-            symbol: "SPY".to_string(),
-            asset_type: AssetType::Equity,
-        };
-
-        assert_eq!(instrument.symbol, "SPY");
-        assert_eq!(instrument.asset_type, AssetType::Equity);
-    }
-
-    #[test]
-    fn test_order_leg_creation() {
-        let instrument = Instrument {
-            symbol: "VTI".to_string(),
-            asset_type: AssetType::Equity,
-        };
-
-        let order_leg = OrderLeg {
-            instruction: Instruction::Sell,
-            quantity: 75,
-            instrument,
-        };
-
-        assert_eq!(order_leg.instruction, Instruction::Sell);
-        assert_eq!(order_leg.quantity, 75);
-        assert_eq!(order_leg.instrument.symbol, "VTI");
-        assert_eq!(order_leg.instrument.asset_type, AssetType::Equity);
-    }
-
     #[tokio::test]
     async fn test_place_order_success() {
         let server = httpmock::MockServer::start();
@@ -603,7 +578,8 @@ mod tests {
                 .header("authorization", "Bearer test_access_token")
                 .header("accept", "*/*")
                 .header("content-type", "application/json");
-            then.status(201);
+            then.status(201)
+                .header("location", "/trader/v1/accounts/ABC123DEF456/orders/12345");
         });
 
         let order = Order::new("AAPL".to_string(), Instruction::Buy, 100);
@@ -611,7 +587,8 @@ mod tests {
 
         account_mock.assert();
         order_mock.assert();
-        result.unwrap();
+        let response = result.unwrap();
+        assert_eq!(response.order_id, "12345");
     }
 
     #[tokio::test]
@@ -676,6 +653,114 @@ mod tests {
             refresh_token_fetched_at: Utc::now(),
         };
         tokens.store(pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_order_placement_success_with_location_header() {
+        let server = httpmock::MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/trader/v1/accounts/ABC123DEF456/orders");
+            then.status(201)
+                .header("location", "/trader/v1/accounts/ABC123DEF456/orders/67890");
+        });
+
+        let order = Order::new("TSLA".to_string(), Instruction::Sell, 50);
+        let result = order.place(&env, &pool).await;
+
+        account_mock.assert();
+        order_mock.assert();
+        let response = result.unwrap();
+        assert_eq!(response.order_id, "67890");
+    }
+
+    #[tokio::test]
+    async fn test_order_placement_missing_location_header() {
+        let server = httpmock::MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/trader/v1/accounts/ABC123DEF456/orders");
+            then.status(201); // Success but missing Location header
+        });
+
+        let order = Order::new("SPY".to_string(), Instruction::Buy, 25);
+        let result = order.place(&env, &pool).await;
+
+        account_mock.assert();
+        order_mock.assert();
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            SchwabError::RequestFailed { action, body, .. }
+            if action == "extract order ID" && body.contains("Missing Location header")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_order_placement_invalid_location_header() {
+        let server = httpmock::MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/trader/v1/accounts/ABC123DEF456/orders");
+            then.status(201).header("location", "invalid-url-format"); // Invalid format
+        });
+
+        let order = Order::new("MSFT".to_string(), Instruction::Buy, 100);
+        let result = order.place(&env, &pool).await;
+
+        account_mock.assert();
+        order_mock.assert();
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            SchwabError::RequestFailed { action, body, .. }
+            if action == "extract order ID" && body.contains("Invalid Location header format")
+        ));
     }
 
     // Tests for ArbTrade-dependent functionality have been removed
