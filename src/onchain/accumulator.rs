@@ -52,7 +52,9 @@ pub async fn add_trade(
 
         match &result {
             Some(execution) => {
-                let execution_id = execution.id.expect("Execution should have ID after save");
+                let execution_id = execution
+                    .id
+                    .ok_or(crate::error::PersistenceError::MissingExecutionId)?;
                 set_pending_execution_id(&mut sql_tx, &base_symbol, execution_id).await?;
             }
             None => {
@@ -201,7 +203,9 @@ async fn execute_position(
     let execution =
         create_execution_within_transaction(sql_tx, base_symbol, shares, instruction).await?;
 
-    let execution_id = execution.id.expect("Execution should have ID after save");
+    let execution_id = execution
+        .id
+        .ok_or(crate::error::PersistenceError::MissingExecutionId)?;
 
     // Find all trades that contributed to this execution and create linkages
     create_trade_execution_linkages(

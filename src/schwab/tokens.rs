@@ -144,11 +144,10 @@ impl SchwabTokens {
         env: SchwabAuthEnv,
     ) -> Result<(), SchwabError> {
         let refresh_interval_secs = (ACCESS_TOKEN_DURATION_MINUTES - 1) * 60;
-        let mut interval_timer = interval(TokioDuration::from_secs(
-            refresh_interval_secs
-                .try_into()
-                .expect("refresh interval must be positive"),
-        ));
+        let refresh_interval_u64 = refresh_interval_secs.try_into().map_err(|_| {
+            SchwabError::InvalidConfiguration("Refresh interval out of range".to_string())
+        })?;
+        let mut interval_timer = interval(TokioDuration::from_secs(refresh_interval_u64));
 
         loop {
             interval_timer.tick().await;

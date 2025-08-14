@@ -49,6 +49,8 @@ pub enum PersistenceError {
         expected: i64,
         current: Option<i64>,
     },
+    #[error("Execution missing ID after database save")]
+    MissingExecutionId,
 }
 
 /// External service and API interaction errors.

@@ -117,6 +117,8 @@ pub enum SchwabError {
         status: reqwest::StatusCode,
         body: String,
     },
+    #[error("Invalid configuration: {0}")]
+    InvalidConfiguration(String),
 }
 
 pub async fn run_oauth_flow(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<(), SchwabError> {
