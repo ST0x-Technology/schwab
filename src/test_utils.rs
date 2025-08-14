@@ -68,40 +68,32 @@ pub fn get_test_log() -> Log {
     create_log(293)
 }
 
-#[cfg(test)]
 use sqlx::SqlitePool;
 
 /// Centralized test database setup to eliminate duplication across test files.
 /// Creates an in-memory SQLite database with all migrations applied.
-#[cfg(test)]
 pub async fn setup_test_db() -> SqlitePool {
     let pool = SqlitePool::connect(":memory:").await.unwrap();
     sqlx::migrate!().run(&pool).await.unwrap();
     pool
 }
 
-#[cfg(test)]
 use crate::onchain::OnchainTrade;
-#[cfg(test)]
 use crate::schwab::TradeStatus;
-#[cfg(test)]
 use crate::schwab::{Direction, execution::SchwabExecution};
 
 /// Builder for creating OnchainTrade test instances with sensible defaults.
 /// Reduces duplication in test data setup.
-#[cfg(test)]
 pub struct OnchainTradeBuilder {
     trade: OnchainTrade,
 }
 
-#[cfg(test)]
 impl Default for OnchainTradeBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(test)]
 impl OnchainTradeBuilder {
     pub fn new() -> Self {
         Self {
@@ -157,19 +149,16 @@ impl OnchainTradeBuilder {
 
 /// Builder for creating SchwabExecution test instances with sensible defaults.
 /// Reduces duplication in test data setup.
-#[cfg(test)]
 pub struct SchwabExecutionBuilder {
     execution: SchwabExecution,
 }
 
-#[cfg(test)]
 impl Default for SchwabExecutionBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(test)]
 impl SchwabExecutionBuilder {
     pub fn new() -> Self {
         Self {
