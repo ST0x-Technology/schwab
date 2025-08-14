@@ -844,13 +844,8 @@ mod tests {
         tokens.store(pool).await.unwrap();
     }
 
-    #[allow(dead_code)]
     struct MockBlockchainData {
-        tx_hash: alloy::primitives::B256,
-        order: crate::bindings::IOrderBookV4::OrderV3,
         order_hash: alloy::primitives::B256,
-        clear_event: ClearV2,
-        after_clear_event: AfterClear,
         receipt_json: serde_json::Value,
         after_clear_log: alloy::rpc::types::Log,
     }
@@ -867,7 +862,7 @@ mod tests {
         let clear_event = ClearV2 {
             sender: address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
             alice: order.clone(),
-            bob: order.clone(),
+            bob: order,
             clearConfig: ClearConfig {
                 aliceInputIOIndex: U256::from(0),
                 aliceOutputIOIndex: U256::from(1),
@@ -895,7 +890,7 @@ mod tests {
             "logs": [{
                 "address": orderbook,
                 "topics": [ClearV2::SIGNATURE_HASH],
-                "data": format!("0x{}", hex::encode(clear_event.clone().into_log_data().data)),
+                "data": format!("0x{}", hex::encode(clear_event.into_log_data().data)),
                 "blockNumber": "0x64",
                 "transactionHash": tx_hash,
                 "transactionIndex": "0x0",
@@ -917,7 +912,7 @@ mod tests {
         let after_clear_log = alloy::rpc::types::Log {
             inner: alloy::primitives::Log {
                 address: orderbook,
-                data: after_clear_event.clone().into_log_data(),
+                data: after_clear_event.into_log_data(),
             },
             block_hash: Some(fixed_bytes!(
                 "0x1111111111111111111111111111111111111111111111111111111111111111"
@@ -931,11 +926,7 @@ mod tests {
         };
 
         MockBlockchainData {
-            tx_hash,
-            order,
             order_hash,
-            clear_event,
-            after_clear_event,
             receipt_json,
             after_clear_log,
         }
