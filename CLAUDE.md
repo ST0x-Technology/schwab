@@ -24,7 +24,7 @@ This is a Rust-based arbitrage bot for tokenized equities that monitors onchain 
 
 ### Database Management
 
-- `sqlx db create` - Apply database migrations
+- `sqlx db create` - Create the database
 - `sqlx migrate run` - Apply database migrations
 - `sqlx migrate revert` - Revert last migration
 - Database URL configured via `DATABASE_URL` environment variable
