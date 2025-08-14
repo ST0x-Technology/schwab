@@ -503,6 +503,6 @@ mod tests {
             .unwrap();
         assert_eq!(trade.symbol, "AAPLs1");
         assert!((trade.amount - 9.0).abs() < f64::EPSILON); // Expected amount from test data  
-        assert!((trade.price_usdc - 11.11111111111111).abs() < 0.001); // Updated expected price
+        assert!((trade.price_usdc - 11.111_111_111_111_11).abs() < 0.001); // Updated expected price
     }
 }

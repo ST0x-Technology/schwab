@@ -236,7 +236,7 @@ mod tests {
         assert_eq!(trade.symbol, "AAPLs1");
         assert!((trade.amount - 15.0).abs() < f64::EPSILON);
         // Price should be 200 USDC / 15 shares = 13.333... USDC per share
-        assert!((trade.price_usdc - 13.333333333333334).abs() < 0.001);
+        assert!((trade.price_usdc - 13.333_333_333_333_334).abs() < 0.001);
     }
 
     #[tokio::test]
@@ -281,19 +281,8 @@ mod tests {
         )
         .await;
 
-        // Check what actually happens with zero amounts
-        match result {
-            Ok(None) => {
-                // This is acceptable - zero amounts should result in None (no trade)
-            }
-            Ok(Some(trade)) => {
-                // If a trade is created, it should have zero amount
-                assert!((trade.amount - 0.0).abs() < f64::EPSILON);
-            }
-            Err(_) => {
-                // Error is also acceptable for zero amounts
-            }
-        }
+        // Zero amounts should deterministically return Ok(None)
+        assert_eq!(result.unwrap(), None);
     }
 
     #[tokio::test]

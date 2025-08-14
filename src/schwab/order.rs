@@ -972,10 +972,9 @@ mod tests {
                 // Test passes - execution was properly marked as failed
                 // Note: error_reason is not persisted in database yet, so we don't test it
             }
-            other => panic!("Expected Failed status but got: {:?}", other),
+            other => panic!("Expected Failed status but got: {other:?}"),
         }
     }
 
-    // Tests for ArbTrade-dependent functionality have been removed
     // These tests can be restored when/if the CLI functionality is migrated to the new system
 }
