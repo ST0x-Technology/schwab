@@ -155,9 +155,9 @@ fn extract_code_from_url(url: &str) -> Result<String, SchwabError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::setup_test_db;
     use httpmock::prelude::*;
     use serde_json::json;
-    use sqlx::SqlitePool;
 
     fn create_test_env_with_mock_server(mock_server: &MockServer) -> SchwabAuthEnv {
         SchwabAuthEnv {
@@ -167,12 +167,6 @@ mod tests {
             base_url: mock_server.base_url(),
             account_index: 0,
         }
-    }
-
-    async fn setup_test_db() -> SqlitePool {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
-        sqlx::migrate!().run(&pool).await.unwrap();
-        pool
     }
 
     #[tokio::test]

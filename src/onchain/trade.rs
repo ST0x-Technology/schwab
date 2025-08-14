@@ -352,14 +352,8 @@ fn shares_from_amount(amount: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::schwab::Direction;
+    use crate::test_utils::setup_test_db;
     use alloy::primitives::fixed_bytes;
-    use sqlx::SqlitePool;
-
-    async fn setup_test_db() -> SqlitePool {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
-        sqlx::migrate!().run(&pool).await.unwrap();
-        pool
-    }
 
     #[tokio::test]
     async fn test_onchain_trade_save_within_transaction_and_find() {

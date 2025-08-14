@@ -375,6 +375,7 @@ mod tests {
     use crate::schwab::execution::SchwabExecution;
     use crate::schwab::{Direction, SchwabInstruction};
     use crate::test_utils::get_test_order;
+    use crate::test_utils::setup_test_db;
     use crate::{LogLevel, onchain::EvmEnv, schwab::SchwabAuthEnv};
     use alloy::hex;
     use alloy::primitives::{IntoLogData, U256, address, fixed_bytes, keccak256};
@@ -831,12 +832,6 @@ mod tests {
                 ),
             },
         }
-    }
-
-    async fn setup_test_db() -> SqlitePool {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
-        sqlx::migrate!().run(&pool).await.unwrap();
-        pool
     }
 
     async fn setup_test_tokens(pool: &SqlitePool) {

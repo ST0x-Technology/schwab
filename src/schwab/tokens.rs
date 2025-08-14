@@ -125,10 +125,10 @@ impl SchwabTokens {
     }
 
     pub async fn db_count(pool: &SqlitePool) -> Result<i64, SchwabError> {
-        let count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_auth")
+        let count = sqlx::query_scalar!("SELECT COUNT(*) FROM schwab_auth")
             .fetch_one(pool)
             .await?;
-        Ok(count.count)
+        Ok(count)
     }
 
     pub fn spawn_automatic_token_refresh(pool: SqlitePool, env: SchwabAuthEnv) {
@@ -203,10 +203,10 @@ impl SchwabTokens {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::setup_test_db;
     use chrono::Utc;
     use httpmock::prelude::*;
     use serde_json::json;
-    use sqlx::SqlitePool;
 
     fn create_test_env_with_mock_server(mock_server: &MockServer) -> SchwabAuthEnv {
         SchwabAuthEnv {
@@ -226,12 +226,6 @@ mod tests {
             base_url: "https://api.schwabapi.com".to_string(),
             account_index: 0,
         }
-    }
-
-    async fn setup_test_db() -> SqlitePool {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
-        sqlx::migrate!().run(&pool).await.unwrap();
-        pool
     }
 
     #[tokio::test]

@@ -361,6 +361,7 @@ async fn handle_execution_failure(pool: &SqlitePool, execution_id: i64, error: S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::setup_test_db;
     use chrono::Utc;
     use serde_json::json;
 
@@ -573,12 +574,6 @@ mod tests {
             base_url: mock_server.base_url(),
             account_index: 0,
         }
-    }
-
-    async fn setup_test_db() -> sqlx::SqlitePool {
-        let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
-        sqlx::migrate!().run(&pool).await.unwrap();
-        pool
     }
 
     async fn setup_test_tokens(pool: &sqlx::SqlitePool) {
