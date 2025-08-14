@@ -247,7 +247,7 @@ pub async fn execute_schwab_order(
     pool: &SqlitePool,
     execution: SchwabExecution,
     max_retries: usize,
-) {
+) -> Result<(), SchwabError> {
     let schwab_instruction = match execution.direction {
         SchwabInstruction::Buy => Instruction::Buy,
         SchwabInstruction::Sell => Instruction::Sell,
@@ -263,21 +263,25 @@ pub async fn execute_schwab_order(
         .retry(&ExponentialBuilder::default().with_max_times(max_retries))
         .await;
 
-    let execution_id = execution
-        .id
-        .expect("SchwabExecution should have ID when executing");
+    let execution_id = execution.id.ok_or_else(|| {
+        error!("SchwabExecution missing ID when executing: {execution:?}");
+        SchwabError::RequestFailed {
+            action: "execute order".to_string(),
+            status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            body: "Execution missing database ID".to_string(),
+        }
+    })?;
 
     match result {
         Ok(response) => handle_execution_success(pool, execution_id, response.order_id).await,
         Err(e) => handle_execution_failure(pool, execution_id, e).await,
     }
+
+    Ok(())
 }
 
 async fn handle_execution_success(pool: &SqlitePool, execution_id: i64, order_id: String) {
-    info!(
-        "Successfully placed Schwab order for execution: id={}, order_id={}",
-        execution_id, order_id
-    );
+    info!("Successfully placed Schwab order for execution: id={execution_id}, order_id={order_id}");
 
     let mut sql_tx = match pool.begin().await {
         Ok(tx) => tx,
@@ -301,33 +305,25 @@ async fn handle_execution_success(pool: &SqlitePool, execution_id: i64, order_id
     )
     .await
     {
-        error!(
-            "Failed to update execution status to COMPLETED: id={}, error={:?}",
-            execution_id, e
-        );
+        error!("Failed to update execution status to COMPLETED: id={execution_id}, error={e:?}",);
         return;
     }
 
     if let Err(e) = sql_tx.commit().await {
-        error!(
-            "Failed to commit execution success transaction: id={}, error={:?}",
-            execution_id, e
-        );
+        error!("Failed to commit execution success transaction: id={execution_id}, error={e:?}",);
     }
 }
 
 async fn handle_execution_failure(pool: &SqlitePool, execution_id: i64, error: SchwabError) {
     error!(
-        "Failed to place Schwab order after retries for execution: id={}, error={:?}",
-        execution_id, error
+        "Failed to place Schwab order after retries for execution: id={execution_id}, error={error:?}",
     );
 
     let mut sql_tx = match pool.begin().await {
         Ok(tx) => tx,
         Err(e) => {
             error!(
-                "Failed to start transaction for execution failure: id={}, error={:?}",
-                execution_id, e
+                "Failed to start transaction for execution failure: id={execution_id}, error={e:?}",
             );
             return;
         }
@@ -344,17 +340,13 @@ async fn handle_execution_failure(pool: &SqlitePool, execution_id: i64, error: S
     .await
     {
         error!(
-            "Failed to update execution status to FAILED: id={}, error={:?}",
-            execution_id, update_err
+            "Failed to update execution status to FAILED: id={execution_id}, error={update_err:?}",
         );
         return;
     }
 
     if let Err(e) = sql_tx.commit().await {
-        error!(
-            "Failed to commit execution failure transaction: id={}, error={:?}",
-            execution_id, e
-        );
+        error!("Failed to commit execution failure transaction: id={execution_id}, error={e:?}",);
     }
 }
 

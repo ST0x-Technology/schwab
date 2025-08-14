@@ -221,9 +221,9 @@ async fn execute_pending_schwab_execution(
     info!("Executing Schwab order: {:?}", execution);
 
     // Use the unified execute_schwab_order function with retry logic
-    execute_schwab_order(env, pool, execution, 3).await;
-
-    Ok(())
+    execute_schwab_order(env, pool, execution, 3)
+        .await
+        .map_err(anyhow::Error::from)
 }
 
 #[cfg(test)]

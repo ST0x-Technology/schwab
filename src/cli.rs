@@ -316,14 +316,18 @@ async fn process_found_trade<W: Write>(
     let execution = accumulator::add_trade(pool, onchain_trade).await?;
 
     if let Some(execution) = execution {
-        let execution_id = execution.id.expect("SchwabExecution should have ID");
+        let execution_id = execution
+            .id
+            .ok_or_else(|| anyhow::anyhow!("SchwabExecution missing ID after accumulation"))?;
         writeln!(
             stdout,
             "✅ Trade triggered Schwab execution (ID: {execution_id})"
         )?;
         ensure_authentication(pool, &env.schwab_auth, stdout).await?;
         writeln!(stdout, "🔄 Executing Schwab order...")?;
-        execute_schwab_order(env, pool, execution, 3).await;
+        execute_schwab_order(env, pool, execution, 3)
+            .await
+            .map_err(anyhow::Error::from)?;
         writeln!(stdout, "🎯 Trade processing completed!")?;
     } else {
         writeln!(
