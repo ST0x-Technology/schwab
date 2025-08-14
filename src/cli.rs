@@ -5,10 +5,7 @@ use thiserror::Error;
 use tracing::{error, info};
 
 use crate::error::OnChainError;
-use crate::onchain::{
-    EvmEnv, PartialArbTrade,
-    trade::{OnchainTrade, accumulator},
-};
+use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
 use crate::schwab::SchwabAuthEnv;
 use crate::schwab::order::{Instruction, Order, execute_schwab_execution};
 use crate::schwab::run_oauth_flow;
@@ -274,9 +271,9 @@ async fn process_tx_with_provider<W: Write, P: Provider + Clone>(
 ) -> anyhow::Result<()> {
     let evm_env = &env.evm_env;
 
-    match PartialArbTrade::try_from_tx_hash(tx_hash, provider, cache, evm_env).await {
-        Ok(Some(partial_trade)) => {
-            process_found_trade(partial_trade, env, pool, stdout).await?;
+    match OnchainTrade::try_from_tx_hash(tx_hash, provider, cache, evm_env).await {
+        Ok(Some(onchain_trade)) => {
+            process_found_trade(onchain_trade, env, pool, stdout).await?;
         }
         Ok(None) => {
             writeln!(
@@ -307,26 +304,12 @@ async fn process_tx_with_provider<W: Write, P: Provider + Clone>(
 }
 
 async fn process_found_trade<W: Write>(
-    partial_trade: PartialArbTrade,
+    onchain_trade: OnchainTrade,
     env: &Env,
     pool: &SqlitePool,
     stdout: &mut W,
 ) -> anyhow::Result<()> {
-    display_trade_details(&partial_trade, stdout)?;
-
-    // Convert PartialArbTrade to OnchainTrade for the new unified system
-    let tokenized_symbol = format!("{}s1", partial_trade.schwab_ticker);
-    let onchain_trade = OnchainTrade {
-        id: None,
-        tx_hash: partial_trade.tx_hash,
-        log_index: partial_trade.log_index,
-        symbol: tokenized_symbol,
-        #[allow(clippy::cast_precision_loss)]
-        amount: partial_trade.schwab_quantity as f64, // Use Schwab quantity for consistency
-        direction: partial_trade.schwab_instruction,
-        price_usdc: partial_trade.onchain_price_per_share_cents,
-        created_at: None,
-    };
+    display_trade_details(&onchain_trade, stdout)?;
 
     writeln!(stdout, "🔄 Processing trade with TradeAccumulator...")?;
 
@@ -357,28 +340,24 @@ async fn process_found_trade<W: Write>(
 }
 
 fn display_trade_details<W: Write>(
-    partial_trade: &PartialArbTrade,
+    onchain_trade: &OnchainTrade,
     stdout: &mut W,
 ) -> anyhow::Result<()> {
+    let schwab_ticker = onchain_trade
+        .symbol
+        .strip_suffix("s1")
+        .unwrap_or(&onchain_trade.symbol);
+
     writeln!(stdout, "✅ Found opposite-side trade opportunity:")?;
-    writeln!(stdout, "   Transaction: {}", partial_trade.tx_hash)?;
-    writeln!(stdout, "   Log Index: {}", partial_trade.log_index)?;
-    writeln!(stdout, "   Schwab Ticker: {}", partial_trade.schwab_ticker)?;
+    writeln!(stdout, "   Transaction: {}", onchain_trade.tx_hash)?;
+    writeln!(stdout, "   Log Index: {}", onchain_trade.log_index)?;
+    writeln!(stdout, "   Schwab Ticker: {}", schwab_ticker)?;
+    writeln!(stdout, "   Schwab Action: {:?}", onchain_trade.direction)?;
+    writeln!(stdout, "   Quantity: {}", onchain_trade.amount)?;
     writeln!(
         stdout,
-        "   Schwab Action: {:?}",
-        partial_trade.schwab_instruction
-    )?;
-    writeln!(stdout, "   Quantity: {}", partial_trade.schwab_quantity)?;
-    writeln!(
-        stdout,
-        "   Onchain Input: {} ({})",
-        partial_trade.onchain_input_amount, partial_trade.onchain_input_symbol
-    )?;
-    writeln!(
-        stdout,
-        "   Onchain Output: {} ({})",
-        partial_trade.onchain_output_amount, partial_trade.onchain_output_symbol
+        "   Price per Share: ${:.2}",
+        onchain_trade.price_usdc
     )?;
     Ok(())
 }

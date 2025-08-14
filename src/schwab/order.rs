@@ -10,7 +10,7 @@ use super::{
     SchwabAuthEnv, SchwabError, SchwabInstruction, SchwabTokens, execution::SchwabExecution,
 };
 use crate::Env;
-use crate::onchain::TradeStatus;
+use crate::schwab::TradeStatus;
 
 /// Response from Schwab order placement API.
 /// According to Schwab OpenAPI spec, successful order placement (201) returns
@@ -951,8 +951,8 @@ mod tests {
     #[tokio::test]
     async fn test_execution_success_handling() {
         use super::super::execution::SchwabExecution;
-        use crate::onchain::TradeStatus;
         use crate::schwab::SchwabInstruction;
+        use crate::schwab::TradeStatus;
 
         let pool = setup_test_db().await;
 
@@ -996,7 +996,7 @@ mod tests {
     #[tokio::test]
     async fn test_execution_failure_handling() {
         use super::super::execution::SchwabExecution;
-        use crate::onchain::TradeStatus;
+        use crate::schwab::TradeStatus;
         use crate::schwab::{SchwabError, SchwabInstruction};
 
         let pool = setup_test_db().await;

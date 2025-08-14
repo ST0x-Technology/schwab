@@ -3,10 +3,8 @@ use tracing::info;
 
 use super::OnchainTrade;
 use crate::error::OnChainError;
-use crate::onchain::{
-    TradeStatus,
-    position_calculator::{ExecutionType, PositionCalculator},
-};
+use crate::onchain::position_calculator::{ExecutionType, PositionCalculator};
+use crate::schwab::TradeStatus;
 use crate::schwab::{Direction, execution::SchwabExecution};
 
 pub async fn add_trade(
@@ -556,5 +554,89 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(execution_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_trade_processing_prevents_duplicate_executions() {
+        let pool = setup_test_db().await;
+
+        // Create two identical trades that should be processed concurrently
+        // Both trades are for 0.8 AAPL shares, which when combined (1.6 shares) should trigger only one execution of 1 share
+        let trade1 = OnchainTrade {
+            id: None,
+            tx_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            log_index: 1,
+            symbol: "AAPLs1".to_string(),
+            amount: 0.8,
+            direction: Direction::Sell,
+            price_usdc: 15000.0,
+            created_at: None,
+        };
+
+        let trade2 = OnchainTrade {
+            id: None,
+            tx_hash: fixed_bytes!(
+                "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ),
+            log_index: 1,
+            symbol: "AAPLs1".to_string(), // Same symbol to test race condition
+            amount: 0.8,
+            direction: Direction::Sell,
+            price_usdc: 15000.0,
+            created_at: None,
+        };
+
+        // Process both trades concurrently to simulate race condition scenario
+        let pool_clone1 = pool.clone();
+        let pool_clone2 = pool.clone();
+
+        let (result1, result2) = tokio::join!(
+            add_trade(&pool_clone1, trade1),
+            add_trade(&pool_clone2, trade2)
+        );
+
+        // Both should succeed without error
+        let execution1 = result1.unwrap();
+        let execution2 = result2.unwrap();
+
+        // Exactly one of them should have triggered an execution (for 1 share)
+        let executions_created = match (execution1, execution2) {
+            (Some(_), None) | (None, Some(_)) => 1,
+            (Some(_), Some(_)) => 2, // This would be the bug we're preventing
+            (None, None) => 0,
+        };
+
+        // Symbol-level locking should ensure only one execution is created
+        assert_eq!(
+            executions_created, 1,
+            "Expected exactly 1 execution to be created, but got {executions_created}"
+        );
+
+        // Verify database state: 2 trades saved, 1 execution created
+        let trade_count = super::OnchainTrade::db_count(&pool).await.unwrap();
+        assert_eq!(trade_count, 2, "Expected 2 trades to be saved");
+
+        let execution_count = SchwabExecution::db_count(&pool).await.unwrap();
+        assert_eq!(
+            execution_count, 1,
+            "Expected exactly 1 execution to prevent duplicate orders"
+        );
+
+        // Verify the accumulator state shows the remaining fractional amount
+        let accumulator_result = find_by_symbol(&pool, "AAPL").await.unwrap();
+        assert!(
+            accumulator_result.is_some(),
+            "Accumulator should exist for AAPL"
+        );
+
+        let (calculator, _) = accumulator_result.unwrap();
+        // Total 1.6 shares accumulated, 1.0 executed, should have 0.6 remaining
+        assert!(
+            (calculator.accumulated_short - 0.6).abs() < f64::EPSILON,
+            "Expected 0.6 accumulated_short remaining, got {}",
+            calculator.accumulated_short
+        );
     }
 }

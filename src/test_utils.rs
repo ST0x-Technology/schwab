@@ -81,9 +81,9 @@ pub async fn setup_test_db() -> SqlitePool {
 }
 
 #[cfg(test)]
-use crate::onchain::TradeStatus;
+use crate::onchain::OnchainTrade;
 #[cfg(test)]
-use crate::onchain::trade::OnchainTrade;
+use crate::schwab::TradeStatus;
 #[cfg(test)]
 use crate::schwab::{Direction, execution::SchwabExecution};
 

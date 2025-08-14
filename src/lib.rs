@@ -21,10 +21,7 @@ mod symbol_cache;
 pub mod test_utils;
 
 use bindings::IOrderBookV4::{ClearV2, IOrderBookV4Instance, TakeOrderV2};
-use onchain::{
-    EvmEnv, PartialArbTrade,
-    trade::{OnchainTrade, accumulator},
-};
+use onchain::{EvmEnv, OnchainTrade, accumulator};
 use schwab::{SchwabAuthEnv, execution::SchwabExecution, order::execute_schwab_execution};
 use symbol_cache::SymbolCache;
 
@@ -164,40 +161,28 @@ where
     S2: Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin,
     P: Provider + Clone,
 {
-    let trade = tokio::select! {
+    let onchain_trade = tokio::select! {
         Some(next_res) = clear_stream.next() => {
             let (event, log) = next_res?;
-            PartialArbTrade::try_from_clear_v2(&env.evm_env, cache, provider, event, log).await?
+            OnchainTrade::try_from_clear_v2(&env.evm_env, cache, provider, event, log).await?
         }
         Some(take) = take_stream.next() => {
             let (event, log) = take?;
-            PartialArbTrade::try_from_take_order_if_target_order(cache, provider, event, log, env.evm_env.order_hash).await?
+            OnchainTrade::try_from_take_order_if_target_order(cache, provider, event, log, env.evm_env.order_hash).await?
         }
     };
 
-    let Some(partial_trade) = trade else {
+    let Some(onchain_trade) = onchain_trade else {
         return Ok(());
     };
 
-    // Convert PartialArbTrade to OnchainTrade for the new unified system
-    // Use the schwab_ticker + "s1" to create a consistent tokenized stock symbol
-    // This ensures TradeAccumulator always receives s1-suffixed symbols regardless of trade direction
-    let tokenized_symbol = format!("{}s1", partial_trade.schwab_ticker);
-
-    let onchain_trade = OnchainTrade {
-        id: None,
-        tx_hash: partial_trade.tx_hash,
-        log_index: partial_trade.log_index,
-        symbol: tokenized_symbol.clone(),
-        amount: amount_from_shares(partial_trade.schwab_quantity),
-        direction: partial_trade.schwab_instruction,
-        price_usdc: partial_trade.onchain_price_per_share_cents,
-        created_at: None,
-    };
-
     // Acquire symbol-level lock to prevent race conditions during accumulation
-    let symbol_lock = get_symbol_lock(&tokenized_symbol).await;
+    let symbol_lock = get_symbol_lock(&onchain_trade.symbol).await;
     let _guard = symbol_lock.lock().await;
+
+    // Save values for logging before the trade is moved
+    let tx_hash = onchain_trade.tx_hash;
+    let log_index = onchain_trade.log_index;
 
     let execution = accumulator::add_trade(pool, onchain_trade).await?;
     let execution_id = execution.and_then(|exec| exec.id);
@@ -216,7 +201,7 @@ where
     } else {
         info!(
             "Trade accumulated but did not trigger execution: tx_hash={:?}, log_index={}",
-            partial_trade.tx_hash, partial_trade.log_index
+            tx_hash, log_index
         );
     }
 
@@ -239,20 +224,6 @@ async fn execute_pending_schwab_execution(
     execute_schwab_execution(env, pool, execution, 3).await;
 
     Ok(())
-}
-
-/// Converts integer share count to f64 amount for database storage.
-///
-/// Domain context: TradeAccumulator expects f64 amounts but Schwab quantities
-/// are u64. This conversion is always safe and precise within the range of
-/// typical share quantities (< 2^53).
-const fn amount_from_shares(shares: u64) -> f64 {
-    #[allow(clippy::cast_precision_loss)]
-    {
-        // Precision loss only occurs for values > 2^53, which is well beyond
-        // realistic share quantities in equity trading
-        shares as f64
-    }
 }
 
 #[cfg(test)]
@@ -532,92 +503,6 @@ mod tests {
             .unwrap();
         assert_eq!(trade.symbol, "AAPLs1");
         assert!((trade.amount - 9.0).abs() < f64::EPSILON); // Expected amount from test data  
-        assert!((trade.price_usdc - 1_111.111_111_111_111).abs() < 0.001); // Expected price from current calculation
-    }
-
-    #[tokio::test]
-    async fn test_concurrent_trade_processing_prevents_duplicate_executions() {
-        let pool = setup_test_db().await;
-
-        // Create two identical trades that should be processed concurrently
-        // Both trades are for 0.8 AAPL shares, which when combined (1.6 shares) should trigger only one execution of 1 share
-        let trade1 = OnchainTrade {
-            id: None,
-            tx_hash: fixed_bytes!(
-                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            ),
-            log_index: 1,
-            symbol: "AAPLs1".to_string(),
-            amount: 0.8,
-            direction: Direction::Sell,
-            price_usdc: 15000.0,
-            created_at: None,
-        };
-
-        let trade2 = OnchainTrade {
-            id: None,
-            tx_hash: fixed_bytes!(
-                "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-            ),
-            log_index: 1,
-            symbol: "AAPLs1".to_string(), // Same symbol to test race condition
-            amount: 0.8,
-            direction: Direction::Sell,
-            price_usdc: 15000.0,
-            created_at: None,
-        };
-
-        // Process both trades concurrently to simulate race condition scenario
-        let pool_clone1 = pool.clone();
-        let pool_clone2 = pool.clone();
-
-        let (result1, result2) = tokio::join!(
-            accumulator::add_trade(&pool_clone1, trade1),
-            accumulator::add_trade(&pool_clone2, trade2)
-        );
-
-        // Both should succeed without error
-        let execution1 = result1.unwrap();
-        let execution2 = result2.unwrap();
-
-        // Exactly one of them should have triggered an execution (for 1 share)
-        let executions_created = match (execution1, execution2) {
-            (Some(_), None) | (None, Some(_)) => 1,
-            (Some(_), Some(_)) => 2, // This would be the bug we're preventing
-            (None, None) => 0,
-        };
-
-        // Symbol-level locking should ensure only one execution is created
-        assert_eq!(
-            executions_created, 1,
-            "Expected exactly 1 execution to be created, but got {executions_created}"
-        );
-
-        // Verify database state: 2 trades saved, 1 execution created
-        let trade_count = OnchainTrade::db_count(&pool).await.unwrap();
-        assert_eq!(trade_count, 2, "Expected 2 trades to be saved");
-
-        let execution_count = crate::schwab::execution::SchwabExecution::db_count(&pool)
-            .await
-            .unwrap();
-        assert_eq!(
-            execution_count, 1,
-            "Expected exactly 1 execution to prevent duplicate orders"
-        );
-
-        // Verify the accumulator state shows the remaining fractional amount
-        let accumulator_result = accumulator::find_by_symbol(&pool, "AAPL").await.unwrap();
-        assert!(
-            accumulator_result.is_some(),
-            "Accumulator should exist for AAPL"
-        );
-
-        let (calculator, _) = accumulator_result.unwrap();
-        // Total 1.6 shares accumulated, 1.0 executed, should have 0.6 remaining
-        assert!(
-            (calculator.accumulated_short - 0.6).abs() < f64::EPSILON,
-            "Expected 0.6 accumulated_short remaining, got {}",
-            calculator.accumulated_short
-        );
+        assert!((trade.price_usdc - 11.11111111111111).abs() < 0.001); // Updated expected price
     }
 }

@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use reqwest::header::InvalidHeaderValue;
 use sqlx::SqlitePool;
 use std::io::{self, Write};
@@ -11,6 +12,43 @@ pub mod tokens;
 pub use auth::{AccountNumbers, SchwabAuthEnv, SchwabAuthResponse};
 pub use execution::SchwabExecution;
 pub use tokens::SchwabTokens;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TradeStatus {
+    Pending,
+    Completed {
+        executed_at: DateTime<Utc>,
+        order_id: String,
+        price_cents: u64,
+    },
+    Failed {
+        failed_at: DateTime<Utc>,
+        error_reason: Option<String>,
+    },
+}
+
+impl TradeStatus {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "PENDING",
+            Self::Completed { .. } => "COMPLETED",
+            Self::Failed { .. } => "FAILED",
+        }
+    }
+}
+
+impl std::str::FromStr for TradeStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "PENDING" => Ok(Self::Pending),
+            "COMPLETED" => Err("Cannot create Completed status without required data".to_string()),
+            "FAILED" => Err("Cannot create Failed status without required data".to_string()),
+            _ => Err(format!("Invalid trade status: {s}")),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {

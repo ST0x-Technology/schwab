@@ -2,8 +2,8 @@ use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 
 use crate::error::OnChainError;
-use crate::onchain::TradeStatus;
 use crate::schwab::SchwabInstruction;
+use crate::schwab::TradeStatus;
 
 /// Converts database row data to a SchwabExecution instance.
 /// Centralizes the conversion logic and casting operations.

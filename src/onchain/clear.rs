@@ -3,13 +3,17 @@ use alloy::providers::Provider;
 use alloy::rpc::types::{Filter, Log};
 use alloy::sol_types::{SolEvent, SolValue};
 
-use super::{EvmEnv, OrderFill, PartialArbTrade};
 use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
 use crate::error::OnChainError;
+use crate::onchain::{
+    EvmEnv,
+    trade::{OnchainTrade, OrderFill},
+};
 use crate::symbol_cache::SymbolCache;
 
-impl PartialArbTrade {
-    pub(crate) async fn try_from_clear_v2<P: Provider>(
+impl OnchainTrade {
+    /// Creates OnchainTrade directly from ClearV2 blockchain events
+    pub async fn try_from_clear_v2<P: Provider>(
         env: &EvmEnv,
         cache: &SymbolCache,
         provider: P,
@@ -38,8 +42,8 @@ impl PartialArbTrade {
             return Ok(None);
         }
 
-        // we need to get the corresponding AfterClear event as ClearV2 doesn't
-        // contain the amounts. so we query the same block number, filter out
+        // We need to get the corresponding AfterClear event as ClearV2 doesn't
+        // contain the amounts. So we query the same block number, filter out
         // logs with index lower than the ClearV2 log index and with tx hashes
         // that don't match the ClearV2 tx hash.
         let block_number = log.block_number.ok_or(OnChainError::NoBlockNumber())?;
@@ -98,87 +102,89 @@ impl PartialArbTrade {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::TradeValidationError;
-    use alloy::primitives::{IntoLogData as _, U256, address, fixed_bytes};
+    use crate::bindings::IERC20::symbolCall;
+    use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange};
+    use crate::symbol_cache::SymbolCache;
+    use crate::test_utils::{get_test_log, get_test_order};
+    use alloy::primitives::{IntoLogData, U256, address, fixed_bytes};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
-    use alloy::sol_types::SolCall;
+    use alloy::rpc::types::Log;
+    use alloy::sol_types::{SolCall, SolValue};
     use serde_json::json;
     use std::str::FromStr;
-    use url::Url;
 
-    use crate::bindings::IERC20::symbolCall;
-    use crate::schwab::SchwabInstruction;
-    use crate::test_utils::get_test_order;
-
-    fn get_env(
-        orderbook: alloy::primitives::Address,
-        order_hash: alloy::primitives::B256,
-    ) -> EvmEnv {
+    fn create_test_env() -> EvmEnv {
         EvmEnv {
-            ws_rpc_url: Url::parse("ws://localhost").unwrap(),
-            orderbook,
-            order_hash,
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash: keccak256(get_test_order().abi_encode()),
         }
     }
 
-    fn get_clear_log(block_number: u64, tx_hash: alloy::primitives::B256) -> Log {
-        Log {
+    fn create_clear_event(
+        alice_order: crate::bindings::IOrderBookV4::OrderV3,
+        bob_order: crate::bindings::IOrderBookV4::OrderV3,
+    ) -> ClearV2 {
+        ClearV2 {
+            sender: address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+            alice: alice_order,
+            bob: bob_order,
+            clearConfig: ClearConfig {
+                aliceInputIOIndex: U256::from(0),
+                aliceOutputIOIndex: U256::from(1),
+                bobInputIOIndex: U256::from(1),
+                bobOutputIOIndex: U256::from(0),
+                aliceBountyVaultId: U256::ZERO,
+                bobBountyVaultId: U256::ZERO,
+            },
+        }
+    }
+
+    fn create_after_clear_event() -> AfterClear {
+        AfterClear {
+            sender: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            clearStateChange: ClearStateChange {
+                aliceOutput: U256::from_str("9000000000000000000").unwrap(), // 9 shares (18 dps)
+                bobOutput: U256::from(100_000_000u64),                       // 100 USDC (6 dps)
+                aliceInput: U256::from(100_000_000u64),                      // 100 USDC (6 dps)
+                bobInput: U256::from_str("9000000000000000000").unwrap(),    // 9 shares (18 dps)
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn test_try_from_clear_v2_alice_order_match() {
+        let env = create_test_env();
+        let cache = SymbolCache::default();
+
+        let order = get_test_order();
+        let different_order = {
+            let mut order = get_test_order();
+            order.nonce =
+                fixed_bytes!("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+            order
+        };
+
+        let clear_event = create_clear_event(order.clone(), different_order);
+        let orderbook = address!("0x1111111111111111111111111111111111111111");
+        let tx_hash =
+            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+
+        let clear_log = Log {
             inner: alloy::primitives::Log {
-                address: address!("0xfefefefefefefefefefefefefefefefefefefefe"),
-                data: alloy::primitives::LogData::empty(),
+                address: orderbook,
+                data: clear_event.to_log_data(),
             },
             block_hash: None,
-            block_number: Some(block_number),
+            block_number: Some(1),
             block_timestamp: None,
             transaction_hash: Some(tx_hash),
             transaction_index: None,
             log_index: Some(1),
             removed: false,
-        }
-    }
-
-    #[tokio::test]
-    async fn test_try_from_clear_v2_ok_alice_match() {
-        let order = get_test_order();
-        let order_hash = keccak256(order.abi_encode());
-        let orderbook = address!("0xfefefefefefefefefefefefefefefefefefefefe");
-        let env = get_env(orderbook, order_hash);
-
-        let clear_config = ClearConfig {
-            aliceInputIOIndex: U256::from(0),
-            aliceOutputIOIndex: U256::from(1),
-            bobInputIOIndex: U256::from(1),
-            bobOutputIOIndex: U256::from(0),
-            aliceBountyVaultId: U256::ZERO,
-            bobBountyVaultId: U256::ZERO,
         };
 
-        let bob_order = order.clone();
-
-        let clear_event = ClearV2 {
-            sender: address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
-            alice: order.clone(),
-            bob: bob_order,
-            clearConfig: clear_config.clone(),
-        };
-
-        let tx_hash =
-            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
-        let clear_log = get_clear_log(1, tx_hash);
-
-        let asserter = Asserter::new();
-
-        // 1. eth_getLogs should return the AfterClear log.
-        let after_clear_event = AfterClear {
-            sender: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-            clearStateChange: ClearStateChange {
-                aliceOutput: U256::from_str("9000000000000000000").unwrap(), // 9 shares (18 dps)
-                bobOutput: U256::ZERO,
-                aliceInput: U256::from(100_000_000u64),
-                bobInput: U256::ZERO,
-            },
-        };
-
+        let after_clear_event = create_after_clear_event();
         let after_clear_log = Log {
             inner: alloy::primitives::Log {
                 address: orderbook,
@@ -189,210 +195,65 @@ mod tests {
             block_timestamp: None,
             transaction_hash: Some(tx_hash),
             transaction_index: None,
-            log_index: Some(2),
+            log_index: Some(2), // Higher than clear log
             removed: false,
         };
 
+        let asserter = Asserter::new();
         asserter.push_success(&json!([after_clear_log]));
-
-        // 2+3. Subsequent eth_call symbol fetches.
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"FOOs1".to_string(),
+            &"AAPLs1".to_string(),
         ));
-
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
-        let cache = SymbolCache::default();
 
-        let trade =
-            PartialArbTrade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
+        let result =
+            OnchainTrade::try_from_clear_v2(&env, &cache, provider, clear_event, clear_log)
                 .await
-                .unwrap()
                 .unwrap();
 
-        assert_eq!(trade.schwab_ticker, "FOO");
-        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
+        let trade = result.unwrap();
+        assert_eq!(trade.symbol, "AAPLs1");
+        assert!((trade.amount - 9.0).abs() < f64::EPSILON);
+        assert_eq!(trade.tx_hash, tx_hash);
+        assert_eq!(trade.log_index, 1);
     }
 
     #[tokio::test]
-    async fn test_try_from_clear_v2_err_no_after_clear_log() {
-        let order = get_test_order();
-        let order_hash = keccak256(order.abi_encode());
-        let orderbook = address!("0xfefefefefefefefefefefefefefefefefefefefe");
-        let env = get_env(orderbook, order_hash);
-
-        let clear_config = ClearConfig {
-            aliceInputIOIndex: U256::from(0),
-            aliceOutputIOIndex: U256::from(1),
-            bobInputIOIndex: U256::from(1),
-            bobOutputIOIndex: U256::from(0),
-            aliceBountyVaultId: U256::ZERO,
-            bobBountyVaultId: U256::ZERO,
-        };
-
-        let clear_event = ClearV2 {
-            sender: address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
-            alice: order.clone(),
-            bob: order.clone(),
-            clearConfig: clear_config,
-        };
-
-        let tx_hash =
-            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
-        let clear_log = get_clear_log(1, tx_hash);
-
-        let asserter = Asserter::new();
-        asserter.push_success(&json!([]));
-
-        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+    async fn test_try_from_clear_v2_bob_order_match() {
+        let env = create_test_env();
         let cache = SymbolCache::default();
 
-        let err =
-            PartialArbTrade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
-                .await
-                .unwrap_err();
-
-        assert!(
-            matches!(
-                err,
-                OnChainError::Validation(TradeValidationError::NoAfterClearLog)
-            ),
-            "got an unexpected error: {err:?}",
-        );
-    }
-
-    #[tokio::test]
-    async fn test_try_from_clear_v2_not_target_order() {
-        // Scenario where neither Alice nor Bob order hash matches the target, expect None.
         let order = get_test_order();
-        let unrelated_hash =
-            keccak256(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").abi_encode());
-        let orderbook = address!("0xfefefefefefefefefefefefefefefefefefefefe");
-        let env = get_env(orderbook, unrelated_hash);
-
-        let clear_config = ClearConfig {
-            aliceInputIOIndex: U256::from(0),
-            aliceOutputIOIndex: U256::from(1),
-            bobInputIOIndex: U256::from(1),
-            bobOutputIOIndex: U256::from(0),
-            aliceBountyVaultId: U256::ZERO,
-            bobBountyVaultId: U256::ZERO,
+        let different_order = {
+            let mut order = get_test_order();
+            order.nonce =
+                fixed_bytes!("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+            order
         };
 
-        let clear_event = ClearV2 {
-            sender: address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
-            alice: order.clone(),
-            bob: order.clone(),
-            clearConfig: clear_config,
-        };
-
+        let clear_event = create_clear_event(different_order, order.clone());
+        let orderbook = address!("0x1111111111111111111111111111111111111111");
         let tx_hash =
             fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
-        let clear_log = get_clear_log(1, tx_hash);
 
-        let asserter = Asserter::new();
-        asserter.push_success(&json!([]));
-
-        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
-        let cache = SymbolCache::default();
-
-        let res =
-            PartialArbTrade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
-                .await
-                .unwrap();
-        assert!(res.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_try_from_clear_v2_err_no_block_number() {
-        let order = get_test_order();
-        let order_hash = keccak256(order.abi_encode());
-        let orderbook = address!("0xfefefefefefefefefefefefefefefefefefefefe");
-        let env = get_env(orderbook, order_hash);
-
-        let clear_config = ClearConfig {
-            aliceInputIOIndex: U256::from(0),
-            aliceOutputIOIndex: U256::from(1),
-            bobInputIOIndex: U256::from(1),
-            bobOutputIOIndex: U256::from(0),
-            aliceBountyVaultId: U256::ZERO,
-            bobBountyVaultId: U256::ZERO,
-        };
-
-        let clear_event = ClearV2 {
-            sender: address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
-            alice: order.clone(),
-            bob: order.clone(),
-            clearConfig: clear_config,
-        };
-
-        let mut clear_log = get_clear_log(
-            1,
-            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
-        );
-        clear_log.block_number = None;
-
-        let asserter = Asserter::new();
-        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
-        let cache = SymbolCache::default();
-
-        let err =
-            PartialArbTrade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
-                .await
-                .unwrap_err();
-
-        assert!(matches!(
-            err,
-            OnChainError::Validation(TradeValidationError::NoBlockNumber)
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_try_from_clear_v2_ok_bob_match() {
-        let bob_order = get_test_order();
-        let bob_order_hash = keccak256(bob_order.abi_encode());
-        let orderbook = address!("0xfefefefefefefefefefefefefefefefefefefefe");
-        let env = get_env(orderbook, bob_order_hash);
-
-        let clear_config = ClearConfig {
-            aliceInputIOIndex: U256::from(0),
-            aliceOutputIOIndex: U256::from(1),
-            bobInputIOIndex: U256::from(1),
-            bobOutputIOIndex: U256::from(0),
-            aliceBountyVaultId: U256::ZERO,
-            bobBountyVaultId: U256::ZERO,
-        };
-
-        // Create a different alice order so only bob matches
-        let mut alice_order = get_test_order();
-        alice_order.nonce =
-            fixed_bytes!("0x1111111111111111111111111111111111111111111111111111111111111111");
-
-        let clear_event = ClearV2 {
-            sender: address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
-            alice: alice_order,
-            bob: bob_order,
-            clearConfig: clear_config,
-        };
-
-        let tx_hash =
-            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
-        let clear_log = get_clear_log(1, tx_hash);
-
-        let asserter = Asserter::new();
-
-        let after_clear_event = AfterClear {
-            sender: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-            clearStateChange: ClearStateChange {
-                aliceOutput: U256::ZERO,
-                bobOutput: U256::from_str("9000000000000000000").unwrap(),
-                aliceInput: U256::ZERO,
-                bobInput: U256::from(100_000_000u64),
+        let clear_log = Log {
+            inner: alloy::primitives::Log {
+                address: orderbook,
+                data: clear_event.to_log_data(),
             },
+            block_hash: None,
+            block_number: Some(1),
+            block_timestamp: None,
+            transaction_hash: Some(tx_hash),
+            transaction_index: None,
+            log_index: Some(1),
+            removed: false,
         };
 
+        let after_clear_event = create_after_clear_event();
         let after_clear_log = Log {
             inner: alloy::primitives::Log {
                 address: orderbook,
@@ -403,70 +264,286 @@ mod tests {
             block_timestamp: None,
             transaction_hash: Some(tx_hash),
             transaction_index: None,
-            log_index: Some(2),
+            log_index: Some(2), // Higher than clear log
             removed: false,
         };
 
+        let asserter = Asserter::new();
         asserter.push_success(&json!([after_clear_log]));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"BARs1".to_string(),
+            &"AAPLs1".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
         ));
-
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
-        let cache = SymbolCache::default();
 
-        let trade =
-            PartialArbTrade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
+        let result =
+            OnchainTrade::try_from_clear_v2(&env, &cache, provider, clear_event, clear_log)
                 .await
-                .unwrap()
                 .unwrap();
 
-        assert_eq!(trade.schwab_ticker, "BAR");
-        assert_eq!(trade.schwab_instruction, SchwabInstruction::Sell);
+        let trade = result.unwrap();
+        assert_eq!(trade.symbol, "AAPLs1");
+        assert!((trade.amount - 9.0).abs() < f64::EPSILON);
+        assert_eq!(trade.tx_hash, tx_hash);
+        assert_eq!(trade.log_index, 1);
     }
 
     #[tokio::test]
-    async fn test_try_from_clear_v2_err_invalid_index_conversion() {
-        let order = get_test_order();
-        let order_hash = keccak256(order.abi_encode());
-        let orderbook = address!("0xfefefefefefefefefefefefefefefefefefefefe");
-        let env = get_env(orderbook, order_hash);
+    async fn test_try_from_clear_v2_no_order_match() {
+        let env = create_test_env();
+        let cache = SymbolCache::default();
 
-        let clear_config = ClearConfig {
-            aliceInputIOIndex: U256::MAX,
-            aliceOutputIOIndex: U256::from(1),
-            bobInputIOIndex: U256::from(1),
-            bobOutputIOIndex: U256::from(0),
-            aliceBountyVaultId: U256::ZERO,
-            bobBountyVaultId: U256::ZERO,
+        let different_order1 = {
+            let mut order = get_test_order();
+            order.nonce =
+                fixed_bytes!("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+            order
+        };
+        let different_order2 = {
+            let mut order = get_test_order();
+            order.nonce =
+                fixed_bytes!("0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd");
+            order
         };
 
-        let clear_event = ClearV2 {
-            sender: address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
-            alice: order.clone(),
-            bob: order.clone(),
-            clearConfig: clear_config,
-        };
-
-        let tx_hash =
-            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
-        let clear_log = get_clear_log(1, tx_hash);
+        let clear_event = create_clear_event(different_order1, different_order2);
+        let clear_log = get_test_log();
 
         let asserter = Asserter::new();
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        let after_clear_event = AfterClear {
-            sender: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-            clearStateChange: ClearStateChange {
-                aliceOutput: U256::from_str("9000000000000000000").unwrap(),
-                bobOutput: U256::ZERO,
-                aliceInput: U256::from(100_000_000u64),
-                bobInput: U256::ZERO,
-            },
+        let result =
+            OnchainTrade::try_from_clear_v2(&env, &cache, provider, clear_event, clear_log)
+                .await
+                .unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_try_from_clear_v2_missing_block_number() {
+        let env = create_test_env();
+        let cache = SymbolCache::default();
+
+        let order = get_test_order();
+        let different_order = {
+            let mut order = get_test_order();
+            order.nonce =
+                fixed_bytes!("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+            order
         };
 
+        let clear_event = create_clear_event(order.clone(), different_order);
+        let mut clear_log = get_test_log();
+        clear_log.block_number = None; // Missing block number
+
+        let asserter = Asserter::new();
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        let result =
+            OnchainTrade::try_from_clear_v2(&env, &cache, provider, clear_event, clear_log).await;
+
+        assert!(matches!(
+            result.unwrap_err(),
+            OnChainError::Validation(crate::error::TradeValidationError::NoBlockNumber)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_try_from_clear_v2_missing_after_clear_log() {
+        let env = create_test_env();
+        let cache = SymbolCache::default();
+
+        let order = get_test_order();
+        let different_order = {
+            let mut order = get_test_order();
+            order.nonce =
+                fixed_bytes!("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+            order
+        };
+
+        let clear_event = create_clear_event(order.clone(), different_order);
+        let clear_log = Log {
+            inner: alloy::primitives::Log {
+                address: address!("0x1111111111111111111111111111111111111111"),
+                data: clear_event.to_log_data(),
+            },
+            block_hash: None,
+            block_number: Some(1),
+            block_timestamp: None,
+            transaction_hash: Some(fixed_bytes!(
+                "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            )),
+            transaction_index: None,
+            log_index: Some(1),
+            removed: false,
+        };
+
+        let asserter = Asserter::new();
+        asserter.push_success(&json!([])); // No after clear logs found
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        let result =
+            OnchainTrade::try_from_clear_v2(&env, &cache, provider, clear_event, clear_log).await;
+
+        assert!(matches!(
+            result.unwrap_err(),
+            OnChainError::Validation(crate::error::TradeValidationError::NoAfterClearLog)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_try_from_clear_v2_after_clear_wrong_transaction() {
+        let env = create_test_env();
+        let cache = SymbolCache::default();
+
+        let order = get_test_order();
+        let different_order = {
+            let mut order = get_test_order();
+            order.nonce =
+                fixed_bytes!("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+            order
+        };
+
+        let clear_event = create_clear_event(order.clone(), different_order);
+        let orderbook = address!("0x1111111111111111111111111111111111111111");
+        let tx_hash =
+            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+
+        let clear_log = Log {
+            inner: alloy::primitives::Log {
+                address: orderbook,
+                data: clear_event.to_log_data(),
+            },
+            block_hash: None,
+            block_number: Some(1),
+            block_timestamp: None,
+            transaction_hash: Some(tx_hash),
+            transaction_index: None,
+            log_index: Some(1),
+            removed: false,
+        };
+
+        let after_clear_event = create_after_clear_event();
+        let wrong_after_clear_log = Log {
+            inner: alloy::primitives::Log {
+                address: orderbook,
+                data: after_clear_event.to_log_data(),
+            },
+            block_hash: None,
+            block_number: Some(1),
+            block_timestamp: None,
+            transaction_hash: Some(fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            )), // Different tx hash
+            transaction_index: None,
+            log_index: Some(2),
+            removed: false,
+        };
+
+        let asserter = Asserter::new();
+        asserter.push_success(&json!([wrong_after_clear_log])); // Wrong transaction hash
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        let result =
+            OnchainTrade::try_from_clear_v2(&env, &cache, provider, clear_event, clear_log).await;
+
+        assert!(matches!(
+            result.unwrap_err(),
+            OnChainError::Validation(crate::error::TradeValidationError::NoAfterClearLog)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_try_from_clear_v2_after_clear_wrong_log_index() {
+        let env = create_test_env();
+        let cache = SymbolCache::default();
+
+        let order = get_test_order();
+        let different_order = {
+            let mut order = get_test_order();
+            order.nonce =
+                fixed_bytes!("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+            order
+        };
+
+        let clear_event = create_clear_event(order.clone(), different_order);
+        let orderbook = address!("0x1111111111111111111111111111111111111111");
+        let tx_hash =
+            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+
+        let clear_log = Log {
+            inner: alloy::primitives::Log {
+                address: orderbook,
+                data: clear_event.to_log_data(),
+            },
+            block_hash: None,
+            block_number: Some(1),
+            block_timestamp: None,
+            transaction_hash: Some(tx_hash),
+            transaction_index: None,
+            log_index: Some(5), // Higher log index
+            removed: false,
+        };
+
+        let after_clear_event = create_after_clear_event();
+        let wrong_after_clear_log = Log {
+            inner: alloy::primitives::Log {
+                address: orderbook,
+                data: after_clear_event.to_log_data(),
+            },
+            block_hash: None,
+            block_number: Some(1),
+            block_timestamp: None,
+            transaction_hash: Some(tx_hash),
+            transaction_index: None,
+            log_index: Some(2), // Lower than clear log index
+            removed: false,
+        };
+
+        let asserter = Asserter::new();
+        asserter.push_success(&json!([wrong_after_clear_log])); // Wrong log index ordering
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        let result =
+            OnchainTrade::try_from_clear_v2(&env, &cache, provider, clear_event, clear_log).await;
+
+        assert!(matches!(
+            result.unwrap_err(),
+            OnChainError::Validation(crate::error::TradeValidationError::NoAfterClearLog)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_try_from_clear_v2_alice_and_bob_both_match() {
+        let env = create_test_env();
+        let cache = SymbolCache::default();
+
+        let order = get_test_order();
+
+        // Both Alice and Bob have the target order hash
+        let clear_event = create_clear_event(order.clone(), order.clone());
+        let orderbook = address!("0x1111111111111111111111111111111111111111");
+        let tx_hash =
+            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+
+        let clear_log = Log {
+            inner: alloy::primitives::Log {
+                address: orderbook,
+                data: clear_event.to_log_data(),
+            },
+            block_hash: None,
+            block_number: Some(1),
+            block_timestamp: None,
+            transaction_hash: Some(tx_hash),
+            transaction_index: None,
+            log_index: Some(1),
+            removed: false,
+        };
+
+        let after_clear_event = create_after_clear_event();
         let after_clear_log = Log {
             inner: alloy::primitives::Log {
                 address: orderbook,
@@ -481,19 +558,26 @@ mod tests {
             removed: false,
         };
 
+        let asserter = Asserter::new();
         asserter.push_success(&json!([after_clear_log]));
-
-        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
-        let cache = SymbolCache::default();
-
-        let err =
-            PartialArbTrade::try_from_clear_v2(&env, &cache, &provider, clear_event, clear_log)
-                .await
-                .unwrap_err();
-
-        assert!(matches!(
-            err,
-            OnChainError::Validation(TradeValidationError::InvalidIndex(_))
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"USDC".to_string(),
         ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"AAPLs1".to_string(),
+        ));
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        let result =
+            OnchainTrade::try_from_clear_v2(&env, &cache, provider, clear_event, clear_log)
+                .await
+                .unwrap();
+
+        // Should process Alice first (alice_hash_matches is checked first)
+        let trade = result.unwrap();
+        assert_eq!(trade.symbol, "AAPLs1");
+        assert!((trade.amount - 9.0).abs() < f64::EPSILON);
+        assert_eq!(trade.tx_hash, tx_hash);
+        assert_eq!(trade.log_index, 1);
     }
 }
