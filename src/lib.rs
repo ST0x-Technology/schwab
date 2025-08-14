@@ -581,8 +581,7 @@ mod tests {
         // Symbol-level locking should ensure only one execution is created
         assert_eq!(
             executions_created, 1,
-            "Expected exactly 1 execution to be created, but got {}",
-            executions_created
+            "Expected exactly 1 execution to be created, but got {executions_created}"
         );
 
         // Verify database state: 2 trades saved, 1 execution created

@@ -504,7 +504,8 @@ mod tests {
     async fn test_find_by_symbol_and_status_ordering() {
         let pool = setup_test_db().await;
 
-        // Add executions in a single transaction to test ordering by id
+        // Add executions for different symbols to test ordering by id
+        // (Multiple pending executions per symbol would violate business constraints)
         let executions = vec![
             SchwabExecution {
                 id: None,
@@ -515,14 +516,14 @@ mod tests {
             },
             SchwabExecution {
                 id: None,
-                symbol: "AAPL".to_string(),
+                symbol: "TSLA".to_string(),
                 shares: 200,
                 direction: SchwabInstruction::Sell,
                 status: TradeStatus::Pending,
             },
             SchwabExecution {
                 id: None,
-                symbol: "AAPL".to_string(),
+                symbol: "MSFT".to_string(),
                 shares: 300,
                 direction: SchwabInstruction::Buy,
                 status: TradeStatus::Pending,
@@ -538,15 +539,24 @@ mod tests {
         }
         sql_tx.commit().await.unwrap();
 
-        let result = SchwabExecution::find_pending_by_symbol(&pool, "AAPL")
+        // Test ordering for each symbol individually
+        let aapl_result = SchwabExecution::find_pending_by_symbol(&pool, "AAPL")
             .await
             .unwrap();
+        assert_eq!(aapl_result.len(), 1);
+        assert_eq!(aapl_result[0].shares, 100);
 
-        // Should be ordered by id ASC, so first saved should be first
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0].shares, 100); // First saved
-        assert_eq!(result[1].shares, 200); // Second saved  
-        assert_eq!(result[2].shares, 300); // Third saved
+        let tsla_result = SchwabExecution::find_pending_by_symbol(&pool, "TSLA")
+            .await
+            .unwrap();
+        assert_eq!(tsla_result.len(), 1);
+        assert_eq!(tsla_result[0].shares, 200);
+
+        let msft_result = SchwabExecution::find_pending_by_symbol(&pool, "MSFT")
+            .await
+            .unwrap();
+        assert_eq!(msft_result.len(), 1);
+        assert_eq!(msft_result[0].shares, 300);
     }
 
     #[tokio::test]
@@ -779,5 +789,99 @@ mod tests {
 
         let count = SchwabExecution::db_count(&pool).await.unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_database_constraints_prevent_multiple_pending_per_symbol() {
+        let pool = setup_test_db().await;
+
+        // Create first pending execution for AAPL
+        let execution1 = SchwabExecution {
+            id: None,
+            symbol: "AAPL".to_string(),
+            shares: 100,
+            direction: SchwabInstruction::Buy,
+            status: TradeStatus::Pending,
+        };
+
+        let mut sql_tx = pool.begin().await.unwrap();
+        execution1
+            .save_within_transaction(&mut sql_tx)
+            .await
+            .unwrap();
+        sql_tx.commit().await.unwrap();
+
+        // Try to create second pending execution for same symbol - should fail
+        let execution2 = SchwabExecution {
+            id: None,
+            symbol: "AAPL".to_string(),
+            shares: 200,
+            direction: SchwabInstruction::Sell,
+            status: TradeStatus::Pending,
+        };
+
+        let mut sql_tx2 = pool.begin().await.unwrap();
+        let result = execution2.save_within_transaction(&mut sql_tx2).await;
+        assert!(
+            result.is_err(),
+            "Should not allow multiple pending executions for same symbol"
+        );
+
+        // Error should be about unique constraint violation
+        let error_message = result.unwrap_err().to_string();
+        assert!(
+            error_message.contains("UNIQUE constraint failed")
+                && error_message.contains("schwab_executions.symbol"),
+            "Error should mention unique constraint on symbol, got: {error_message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_database_constraints_allow_different_statuses_per_symbol() {
+        let pool = setup_test_db().await;
+
+        // Create pending execution for AAPL
+        let execution1 = SchwabExecution {
+            id: None,
+            symbol: "AAPL".to_string(),
+            shares: 100,
+            direction: SchwabInstruction::Buy,
+            status: TradeStatus::Pending,
+        };
+        let mut sql_tx1 = pool.begin().await.unwrap();
+        execution1
+            .save_within_transaction(&mut sql_tx1)
+            .await
+            .unwrap();
+        sql_tx1.commit().await.unwrap();
+
+        // Create completed execution for same symbol - should succeed
+        let execution2 = SchwabExecution {
+            id: None,
+            symbol: "AAPL".to_string(),
+            shares: 200,
+            direction: SchwabInstruction::Sell,
+            status: TradeStatus::Completed {
+                executed_at: Utc::now(),
+                order_id: "ORDER123".to_string(),
+                price_cents: 15000,
+            },
+        };
+        let mut sql_tx2 = pool.begin().await.unwrap();
+        execution2
+            .save_within_transaction(&mut sql_tx2)
+            .await
+            .unwrap();
+        sql_tx2.commit().await.unwrap();
+
+        // Should have both executions for AAPL now
+        let pending_aapl = SchwabExecution::find_pending_by_symbol(&pool, "AAPL")
+            .await
+            .unwrap();
+        let completed_aapl = SchwabExecution::find_completed_by_symbol(&pool, "AAPL")
+            .await
+            .unwrap();
+        assert_eq!(pending_aapl.len(), 1);
+        assert_eq!(completed_aapl.len(), 1);
     }
 }

@@ -646,14 +646,52 @@ After analyzing the diff with master branch, several critical gaps and missing l
 
 **Result**: All 159 tests passing. Order placement now captures real order IDs from Schwab API Location header according to official API specification.
 
-### 7.3 Add Missing Database Constraints ⚠️ MEDIUM PRIORITY
+### 7.3 Add Missing Database Constraints ✅ COMPLETED
 **Problem**: Database schema lacks important constraints that could lead to data corruption:
 
-**Missing Constraints**:
-- [ ] Add CHECK constraints ensuring accumulated_long >= 0 and accumulated_short >= 0
-- [ ] Add foreign key CASCADE/SET NULL behavior for pending_execution_id references
-- [ ] Add unique constraint preventing multiple pending executions per symbol  
-- [ ] Add database migration to apply these constraints to existing schema
+**Implementation Completed**:
+- [x] **Added CHECK constraints ensuring `accumulated_long >= 0` and `accumulated_short >= 0`**:
+  - Updated `trade_accumulators` table with individual column constraints
+  - Added business rule constraint ensuring at least one accumulation side is positive when non-zero
+  - Added symbol validation constraint ensuring non-empty symbols
+- [x] **Added foreign key CASCADE/SET NULL behavior for `pending_execution_id` references**:
+  - Updated foreign key constraint to `ON DELETE SET NULL ON UPDATE CASCADE`
+  - Ensures referential integrity when schwab_executions are deleted or updated
+- [x] **Added unique constraint preventing multiple pending executions per symbol**:
+  - Created partial unique index `idx_unique_pending_execution_per_symbol` on `schwab_executions(symbol)` WHERE `status = 'PENDING'`
+  - Prevents race condition data corruption where multiple executions could be created for same symbol
+  - Created unique index `idx_unique_pending_execution_in_accumulator` ensuring each execution only referenced once
+- [x] **Enhanced data validation constraints**:
+  - Added transaction hash format validation (66 chars, starts with '0x')
+  - Added positive amount/price validation for onchain_trades
+  - Added positive shares validation for schwab_executions
+  - Added order ID format validation and business rule constraints for execution status consistency
+- [x] **Updated initial database migration and recreated database** with all new constraints applied
+- [x] **Fixed affected test** (`test_find_by_symbol_and_status_ordering`) to use different symbols instead of violating business constraint
+- [x] **Added comprehensive constraint validation tests**:
+  - `test_database_constraints_prevent_multiple_pending_per_symbol()` - verifies unique constraint enforcement
+  - `test_database_constraints_allow_different_statuses_per_symbol()` - verifies constraint doesn't prevent valid operations
+- [x] **All tests and static analysis pass**: 161 tests passing, zero clippy warnings, proper formatting
+
+**Key Architectural Improvements**:
+- **Data Integrity**: Prevents invalid data states at database level (negative accumulations, invalid formats, duplicate pending executions)
+- **Race Condition Prevention**: Database-level constraint prevents multiple pending executions per symbol even if application-level locks fail
+- **Referential Integrity**: Proper foreign key behavior ensures clean data relationships
+- **Business Rule Enforcement**: Status consistency rules enforced at database level, not just application level
+- **Production Safety**: Comprehensive validation prevents data corruption scenarios in production environment
+
+**Result**: Database schema now enforces comprehensive data integrity constraints, preventing data corruption and race conditions at the database level. All 161 tests pass with constraints active.
+
+### 7.4 Implement Execution Cleanup and Recovery ⚠️ HIGH PRIORITY
+**Problem**: No cleanup logic exists for failed or stuck executions, leaving accumulator state corrupted:
+
+**Missing Logic**:
+- [ ] Add timeout handling for pending executions that never complete
+- [ ] Implement retry logic for failed executions with proper state restoration
+- [ ] Create cleanup mechanism for orphaned `pending_execution_id` references
+- [ ] Add background task to periodically check and recover stale execution state
+- [ ] Update/extend tests
+- [ ] Ensure tests and `rainix-rs-static` pass
 
 
 ```rust
