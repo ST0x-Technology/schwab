@@ -4,7 +4,7 @@ use alloy::rpc::types::{Filter, Log};
 use alloy::sol_types::{SolEvent, SolValue};
 
 use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
-use crate::error::OnChainError;
+use crate::error::{OnChainError, TradeValidationError};
 use crate::onchain::{
     EvmEnv,
     trade::{OnchainTrade, OrderFill},
@@ -46,7 +46,9 @@ impl OnchainTrade {
         // contain the amounts. So we query the same block number, filter out
         // logs with index lower than the ClearV2 log index and with tx hashes
         // that don't match the ClearV2 tx hash.
-        let block_number = log.block_number.ok_or(OnChainError::NoBlockNumber())?;
+        let block_number = log
+            .block_number
+            .ok_or(TradeValidationError::NoBlockNumber)?;
 
         let filter = Filter::new()
             .select(block_number)
@@ -60,7 +62,7 @@ impl OnchainTrade {
                 after_clear_log.transaction_hash == log.transaction_hash
                     && after_clear_log.log_index > log.log_index
             })
-            .ok_or(OnChainError::NoAfterClearLog())?;
+            .ok_or(TradeValidationError::NoAfterClearLog)?;
 
         let after_clear = after_clear_log.log_decode::<AfterClear>()?;
 

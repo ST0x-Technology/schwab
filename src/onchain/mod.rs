@@ -6,8 +6,12 @@ mod clear;
 pub mod position_calculator;
 mod take_order;
 pub mod trade;
+pub mod trade_execution_link;
 
 pub use trade::OnchainTrade;
+pub use trade_execution_link::{
+    AuditTrailEntry, ExecutionContribution, TradeContribution, TradeExecutionLink,
+};
 
 #[derive(Parser, Debug, Clone)]
 pub struct EvmEnv {

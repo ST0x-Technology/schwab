@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 
-use crate::error::OnChainError;
+use crate::error::{OnChainError, PersistenceError};
 use crate::schwab::SchwabInstruction;
 use crate::schwab::TradeStatus;
 
@@ -18,25 +18,27 @@ fn row_to_execution(
     status: &str,
     executed_at: Option<chrono::NaiveDateTime>,
 ) -> Result<SchwabExecution, OnChainError> {
-    let parsed_direction = direction
-        .parse()
-        .map_err(OnChainError::InvalidSchwabInstruction)?;
+    let parsed_direction = direction.parse().map_err(|e: String| {
+        OnChainError::Persistence(PersistenceError::InvalidSchwabInstruction(e))
+    })?;
 
     let parsed_status = match status {
         "PENDING" => TradeStatus::Pending,
         "COMPLETED" => {
             let order_id = order_id.ok_or_else(|| {
-                OnChainError::InvalidTradeStatus("COMPLETED status requires order_id".to_string())
+                OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
+                    "COMPLETED status requires order_id".to_string(),
+                ))
             })?;
             let price_cents = price_cents.ok_or_else(|| {
-                OnChainError::InvalidTradeStatus(
+                OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
                     "COMPLETED status requires price_cents".to_string(),
-                )
+                ))
             })?;
             let executed_at = executed_at.ok_or_else(|| {
-                OnChainError::InvalidTradeStatus(
+                OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
                     "COMPLETED status requires executed_at".to_string(),
-                )
+                ))
             })?;
             TradeStatus::Completed {
                 executed_at: DateTime::<Utc>::from_naive_utc_and_offset(executed_at, Utc),
@@ -46,9 +48,9 @@ fn row_to_execution(
         }
         "FAILED" => {
             let failed_at = executed_at.ok_or_else(|| {
-                OnChainError::InvalidTradeStatus(
+                OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
                     "FAILED status requires executed_at timestamp".to_string(),
-                )
+                ))
             })?;
             TradeStatus::Failed {
                 failed_at: DateTime::<Utc>::from_naive_utc_and_offset(failed_at, Utc),
@@ -56,9 +58,9 @@ fn row_to_execution(
             }
         }
         _ => {
-            return Err(OnChainError::InvalidTradeStatus(format!(
-                "Invalid trade status: {status}"
-            )));
+            return Err(OnChainError::Persistence(
+                PersistenceError::InvalidTradeStatus(format!("Invalid trade status: {status}")),
+            ));
         }
     };
 

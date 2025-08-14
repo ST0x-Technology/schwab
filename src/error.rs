@@ -104,37 +104,3 @@ impl From<RpcError<TransportErrorKind>> for OnChainError {
         Self::Execution(ExecutionError::RpcTransport(err))
     }
 }
-
-// Legacy compatibility methods for existing code
-#[allow(non_snake_case)]
-impl OnChainError {
-    pub const fn InvalidSchwabInstruction(msg: String) -> Self {
-        Self::Persistence(PersistenceError::InvalidSchwabInstruction(msg))
-    }
-
-    pub const fn InvalidTradeStatus(msg: String) -> Self {
-        Self::Persistence(PersistenceError::InvalidTradeStatus(msg))
-    }
-
-    pub const fn TransactionNotFound(hash: alloy::primitives::B256) -> Self {
-        Self::Validation(TradeValidationError::TransactionNotFound(hash))
-    }
-
-    pub const fn NoBlockNumber() -> Self {
-        Self::Validation(TradeValidationError::NoBlockNumber)
-    }
-
-    pub const fn NoAfterClearLog() -> Self {
-        Self::Validation(TradeValidationError::NoAfterClearLog)
-    }
-
-    pub const fn SymbolMapLock() -> Self {
-        Self::Persistence(PersistenceError::SymbolMapLock)
-    }
-
-    pub const fn InvalidSymbolConfiguration(input: String, output: String) -> Self {
-        Self::Validation(TradeValidationError::InvalidSymbolConfiguration(
-            input, output,
-        ))
-    }
-}

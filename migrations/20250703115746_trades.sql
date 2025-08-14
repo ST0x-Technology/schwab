@@ -38,12 +38,29 @@ CREATE TABLE trade_accumulators (
   CHECK (symbol != '')  -- Ensure symbol is not empty
 );
 
-
+-- Trade-Execution linkage table for complete audit trail
+-- Links individual onchain trades to their contributing Schwab executions
+-- Supports many-to-many relationships as multiple trades can contribute to one execution
+-- and a single large trade could theoretically span multiple executions
+CREATE TABLE trade_execution_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+  trade_id INTEGER NOT NULL REFERENCES onchain_trades(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  execution_id INTEGER NOT NULL REFERENCES schwab_executions(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  contributed_shares REAL NOT NULL CHECK (contributed_shares > 0.0),  -- Fractional shares this trade contributed to execution
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  UNIQUE (trade_id, execution_id)  -- Prevent duplicate linkages between same trade/execution pair
+);
 
 -- Indexes for new tables
 CREATE INDEX idx_onchain_trades_symbol ON onchain_trades(symbol);
 CREATE INDEX idx_schwab_executions_symbol ON schwab_executions(symbol);
 CREATE INDEX idx_schwab_executions_status ON schwab_executions(status);
+
+-- Indexes for trade_execution_links table (audit queries)
+CREATE INDEX idx_trade_execution_links_trade_id ON trade_execution_links(trade_id);
+CREATE INDEX idx_trade_execution_links_execution_id ON trade_execution_links(execution_id);
+CREATE INDEX idx_trade_execution_links_created_at ON trade_execution_links(created_at);
+CREATE INDEX idx_trade_execution_links_trade_exec ON trade_execution_links(trade_id, execution_id);
 
 -- Data integrity constraints
 -- Ensure only one pending execution per symbol (prevents race conditions)

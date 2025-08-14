@@ -3,7 +3,7 @@ use backon::{ExponentialBuilder, Retryable};
 use std::{collections::BTreeMap, sync::RwLock};
 
 use crate::bindings::{IERC20::IERC20Instance, IOrderBookV4::IO};
-use crate::error::OnChainError;
+use crate::error::{OnChainError, PersistenceError};
 
 #[derive(Debug, Default)]
 pub struct SymbolCache {
@@ -22,7 +22,10 @@ impl SymbolCache {
         io: &IO,
     ) -> Result<String, OnChainError> {
         let maybe_symbol = {
-            let read_guard = self.map.read().map_err(|_| OnChainError::SymbolMapLock())?;
+            let read_guard = self
+                .map
+                .read()
+                .map_err(|_| OnChainError::Persistence(PersistenceError::SymbolMapLock))?;
             read_guard.get(&io.token).cloned()
         };
 
@@ -37,7 +40,7 @@ impl SymbolCache {
 
         self.map
             .write()
-            .map_err(|_| OnChainError::SymbolMapLock())?
+            .map_err(|_| OnChainError::Persistence(PersistenceError::SymbolMapLock))?
             .insert(io.token, symbol.clone());
 
         Ok(symbol)

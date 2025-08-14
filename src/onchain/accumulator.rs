@@ -1,8 +1,8 @@
 use sqlx::SqlitePool;
 use tracing::info;
 
-use super::OnchainTrade;
-use crate::error::OnChainError;
+use super::{OnchainTrade, trade_execution_link::TradeExecutionLink};
+use crate::error::{OnChainError, TradeValidationError};
 use crate::onchain::position_calculator::{ExecutionType, PositionCalculator};
 use crate::schwab::TradeStatus;
 use crate::schwab::{Direction, execution::SchwabExecution};
@@ -81,9 +81,11 @@ pub async fn db_count(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
 
 fn extract_base_symbol(symbol: &str) -> Result<String, OnChainError> {
     if !symbol.ends_with("s1") {
-        return Err(OnChainError::InvalidSymbolConfiguration(
-            symbol.to_string(),
-            "TradeAccumulator only processes tokenized equity symbols (s1 suffix)".to_string(),
+        return Err(OnChainError::Validation(
+            TradeValidationError::InvalidSymbolConfiguration(
+                symbol.to_string(),
+                "TradeAccumulator only processes tokenized equity symbols (s1 suffix)".to_string(),
+            ),
         ));
     }
 
@@ -91,10 +93,10 @@ fn extract_base_symbol(symbol: &str) -> Result<String, OnChainError> {
         .strip_suffix("s1")
         .map(ToString::to_string)
         .ok_or_else(|| {
-            OnChainError::InvalidSymbolConfiguration(
+            OnChainError::Validation(TradeValidationError::InvalidSymbolConfiguration(
                 symbol.to_string(),
                 "Failed to extract base symbol from s1 suffix".to_string(),
-            )
+            ))
         })
 }
 
@@ -165,7 +167,7 @@ async fn try_create_execution_if_ready(
 async fn execute_position(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     base_symbol: &str,
-    _trade_id: i64,
+    triggering_trade_id: i64,
     calculator: &mut PositionCalculator,
     execution_type: ExecutionType,
 ) -> Result<Option<SchwabExecution>, OnChainError> {
@@ -183,6 +185,19 @@ async fn execute_position(
     let execution =
         create_execution_within_transaction(sql_tx, base_symbol, shares, instruction).await?;
 
+    let execution_id = execution.id.expect("Execution should have ID after save");
+
+    // Find all trades that contributed to this execution and create linkages
+    create_trade_execution_linkages(
+        sql_tx,
+        base_symbol,
+        triggering_trade_id,
+        execution_id,
+        execution_type,
+        shares,
+    )
+    .await?;
+
     calculator.reduce_accumulation(execution_type, shares);
 
     info!(
@@ -193,10 +208,96 @@ async fn execute_position(
         execution_id = ?execution.id,
         remaining_long = calculator.accumulated_long,
         remaining_short = calculator.accumulated_short,
-        "Created Schwab execution"
+        "Created Schwab execution with trade linkages"
     );
 
     Ok(Some(execution))
+}
+
+/// Creates trade-execution linkages for an execution.
+/// Links trades to executions based on chronological order and remaining available amounts.
+async fn create_trade_execution_linkages(
+    sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    base_symbol: &str,
+    _triggering_trade_id: i64,
+    execution_id: i64,
+    execution_type: ExecutionType,
+    execution_shares: u64,
+) -> Result<(), OnChainError> {
+    // Find all trades for this symbol that match the execution direction
+    // and haven't been fully allocated to previous executions
+    let direction_str = match execution_type {
+        ExecutionType::Long => "BUY",
+        ExecutionType::Short => "SELL",
+    };
+
+    let tokenized_symbol = format!("{base_symbol}s1");
+
+    // Get all trades for this symbol/direction, ordered by creation time
+    let trade_rows = sqlx::query!(
+        r#"
+        SELECT 
+            ot.id as trade_id,
+            ot.amount as trade_amount,
+            COALESCE(SUM(tel.contributed_shares), 0.0) as "already_allocated: f64"
+        FROM onchain_trades ot
+        LEFT JOIN trade_execution_links tel ON ot.id = tel.trade_id
+        WHERE ot.symbol = ?1 AND ot.direction = ?2
+        GROUP BY ot.id, ot.amount, ot.created_at
+        HAVING (ot.amount - COALESCE(SUM(tel.contributed_shares), 0.0)) > 0.001  -- Has remaining allocation
+        ORDER BY ot.created_at ASC
+        "#,
+        tokenized_symbol,
+        direction_str
+    )
+    .fetch_all(&mut **sql_tx)
+    .await?;
+
+    #[allow(clippy::cast_precision_loss)]
+    let mut remaining_execution_shares = execution_shares as f64;
+
+    // Allocate trades to this execution in chronological order
+    for row in trade_rows {
+        if remaining_execution_shares <= 0.001 {
+            break; // Execution fully allocated
+        }
+
+        let available_amount = row.trade_amount - row.already_allocated.unwrap_or(0.0);
+        if available_amount <= 0.001 {
+            continue; // Trade fully allocated to previous executions
+        }
+
+        // Allocate either the full remaining amount or up to execution remaining shares
+        let contribution = available_amount.min(remaining_execution_shares);
+
+        // Create the linkage
+        let link = TradeExecutionLink::new(row.trade_id, execution_id, contribution);
+        link.save_within_transaction(sql_tx).await?;
+
+        remaining_execution_shares -= contribution;
+
+        info!(
+            trade_id = row.trade_id,
+            execution_id = execution_id,
+            contributed_shares = contribution,
+            remaining_execution_shares = remaining_execution_shares,
+            "Created trade-execution linkage"
+        );
+    }
+
+    // Ensure we allocated the full execution (within floating point precision)
+    if remaining_execution_shares > 0.001 {
+        return Err(OnChainError::Validation(
+            TradeValidationError::InvalidSymbolConfiguration(
+                base_symbol.to_string(),
+                format!(
+                    "Could not fully allocate execution shares. Remaining: {remaining_execution_shares}"
+                ),
+            ),
+        ));
+    }
+
+    Ok(())
 }
 
 async fn create_execution_within_transaction(
@@ -223,6 +324,7 @@ async fn create_execution_within_transaction(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::onchain::trade_execution_link::TradeExecutionLink;
     use alloy::primitives::fixed_bytes;
     use sqlx::SqlitePool;
 
@@ -368,9 +470,7 @@ mod tests {
         let result = add_trade(&pool, trade).await;
         assert!(matches!(
             result.unwrap_err(),
-            OnChainError::Validation(
-                crate::error::TradeValidationError::InvalidSymbolConfiguration(_, _)
-            )
+            OnChainError::Validation(TradeValidationError::InvalidSymbolConfiguration(_, _))
         ));
     }
 
@@ -394,9 +494,7 @@ mod tests {
         let result = add_trade(&pool, trade).await;
         assert!(matches!(
             result.unwrap_err(),
-            OnChainError::Validation(
-                crate::error::TradeValidationError::InvalidSymbolConfiguration(_, _)
-            )
+            OnChainError::Validation(TradeValidationError::InvalidSymbolConfiguration(_, _))
         ));
     }
 
@@ -637,6 +735,290 @@ mod tests {
             (calculator.accumulated_short - 0.6).abs() < f64::EPSILON,
             "Expected 0.6 accumulated_short remaining, got {}",
             calculator.accumulated_short
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trade_execution_linkage_single_trade() {
+        let pool = setup_test_db().await;
+
+        let trade = OnchainTrade {
+            id: None,
+            tx_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            log_index: 1,
+            symbol: "AAPLs1".to_string(),
+            amount: 1.5,
+            direction: Direction::Sell,
+            price_usdc: 150.0,
+            created_at: None,
+        };
+
+        let result = add_trade(&pool, trade).await.unwrap();
+        let execution = result.unwrap();
+        let execution_id = execution.id.unwrap();
+
+        // Verify trade-execution link was created
+        let trade_count = OnchainTrade::db_count(&pool).await.unwrap();
+        assert_eq!(trade_count, 1);
+
+        let link_count = TradeExecutionLink::db_count(&pool).await.unwrap();
+        assert_eq!(link_count, 1);
+
+        // Find the trade ID to verify linkage
+        let trades_for_execution =
+            TradeExecutionLink::find_trades_for_execution(&pool, execution_id)
+                .await
+                .unwrap();
+        assert_eq!(trades_for_execution.len(), 1);
+        assert!((trades_for_execution[0].contributed_shares - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn test_trade_execution_linkage_multiple_trades() {
+        let pool = setup_test_db().await;
+
+        let trades = vec![
+            OnchainTrade {
+                id: None,
+                tx_hash: fixed_bytes!(
+                    "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                ),
+                log_index: 1,
+                symbol: "MSFTs1".to_string(),
+                amount: 0.3,
+                direction: Direction::Buy,
+                price_usdc: 300.0,
+                created_at: None,
+            },
+            OnchainTrade {
+                id: None,
+                tx_hash: fixed_bytes!(
+                    "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                ),
+                log_index: 2,
+                symbol: "MSFTs1".to_string(),
+                amount: 0.4,
+                direction: Direction::Buy,
+                price_usdc: 305.0,
+                created_at: None,
+            },
+            OnchainTrade {
+                id: None,
+                tx_hash: fixed_bytes!(
+                    "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                ),
+                log_index: 3,
+                symbol: "MSFTs1".to_string(),
+                amount: 0.5,
+                direction: Direction::Buy,
+                price_usdc: 310.0,
+                created_at: None,
+            },
+        ];
+
+        // Add first two trades - should not trigger execution
+        let result1 = add_trade(&pool, trades[0].clone()).await.unwrap();
+        assert!(result1.is_none());
+
+        let result2 = add_trade(&pool, trades[1].clone()).await.unwrap();
+        assert!(result2.is_none());
+
+        // Third trade should trigger execution
+        let result3 = add_trade(&pool, trades[2].clone()).await.unwrap();
+        let execution = result3.unwrap();
+        let execution_id = execution.id.unwrap();
+
+        // Verify all trades are linked to the execution
+        let contributing_trades =
+            TradeExecutionLink::find_trades_for_execution(&pool, execution_id)
+                .await
+                .unwrap();
+        assert_eq!(contributing_trades.len(), 3);
+
+        // Verify total contribution equals execution shares
+        let total_contribution: f64 = contributing_trades
+            .iter()
+            .map(|t| t.contributed_shares)
+            .sum();
+        assert!((total_contribution - 1.0).abs() < f64::EPSILON);
+
+        // Verify individual contributions match chronological allocation
+        let mut contributions = contributing_trades;
+        contributions.sort_by(|a, b| a.trade_id.cmp(&b.trade_id));
+
+        assert!((contributions[0].contributed_shares - 0.3).abs() < f64::EPSILON);
+        assert!((contributions[1].contributed_shares - 0.4).abs() < f64::EPSILON);
+        assert!((contributions[2].contributed_shares - 0.3).abs() < f64::EPSILON); // Only 0.3 of 0.5 needed
+    }
+
+    #[tokio::test]
+    async fn test_audit_trail_completeness() {
+        let pool = setup_test_db().await;
+
+        // Create trades that will accumulate before triggering execution
+        let trades = vec![
+            OnchainTrade {
+                id: None,
+                tx_hash: fixed_bytes!(
+                    "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                ),
+                log_index: 1,
+                symbol: "AAPLs1".to_string(),
+                amount: 0.4, // Below threshold
+                direction: Direction::Sell,
+                price_usdc: 150.0,
+                created_at: None,
+            },
+            OnchainTrade {
+                id: None,
+                tx_hash: fixed_bytes!(
+                    "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                ),
+                log_index: 2,
+                symbol: "AAPLs1".to_string(),
+                amount: 0.8, // Combined: 0.4 + 0.8 = 1.2, triggers execution of 1 share
+                direction: Direction::Sell,
+                price_usdc: 155.0,
+                created_at: None,
+            },
+        ];
+
+        // Add first trade - no execution
+        let result1 = add_trade(&pool, trades[0].clone()).await.unwrap();
+        assert!(result1.is_none());
+
+        // Add second trade - triggers execution
+        let result2 = add_trade(&pool, trades[1].clone()).await.unwrap();
+        let execution = result2.unwrap();
+
+        // Test audit trail completeness
+        let audit_trail = TradeExecutionLink::get_symbol_audit_trail(&pool, "AAPLs1")
+            .await
+            .unwrap();
+
+        assert_eq!(audit_trail.len(), 2); // Both trades should appear
+
+        // Verify audit trail contains complete information
+        for entry in &audit_trail {
+            assert!(!entry.trade_tx_hash.is_empty());
+            assert!(entry.trade_id > 0);
+            assert!(entry.execution_id > 0);
+            assert!(entry.contributed_shares > 0.0);
+            assert_eq!(entry.execution_shares, 1); // Should be 1 whole share
+        }
+
+        // Verify total contributions in audit trail
+        let total_audit_contribution: f64 = audit_trail.iter().map(|e| e.contributed_shares).sum();
+        assert!((total_audit_contribution - 1.0).abs() < f64::EPSILON);
+
+        // Test reverse lookups work
+        let execution_id = execution.id.unwrap();
+        let executions_for_first_trade = TradeExecutionLink::find_executions_for_trade(&pool, 1) // Assuming first trade has ID 1
+            .await
+            .unwrap();
+        assert_eq!(executions_for_first_trade.len(), 1);
+        assert_eq!(executions_for_first_trade[0].execution_id, execution_id);
+    }
+
+    #[tokio::test]
+    async fn test_linkage_prevents_over_allocation() {
+        let pool = setup_test_db().await;
+
+        // Create a trade
+        let trade = OnchainTrade {
+            id: None,
+            tx_hash: fixed_bytes!(
+                "0x1010101010101010101010101010101010101010101010101010101010101010"
+            ),
+            log_index: 1,
+            symbol: "TSLAs1".to_string(),
+            amount: 1.2,
+            direction: Direction::Buy,
+            price_usdc: 800.0,
+            created_at: None,
+        };
+
+        // Add trade and trigger execution
+        let result = add_trade(&pool, trade).await.unwrap();
+        let execution = result.unwrap();
+
+        // Verify only 1 share executed, not 1.2
+        assert_eq!(execution.shares, 1);
+
+        // Verify linkage shows correct contribution
+        let execution_id = execution.id.unwrap();
+        let trades_for_execution =
+            TradeExecutionLink::find_trades_for_execution(&pool, execution_id)
+                .await
+                .unwrap();
+
+        assert_eq!(trades_for_execution.len(), 1);
+        assert!((trades_for_execution[0].contributed_shares - 1.0).abs() < f64::EPSILON);
+
+        // Verify the remaining 0.2 is still available for future executions
+        let (calculator, _) = find_by_symbol(&pool, "TSLA").await.unwrap().unwrap();
+        assert!((calculator.accumulated_long - 0.2).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn test_cross_direction_linkage_isolation() {
+        let pool = setup_test_db().await;
+
+        // Create trades in both directions for different symbols to avoid unique constraint
+        let buy_trade = OnchainTrade {
+            id: None,
+            tx_hash: fixed_bytes!(
+                "0x2020202020202020202020202020202020202020202020202020202020202020"
+            ),
+            log_index: 1,
+            symbol: "AAPLs1".to_string(),
+            amount: 1.5,
+            direction: Direction::Buy,
+            price_usdc: 150.0,
+            created_at: None,
+        };
+
+        let sell_trade = OnchainTrade {
+            id: None,
+            tx_hash: fixed_bytes!(
+                "0x3030303030303030303030303030303030303030303030303030303030303030"
+            ),
+            log_index: 2,
+            symbol: "MSFTs1".to_string(), // Different symbol
+            amount: 1.5,
+            direction: Direction::Sell,
+            price_usdc: 155.0,
+            created_at: None,
+        };
+
+        // Execute both trades
+        let buy_result = add_trade(&pool, buy_trade).await.unwrap();
+        let sell_result = add_trade(&pool, sell_trade).await.unwrap();
+
+        let buy_execution = buy_result.unwrap();
+        let sell_execution = sell_result.unwrap();
+
+        // Verify each execution is only linked to trades of matching direction
+        let buy_execution_trades =
+            TradeExecutionLink::find_trades_for_execution(&pool, buy_execution.id.unwrap())
+                .await
+                .unwrap();
+        let sell_execution_trades =
+            TradeExecutionLink::find_trades_for_execution(&pool, sell_execution.id.unwrap())
+                .await
+                .unwrap();
+
+        assert_eq!(buy_execution_trades.len(), 1);
+        assert_eq!(sell_execution_trades.len(), 1);
+        assert_eq!(buy_execution_trades[0].trade_direction, "BUY");
+        assert_eq!(sell_execution_trades[0].trade_direction, "SELL");
+
+        // Verify no cross-contamination
+        assert_ne!(
+            buy_execution_trades[0].trade_id,
+            sell_execution_trades[0].trade_id
         );
     }
 }

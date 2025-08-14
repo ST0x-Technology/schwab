@@ -6,7 +6,7 @@ use sqlx::SqlitePool;
 use std::num::ParseFloatError;
 
 use crate::bindings::IOrderBookV4::{ClearV2, OrderV3, TakeOrderV2};
-use crate::error::{OnChainError, TradeValidationError};
+use crate::error::{OnChainError, PersistenceError, TradeValidationError};
 use crate::onchain::EvmEnv;
 use crate::schwab::Direction;
 use crate::symbol_cache::SymbolCache;
@@ -68,17 +68,17 @@ impl OnchainTrade {
         .await?;
 
         let tx_hash = row.tx_hash.parse().map_err(|_| {
-            OnChainError::InvalidSchwabInstruction(format!(
+            OnChainError::Persistence(PersistenceError::InvalidSchwabInstruction(format!(
                 "Invalid tx_hash format: {}",
                 row.tx_hash
-            ))
+            )))
         })?;
 
         let direction = row.direction.parse().map_err(|_| {
-            OnChainError::InvalidSchwabInstruction(format!(
+            OnChainError::Persistence(PersistenceError::InvalidSchwabInstruction(format!(
                 "Invalid direction in database: {}",
                 row.direction
-            ))
+            )))
         })?;
 
         Ok(Self {
@@ -234,7 +234,11 @@ impl OnchainTrade {
         let receipt = provider
             .get_transaction_receipt(tx_hash)
             .await?
-            .ok_or_else(|| OnChainError::TransactionNotFound(tx_hash))?;
+            .ok_or_else(|| {
+                OnChainError::Validation(crate::error::TradeValidationError::TransactionNotFound(
+                    tx_hash,
+                ))
+            })?;
 
         let trades: Vec<_> = receipt
             .inner
