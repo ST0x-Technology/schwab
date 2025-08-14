@@ -85,7 +85,7 @@ use crate::onchain::TradeStatus;
 #[cfg(test)]
 use crate::onchain::trade::OnchainTrade;
 #[cfg(test)]
-use crate::schwab::{SchwabInstruction, execution::SchwabExecution};
+use crate::schwab::{Direction, execution::SchwabExecution};
 
 /// Builder for creating OnchainTrade test instances with sensible defaults.
 /// Reduces duplication in test data setup.
@@ -113,6 +113,7 @@ impl OnchainTradeBuilder {
                 log_index: 1,
                 symbol: "AAPLs1".to_string(),
                 amount: 1.0,
+                direction: Direction::Buy,
                 price_usdc: 150.0,
                 created_at: None,
             },
@@ -176,7 +177,7 @@ impl SchwabExecutionBuilder {
                 id: None,
                 symbol: "AAPL".to_string(),
                 shares: 100,
-                direction: SchwabInstruction::Buy,
+                direction: Direction::Buy,
                 status: TradeStatus::Pending,
             },
         }
@@ -195,7 +196,7 @@ impl SchwabExecutionBuilder {
     }
 
     #[must_use]
-    pub fn with_direction(mut self, direction: SchwabInstruction) -> Self {
+    pub fn with_direction(mut self, direction: Direction) -> Self {
         self.execution.direction = direction;
         self
     }

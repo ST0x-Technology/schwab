@@ -15,12 +15,8 @@ pub mod position_calculator;
 mod processor;
 mod take_order;
 pub mod trade;
-pub mod trade_accumulator;
-pub mod trade_accumulator_repository;
-pub mod trade_execution_service;
 
 pub use trade::OnchainTrade;
-pub use trade_accumulator::TradeAccumulator;
 
 #[derive(Parser, Debug, Clone)]
 pub struct EvmEnv {
@@ -169,7 +165,11 @@ impl PartialArbTrade {
     }
 
     /// Determines Schwab trade direction and ticker based on onchain symbol configuration.
-    /// Flattened from nested conditionals to follow CLAUDE.md avoid-deep-nesting principle.
+    ///
+    /// If the on-chain order has USDC as input and an s1 tokenized stock as
+    /// output then it means the order received USDC and gave away an s1
+    /// tokenized stock, i.e. sold, which means that to take the opposite
+    /// trade in schwab we need to buy and vice versa.
     fn determine_schwab_trade_details(
         onchain_input_symbol: &str,
         onchain_output_symbol: &str,

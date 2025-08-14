@@ -6,7 +6,8 @@ use tracing::{error, info};
 
 use crate::error::OnChainError;
 use crate::onchain::{
-    EvmEnv, PartialArbTrade, trade::OnchainTrade, trade_accumulator::TradeAccumulator,
+    EvmEnv, PartialArbTrade,
+    trade::{OnchainTrade, accumulator},
 };
 use crate::schwab::SchwabAuthEnv;
 use crate::schwab::order::{Instruction, Order, execute_schwab_execution};
@@ -322,13 +323,14 @@ async fn process_found_trade<W: Write>(
         symbol: tokenized_symbol,
         #[allow(clippy::cast_precision_loss)]
         amount: partial_trade.schwab_quantity as f64, // Use Schwab quantity for consistency
+        direction: partial_trade.schwab_instruction,
         price_usdc: partial_trade.onchain_price_per_share_cents,
         created_at: None,
     };
 
     writeln!(stdout, "🔄 Processing trade with TradeAccumulator...")?;
 
-    let execution = TradeAccumulator::add_trade(pool, onchain_trade).await?;
+    let execution = accumulator::add_trade(pool, onchain_trade).await?;
 
     if let Some(execution) = execution {
         let execution_id = execution.id.expect("SchwabExecution should have ID");
@@ -391,8 +393,8 @@ mod tests {
     use crate::bindings::IERC20::symbolCall;
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
     use crate::onchain::trade::OnchainTrade;
-    use crate::schwab::SchwabInstruction;
     use crate::schwab::execution::SchwabExecution;
+    use crate::schwab::{Direction, SchwabInstruction};
     use crate::test_utils::get_test_order;
     use crate::{LogLevel, onchain::EvmEnv, schwab::SchwabAuthEnv};
     use alloy::hex;
@@ -1574,7 +1576,7 @@ mod tests {
             .unwrap();
         assert_eq!(executions.len(), 1);
         assert_eq!(executions[0].shares, 9);
-        assert_eq!(executions[0].direction, SchwabInstruction::Sell);
+        assert_eq!(executions[0].direction, SchwabInstruction::Buy);
 
         // Verify Schwab API was called
         account_mock.assert();
@@ -1722,6 +1724,7 @@ mod tests {
             log_index: 42,
             symbol: "GOOGs1".to_string(),
             amount: 2.5,
+            direction: Direction::Buy,
             price_usdc: 20000.0,
             created_at: None,
         };

@@ -4,7 +4,8 @@ CREATE TABLE onchain_trades (
   tx_hash TEXT NOT NULL CHECK (length(tx_hash) = 66 AND tx_hash LIKE '0x%'),  -- Ensure valid transaction hash format
   log_index INTEGER NOT NULL CHECK (log_index >= 0),  -- Log index must be non-negative
   symbol TEXT NOT NULL CHECK (symbol != ''),  -- Valid symbol constraints
-  amount REAL NOT NULL CHECK (amount > 0.0),  -- Trade amount must be positive
+  amount REAL NOT NULL CHECK (amount > 0.0),  -- Trade amount must be positive (quantity only)
+  direction TEXT CHECK (direction IN ('BUY', 'SELL')) NOT NULL,  -- Explicit trade direction for Schwab execution
   price_usdc REAL NOT NULL CHECK (price_usdc > 0.0),  -- Price must be positive
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE (tx_hash, log_index)

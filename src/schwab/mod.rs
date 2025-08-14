@@ -13,12 +13,12 @@ pub use execution::SchwabExecution;
 pub use tokens::SchwabTokens;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SchwabInstruction {
+pub enum Direction {
     Buy,
     Sell,
 }
 
-impl SchwabInstruction {
+impl Direction {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Buy => "BUY",
@@ -27,19 +27,19 @@ impl SchwabInstruction {
     }
 }
 
-impl std::str::FromStr for SchwabInstruction {
+impl std::str::FromStr for Direction {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "BUY" => Ok(Self::Buy),
             "SELL" => Ok(Self::Sell),
-            _ => Err(format!("Invalid Schwab instruction: {s}")),
+            _ => Err(format!("Invalid direction: {s}")),
         }
     }
 }
 
-impl serde::Serialize for SchwabInstruction {
+impl serde::Serialize for Direction {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -47,6 +47,9 @@ impl serde::Serialize for SchwabInstruction {
         serializer.serialize_str(self.as_str())
     }
 }
+
+// Legacy alias for compatibility
+pub type SchwabInstruction = Direction;
 
 #[derive(Error, Debug)]
 pub enum SchwabError {
@@ -271,32 +274,26 @@ mod tests {
 
     #[test]
     fn test_schwab_instruction_as_str() {
-        assert_eq!(SchwabInstruction::Buy.as_str(), "BUY");
-        assert_eq!(SchwabInstruction::Sell.as_str(), "SELL");
+        assert_eq!(Direction::Buy.as_str(), "BUY");
+        assert_eq!(Direction::Sell.as_str(), "SELL");
     }
 
     #[test]
     fn test_schwab_instruction_from_str() {
-        assert_eq!(
-            "BUY".parse::<SchwabInstruction>().unwrap(),
-            SchwabInstruction::Buy
-        );
-        assert_eq!(
-            "SELL".parse::<SchwabInstruction>().unwrap(),
-            SchwabInstruction::Sell
-        );
+        assert_eq!("BUY".parse::<Direction>().unwrap(), Direction::Buy);
+        assert_eq!("SELL".parse::<Direction>().unwrap(), Direction::Sell);
 
-        let result = "INVALID".parse::<SchwabInstruction>();
+        let result = "INVALID".parse::<Direction>();
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Invalid Schwab instruction: INVALID");
+        assert_eq!(result.unwrap_err(), "Invalid direction: INVALID");
     }
 
     #[test]
     fn test_schwab_instruction_serialize() {
-        let buy_json = serde_json::to_string(&SchwabInstruction::Buy).unwrap();
+        let buy_json = serde_json::to_string(&Direction::Buy).unwrap();
         assert_eq!(buy_json, "\"BUY\"");
 
-        let sell_json = serde_json::to_string(&SchwabInstruction::Sell).unwrap();
+        let sell_json = serde_json::to_string(&Direction::Sell).unwrap();
         assert_eq!(sell_json, "\"SELL\"");
     }
 }

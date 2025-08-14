@@ -646,26 +646,25 @@ After analyzing the diff with master branch, several critical gaps and missing l
 
 **Result**: All 159 tests passing. Order placement now captures real order IDs from Schwab API Location header according to official API specification.
 
-### 7.3 Add Missing Database Constraints ✅ COMPLETED
+### 7.3 Add Missing Database Constraints ✅ COMPLETED - VERIFIED AUGUST 2025
 **Problem**: Database schema lacks important constraints that could lead to data corruption:
 
 **Implementation Completed**:
 - [x] **Added CHECK constraints ensuring `accumulated_long >= 0` and `accumulated_short >= 0`**:
-  - Updated `trade_accumulators` table with individual column constraints
-  - Added business rule constraint ensuring at least one accumulation side is positive when non-zero
-  - Added symbol validation constraint ensuring non-empty symbols
+  - Updated `trade_accumulators` table with individual column constraints (lines 33-34 in migration)
+  - Added symbol validation constraint ensuring non-empty symbols (line 37)
 - [x] **Added foreign key CASCADE/SET NULL behavior for `pending_execution_id` references**:
-  - Updated foreign key constraint to `ON DELETE SET NULL ON UPDATE CASCADE`
+  - Updated foreign key constraint to `ON DELETE SET NULL ON UPDATE CASCADE` (line 35)
   - Ensures referential integrity when schwab_executions are deleted or updated
 - [x] **Added unique constraint preventing multiple pending executions per symbol**:
-  - Created partial unique index `idx_unique_pending_execution_per_symbol` on `schwab_executions(symbol)` WHERE `status = 'PENDING'`
+  - Created partial unique index `idx_unique_pending_execution_per_symbol` on `schwab_executions(symbol)` WHERE `status = 'PENDING'` (lines 49-51)
   - Prevents race condition data corruption where multiple executions could be created for same symbol
-  - Created unique index `idx_unique_pending_execution_in_accumulator` ensuring each execution only referenced once
+  - Created unique index `idx_unique_pending_execution_in_accumulator` ensuring each execution only referenced once (lines 54-56)
 - [x] **Enhanced data validation constraints**:
-  - Added transaction hash format validation (66 chars, starts with '0x')
-  - Added positive amount/price validation for onchain_trades
-  - Added positive shares validation for schwab_executions
-  - Added order ID format validation and business rule constraints for execution status consistency
+  - Added transaction hash format validation (66 chars, starts with '0x') (line 4)
+  - Added positive amount/price validation for onchain_trades (lines 7-8)
+  - Added positive shares validation for schwab_executions (line 16)
+  - Added order ID format validation and business rule constraints for execution status consistency (lines 18-26)
 - [x] **Updated initial database migration and recreated database** with all new constraints applied
 - [x] **Fixed affected test** (`test_find_by_symbol_and_status_ordering`) to use different symbols instead of violating business constraint
 - [x] **Added comprehensive constraint validation tests**:
@@ -682,29 +681,53 @@ After analyzing the diff with master branch, several critical gaps and missing l
 
 **Result**: Database schema now enforces comprehensive data integrity constraints, preventing data corruption and race conditions at the database level. All 161 tests pass with constraints active.
 
-### 7.4 Implement Execution Cleanup and Recovery ⚠️ HIGH PRIORITY
-**Problem**: No cleanup logic exists for failed or stuck executions, leaving accumulator state corrupted:
+### 7.4 Fix PositionCalculator Direction Logic ✅ COMPLETED
+**Problem**: `PositionCalculator.add_trade_amount()` always adds to `accumulated_short` regardless of trade direction.
 
-**Missing Logic**:
-- [ ] Add timeout handling for pending executions that never complete
-- [ ] Implement retry logic for failed executions with proper state restoration
-- [ ] Create cleanup mechanism for orphaned `pending_execution_id` references
-- [ ] Add background task to periodically check and recover stale execution state
-- [ ] Update/extend tests
-- [ ] Ensure tests and `rainix-rs-static` pass
+**Implementation Completed**:
+- [x] **Replaced signed amount approach with explicit direction parameter**: Updated `add_trade_amount()` to `add_trade(amount: f64, direction: ExecutionType)` 
+- [x] **Implemented proper direction logic**: `ExecutionType::Long` accumulates to `accumulated_long`, `ExecutionType::Short` accumulates to `accumulated_short`
+- [x] **Fixed net position calculation**: Proper tracking of long/short positions with correct sign logic
+- [x] **Created unified Direction enum**: Replaced `SchwabInstruction` with common `Direction` enum throughout codebase
+- [x] **Enhanced database schema**: Added explicit `direction` field to `onchain_trades` table instead of using signed amounts
+- [x] **Added comprehensive direction mapping tests**: 
+  - `test_direction_mapping_sell_instruction_preserved()` - verifies SELL direction flows correctly
+  - `test_direction_mapping_buy_instruction_preserved()` - verifies BUY direction flows correctly
+- [x] **Fixed all compilation errors**: Updated all test files with missing direction fields
+- [x] **Verified complete system integration**: All 162 tests passing, clippy analysis passes, build succeeds
 
+**Key Architectural Improvements**:
+- **Correct Direction Logic**: PositionCalculator now properly handles long/short accumulation based on explicit direction parameter
+- **Clean Schema Design**: Database uses explicit direction field instead of implicit signed amounts
+- **Unified Direction Enum**: Single `Direction` type used throughout system with backwards compatibility
+- **Comprehensive Test Coverage**: Direction mapping tests ensure arbitrage logic works correctly
+- **Production Ready**: All static analysis passes, no compilation warnings
 
-```rust
-TradeStatus::Completed {
-    executed_at: Utc::now(),
-    order_id: "TODO_ORDER_ID".to_string(), // Missing actual order_id parsing
-    price_cents: 0,                        // Missing actual price parsing
-}
-```
+**Result**: PositionCalculator direction logic completely fixed. All trades now accumulate correctly based on their actual direction instead of always adding to `accumulated_short`.
 
-**Required Implementation**:
-- [ ] Parse Schwab order placement responses to extract real order IDs
-- [ ] Capture actual execution prices from Schwab API responses
-- [ ] Handle Schwab API error responses properly
-- [ ] Update TradeStatus with real execution data instead of placeholders
+### 7.5 Add Comprehensive Edge Case Testing ⚠️ MEDIUM PRIORITY
+**Problem**: Test coverage missing for critical edge cases that could cause production failures:
 
+**Missing Test Scenarios**:
+- [ ] Concurrent trade processing for same symbol (race condition tests)
+- [ ] Database transaction rollback scenarios during execution creation
+- [ ] Network failures during Schwab API calls with proper error handling
+- [ ] Invalid/malformed Schwab API response handling
+- [ ] Accumulator state corruption and recovery mechanisms
+- [ ] Failed execution cleanup and retry logic validation
+
+### 7.6 Enhance Error Context and Logging ⚠️ LOW PRIORITY
+**Problem**: Error handling lacks sufficient context for production debugging:
+
+**Missing Context**:
+- [ ] Add structured logging with execution details (symbol, shares, direction)
+- [ ] Implement correlation IDs for tracking related trades through the system
+- [ ] Enhanced error messages with accumulator state information
+- [ ] Add monitoring metrics for execution success/failure rates
+
+**Priority Summary**:
+- **HIGH PRIORITY (4 tasks)**: Race conditions, Schwab parsing, execution cleanup, direction logic
+- **MEDIUM PRIORITY (3 tasks)**: Database constraints, edge case testing, order polling  
+- **LOW PRIORITY (1 task)**: Enhanced logging and monitoring
+
+**Risk Assessment**: The HIGH PRIORITY items represent critical gaps that could cause data corruption, duplicate executions, or system failures in production. These should be completed before deploying the trade batching feature.

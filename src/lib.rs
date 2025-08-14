@@ -21,7 +21,10 @@ mod symbol_cache;
 pub mod test_utils;
 
 use bindings::IOrderBookV4::{ClearV2, IOrderBookV4Instance, TakeOrderV2};
-use onchain::{EvmEnv, PartialArbTrade, trade::OnchainTrade, trade_accumulator::TradeAccumulator};
+use onchain::{
+    EvmEnv, PartialArbTrade,
+    trade::{OnchainTrade, accumulator},
+};
 use schwab::{SchwabAuthEnv, execution::SchwabExecution, order::execute_schwab_execution};
 use symbol_cache::SymbolCache;
 
@@ -180,12 +183,14 @@ where
     // Use the schwab_ticker + "s1" to create a consistent tokenized stock symbol
     // This ensures TradeAccumulator always receives s1-suffixed symbols regardless of trade direction
     let tokenized_symbol = format!("{}s1", partial_trade.schwab_ticker);
+
     let onchain_trade = OnchainTrade {
         id: None,
         tx_hash: partial_trade.tx_hash,
         log_index: partial_trade.log_index,
         symbol: tokenized_symbol.clone(),
-        amount: amount_from_shares(partial_trade.schwab_quantity), // Use Schwab quantity for consistency
+        amount: amount_from_shares(partial_trade.schwab_quantity),
+        direction: partial_trade.schwab_instruction,
         price_usdc: partial_trade.onchain_price_per_share_cents,
         created_at: None,
     };
@@ -194,7 +199,7 @@ where
     let symbol_lock = get_symbol_lock(&tokenized_symbol).await;
     let _guard = symbol_lock.lock().await;
 
-    let execution = TradeAccumulator::add_trade(pool, onchain_trade).await?;
+    let execution = accumulator::add_trade(pool, onchain_trade).await?;
     let execution_id = execution.and_then(|exec| exec.id);
 
     if let Some(exec_id) = execution_id {
@@ -254,6 +259,7 @@ const fn amount_from_shares(shares: u64) -> f64 {
 mod tests {
     use super::*;
     use crate::onchain::trade::OnchainTrade;
+    use crate::schwab::Direction;
     use crate::test_utils::{OnchainTradeBuilder, setup_test_db};
     use alloy::primitives::{IntoLogData, U256, address, fixed_bytes, keccak256};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
@@ -377,6 +383,7 @@ mod tests {
             log_index: 293,
             symbol: "AAPLs1".to_string(),
             amount: 5.0,
+            direction: Direction::Sell,
             price_usdc: 20000.0,
             created_at: None,
         };
@@ -542,6 +549,7 @@ mod tests {
             log_index: 1,
             symbol: "AAPLs1".to_string(),
             amount: 0.8,
+            direction: Direction::Sell,
             price_usdc: 15000.0,
             created_at: None,
         };
@@ -554,6 +562,7 @@ mod tests {
             log_index: 1,
             symbol: "AAPLs1".to_string(), // Same symbol to test race condition
             amount: 0.8,
+            direction: Direction::Sell,
             price_usdc: 15000.0,
             created_at: None,
         };
@@ -563,8 +572,8 @@ mod tests {
         let pool_clone2 = pool.clone();
 
         let (result1, result2) = tokio::join!(
-            TradeAccumulator::add_trade(&pool_clone1, trade1),
-            TradeAccumulator::add_trade(&pool_clone2, trade2)
+            accumulator::add_trade(&pool_clone1, trade1),
+            accumulator::add_trade(&pool_clone2, trade2)
         );
 
         // Both should succeed without error
@@ -597,12 +606,13 @@ mod tests {
         );
 
         // Verify the accumulator state shows the remaining fractional amount
-        let accumulator = TradeAccumulator::find_by_symbol(&pool, "AAPL")
-            .await
-            .unwrap();
-        assert!(accumulator.is_some(), "Accumulator should exist for AAPL");
+        let accumulator_result = accumulator::find_by_symbol(&pool, "AAPL").await.unwrap();
+        assert!(
+            accumulator_result.is_some(),
+            "Accumulator should exist for AAPL"
+        );
 
-        let (calculator, _) = accumulator.unwrap();
+        let (calculator, _) = accumulator_result.unwrap();
         // Total 1.6 shares accumulated, 1.0 executed, should have 0.6 remaining
         assert!(
             (calculator.accumulated_short - 0.6).abs() < f64::EPSILON,

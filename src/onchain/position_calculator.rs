@@ -60,13 +60,25 @@ impl PositionCalculator {
         }
     }
 
-    pub fn add_trade_amount(&mut self, amount: f64) {
-        self.accumulated_short += amount;
-        self.net_position += amount;
+    pub fn add_trade(&mut self, amount: f64, direction: ExecutionType) {
+        match direction {
+            ExecutionType::Long => {
+                // Buy on Schwab (offset short position) = accumulate for long execution
+                self.accumulated_long += amount;
+                self.net_position += amount;
+            }
+            ExecutionType::Short => {
+                // Sell on Schwab (offset long position) = accumulate for short execution
+                self.accumulated_short += amount;
+                self.net_position -= amount;
+            }
+        }
     }
 
     pub fn reduce_accumulation(&mut self, execution_type: ExecutionType, shares: u64) {
-        let shares_amount = amount_from_shares(shares);
+        // precision loss only occurs beyond 2^53 shares (unrealistic for equity trading)
+        #[allow(clippy::cast_precision_loss)]
+        let shares_amount = shares as f64;
 
         match execution_type {
             ExecutionType::Long => {
@@ -88,15 +100,6 @@ impl PositionCalculator {
     pub fn calculate_executable_shares(&self, execution_type: ExecutionType) -> u64 {
         let accumulated_amount = self.get_accumulated_amount(execution_type);
         shares_from_amount_floor(accumulated_amount)
-    }
-}
-
-/// Converts integer share count to f64 amount for position calculations.
-/// Safe conversion for typical share quantities.
-pub const fn amount_from_shares(shares: u64) -> f64 {
-    #[allow(clippy::cast_precision_loss)]
-    {
-        shares as f64 // Safe: precision loss only occurs beyond 2^53 shares (unrealistic for equity trading)
     }
 }
 
@@ -144,11 +147,42 @@ mod tests {
     }
 
     #[test]
-    fn test_add_trade_amount() {
+    fn test_add_trade_long_accumulation() {
         let mut calc = PositionCalculator::new();
-        calc.add_trade_amount(1.5);
-        assert!((calc.accumulated_short - 1.5).abs() < f64::EPSILON);
+        calc.add_trade(1.5, ExecutionType::Long); // Buy on Schwab = accumulate for long execution
+        assert!((calc.accumulated_long - 1.5).abs() < f64::EPSILON);
+        assert!((calc.accumulated_short - 0.0).abs() < f64::EPSILON);
         assert!((calc.net_position - 1.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_add_trade_short_accumulation() {
+        let mut calc = PositionCalculator::new();
+        calc.add_trade(2.0, ExecutionType::Short); // Sell on Schwab = accumulate for short execution
+        assert!((calc.accumulated_long - 0.0).abs() < f64::EPSILON);
+        assert!((calc.accumulated_short - 2.0).abs() < f64::EPSILON);
+        assert!((calc.net_position - (-2.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_add_trade_zero_amount() {
+        let mut calc = PositionCalculator::new();
+        calc.add_trade(0.0, ExecutionType::Long); // Zero amount but still affects direction
+        assert!((calc.accumulated_long - 0.0).abs() < f64::EPSILON);
+        assert!((calc.accumulated_short - 0.0).abs() < f64::EPSILON);
+        assert!((calc.net_position - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_add_trade_mixed_directions() {
+        let mut calc = PositionCalculator::new();
+        calc.add_trade(1.5, ExecutionType::Long); // Long accumulation
+        calc.add_trade(2.0, ExecutionType::Short); // Short accumulation
+        calc.add_trade(0.3, ExecutionType::Long); // More long accumulation
+
+        assert!((calc.accumulated_long - 1.8).abs() < f64::EPSILON); // 1.5 + 0.3
+        assert!((calc.accumulated_short - 2.0).abs() < f64::EPSILON); // 2.0
+        assert!((calc.net_position - (-0.2)).abs() < f64::EPSILON); // 1.5 - 2.0 + 0.3 = -0.2
     }
 
     #[test]
