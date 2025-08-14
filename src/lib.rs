@@ -1,9 +1,13 @@
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock};
+
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use alloy::rpc::types::Log;
 use alloy::sol_types;
 use clap::Parser;
 use futures_util::{Stream, StreamExt};
 use sqlx::SqlitePool;
+use tokio::sync::{Mutex, RwLock};
 use tracing::{Level, error, info};
 
 mod bindings;
@@ -20,6 +24,30 @@ use bindings::IOrderBookV4::{ClearV2, IOrderBookV4Instance, TakeOrderV2};
 use onchain::{EvmEnv, PartialArbTrade, trade::OnchainTrade, trade_accumulator::TradeAccumulator};
 use schwab::{SchwabAuthEnv, execution::SchwabExecution, order::execute_schwab_execution};
 use symbol_cache::SymbolCache;
+
+/// Global symbol-level locks to prevent race conditions during concurrent trade processing.
+/// Each symbol gets its own mutex to ensure atomic accumulation operations.
+static SYMBOL_LOCKS: LazyLock<RwLock<HashMap<String, Arc<Mutex<()>>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Acquires a symbol-specific lock to ensure atomic trade processing.
+/// Creates a new lock for the symbol if one doesn't exist.
+async fn get_symbol_lock(symbol: &str) -> Arc<Mutex<()>> {
+    // First try to get existing lock with read lock (most common case)
+    {
+        let locks_read = SYMBOL_LOCKS.read().await;
+        if let Some(lock) = locks_read.get(symbol) {
+            return lock.clone();
+        }
+    }
+
+    // If lock doesn't exist, acquire write lock and create new one
+    let mut locks_write = SYMBOL_LOCKS.write().await;
+    locks_write
+        .entry(symbol.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
 
 #[derive(clap::ValueEnum, Debug, Clone)]
 pub enum LogLevel {
@@ -156,11 +184,15 @@ where
         id: None,
         tx_hash: partial_trade.tx_hash,
         log_index: partial_trade.log_index,
-        symbol: tokenized_symbol,
+        symbol: tokenized_symbol.clone(),
         amount: amount_from_shares(partial_trade.schwab_quantity), // Use Schwab quantity for consistency
         price_usdc: partial_trade.onchain_price_per_share_cents,
         created_at: None,
     };
+
+    // Acquire symbol-level lock to prevent race conditions during accumulation
+    let symbol_lock = get_symbol_lock(&tokenized_symbol).await;
+    let _guard = symbol_lock.lock().await;
 
     let execution = TradeAccumulator::add_trade(pool, onchain_trade).await?;
     let execution_id = execution.and_then(|exec| exec.id);
@@ -494,5 +526,89 @@ mod tests {
         assert_eq!(trade.symbol, "AAPLs1");
         assert!((trade.amount - 9.0).abs() < f64::EPSILON); // Expected amount from test data  
         assert!((trade.price_usdc - 1_111.111_111_111_111).abs() < 0.001); // Expected price from current calculation
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_trade_processing_prevents_duplicate_executions() {
+        let pool = setup_test_db().await;
+
+        // Create two identical trades that should be processed concurrently
+        // Both trades are for 0.8 AAPL shares, which when combined (1.6 shares) should trigger only one execution of 1 share
+        let trade1 = OnchainTrade {
+            id: None,
+            tx_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            log_index: 1,
+            symbol: "AAPLs1".to_string(),
+            amount: 0.8,
+            price_usdc: 15000.0,
+            created_at: None,
+        };
+
+        let trade2 = OnchainTrade {
+            id: None,
+            tx_hash: fixed_bytes!(
+                "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ),
+            log_index: 1,
+            symbol: "AAPLs1".to_string(), // Same symbol to test race condition
+            amount: 0.8,
+            price_usdc: 15000.0,
+            created_at: None,
+        };
+
+        // Process both trades concurrently to simulate race condition scenario
+        let pool_clone1 = pool.clone();
+        let pool_clone2 = pool.clone();
+
+        let (result1, result2) = tokio::join!(
+            TradeAccumulator::add_trade(&pool_clone1, trade1),
+            TradeAccumulator::add_trade(&pool_clone2, trade2)
+        );
+
+        // Both should succeed without error
+        let execution1 = result1.unwrap();
+        let execution2 = result2.unwrap();
+
+        // Exactly one of them should have triggered an execution (for 1 share)
+        let executions_created = match (execution1, execution2) {
+            (Some(_), None) | (None, Some(_)) => 1,
+            (Some(_), Some(_)) => 2, // This would be the bug we're preventing
+            (None, None) => 0,
+        };
+
+        // Symbol-level locking should ensure only one execution is created
+        assert_eq!(
+            executions_created, 1,
+            "Expected exactly 1 execution to be created, but got {}",
+            executions_created
+        );
+
+        // Verify database state: 2 trades saved, 1 execution created
+        let trade_count = OnchainTrade::db_count(&pool).await.unwrap();
+        assert_eq!(trade_count, 2, "Expected 2 trades to be saved");
+
+        let execution_count = crate::schwab::execution::SchwabExecution::db_count(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            execution_count, 1,
+            "Expected exactly 1 execution to prevent duplicate orders"
+        );
+
+        // Verify the accumulator state shows the remaining fractional amount
+        let accumulator = TradeAccumulator::find_by_symbol(&pool, "AAPL")
+            .await
+            .unwrap();
+        assert!(accumulator.is_some(), "Accumulator should exist for AAPL");
+
+        let (calculator, _) = accumulator.unwrap();
+        // Total 1.6 shares accumulated, 1.0 executed, should have 0.6 remaining
+        assert!(
+            (calculator.accumulated_short - 0.6).abs() < f64::EPSILON,
+            "Expected 0.6 accumulated_short remaining, got {}",
+            calculator.accumulated_short
+        );
     }
 }

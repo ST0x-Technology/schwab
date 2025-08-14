@@ -93,7 +93,7 @@ impl PositionCalculator {
 
 /// Converts integer share count to f64 amount for position calculations.
 /// Safe conversion for typical share quantities.
-const fn amount_from_shares(shares: u64) -> f64 {
+pub const fn amount_from_shares(shares: u64) -> f64 {
     #[allow(clippy::cast_precision_loss)]
     {
         shares as f64 // Safe: precision loss only occurs beyond 2^53 shares (unrealistic for equity trading)

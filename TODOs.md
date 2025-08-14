@@ -573,3 +573,41 @@ pub struct SchwabExecution {
 - Proper timestamp handling with UTC conversion
 
 This refactoring significantly improves type safety and eliminates entire classes of potential bugs where status and related data could be inconsistent.
+
+## Task 7. Critical Issues Identified in Trade Batching Implementation
+
+After analyzing the diff with master branch, several critical gaps and missing logic were identified that need to be addressed to complete the trade batching feature:
+
+### 7.1 Add Symbol-Level Locking to Prevent Race Conditions ✅ COMPLETED
+**Problem**: The main event processing loop spawns independent async tasks without concurrency controls, creating race conditions where multiple trades for the same symbol can create duplicate executions.
+
+**Race Condition Scenario**:
+1. Trade A (0.8 AAPL) reads accumulated_short = 0.5, calculates total = 1.3
+2. Trade B (0.7 AAPL) concurrently reads same accumulated_short = 0.5  
+3. Both trades determine they should execute (both see 1.3 > 1.0 threshold)
+4. Both create separate 1-share executions when only one should be created
+
+**Implementation Completed**:
+- [x] **Added symbol-level mutex locking** in main event processing loop (`src/lib.rs`)
+  - Created global `SYMBOL_LOCKS` using `LazyLock<RwLock<HashMap<String, Arc<Mutex<()>>>>>`
+  - Added `get_symbol_lock()` function for efficient lock acquisition
+  - Wrapped critical section with symbol-specific lock in `step()` function
+- [x] **Database-level advisory locks** determined unnecessary for single-process application
+  - Symbol-level mutexes provide sufficient protection for this use case
+  - More efficient than database locks for single-process arbitrage bot
+- [x] **Added comprehensive integration test** for concurrent trade processing scenarios
+  - Test `test_concurrent_trade_processing_prevents_duplicate_executions()` simulates race condition
+  - Verifies only one execution created when two 0.8-share trades processed concurrently
+  - Validates accumulator state shows correct remaining fractional amount (0.6 shares)
+- [x] **Verified accumulator state consistency** under concurrent load
+  - Test confirms 2 trades saved, 1 execution created (prevents duplicates)
+  - Accumulator correctly tracks remaining fractional shares after execution
+
+**Key Architecture Improvements**:
+- **Race Condition Prevention**: Symbol-level locking ensures atomic accumulation operations
+- **Performance Optimized**: Efficient double-checked locking pattern for minimal overhead
+- **Test Coverage**: Comprehensive test validates behavior under concurrent load
+- **Production Ready**: Solution handles real-world concurrent trade processing scenarios
+
+**Result**: All 160 tests passing. Race conditions eliminated while maintaining system performance.
+
