@@ -23,7 +23,7 @@ pub mod test_utils;
 
 use bindings::IOrderBookV4::{ClearV2, IOrderBookV4Instance, TakeOrderV2};
 use onchain::{EvmEnv, OnchainTrade, accumulator};
-use schwab::{SchwabAuthEnv, execution::SchwabExecution, order::execute_schwab_order};
+use schwab::{SchwabAuthEnv, execution::find_execution_by_id, order::execute_schwab_order};
 use symbol_cache::SymbolCache;
 
 /// Global symbol-level locks to prevent race conditions during concurrent trade processing.
@@ -215,7 +215,7 @@ async fn execute_pending_schwab_execution(
     pool: &SqlitePool,
     execution_id: i64,
 ) -> anyhow::Result<()> {
-    let execution = SchwabExecution::find_by_id(pool, execution_id)
+    let execution = find_execution_by_id(pool, execution_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Execution with ID {} not found", execution_id))?;
 

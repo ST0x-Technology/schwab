@@ -376,7 +376,7 @@ mod tests {
     use crate::bindings::IERC20::symbolCall;
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
     use crate::onchain::trade::OnchainTrade;
-    use crate::schwab::execution::SchwabExecution;
+    use crate::schwab::execution::find_completed_executions_by_symbol;
     use crate::schwab::{Direction, SchwabInstruction};
     use crate::test_utils::get_test_order;
     use crate::test_utils::setup_test_db;
@@ -1540,7 +1540,7 @@ mod tests {
         assert!((trade.amount - 9.0).abs() < f64::EPSILON); // Amount from the test data
 
         // Verify SchwabExecution was created (due to TradeAccumulator)
-        let executions = SchwabExecution::find_completed_by_symbol(&pool, "AAPL")
+        let executions = find_completed_executions_by_symbol(&pool, "AAPL")
             .await
             .unwrap();
         assert_eq!(executions.len(), 1);

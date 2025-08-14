@@ -6,8 +6,11 @@ use tracing::{error, info};
 
 use chrono::Utc;
 
+#[cfg(test)]
+use super::execution::find_execution_by_id;
 use super::{
-    SchwabAuthEnv, SchwabError, SchwabInstruction, SchwabTokens, execution::SchwabExecution,
+    SchwabAuthEnv, SchwabError, SchwabInstruction, SchwabTokens,
+    execution::{SchwabExecution, update_execution_status_within_transaction},
 };
 use crate::Env;
 use crate::schwab::TradeStatus;
@@ -294,7 +297,7 @@ async fn handle_execution_success(pool: &SqlitePool, execution_id: i64, order_id
         }
     };
 
-    if let Err(e) = SchwabExecution::update_status_within_transaction(
+    if let Err(e) = update_execution_status_within_transaction(
         &mut sql_tx,
         execution_id,
         TradeStatus::Completed {
@@ -330,7 +333,7 @@ async fn handle_execution_failure(pool: &SqlitePool, execution_id: i64, error: S
         }
     };
 
-    if let Err(update_err) = SchwabExecution::update_status_within_transaction(
+    if let Err(update_err) = update_execution_status_within_transaction(
         &mut sql_tx,
         execution_id,
         TradeStatus::Failed {
@@ -901,7 +904,7 @@ mod tests {
         handle_execution_success(&pool, execution_id, "ORDER123".to_string()).await;
 
         // Verify execution status was updated
-        let updated_execution = SchwabExecution::find_by_id(&pool, execution_id)
+        let updated_execution = find_execution_by_id(&pool, execution_id)
             .await
             .unwrap()
             .unwrap();
@@ -952,7 +955,7 @@ mod tests {
         handle_execution_failure(&pool, execution_id, test_error).await;
 
         // Verify execution status was updated to failed
-        let updated_execution = SchwabExecution::find_by_id(&pool, execution_id)
+        let updated_execution = find_execution_by_id(&pool, execution_id)
             .await
             .unwrap()
             .unwrap();

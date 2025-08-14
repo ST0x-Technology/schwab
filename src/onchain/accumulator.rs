@@ -341,6 +341,7 @@ async fn create_execution_within_transaction(
 mod tests {
     use super::*;
     use crate::onchain::trade_execution_link::TradeExecutionLink;
+    use crate::schwab::execution::schwab_execution_db_count;
     use crate::test_utils::setup_test_db;
     use alloy::primitives::fixed_bytes;
 
@@ -659,9 +660,7 @@ mod tests {
         assert_eq!(trade_count, 2);
 
         // Verify exactly one execution was created
-        let execution_count = crate::schwab::execution::SchwabExecution::db_count(&pool)
-            .await
-            .unwrap();
+        let execution_count = schwab_execution_db_count(&pool).await.unwrap();
         assert_eq!(execution_count, 1);
     }
 
@@ -727,7 +726,7 @@ mod tests {
         let trade_count = super::OnchainTrade::db_count(&pool).await.unwrap();
         assert_eq!(trade_count, 2, "Expected 2 trades to be saved");
 
-        let execution_count = SchwabExecution::db_count(&pool).await.unwrap();
+        let execution_count = schwab_execution_db_count(&pool).await.unwrap();
         assert_eq!(
             execution_count, 1,
             "Expected exactly 1 execution to prevent duplicate orders"

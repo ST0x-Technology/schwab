@@ -108,6 +108,186 @@ pub struct SchwabExecution {
     pub status: TradeStatus,
 }
 
+pub async fn update_execution_status_within_transaction(
+    sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    execution_id: i64,
+    new_status: TradeStatus,
+) -> Result<(), sqlx::Error> {
+    let status_str = new_status.as_str();
+
+    let (order_id, price_cents_i64, executed_at) = match &new_status {
+        TradeStatus::Pending => (None, None, None),
+        TradeStatus::Completed {
+            executed_at,
+            order_id,
+            price_cents,
+        } => (
+            Some(order_id.clone()),
+            Some(shares_to_db_i64(*price_cents)),
+            Some(executed_at.naive_utc()),
+        ),
+        TradeStatus::Failed {
+            failed_at,
+            error_reason: _,
+        } => (None, None, Some(failed_at.naive_utc())),
+    };
+
+    sqlx::query!(
+        "UPDATE schwab_executions SET status = ?1, order_id = ?2, price_cents = ?3, executed_at = ?4 WHERE id = ?5",
+        status_str,
+        order_id,
+        price_cents_i64,
+        executed_at,
+        execution_id
+    )
+    .execute(&mut **sql_tx)
+    .await?;
+
+    Ok(())
+}
+
+/// Find executions with PENDING status
+pub async fn find_pending_executions_by_symbol(
+    pool: &SqlitePool,
+    symbol: &str,
+) -> Result<Vec<SchwabExecution>, OnChainError> {
+    find_executions_by_symbol_and_status(pool, symbol, "PENDING").await
+}
+
+/// Find executions with COMPLETED status
+pub async fn find_completed_executions_by_symbol(
+    pool: &SqlitePool,
+    symbol: &str,
+) -> Result<Vec<SchwabExecution>, OnChainError> {
+    find_executions_by_symbol_and_status(pool, symbol, "COMPLETED").await
+}
+
+/// Find executions with FAILED status
+pub async fn find_failed_executions_by_symbol(
+    pool: &SqlitePool,
+    symbol: &str,
+) -> Result<Vec<SchwabExecution>, OnChainError> {
+    find_executions_by_symbol_and_status(pool, symbol, "FAILED").await
+}
+
+pub async fn find_executions_by_symbol_and_status(
+    pool: &SqlitePool,
+    symbol: &str,
+    status_str: &str,
+) -> Result<Vec<SchwabExecution>, OnChainError> {
+    if symbol.is_empty() {
+        let rows = sqlx::query!(
+            "SELECT * FROM schwab_executions WHERE status = ?1 ORDER BY id ASC",
+            status_str
+        )
+        .fetch_all(pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                row_to_execution(
+                    row.id,
+                    row.symbol,
+                    row.shares,
+                    &row.direction,
+                    row.order_id,
+                    row.price_cents,
+                    &row.status,
+                    row.executed_at,
+                )
+            })
+            .collect()
+    } else {
+        let rows = sqlx::query!(
+            "SELECT * FROM schwab_executions WHERE symbol = ?1 AND status = ?2 ORDER BY id ASC",
+            symbol,
+            status_str
+        )
+        .fetch_all(pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                row_to_execution(
+                    row.id,
+                    row.symbol,
+                    row.shares,
+                    &row.direction,
+                    row.order_id,
+                    row.price_cents,
+                    &row.status,
+                    row.executed_at,
+                )
+            })
+            .collect()
+    }
+}
+
+pub async fn find_execution_by_id(
+    pool: &SqlitePool,
+    execution_id: i64,
+) -> Result<Option<SchwabExecution>, OnChainError> {
+    let row = sqlx::query!(
+        "SELECT * FROM schwab_executions WHERE id = ?1",
+        execution_id
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    if let Some(row) = row {
+        row_to_execution(
+            row.id,
+            row.symbol,
+            row.shares,
+            &row.direction,
+            row.order_id,
+            row.price_cents,
+            &row.status,
+            row.executed_at,
+        )
+        .map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Updates execution status and clears pending execution lease atomically
+pub async fn update_execution_status_and_clear_lease(
+    pool: &SqlitePool,
+    execution_id: i64,
+    new_status: TradeStatus,
+) -> Result<(), OnChainError> {
+    // Get the symbol for this execution first
+    let execution = find_execution_by_id(pool, execution_id).await?;
+
+    if let Some(execution) = execution {
+        // Update the execution status and clear lease in a single transaction
+        let mut sql_tx = pool.begin().await?;
+
+        update_execution_status_within_transaction(&mut sql_tx, execution_id, new_status.clone())
+            .await?;
+
+        // Clear the pending execution lease if status is completed or failed
+        match new_status {
+            TradeStatus::Completed { .. } | TradeStatus::Failed { .. } => {
+                crate::lock::clear_pending_execution_within_transaction(
+                    &mut sql_tx,
+                    &execution.symbol,
+                    execution_id,
+                )
+                .await?;
+            }
+            TradeStatus::Pending => {
+                // No need to clear lease for pending status
+            }
+        }
+
+        sql_tx.commit().await?;
+    }
+
+    Ok(())
+}
+
 impl SchwabExecution {
     pub async fn save_within_transaction(
         &self,
@@ -152,194 +332,13 @@ impl SchwabExecution {
 
         Ok(result.last_insert_rowid())
     }
+}
 
-    /// Find executions with PENDING status
-    pub async fn find_pending_by_symbol(
-        pool: &SqlitePool,
-        symbol: &str,
-    ) -> Result<Vec<Self>, OnChainError> {
-        Self::find_by_symbol_and_status(pool, symbol, "PENDING").await
-    }
-
-    /// Find executions with COMPLETED status
-    pub async fn find_completed_by_symbol(
-        pool: &SqlitePool,
-        symbol: &str,
-    ) -> Result<Vec<Self>, OnChainError> {
-        Self::find_by_symbol_and_status(pool, symbol, "COMPLETED").await
-    }
-
-    /// Find executions with FAILED status
-    pub async fn find_failed_by_symbol(
-        pool: &SqlitePool,
-        symbol: &str,
-    ) -> Result<Vec<Self>, OnChainError> {
-        Self::find_by_symbol_and_status(pool, symbol, "FAILED").await
-    }
-
-    pub async fn find_by_id(
-        pool: &SqlitePool,
-        execution_id: i64,
-    ) -> Result<Option<Self>, OnChainError> {
-        let row = sqlx::query!(
-            "SELECT * FROM schwab_executions WHERE id = ?1",
-            execution_id
-        )
-        .fetch_optional(pool)
+pub async fn schwab_execution_db_count(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    let row = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+        .fetch_one(pool)
         .await?;
-
-        if let Some(row) = row {
-            row_to_execution(
-                row.id,
-                row.symbol,
-                row.shares,
-                &row.direction,
-                row.order_id,
-                row.price_cents,
-                &row.status,
-                row.executed_at,
-            )
-            .map(Some)
-        } else {
-            Ok(None)
-        }
-    }
-
-    pub async fn find_by_symbol_and_status(
-        pool: &SqlitePool,
-        symbol: &str,
-        status_str: &str,
-    ) -> Result<Vec<Self>, OnChainError> {
-        if symbol.is_empty() {
-            let rows = sqlx::query!(
-                "SELECT * FROM schwab_executions WHERE status = ?1 ORDER BY id ASC",
-                status_str
-            )
-            .fetch_all(pool)
-            .await?;
-
-            rows.into_iter()
-                .map(|row| {
-                    row_to_execution(
-                        row.id,
-                        row.symbol,
-                        row.shares,
-                        &row.direction,
-                        row.order_id,
-                        row.price_cents,
-                        &row.status,
-                        row.executed_at,
-                    )
-                })
-                .collect()
-        } else {
-            let rows = sqlx::query!(
-                "SELECT * FROM schwab_executions WHERE symbol = ?1 AND status = ?2 ORDER BY id ASC",
-                symbol,
-                status_str
-            )
-            .fetch_all(pool)
-            .await?;
-
-            rows.into_iter()
-                .map(|row| {
-                    row_to_execution(
-                        row.id,
-                        row.symbol,
-                        row.shares,
-                        &row.direction,
-                        row.order_id,
-                        row.price_cents,
-                        &row.status,
-                        row.executed_at,
-                    )
-                })
-                .collect()
-        }
-    }
-
-    pub async fn update_status_within_transaction(
-        sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        execution_id: i64,
-        new_status: TradeStatus,
-    ) -> Result<(), sqlx::Error> {
-        let status_str = new_status.as_str();
-
-        let (order_id, price_cents_i64, executed_at) = match &new_status {
-            TradeStatus::Pending => (None, None, None),
-            TradeStatus::Completed {
-                executed_at,
-                order_id,
-                price_cents,
-            } => (
-                Some(order_id.clone()),
-                Some(shares_to_db_i64(*price_cents)),
-                Some(executed_at.naive_utc()),
-            ),
-            TradeStatus::Failed {
-                failed_at,
-                error_reason: _,
-            } => (None, None, Some(failed_at.naive_utc())),
-        };
-
-        sqlx::query!(
-            "UPDATE schwab_executions SET status = ?1, order_id = ?2, price_cents = ?3, executed_at = ?4 WHERE id = ?5",
-            status_str,
-            order_id,
-            price_cents_i64,
-            executed_at,
-            execution_id
-        )
-        .execute(&mut **sql_tx)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Updates execution status and clears pending execution lease atomically
-    pub async fn update_status_and_clear_lease(
-        pool: &SqlitePool,
-        execution_id: i64,
-        new_status: TradeStatus,
-    ) -> Result<(), OnChainError> {
-        // Get the symbol for this execution first
-        let execution = Self::find_by_id(pool, execution_id).await?;
-
-        if let Some(execution) = execution {
-            // Update the execution status and clear lease in a single transaction
-            let mut sql_tx = pool.begin().await?;
-
-            Self::update_status_within_transaction(&mut sql_tx, execution_id, new_status.clone())
-                .await?;
-
-            // Clear the pending execution lease if status is completed or failed
-            match new_status {
-                TradeStatus::Completed { .. } | TradeStatus::Failed { .. } => {
-                    crate::lock::clear_pending_execution_within_transaction(
-                        &mut sql_tx,
-                        &execution.symbol,
-                        execution_id,
-                    )
-                    .await?;
-                }
-                TradeStatus::Pending => {
-                    // No need to clear lease for pending status
-                }
-            }
-
-            sql_tx.commit().await?;
-        }
-
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub async fn db_count(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
-        let row = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
-            .fetch_one(pool)
-            .await?;
-        Ok(row.count)
-    }
+    Ok(row.count)
 }
 
 #[cfg(test)]
@@ -362,7 +361,7 @@ mod tests {
         assert!(id > 0);
 
         // Verify execution was saved by checking the count
-        let count = SchwabExecution::db_count(&pool).await.unwrap();
+        let count = schwab_execution_db_count(&pool).await.unwrap();
         assert_eq!(count, 1);
     }
 
@@ -419,7 +418,7 @@ mod tests {
             .unwrap();
         sql_tx3.commit().await.unwrap();
 
-        let pending_aapl = SchwabExecution::find_pending_by_symbol(&pool, "AAPL")
+        let pending_aapl = find_pending_executions_by_symbol(&pool, "AAPL")
             .await
             .unwrap();
 
@@ -427,7 +426,7 @@ mod tests {
         assert_eq!(pending_aapl[0].shares, 50);
         assert_eq!(pending_aapl[0].direction, SchwabInstruction::Buy);
 
-        let completed_aapl = SchwabExecution::find_completed_by_symbol(&pool, "AAPL")
+        let completed_aapl = find_completed_executions_by_symbol(&pool, "AAPL")
             .await
             .unwrap();
 
@@ -445,12 +444,12 @@ mod tests {
     async fn test_find_by_symbol_and_status_empty_database() {
         let pool = setup_test_db().await;
 
-        let result = SchwabExecution::find_pending_by_symbol(&pool, "AAPL")
+        let result = find_pending_executions_by_symbol(&pool, "AAPL")
             .await
             .unwrap();
         assert_eq!(result.len(), 0);
 
-        let result = SchwabExecution::find_by_symbol_and_status(&pool, "", "PENDING")
+        let result = find_executions_by_symbol_and_status(&pool, "", "PENDING")
             .await
             .unwrap();
         assert_eq!(result.len(), 0);
@@ -469,12 +468,12 @@ mod tests {
             .unwrap();
         sql_tx.commit().await.unwrap();
 
-        let result = SchwabExecution::find_pending_by_symbol(&pool, "NONEXISTENT")
+        let result = find_pending_executions_by_symbol(&pool, "NONEXISTENT")
             .await
             .unwrap();
         assert_eq!(result.len(), 0);
 
-        let result = SchwabExecution::find_completed_by_symbol(&pool, "AAPL")
+        let result = find_completed_executions_by_symbol(&pool, "AAPL")
             .await
             .unwrap();
         assert_eq!(result.len(), 0);
@@ -523,17 +522,17 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Empty symbol should find all executions with the specified status
-        let pending_all = SchwabExecution::find_by_symbol_and_status(&pool, "", "PENDING")
+        let pending_all = find_executions_by_symbol_and_status(&pool, "", "PENDING")
             .await
             .unwrap();
         assert_eq!(pending_all.len(), 2); // AAPL and MSFT pending
 
-        let completed_all = SchwabExecution::find_by_symbol_and_status(&pool, "", "COMPLETED")
+        let completed_all = find_executions_by_symbol_and_status(&pool, "", "COMPLETED")
             .await
             .unwrap();
         assert_eq!(completed_all.len(), 1); // Only AAPL completed
 
-        let failed_all = SchwabExecution::find_by_symbol_and_status(&pool, "", "FAILED")
+        let failed_all = find_executions_by_symbol_and_status(&pool, "", "FAILED")
             .await
             .unwrap();
         assert_eq!(failed_all.len(), 0); // None failed
@@ -579,19 +578,19 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Test ordering for each symbol individually
-        let aapl_result = SchwabExecution::find_pending_by_symbol(&pool, "AAPL")
+        let aapl_result = find_pending_executions_by_symbol(&pool, "AAPL")
             .await
             .unwrap();
         assert_eq!(aapl_result.len(), 1);
         assert_eq!(aapl_result[0].shares, 100);
 
-        let tsla_result = SchwabExecution::find_pending_by_symbol(&pool, "TSLA")
+        let tsla_result = find_pending_executions_by_symbol(&pool, "TSLA")
             .await
             .unwrap();
         assert_eq!(tsla_result.len(), 1);
         assert_eq!(tsla_result[0].shares, 200);
 
-        let msft_result = SchwabExecution::find_pending_by_symbol(&pool, "MSFT")
+        let msft_result = find_pending_executions_by_symbol(&pool, "MSFT")
             .await
             .unwrap();
         assert_eq!(msft_result.len(), 1);
@@ -617,17 +616,17 @@ mod tests {
             .unwrap();
         sql_tx.commit().await.unwrap();
 
-        let result = SchwabExecution::find_pending_by_symbol(&pool, "AAPL")
+        let result = find_pending_executions_by_symbol(&pool, "AAPL")
             .await
             .unwrap();
         assert_eq!(result.len(), 1);
 
-        let result = SchwabExecution::find_pending_by_symbol(&pool, "aapl")
+        let result = find_pending_executions_by_symbol(&pool, "aapl")
             .await
             .unwrap();
         assert_eq!(result.len(), 0);
 
-        let result = SchwabExecution::find_pending_by_symbol(&pool, "Aapl")
+        let result = find_pending_executions_by_symbol(&pool, "Aapl")
             .await
             .unwrap();
         assert_eq!(result.len(), 0);
@@ -659,7 +658,7 @@ mod tests {
 
         // Test each symbol can be found
         for symbol in ["BRK.B", "BF-B", "TEST123", "A-B_C.D"] {
-            let result = SchwabExecution::find_pending_by_symbol(&pool, symbol)
+            let result = find_pending_executions_by_symbol(&pool, symbol)
                 .await
                 .unwrap();
             assert_eq!(result.len(), 1, "Failed to find symbol: {symbol}");
@@ -690,7 +689,7 @@ mod tests {
             .unwrap();
         sql_tx.commit().await.unwrap();
 
-        let result = SchwabExecution::find_completed_by_symbol(&pool, "TEST")
+        let result = find_completed_executions_by_symbol(&pool, "TEST")
             .await
             .unwrap();
 
@@ -753,7 +752,7 @@ mod tests {
         assert!(result.is_err());
 
         // Verify our database maintains data integrity
-        let count = SchwabExecution::db_count(&pool).await.unwrap();
+        let count = schwab_execution_db_count(&pool).await.unwrap();
         assert_eq!(count, 0); // No invalid data should have been inserted
     }
 
@@ -778,7 +777,7 @@ mod tests {
 
         // Update using the transaction method
         let mut sql_tx = pool.begin().await.unwrap();
-        SchwabExecution::update_status_within_transaction(
+        update_execution_status_within_transaction(
             &mut sql_tx,
             id,
             TradeStatus::Completed {
@@ -792,7 +791,7 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Verify the update persisted by finding executions with the new status
-        let completed_executions = SchwabExecution::find_completed_by_symbol(&pool, "TSLA")
+        let completed_executions = find_completed_executions_by_symbol(&pool, "TSLA")
             .await
             .unwrap();
 
@@ -808,7 +807,7 @@ mod tests {
     async fn test_db_count() {
         let pool = setup_test_db().await;
 
-        let count = SchwabExecution::db_count(&pool).await.unwrap();
+        let count = schwab_execution_db_count(&pool).await.unwrap();
         assert_eq!(count, 0);
 
         let execution = SchwabExecution {
@@ -826,7 +825,7 @@ mod tests {
             .unwrap();
         sql_tx.commit().await.unwrap();
 
-        let count = SchwabExecution::db_count(&pool).await.unwrap();
+        let count = schwab_execution_db_count(&pool).await.unwrap();
         assert_eq!(count, 1);
     }
 
@@ -914,10 +913,10 @@ mod tests {
         sql_tx2.commit().await.unwrap();
 
         // Should have both executions for AAPL now
-        let pending_aapl = SchwabExecution::find_pending_by_symbol(&pool, "AAPL")
+        let pending_aapl = find_pending_executions_by_symbol(&pool, "AAPL")
             .await
             .unwrap();
-        let completed_aapl = SchwabExecution::find_completed_by_symbol(&pool, "AAPL")
+        let completed_aapl = find_completed_executions_by_symbol(&pool, "AAPL")
             .await
             .unwrap();
         assert_eq!(pending_aapl.len(), 1);
