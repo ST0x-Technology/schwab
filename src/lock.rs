@@ -1,4 +1,4 @@
-use crate::error::OnChainError;
+use crate::error::{OnChainError, PersistenceError};
 
 /// Atomically acquires an execution lease for the given symbol.
 /// Returns true if lease was acquired, false if another worker holds it.
@@ -61,7 +61,7 @@ pub async fn clear_pending_execution_within_transaction(
     execution_id: i64,
 ) -> Result<(), OnChainError> {
     // Clear the pending_execution_id in the accumulator
-    sqlx::query!(
+    let update_result = sqlx::query!(
         r#"
         UPDATE trade_accumulators 
         SET pending_execution_id = NULL, last_updated = CURRENT_TIMESTAMP
@@ -73,51 +73,41 @@ pub async fn clear_pending_execution_within_transaction(
     .execute(sql_tx.as_mut())
     .await?;
 
-    // Release the symbol lock
-    sqlx::query("DELETE FROM symbol_locks WHERE symbol = ?1")
-        .bind(symbol)
-        .execute(sql_tx.as_mut())
-        .await?;
+    // Only release the symbol lock if the UPDATE actually affected a row
+    if update_result.rows_affected() > 0 {
+        // Release the symbol lock
+        sqlx::query("DELETE FROM symbol_locks WHERE symbol = ?1")
+            .bind(symbol)
+            .execute(sql_tx.as_mut())
+            .await?;
+        Ok(())
+    } else {
+        // Query the current pending_execution_id to provide detailed error info
+        let current_execution_id: Option<i64> = sqlx::query_scalar!(
+            "SELECT pending_execution_id FROM trade_accumulators WHERE symbol = ?1",
+            symbol
+        )
+        .fetch_optional(sql_tx.as_mut())
+        .await?
+        .flatten();
 
-    Ok(())
+        Err(OnChainError::Persistence(
+            PersistenceError::ExecutionIdMismatch {
+                symbol: symbol.to_string(),
+                expected: execution_id,
+                current: current_execution_id,
+            },
+        ))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::onchain::accumulator::save_within_transaction;
     use crate::onchain::position_calculator::PositionCalculator;
     use crate::schwab::{Direction, TradeStatus, execution::SchwabExecution};
     use crate::test_utils::setup_test_db;
-
-    async fn save_within_transaction(
-        sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        symbol: &str,
-        calculator: &PositionCalculator,
-        pending_execution_id: Option<i64>,
-    ) -> Result<(), OnChainError> {
-        sqlx::query!(
-            r#"
-            INSERT OR REPLACE INTO trade_accumulators (
-                symbol,
-                net_position,
-                accumulated_long,
-                accumulated_short,
-                pending_execution_id,
-                last_updated
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)
-            "#,
-            symbol,
-            calculator.net_position,
-            calculator.accumulated_long,
-            calculator.accumulated_short,
-            pending_execution_id
-        )
-        .execute(sql_tx.as_mut())
-        .await?;
-
-        Ok(())
-    }
 
     #[tokio::test]
     async fn test_try_acquire_execution_lease_success() {
@@ -282,7 +272,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_symbol_locks_table_creation() {
+    async fn test_acquire_execution_lease_persists_lock_row() {
         let pool = setup_test_db().await;
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -298,5 +288,66 @@ mod tests {
         assert_eq!(count, 1);
 
         sql_tx.commit().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_clear_pending_execution_mismatch_preserves_lock() {
+        let pool = setup_test_db().await;
+
+        let execution = SchwabExecution {
+            id: None,
+            symbol: "AAPL".to_string(),
+            shares: 100,
+            direction: Direction::Buy,
+            status: TradeStatus::Pending,
+        };
+
+        let mut sql_tx = pool.begin().await.unwrap();
+        let execution_id = execution
+            .save_within_transaction(&mut sql_tx)
+            .await
+            .unwrap();
+
+        let calculator = PositionCalculator::new();
+        save_within_transaction(&mut sql_tx, "AAPL", &calculator, Some(execution_id))
+            .await
+            .unwrap();
+
+        try_acquire_execution_lease(&mut sql_tx, "AAPL")
+            .await
+            .unwrap();
+        sql_tx.commit().await.unwrap();
+
+        // Try to clear with wrong execution_id
+        let wrong_execution_id = execution_id + 999;
+        let mut sql_tx = pool.begin().await.unwrap();
+        let result =
+            clear_pending_execution_within_transaction(&mut sql_tx, "AAPL", wrong_execution_id)
+                .await;
+
+        // Should fail with ExecutionIdMismatch error
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            OnChainError::Persistence(PersistenceError::ExecutionIdMismatch {
+                symbol,
+                expected,
+                current,
+            }) => {
+                assert_eq!(symbol, "AAPL");
+                assert_eq!(expected, wrong_execution_id);
+                assert_eq!(current, Some(execution_id));
+            }
+            other => panic!("Expected ExecutionIdMismatch error, got: {:?}", other),
+        }
+
+        sql_tx.rollback().await.unwrap();
+
+        // Verify the lock is still held (should not be able to acquire again)
+        let mut sql_tx = pool.begin().await.unwrap();
+        let result = try_acquire_execution_lease(&mut sql_tx, "AAPL")
+            .await
+            .unwrap();
+        assert!(!result); // Should fail to acquire because lock is still held
+        sql_tx.rollback().await.unwrap();
     }
 }
