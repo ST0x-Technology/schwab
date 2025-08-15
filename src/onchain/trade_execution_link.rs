@@ -141,7 +141,8 @@ impl TradeExecutionLink {
                     trade_id: row.trade_id,
                     contributed_shares: row.contributed_shares,
                     trade_tx_hash: row.tx_hash,
-                    trade_log_index: shares_from_db_i64(row.log_index)?,
+                    #[allow(clippy::cast_sign_loss)]
+                    trade_log_index: row.log_index as u64,
                     trade_symbol: row.symbol,
                     trade_total_amount: row.amount,
                     trade_direction: row.direction,
@@ -200,7 +201,8 @@ impl TradeExecutionLink {
                     )),
                     trade_id: row.trade_id,
                     trade_tx_hash: row.tx_hash,
-                    trade_log_index: shares_from_db_i64(row.log_index)?,
+                    #[allow(clippy::cast_sign_loss)]
+                    trade_log_index: row.log_index as u64,
                     trade_amount: row.trade_amount,
                     trade_direction: row.trade_direction,
                     trade_price_usdc: row.price_usdc,

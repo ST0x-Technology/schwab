@@ -576,7 +576,22 @@ mod tests {
     async fn test_database_transaction_rollback_on_execution_save_failure() {
         let pool = setup_test_db().await;
 
-        // Create a trade that would trigger execution
+        // First, create a pending execution for AAPL to trigger the unique constraint
+        let blocking_execution = SchwabExecution {
+            id: None,
+            symbol: "AAPL".to_string(),
+            shares: 50,
+            direction: Direction::Buy,
+            status: TradeStatus::Pending,
+        };
+        let mut sql_tx = pool.begin().await.unwrap();
+        blocking_execution
+            .save_within_transaction(&mut sql_tx)
+            .await
+            .unwrap();
+        sql_tx.commit().await.unwrap();
+
+        // Create a trade that would trigger execution for the same symbol
         let trade = OnchainTrade {
             id: None,
             tx_hash: fixed_bytes!(
@@ -590,25 +605,28 @@ mod tests {
             created_at: None,
         };
 
-        // Simulate execution save failure by corrupting database schema
-        // This is tricky to test without breaking the database, so we'll
-        // create a controlled scenario
+        // Attempt to add trade - should fail when trying to save execution due to unique constraint
+        let result = add_trade(&pool, trade).await;
 
-        // First add the trade successfully
-        let result = add_trade(&pool, trade).await.unwrap();
-        let execution = result.unwrap();
+        // Verify the operation failed due to execution save failure (unique constraint violation)
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("UNIQUE constraint failed"));
 
-        // Verify execution was created
-        assert!(execution.id.is_some());
-        assert_eq!(execution.symbol, "AAPL");
-
-        // Verify trade was saved
+        // Verify transaction was rolled back - no new trade should have been saved
         let trade_count = OnchainTrade::db_count(&pool).await.unwrap();
-        assert_eq!(trade_count, 1);
+        assert_eq!(trade_count, 0);
 
-        // Verify accumulator was updated correctly
-        let (calculator, _) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
-        assert!((calculator.accumulated_short - 0.5).abs() < f64::EPSILON);
+        // Verify accumulator was not created for this failed transaction
+        let accumulator_result = find_by_symbol(&pool, "AAPL").await.unwrap();
+        assert!(accumulator_result.is_none());
+
+        // Verify only the original execution remains
+        let executions = crate::schwab::execution::find_pending_executions_by_symbol(&pool, "AAPL")
+            .await
+            .unwrap();
+        assert_eq!(executions.len(), 1);
+        assert_eq!(executions[0].shares, 50);
     }
 
     #[tokio::test]
