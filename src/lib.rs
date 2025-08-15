@@ -1,26 +1,54 @@
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock};
+
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use alloy::rpc::types::Log;
 use alloy::sol_types;
 use clap::Parser;
 use futures_util::{Stream, StreamExt};
 use sqlx::SqlitePool;
-use tracing::{Level, info};
+use tokio::sync::{Mutex, RwLock};
+use tracing::{Level, error, info};
 
-pub mod arb;
 mod bindings;
 pub mod cli;
+pub mod error;
+mod lock;
+pub mod onchain;
 pub mod schwab;
 mod symbol_cache;
-pub mod trade;
 
 #[cfg(test)]
 pub mod test_utils;
 
-use arb::ArbTrade;
 use bindings::IOrderBookV4::{ClearV2, IOrderBookV4Instance, TakeOrderV2};
-use schwab::{SchwabAuthEnv, order::execute_trade};
+use onchain::{EvmEnv, OnchainTrade, accumulator};
+use schwab::{SchwabAuthEnv, execution::find_execution_by_id, order::execute_schwab_order};
 use symbol_cache::SymbolCache;
-use trade::{EvmEnv, PartialArbTrade};
+
+/// Global symbol-level locks to prevent race conditions during concurrent trade processing.
+/// Each symbol gets its own mutex to ensure atomic accumulation operations.
+static SYMBOL_LOCKS: LazyLock<RwLock<HashMap<String, Arc<Mutex<()>>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Acquires a symbol-specific lock to ensure atomic trade processing.
+/// Creates a new lock for the symbol if one doesn't exist.
+async fn get_symbol_lock(symbol: &str) -> Arc<Mutex<()>> {
+    // First try to get existing lock with read lock (most common case)
+    {
+        let locks_read = SYMBOL_LOCKS.read().await;
+        if let Some(lock) = locks_read.get(symbol) {
+            return lock.clone();
+        }
+    }
+
+    // If lock doesn't exist, acquire write lock and create new one
+    let mut locks_write = SYMBOL_LOCKS.write().await;
+    locks_write
+        .entry(symbol.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
 
 #[derive(clap::ValueEnum, Debug, Clone)]
 pub enum LogLevel {
@@ -134,50 +162,77 @@ where
     S2: Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin,
     P: Provider + Clone,
 {
-    let trade = tokio::select! {
+    let onchain_trade = tokio::select! {
         Some(next_res) = clear_stream.next() => {
             let (event, log) = next_res?;
-            PartialArbTrade::try_from_clear_v2(&env.evm_env, cache, provider, event, log).await?
+            OnchainTrade::try_from_clear_v2(&env.evm_env, cache, provider, event, log).await?
         }
         Some(take) = take_stream.next() => {
             let (event, log) = take?;
-            PartialArbTrade::try_from_take_order_if_target_order(cache, provider, event, log, env.evm_env.order_hash).await?
+            OnchainTrade::try_from_take_order_if_target_order(cache, provider, event, log, env.evm_env.order_hash).await?
         }
     };
 
-    let Some(trade) = trade else {
+    let Some(onchain_trade) = onchain_trade else {
         return Ok(());
     };
 
-    let arb_trade = ArbTrade::from_partial_trade(trade.clone());
+    // Acquire symbol-level lock to prevent race conditions during accumulation
+    let symbol_lock = get_symbol_lock(&onchain_trade.symbol).await;
+    let _guard = symbol_lock.lock().await;
 
-    let was_inserted = arb_trade.try_save_to_db(pool).await?;
-    if !was_inserted {
+    // Save values for logging before the trade is moved
+    let tx_hash = onchain_trade.tx_hash;
+    let log_index = onchain_trade.log_index;
+
+    let execution = accumulator::add_trade(pool, onchain_trade).await?;
+    let execution_id = execution.and_then(|exec| exec.id);
+
+    if let Some(exec_id) = execution_id {
+        info!("Trade triggered Schwab execution with ID: {}", exec_id);
+
+        let env_clone = env.clone();
+        let pool_clone = pool.clone();
+        tokio::spawn(async move {
+            if let Err(e) = execute_pending_schwab_execution(&env_clone, &pool_clone, exec_id).await
+            {
+                error!("Failed to execute Schwab order: {}", e);
+            }
+        });
+    } else {
         info!(
-            "Trade already exists in database, skipping: tx_hash={tx_hash:?}, log_index={log_index}",
-            tx_hash = trade.tx_hash,
-            log_index = trade.log_index
+            "Trade accumulated but did not trigger execution: tx_hash={:?}, log_index={}",
+            tx_hash, log_index
         );
-        return Ok(());
     }
 
-    info!("Saved trade to database: {trade:?}");
-
-    let env_clone = env.clone();
-    let pool_clone = pool.clone();
-
-    const MAX_TRADE_RETRIES: usize = 10;
-    tokio::spawn(async move {
-        execute_trade(&env_clone, &pool_clone, arb_trade, MAX_TRADE_RETRIES).await;
-    });
-
     Ok(())
+}
+
+/// Execute a pending Schwab execution by fetching it from the database and placing the order.
+async fn execute_pending_schwab_execution(
+    env: &Env,
+    pool: &SqlitePool,
+    execution_id: i64,
+) -> anyhow::Result<()> {
+    let execution = find_execution_by_id(pool, execution_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Execution with ID {} not found", execution_id))?;
+
+    info!("Executing Schwab order: {:?}", execution);
+
+    // Use the unified execute_schwab_order function with retry logic
+    execute_schwab_order(env, pool, execution, 3)
+        .await
+        .map_err(anyhow::Error::from)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trade::{SchwabInstruction, TradeStatus};
+    use crate::onchain::trade::OnchainTrade;
+    use crate::schwab::Direction;
+    use crate::test_utils::{OnchainTradeBuilder, setup_test_db};
     use alloy::primitives::{IntoLogData, U256, address, fixed_bytes, keccak256};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
     use alloy::rpc::types::Log;
@@ -188,14 +243,7 @@ mod tests {
     };
     use futures_util::stream;
     use serde_json::json;
-    use sqlx::SqlitePool;
     use std::str::FromStr;
-
-    async fn setup_test_db() -> SqlitePool {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
-        sqlx::migrate!().run(&pool).await.unwrap();
-        pool
-    }
 
     fn create_test_env_with_order_hash(order_hash: alloy::primitives::B256) -> Env {
         Env {
@@ -260,49 +308,38 @@ mod tests {
         .await
         .unwrap();
 
-        let count = sqlx::query!("SELECT COUNT(*) as count FROM trades")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(count.count, 0);
+        let count = OnchainTrade::db_count(&pool).await.unwrap();
+        assert_eq!(count, 0);
     }
 
     #[tokio::test]
-    async fn test_arb_trade_duplicate_handling() {
+    async fn test_onchain_trade_duplicate_handling() {
         let pool = setup_test_db().await;
 
-        let existing_trade = ArbTrade {
-            tx_hash: fixed_bytes!(
+        let existing_trade = OnchainTradeBuilder::new()
+            .with_tx_hash(fixed_bytes!(
                 "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-            ),
-            log_index: 293,
-            onchain_input_symbol: "USDC".to_string(),
-            onchain_input_amount: 1000.0,
-            onchain_output_symbol: "AAPLs1".to_string(),
-            onchain_output_amount: 5.0,
-            onchain_io_ratio: 200.0,
-            schwab_ticker: "AAPL".to_string(),
-            schwab_instruction: SchwabInstruction::Buy,
-            schwab_quantity: 5,
-            onchain_price_per_share_cents: 20000.0,
-            schwab_price_per_share_cents: None,
-            status: TradeStatus::Pending,
-            schwab_order_id: None,
-            id: None,
-            created_at: None,
-            completed_at: None,
-        };
-        existing_trade.try_save_to_db(&pool).await.unwrap();
-
-        let duplicate_trade = existing_trade.clone();
-        let was_inserted = duplicate_trade.try_save_to_db(&pool).await.unwrap();
-        assert!(!was_inserted);
-
-        let count = sqlx::query!("SELECT COUNT(*) as count FROM trades")
-            .fetch_one(&pool)
+            ))
+            .with_log_index(293)
+            .with_symbol("AAPLs1")
+            .with_amount(5.0)
+            .with_price(20000.0)
+            .build();
+        let mut sql_tx = pool.begin().await.unwrap();
+        existing_trade
+            .save_within_transaction(&mut sql_tx)
             .await
             .unwrap();
-        assert_eq!(count.count, 1);
+        sql_tx.commit().await.unwrap();
+
+        let duplicate_trade = existing_trade.clone();
+        let mut sql_tx2 = pool.begin().await.unwrap();
+        let duplicate_result = duplicate_trade.save_within_transaction(&mut sql_tx2).await;
+        assert!(duplicate_result.is_err());
+        sql_tx2.rollback().await.unwrap();
+
+        let count = OnchainTrade::db_count(&pool).await.unwrap();
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]
@@ -311,28 +348,24 @@ mod tests {
         let env = create_test_env();
         let cache = SymbolCache::default();
 
-        let existing_trade = ArbTrade {
+        let existing_trade = OnchainTrade {
+            id: None,
             tx_hash: fixed_bytes!(
                 "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             ),
             log_index: 293,
-            onchain_input_symbol: "USDC".to_string(),
-            onchain_input_amount: 1000.0,
-            onchain_output_symbol: "AAPLs1".to_string(),
-            onchain_output_amount: 5.0,
-            onchain_io_ratio: 200.0,
-            schwab_ticker: "AAPL".to_string(),
-            schwab_instruction: SchwabInstruction::Buy,
-            schwab_quantity: 5,
-            onchain_price_per_share_cents: 20000.0,
-            schwab_price_per_share_cents: None,
-            status: TradeStatus::Pending,
-            schwab_order_id: None,
-            id: None,
+            symbol: "AAPLs1".to_string(),
+            amount: 5.0,
+            direction: Direction::Sell,
+            price_usdc: 20000.0,
             created_at: None,
-            completed_at: None,
         };
-        existing_trade.try_save_to_db(&pool).await.unwrap();
+        let mut sql_tx = pool.begin().await.unwrap();
+        existing_trade
+            .save_within_transaction(&mut sql_tx)
+            .await
+            .unwrap();
+        sql_tx.commit().await.unwrap();
 
         cache.insert_for_test(
             address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
@@ -367,11 +400,8 @@ mod tests {
         .await
         .unwrap();
 
-        let count = sqlx::query!("SELECT COUNT(*) as count FROM trades")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(count.count, 1);
+        let count = OnchainTrade::db_count(&pool).await.unwrap();
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]
@@ -467,21 +497,14 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
-        let count = sqlx::query!("SELECT COUNT(*) as count FROM trades")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(count.count, 1);
+        let count = OnchainTrade::db_count(&pool).await.unwrap();
+        assert_eq!(count, 1);
 
-        let trade = sqlx::query!("SELECT * FROM trades LIMIT 1")
-            .fetch_one(&pool)
+        let trade = OnchainTrade::find_by_tx_hash_and_log_index(&pool, tx_hash, 1)
             .await
             .unwrap();
-        assert_eq!(trade.onchain_input_symbol.unwrap(), "USDC");
-        assert_eq!(trade.onchain_output_symbol.unwrap(), "AAPLs1");
-        assert_eq!(trade.schwab_ticker.unwrap(), "AAPL");
-        assert_eq!(trade.schwab_instruction.unwrap(), "BUY");
-        assert!(trade.schwab_price_per_share_cents.is_none());
-        assert_eq!(trade.status.unwrap(), "PENDING");
+        assert_eq!(trade.symbol, "AAPLs1");
+        assert!((trade.amount - 9.0).abs() < f64::EPSILON); // Expected amount from test data  
+        assert!((trade.price_usdc - 11.111_111_111_111_11).abs() < 0.001); // Updated expected price
     }
 }

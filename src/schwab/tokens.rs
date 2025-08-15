@@ -124,6 +124,13 @@ impl SchwabTokens {
         Ok(new_tokens.access_token)
     }
 
+    pub async fn db_count(pool: &SqlitePool) -> Result<i64, SchwabError> {
+        let count = sqlx::query_scalar!("SELECT COUNT(*) FROM schwab_auth")
+            .fetch_one(pool)
+            .await?;
+        Ok(count)
+    }
+
     pub fn spawn_automatic_token_refresh(pool: SqlitePool, env: SchwabAuthEnv) {
         tokio::spawn(async move {
             if let Err(e) = Self::start_automatic_token_refresh_loop(pool, env).await {
@@ -137,11 +144,10 @@ impl SchwabTokens {
         env: SchwabAuthEnv,
     ) -> Result<(), SchwabError> {
         let refresh_interval_secs = (ACCESS_TOKEN_DURATION_MINUTES - 1) * 60;
-        let mut interval_timer = interval(TokioDuration::from_secs(
-            refresh_interval_secs
-                .try_into()
-                .expect("refresh interval must be positive"),
-        ));
+        let refresh_interval_u64 = refresh_interval_secs.try_into().map_err(|_| {
+            SchwabError::InvalidConfiguration("Refresh interval out of range".to_string())
+        })?;
+        let mut interval_timer = interval(TokioDuration::from_secs(refresh_interval_u64));
 
         loop {
             interval_timer.tick().await;
@@ -196,10 +202,10 @@ impl SchwabTokens {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::setup_test_db;
     use chrono::Utc;
     use httpmock::prelude::*;
     use serde_json::json;
-    use sqlx::SqlitePool;
 
     fn create_test_env_with_mock_server(mock_server: &MockServer) -> SchwabAuthEnv {
         SchwabAuthEnv {
@@ -219,12 +225,6 @@ mod tests {
             base_url: "https://api.schwabapi.com".to_string(),
             account_index: 0,
         }
-    }
-
-    async fn setup_test_db() -> SqlitePool {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
-        sqlx::migrate!().run(&pool).await.unwrap();
-        pool
     }
 
     #[tokio::test]
@@ -271,11 +271,7 @@ mod tests {
 
         updated_tokens.store(&pool).await.unwrap();
 
-        let count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_auth")
-            .fetch_one(&pool)
-            .await
-            .unwrap()
-            .count;
+        let count = SchwabTokens::db_count(&pool).await.unwrap();
         assert_eq!(count, 1);
 
         let stored_tokens = SchwabTokens::load(&pool).await.unwrap();

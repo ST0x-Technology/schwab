@@ -38,15 +38,16 @@ The focus is on getting a functional system live quickly. There are known risks 
 
 1. Order continuously offers to buy/sell tokenized equities at Pyth price ± spread  
 2. Bot monitors Raindex for clears involving the arbitrageur's order  
-3. Upon detecting an onchain trade, the bot immediately executes the opposite trade on Charles Schwab  
-4. Bot maintains running inventory of positions across both venues  
-5. Periodic rebalancing via st0x bridge to normalize inventory levels
+3. Bot records onchain trades and accumulates net position changes per symbol  
+4. When accumulated net position reaches ≥1 whole share, execute offsetting trade on Charles Schwab for the floor of the net amount, continuing to track the remaining fractional amount  
+5. Bot maintains running inventory of positions across both venues  
+6. Periodic rebalancing via st0x bridge to normalize inventory levels
 
-Example:
+Example (Offchain Batching):
 
-* If onchain order sells AAPL tokens → bot buys AAPL on Schwab  
-* If onchain order buys AAPL tokens → bot sells AAPL on Schwab  
-* The net position should remain approximately neutral across venues
+* Onchain trades: 0.3 AAPL sold, 0.5 AAPL sold, 0.4 AAPL sold → net 1.2 AAPL sold  
+* Bot executes: Buy 1 AAPL share on Schwab (floor of 1.2), continues tracking 0.2 AAPL net exposure  
+* Continue accumulating fractional amount until next whole share threshold is reached
 
 **Rebalancing Process (Manual for now):**
 
@@ -173,6 +174,7 @@ The following risks are known for v1 but will not be addressed in the initial im
 
 ### **Offchain Risks**
 
+* **Fractional Share Exposure**: Charles Schwab API doesn't support fractional shares, requiring offchain batching until net positions reach whole share amounts. This creates temporary unhedged exposure for fractional amounts that haven't reached the execution threshold.
 * **Missed Trade Execution**: The bot fails to execute offsetting trades on Charles Schwab when onchain trades occur, creating unhedged exposure. For example:  
   * Bot downtime while onchain order remains active  
   * Bot detects onchain trade but fails to execute offchain trade  

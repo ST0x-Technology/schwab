@@ -9,32 +9,42 @@ This is a Rust-based arbitrage bot for tokenized equities that monitors onchain 
 ## Key Development Commands
 
 ### Building & Running
+
 - `cargo build` - Build the project
 - `cargo run --bin main` - Run the main arbitrage bot
 - `cargo run --bin auth` - Run the authentication flow for Charles Schwab OAuth setup
+- `cargo run --bin cli` - Run the command-line interface for manual operations
 
 ### Testing
-- `cargo test` - Run all tests
-- `cargo test --lib` - Run library tests only
-- `cargo test --bin <binary>` - Run tests for specific binary
-- `cargo test <test_name>` - Run specific test
+
+- `cargo test -q` - Run all tests
+- `cargo test -q --lib` - Run library tests only
+- `cargo test -q --bin <binary>` - Run tests for specific binary
+- `cargo test -q <test_name>` - Run specific test
 
 ### Database Management
-- `sqlx db create` - Apply database migrations
+
+- `sqlx db create` - Create the database
 - `sqlx migrate run` - Apply database migrations
 - `sqlx migrate revert` - Revert last migration
 - Database URL configured via `DATABASE_URL` environment variable
 
 ### Development Tools
+
 - `rainix-rs-static` - Run Rust static analysis
 - `cargo clippy --all-targets --all-features -- -D clippy::all` - Run Clippy for linting
 - `cargo fmt` - Format code
 - `cargo-tarpaulin --skip-clean --out Html` - Generate test coverage report
 
 ### Nix Development Environment
+
 - `nix develop` - Enter development shell with all dependencies
 - `nix run .#prepSolArtifacts` - Build Solidity artifacts for orderbook interface
 - `nix run .#checkTestCoverage` - Generate test coverage report
+
+## Development Workflow Notes
+
+- When running `git diff`, make sure to add `--no-pager` to avoid opening it in the interactive view, e.g. `git --no-pager diff`
 
 ## Architecture Overview
 
