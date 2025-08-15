@@ -20,6 +20,7 @@ This is a Rust-based arbitrage bot for tokenized equities that monitors onchain 
 - `cargo test <test_name>` - Run specific test
 
 ### Database Management
+- `sqlx db create` - Apply database migrations
 - `sqlx migrate run` - Apply database migrations
 - `sqlx migrate revert` - Revert last migration
 - Database URL configured via `DATABASE_URL` environment variable

@@ -7,7 +7,7 @@ use tracing::debug;
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv_override().ok();
     let env = Env::try_parse()?;
-    setup_tracing(env.log_level.clone());
+    setup_tracing(&env.log_level);
 
     debug!("Connecting to SQLite...");
     let pool = env.get_sqlite_pool().await?;
