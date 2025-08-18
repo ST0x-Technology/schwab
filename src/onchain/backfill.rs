@@ -2,17 +2,22 @@ use alloy::providers::Provider;
 use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
 use backon::{ExponentialBuilder, Retryable};
-use futures_util::{StreamExt, TryStreamExt, future, stream};
+use futures_util::future;
 use itertools::Itertools;
 use sqlx::SqlitePool;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
-use super::{EvmEnv, accumulator, trade::OnchainTrade};
+use super::EvmEnv;
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
 use crate::error::OnChainError;
-use crate::schwab::execution::SchwabExecution;
-use crate::symbol_cache::SymbolCache;
+use crate::queue::{enqueue, get_unprocessed_count};
+
+#[derive(Debug, Clone)]
+enum DecodedEvent {
+    ClearV2(ClearV2),
+    TakeOrderV2(TakeOrderV2),
+}
 
 const BACKFILL_BATCH_SIZE: usize = 1000;
 const BACKFILL_MAX_RETRIES: usize = 3;
@@ -20,93 +25,49 @@ const BACKFILL_INITIAL_DELAY: Duration = Duration::from_millis(1000);
 const BACKFILL_MAX_DELAY: Duration = Duration::from_secs(30);
 
 pub async fn backfill_events<P: Provider + Clone>(
+    pool: &SqlitePool,
     provider: &P,
-    cache: &SymbolCache,
     evm_env: &EvmEnv,
-) -> Result<Vec<OnchainTrade>, OnChainError> {
-    let current_block = provider.get_block_number().await?;
-
-    if evm_env.deployment_block > current_block {
-        return Ok(Vec::new());
+    end_block: u64,
+) -> Result<(), OnChainError> {
+    if evm_env.deployment_block > end_block {
+        return Ok(());
     }
 
-    let total_blocks = current_block - evm_env.deployment_block + 1;
+    let total_blocks = end_block - evm_env.deployment_block + 1;
 
     info!(
         "Starting backfill from block {} to {} ({} blocks)",
-        evm_env.deployment_block, current_block, total_blocks
+        evm_env.deployment_block, end_block, total_blocks
     );
 
-    let batch_ranges = generate_batch_ranges(evm_env.deployment_block, current_block);
+    let batch_ranges = generate_batch_ranges(evm_env.deployment_block, end_block);
 
-    let all_trades: Vec<OnchainTrade> = stream::iter(batch_ranges.into_iter().enumerate())
-        .then(|(batch_index, (batch_start, batch_end))| async move {
+    let batch_tasks = batch_ranges
+        .into_iter()
+        .enumerate()
+        .map(|(batch_index, (batch_start, batch_end))| {
             let processed_blocks = batch_index * BACKFILL_BATCH_SIZE;
 
             debug!(
                 "Processing blocks {batch_start}-{batch_end} ({processed_blocks}/{total_blocks} blocks processed)"
             );
 
-            process_batch(provider, cache, evm_env, batch_start, batch_end).await
+            enqueue_batch_events(pool, provider, evm_env, batch_start, batch_end)
         })
-        .try_collect::<Vec<_>>()
-        .await?
+        .collect::<Vec<_>>();
+
+    let batch_results = future::join_all(batch_tasks).await;
+
+    let total_enqueued = batch_results
         .into_iter()
-        .flatten()
-        .collect();
-
-    info!(
-        "Backfill completed: {} valid trades found",
-        all_trades.len()
-    );
-
-    Ok(all_trades)
-}
-
-pub async fn backfill_and_process_trades<P: Provider + Clone>(
-    pool: &SqlitePool,
-    provider: &P,
-    cache: &SymbolCache,
-    evm_env: &EvmEnv,
-) -> Result<Vec<SchwabExecution>, OnChainError> {
-    let trades = backfill_events(provider, cache, evm_env).await?;
-
-    let executions: Vec<SchwabExecution> = stream::iter(trades)
-        .then(|trade| async {
-            info!(
-                tx_hash = ?trade.tx_hash,
-                log_index = trade.log_index,
-                symbol = %trade.symbol,
-                amount = trade.amount,
-                direction = ?trade.direction,
-                "Processing backfilled trade through accumulator"
-            );
-
-            accumulator::add_trade(pool, trade).await.map(|execution| {
-                if let Some(ref exec) = execution {
-                    info!(
-                        execution_id = ?exec.id,
-                        symbol = %exec.symbol,
-                        shares = exec.shares,
-                        direction = ?exec.direction,
-                        "Backfilled trade triggered SchwabExecution"
-                    );
-                }
-                execution
-            })
-        })
-        .try_collect::<Vec<_>>()
-        .await?
+        .collect::<Result<Vec<_>, _>>()?
         .into_iter()
-        .flatten()
-        .collect();
+        .sum::<usize>();
 
-    info!(
-        total_executions = executions.len(),
-        "Backfill processing completed"
-    );
+    info!("Backfill completed: {total_enqueued} events enqueued");
 
-    Ok(executions)
+    Ok(())
 }
 
 pub async fn process_batch<P: Provider + Clone>(
@@ -170,42 +131,51 @@ async fn process_batch_inner<P: Provider + Clone>(
         batch_end
     );
 
-    let trades = stream::iter(
-        clear_logs
-            .into_iter()
-            .chain(take_logs)
-            .sorted_by_key(|log| (log.block_number, log.log_index)),
-    )
-    .then(|log| async move {
-        if let Ok(clear_event_log) = log.log_decode::<ClearV2>() {
-            OnchainTrade::try_from_clear_v2(
-                evm_env,
-                cache,
-                provider.clone(),
-                clear_event_log.data().clone(),
-                log,
-            )
-            .await
-        } else if let Ok(take_event_log) = log.log_decode::<TakeOrderV2>() {
-            OnchainTrade::try_from_take_order_if_target_order(
-                cache,
-                provider.clone(),
-                take_event_log.data().clone(),
-                log,
-                evm_env.order_hash,
-            )
-            .await
-        } else {
-            Ok(None)
-        }
-    })
-    .try_collect::<Vec<_>>()
-    .await?
-    .into_iter()
-    .flatten()
-    .collect();
+    let all_logs = clear_logs
+        .into_iter()
+        .chain(take_logs.into_iter())
+        .collect::<Vec<_>>();
 
-    Ok(trades)
+    let enqueue_tasks = all_logs
+        .into_iter()
+        .sorted_by_key(|log| (log.block_number, log.log_index))
+        .filter_map(|log| {
+            // Try ClearV2 first
+            if let Ok(clear_event) = log.log_decode::<ClearV2>() {
+                Some((
+                    DecodedEvent::ClearV2(Box::new(clear_event.data().clone())),
+                    log,
+                ))
+            // Then try TakeOrderV2
+            } else if let Ok(take_event) = log.log_decode::<TakeOrderV2>() {
+                Some((
+                    DecodedEvent::TakeOrderV2(Box::new(take_event.data().clone())),
+                    log,
+                ))
+            } else {
+                None
+            }
+        })
+        .map(|(decoded_event, log)| async move {
+            let result = match decoded_event {
+                DecodedEvent::ClearV2(event) => enqueue(pool, &*event, &log).await,
+                DecodedEvent::TakeOrderV2(event) => enqueue(pool, &*event, &log).await,
+            };
+            match result {
+                Ok(()) => Some(()),
+                Err(e) => {
+                    warn!("Failed to enqueue event during backfill: {e}");
+                    None
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let enqueue_results = future::join_all(enqueue_tasks).await;
+
+    let enqueued_count = enqueue_results.into_iter().flatten().count();
+
+    Ok(enqueued_count)
 }
 
 pub fn generate_batch_ranges(start_block: u64, end_block: u64) -> Vec<(u64, u64)> {
@@ -291,6 +261,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_backfill_events_with_clear_v2_events() {
+        let pool = setup_test_db().await;
         let order = get_test_order();
         let order_hash = keccak256(order.abi_encode());
         let evm_env = EvmEnv {
@@ -393,6 +364,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_backfill_events_with_take_order_v2_events() {
+        let pool = setup_test_db().await;
         let order = get_test_order();
         let order_hash = keccak256(order.abi_encode());
         let evm_env = EvmEnv {
@@ -414,6 +386,9 @@ mod tests {
             output: U256::from_str("9000000000000000000").unwrap(),
         };
 
+        let tx_hash = fixed_bytes!(
+            "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        );
         let take_log = Log {
             inner: alloy::primitives::Log {
                 address: evm_env.orderbook,
@@ -422,9 +397,7 @@ mod tests {
             block_hash: None,
             block_number: Some(50),
             block_timestamp: None,
-            transaction_hash: Some(fixed_bytes!(
-                "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-            )),
+            transaction_hash: Some(tx_hash),
             transaction_index: None,
             log_index: Some(1),
             removed: false,

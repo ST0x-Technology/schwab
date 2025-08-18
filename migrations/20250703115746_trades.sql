@@ -90,3 +90,23 @@ CREATE TABLE symbol_locks (
   symbol TEXT PRIMARY KEY NOT NULL,
   locked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
+
+-- Event queue table for idempotent event processing
+-- Ensures events are persisted before processing to prevent loss during restarts
+CREATE TABLE event_queue (
+  id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+  tx_hash TEXT NOT NULL CHECK (length(tx_hash) = 66 AND tx_hash LIKE '0x%'),
+  log_index INTEGER NOT NULL CHECK (log_index >= 0),
+  block_number INTEGER NOT NULL CHECK (block_number >= 0),
+  event_data TEXT NOT NULL,  -- JSON serialized event data
+  processed BOOLEAN NOT NULL DEFAULT 0,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  processed_at TIMESTAMP,
+  UNIQUE (tx_hash, log_index),  -- Prevent duplicate events
+  CHECK (event_data != '')  -- Ensure event data is not empty
+);
+
+-- Indexes for event_queue table
+CREATE INDEX idx_event_queue_processed ON event_queue(processed);
+CREATE INDEX idx_event_queue_block_number ON event_queue(block_number);
+CREATE INDEX idx_event_queue_created_at ON event_queue(created_at);

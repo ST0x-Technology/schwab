@@ -70,6 +70,15 @@ pub enum SchwabApiError {
     ApiCall(String),
 }
 
+/// Event queue persistence and processing errors.
+#[derive(Debug, thiserror::Error)]
+pub enum EventQueueError {
+    #[error("Database error: {0}")]
+    Database(#[from] sqlx::Error),
+    #[error("Event queue error: {0}")]
+    Processing(String),
+}
+
 /// Unified error type for onchain trade processing with clear domain boundaries.
 /// Provides error mapping between layers while maintaining separation of concerns.
 #[derive(Debug, thiserror::Error)]

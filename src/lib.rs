@@ -15,6 +15,7 @@ pub mod cli;
 pub mod error;
 mod lock;
 pub mod onchain;
+pub mod queue;
 pub mod schwab;
 mod symbol_cache;
 
@@ -23,6 +24,7 @@ pub mod test_utils;
 
 use bindings::IOrderBookV4::{ClearV2, IOrderBookV4Instance, TakeOrderV2};
 use onchain::{EvmEnv, OnchainTrade, accumulator};
+use queue::{enqueue_blockchain_event, get_next_unprocessed_event, mark_event_processed};
 use schwab::{SchwabAuthEnv, execution::find_execution_by_id, order::execute_schwab_order};
 use symbol_cache::SymbolCache;
 
@@ -130,6 +132,9 @@ pub async fn run(env: Env) -> anyhow::Result<()> {
         env.schwab_auth.clone(),
     );
 
+    // Process any unprocessed events from previous runs
+    process_unprocessed_events(&pool).await?;
+
     let clear_filter = orderbook.ClearV2_filter().watch().await?;
     let take_filter = orderbook.TakeOrderV2_filter().watch().await?;
 
@@ -165,10 +170,20 @@ where
     let onchain_trade = tokio::select! {
         Some(next_res) = clear_stream.next() => {
             let (event, log) = next_res?;
+
+            if let Err(e) = enqueue(pool, &event, &log).await {
+                error!("Failed to enqueue ClearV2 event: {e}");
+            }
+
             OnchainTrade::try_from_clear_v2(&env.evm_env, cache, provider, event, log).await?
         }
         Some(take) = take_stream.next() => {
             let (event, log) = take?;
+
+            if let Err(e) = enqueue(pool, &event, &log).await {
+                error!("Failed to enqueue TakeOrderV2 event: {e}");
+            }
+
             OnchainTrade::try_from_take_order_if_target_order(cache, provider, event, log, env.evm_env.order_hash).await?
         }
     };
