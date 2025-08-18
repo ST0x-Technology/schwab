@@ -115,7 +115,7 @@ Environment variables (can be set via `.env` file):
 - **Symbol Suffix Convention**: Tokenized equities use "s1" suffix to distinguish from base assets
 - **Price Direction Logic**: Onchain buy = offchain sell (and vice versa) to maintain market-neutral positions
 - **Comprehensive Error Handling**: Custom error types (`TradeConversionError`, `SchwabAuthError`) with proper propagation
-- **Idiomatic Functional Programming**: Prefer iterator-based functional programming patterns over imperative loops unless it increases complexity
+- **Idiomatic Functional Programming**: Prefer iterator-based functional programming patterns over imperative loops unless it increases complexity. Use itertools to be able to do more with iterators and functional programming in Rust
 - **Comments**: Follow comprehensive commenting guidelines (see detailed section below)
 - **Spacing**: Leave an empty line in between code blocks to allow vim curly braces jumping between blocks and for easier reading
 - **Import Conventions**: Use qualified imports when they prevent ambiguity (e.g. `contract::Error` for `alloy::contract::Error`), but avoid them when the module is clear (e.g. use `info!` instead of `tracing::info!`). Generally avoid imports inside functions
