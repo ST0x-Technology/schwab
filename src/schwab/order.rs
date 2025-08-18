@@ -243,13 +243,14 @@ pub struct Instrument {
     pub asset_type: AssetType,
 }
 
+const MAX_RETRIES: usize = 3;
+
 /// Execute a Schwab order using the unified system.
 /// Takes a SchwabExecution and places the corresponding order via Schwab API.
 pub async fn execute_schwab_order(
     env: &Env,
     pool: &SqlitePool,
     execution: SchwabExecution,
-    max_retries: usize,
 ) -> Result<(), SchwabError> {
     let schwab_instruction = match execution.direction {
         SchwabInstruction::Buy => Instruction::Buy,
@@ -263,7 +264,7 @@ pub async fn execute_schwab_order(
     );
 
     let result = (|| async { order.place(&env.schwab_auth, pool).await })
-        .retry(&ExponentialBuilder::default().with_max_times(max_retries))
+        .retry(&ExponentialBuilder::default().with_max_times(MAX_RETRIES))
         .await;
 
     let execution_id = execution.id.ok_or_else(|| {

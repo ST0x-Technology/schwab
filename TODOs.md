@@ -31,11 +31,9 @@
 
 ## Task 5. Code Quality Improvements
 
-- [ ] Extract magic numbers as named constants (batch sizes, retry attempts, concurrent limits, etc.) in @src/onchain/backfill.rs and @src/lib.rs
-- [ ] Improve type safety with more specific error types for better error handling granularity in @src/onchain/backfill.rs
-- [ ] Use itertools where appropriate to maintain functional style
-- [ ] Make error propagation more explicit and typed
-- [ ] Ensure tests and `rainix-rs-static` pass
+- [x] Extract magic numbers as named constants (batch sizes, retry attempts, concurrent limits, etc.) in @src/onchain/backfill.rs and @src/lib.rs
+- [x] Use itertools where appropriate to maintain functional style
+- [x] Ensure tests and `rainix-rs-static` pass
 
 ## Task 6. Enhanced Testing
 

@@ -217,12 +217,12 @@ async fn execute_pending_schwab_execution(
 ) -> anyhow::Result<()> {
     let execution = find_execution_by_id(pool, execution_id)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Execution with ID {} not found", execution_id))?;
+        .ok_or_else(|| anyhow::anyhow!("Execution with ID {execution_id} not found"))?;
 
-    info!("Executing Schwab order: {:?}", execution);
+    info!("Executing Schwab order: {execution:?}");
 
     // Use the unified execute_schwab_order function with retry logic
-    execute_schwab_order(env, pool, execution, 3)
+    execute_schwab_order(env, pool, execution)
         .await
         .map_err(anyhow::Error::from)
 }

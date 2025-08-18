@@ -6,10 +6,16 @@ pub async fn try_acquire_execution_lease(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     symbol: &str,
 ) -> Result<bool, OnChainError> {
+    const LOCK_TIMEOUT_MINUTES: i32 = 5;
+
     // Clean up old locks first (older than 5 minutes)
-    sqlx::query("DELETE FROM symbol_locks WHERE locked_at < datetime('now', '-5 minutes')")
-        .execute(sql_tx.as_mut())
-        .await?;
+    let timeout_param = format!("-{LOCK_TIMEOUT_MINUTES} minutes");
+    sqlx::query!(
+        "DELETE FROM symbol_locks WHERE locked_at < datetime('now', ?1)",
+        timeout_param
+    )
+    .execute(sql_tx.as_mut())
+    .await?;
 
     // Try to acquire lock by inserting into symbol_locks table
     let result = sqlx::query("INSERT OR IGNORE INTO symbol_locks (symbol) VALUES (?1)")

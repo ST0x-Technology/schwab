@@ -325,7 +325,7 @@ async fn process_found_trade<W: Write>(
         )?;
         ensure_authentication(pool, &env.schwab_auth, stdout).await?;
         writeln!(stdout, "🔄 Executing Schwab order...")?;
-        execute_schwab_order(env, pool, execution, 3)
+        execute_schwab_order(env, pool, execution)
             .await
             .map_err(anyhow::Error::from)?;
         writeln!(stdout, "🎯 Trade processing completed!")?;
