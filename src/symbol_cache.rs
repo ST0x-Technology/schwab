@@ -93,7 +93,7 @@ mod tests {
         let result = cache.get_io_symbol(provider, &io).await;
         assert!(matches!(
             result.unwrap_err(),
-            OnChainError::Execution(crate::error::ExecutionError::GetSymbol(_))
+            OnChainError::Alloy(crate::error::AlloyError::GetSymbol(_))
         ));
     }
 }

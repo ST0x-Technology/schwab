@@ -1,32 +1,18 @@
 use alloy::providers::Provider;
 use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
-use alloy::transports::{RpcError, TransportErrorKind};
 use backon::{ExponentialBuilder, Retryable};
 use futures_util::{StreamExt, TryStreamExt, future, stream};
 use itertools::Itertools;
+use sqlx::SqlitePool;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
-use super::{EvmEnv, PartialArbTrade, TradeConversionError};
+use super::{EvmEnv, accumulator, trade::OnchainTrade};
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
+use crate::error::OnChainError;
+use crate::schwab::execution::SchwabExecution;
 use crate::symbol_cache::SymbolCache;
-
-#[derive(Debug, thiserror::Error)]
-pub enum BackfillError {
-    #[error("RPC failure during batch processing: {0}")]
-    RpcFailure(#[from] RpcError<TransportErrorKind>),
-    #[error("Trade conversion error: {0}")]
-    TradeConversion(#[from] TradeConversionError),
-    #[error(
-        "Batch processing failed after all retries for range {start_block}-{end_block}: {source}"
-    )]
-    BatchRetryExhausted {
-        start_block: u64,
-        end_block: u64,
-        source: Box<BackfillError>,
-    },
-}
 
 const BACKFILL_BATCH_SIZE: usize = 1000;
 const BACKFILL_MAX_RETRIES: usize = 3;
@@ -37,7 +23,7 @@ pub async fn backfill_events<P: Provider + Clone>(
     provider: &P,
     cache: &SymbolCache,
     evm_env: &EvmEnv,
-) -> Result<Vec<PartialArbTrade>, BackfillError> {
+) -> Result<Vec<OnchainTrade>, OnChainError> {
     let current_block = provider.get_block_number().await?;
     let total_blocks = current_block - evm_env.deployment_block + 1;
 
@@ -48,7 +34,7 @@ pub async fn backfill_events<P: Provider + Clone>(
 
     let batch_ranges = generate_batch_ranges(evm_env.deployment_block, current_block);
 
-    let all_trades: Vec<PartialArbTrade> = stream::iter(batch_ranges.into_iter().enumerate())
+    let all_trades: Vec<OnchainTrade> = stream::iter(batch_ranges.into_iter().enumerate())
         .then(|(batch_index, (batch_start, batch_end))| async move {
             let processed_blocks = batch_index * BACKFILL_BATCH_SIZE;
 
@@ -62,7 +48,6 @@ pub async fn backfill_events<P: Provider + Clone>(
         .await?
         .into_iter()
         .flatten()
-        .sorted_by_key(|trade| (trade.block_number, trade.log_index))
         .collect();
 
     info!(
@@ -73,13 +58,59 @@ pub async fn backfill_events<P: Provider + Clone>(
     Ok(all_trades)
 }
 
+pub async fn backfill_and_process_trades<P: Provider + Clone>(
+    pool: &SqlitePool,
+    provider: &P,
+    cache: &SymbolCache,
+    evm_env: &EvmEnv,
+) -> Result<Vec<SchwabExecution>, OnChainError> {
+    let trades = backfill_events(provider, cache, evm_env).await?;
+
+    let executions: Vec<SchwabExecution> = stream::iter(trades)
+        .then(|trade| async {
+            info!(
+                tx_hash = ?trade.tx_hash,
+                log_index = trade.log_index,
+                symbol = %trade.symbol,
+                amount = trade.amount,
+                direction = ?trade.direction,
+                "Processing backfilled trade through accumulator"
+            );
+
+            accumulator::add_trade(pool, trade).await.map(|execution| {
+                if let Some(ref exec) = execution {
+                    info!(
+                        execution_id = ?exec.id,
+                        symbol = %exec.symbol,
+                        shares = exec.shares,
+                        direction = ?exec.direction,
+                        "Backfilled trade triggered SchwabExecution"
+                    );
+                }
+                execution
+            })
+        })
+        .try_collect::<Vec<_>>()
+        .await?
+        .into_iter()
+        .flatten()
+        .collect();
+
+    info!(
+        total_executions = executions.len(),
+        "Backfill processing completed"
+    );
+
+    Ok(executions)
+}
+
 pub async fn process_batch<P: Provider + Clone>(
     provider: &P,
     cache: &SymbolCache,
     evm_env: &EvmEnv,
     batch_start: u64,
     batch_end: u64,
-) -> Result<Vec<PartialArbTrade>, BackfillError> {
+) -> Result<Vec<OnchainTrade>, OnChainError> {
     let retry_strategy = ExponentialBuilder::default()
         .with_max_times(BACKFILL_MAX_RETRIES)
         .with_min_delay(BACKFILL_INITIAL_DELAY)
@@ -96,11 +127,7 @@ pub async fn process_batch<P: Provider + Clone>(
                 BACKFILL_MAX_RETRIES, batch_start, batch_end, error
             );
 
-            Err(BackfillError::BatchRetryExhausted {
-                start_block: batch_start,
-                end_block: batch_end,
-                source: Box::new(error),
-            })
+            Err(error)
         }
     }
 }
@@ -111,7 +138,7 @@ async fn process_batch_inner<P: Provider + Clone>(
     evm_env: &EvmEnv,
     batch_start: u64,
     batch_end: u64,
-) -> Result<Vec<PartialArbTrade>, BackfillError> {
+) -> Result<Vec<OnchainTrade>, OnChainError> {
     let clear_filter = Filter::new()
         .address(evm_env.orderbook)
         .from_block(batch_start)
@@ -138,35 +165,40 @@ async fn process_batch_inner<P: Provider + Clone>(
         batch_end
     );
 
-    let trades = stream::iter(clear_logs.into_iter().chain(take_logs))
-        .then(|log| async move {
-            if let Ok(clear_event_log) = log.log_decode::<ClearV2>() {
-                PartialArbTrade::try_from_clear_v2(
-                    evm_env,
-                    cache,
-                    provider.clone(),
-                    clear_event_log.data().clone(),
-                    log,
-                )
-                .await
-            } else if let Ok(take_event_log) = log.log_decode::<TakeOrderV2>() {
-                PartialArbTrade::try_from_take_order_if_target_order(
-                    cache,
-                    provider.clone(),
-                    take_event_log.data().clone(),
-                    log,
-                    evm_env.order_hash,
-                )
-                .await
-            } else {
-                Ok(None)
-            }
-        })
-        .try_collect::<Vec<_>>()
-        .await?
-        .into_iter()
-        .flatten()
-        .collect();
+    let trades = stream::iter(
+        clear_logs
+            .into_iter()
+            .chain(take_logs)
+            .sorted_by_key(|log| (log.block_number, log.log_index)),
+    )
+    .then(|log| async move {
+        if let Ok(clear_event_log) = log.log_decode::<ClearV2>() {
+            OnchainTrade::try_from_clear_v2(
+                evm_env,
+                cache,
+                provider.clone(),
+                clear_event_log.data().clone(),
+                log,
+            )
+            .await
+        } else if let Ok(take_event_log) = log.log_decode::<TakeOrderV2>() {
+            OnchainTrade::try_from_take_order_if_target_order(
+                cache,
+                provider.clone(),
+                take_event_log.data().clone(),
+                log,
+                evm_env.order_hash,
+            )
+            .await
+        } else {
+            Ok(None)
+        }
+    })
+    .try_collect::<Vec<_>>()
+    .await?
+    .into_iter()
+    .flatten()
+    .collect();
 
     Ok(trades)
 }
@@ -194,9 +226,10 @@ mod tests {
     use super::*;
     use crate::bindings::IERC20::symbolCall;
     use crate::bindings::IOrderBookV4;
+    use crate::onchain::{EvmEnv, trade::OnchainTrade};
+    use crate::schwab::Direction;
     use crate::symbol_cache::SymbolCache;
     use crate::test_utils::get_test_order;
-    use crate::trade::{EvmEnv, PartialArbTrade, SchwabInstruction};
 
     #[tokio::test]
     async fn test_backfill_events_empty_results() {
@@ -340,21 +373,16 @@ mod tests {
         let trade = &trades[0];
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 1);
-        assert_eq!(trade.onchain_input_symbol, "USDC");
-        assert_eq!(trade.onchain_output_symbol, "AAPLs1");
-        assert!((trade.onchain_input_amount - 100.0).abs() < f64::EPSILON);
-        assert!((trade.onchain_output_amount - 9.0).abs() < f64::EPSILON);
-        assert!((trade.onchain_io_ratio - (100.0 / 9.0)).abs() < f64::EPSILON);
-        assert_eq!(trade.schwab_ticker, "AAPL");
-        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
-        assert!((trade.schwab_quantity - 9.0).abs() < f64::EPSILON);
+        assert_eq!(trade.symbol, "AAPLs1");
+        assert!((trade.amount - 9.0).abs() < f64::EPSILON);
+        assert_eq!(trade.direction, Direction::Buy);
 
-        let expected_price = (100.0_f64 / 9.0) * 100.0;
+        let expected_price = 100.0_f64 / 9.0;
         assert!(
-            (trade.onchain_price_per_share_cents - expected_price).abs() < f64::EPSILON,
+            (trade.price_usdc - expected_price).abs() < f64::EPSILON,
             "Expected price {} but got {}",
             expected_price,
-            trade.onchain_price_per_share_cents
+            trade.price_usdc
         );
     }
 
@@ -420,21 +448,16 @@ mod tests {
             fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
         );
         assert_eq!(trade.log_index, 1);
-        assert_eq!(trade.onchain_input_symbol, "USDC");
-        assert_eq!(trade.onchain_output_symbol, "MSFTs1");
-        assert!((trade.onchain_input_amount - 100.0).abs() < f64::EPSILON);
-        assert!((trade.onchain_output_amount - 9.0).abs() < f64::EPSILON);
-        assert!((trade.onchain_io_ratio - (100.0 / 9.0)).abs() < f64::EPSILON);
-        assert_eq!(trade.schwab_ticker, "MSFT");
-        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
-        assert!((trade.schwab_quantity - 9.0).abs() < f64::EPSILON);
+        assert_eq!(trade.symbol, "MSFTs1");
+        assert!((trade.amount - 9.0).abs() < f64::EPSILON);
+        assert_eq!(trade.direction, Direction::Buy);
 
-        let expected_price = (100.0_f64 / 9.0) * 100.0;
+        let expected_price = 100.0_f64 / 9.0;
         assert!(
-            (trade.onchain_price_per_share_cents - expected_price).abs() < f64::EPSILON,
+            (trade.price_usdc - expected_price).abs() < f64::EPSILON,
             "Expected price {} but got {}",
             expected_price,
-            trade.onchain_price_per_share_cents
+            trade.price_usdc
         );
     }
 
@@ -513,7 +536,7 @@ mod tests {
         let result = backfill_events(&provider, &cache, &evm_env).await;
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), BackfillError::RpcFailure(_)));
+        assert!(matches!(result.unwrap_err(), OnChainError::Alloy(_)));
     }
 
     #[tokio::test]
@@ -580,23 +603,17 @@ mod tests {
     }
 
     fn assert_trade_details(
-        trade: &PartialArbTrade,
+        trade: &OnchainTrade,
         tx_hash: FixedBytes<32>,
-        input_amount: f64,
-        output_amount: f64,
-        schwab_quantity: f64,
-        price_per_share_cents: f64,
+        trade_amount: f64,
+        price_usdc: f64,
     ) {
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 1);
-        assert_eq!(trade.onchain_input_symbol, "USDC");
-        assert_eq!(trade.onchain_output_symbol, "MSFTs1");
-        assert!((trade.onchain_input_amount - input_amount).abs() < f64::EPSILON);
-        assert!((trade.onchain_output_amount - output_amount).abs() < f64::EPSILON);
-        assert!((trade.schwab_quantity - schwab_quantity).abs() < f64::EPSILON);
-        assert_eq!(trade.schwab_ticker, "MSFT");
-        assert_eq!(trade.schwab_instruction, SchwabInstruction::Buy);
-        assert!((trade.onchain_price_per_share_cents - price_per_share_cents).abs() < f64::EPSILON);
+        assert_eq!(trade.symbol, "MSFTs1");
+        assert!((trade.amount - trade_amount).abs() < f64::EPSILON);
+        assert_eq!(trade.direction, Direction::Buy);
+        assert!((trade.price_usdc - price_usdc).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
@@ -646,8 +663,8 @@ mod tests {
 
         assert_eq!(trades.len(), 2);
 
-        assert_trade_details(&trades[0], tx_hash1, 100.0, 1.0, 1.0, 10000.0);
-        assert_trade_details(&trades[1], tx_hash2, 200.0, 2.0, 2.0, 10000.0);
+        assert_trade_details(&trades[0], tx_hash1, 1.0, 100.0);
+        assert_trade_details(&trades[1], tx_hash2, 2.0, 100.0);
     }
 
     #[tokio::test]
@@ -747,9 +764,8 @@ mod tests {
 
         assert_eq!(trades.len(), 1);
         assert_eq!(trades[0].tx_hash, tx_hash);
-        assert_eq!(trades[0].block_number, 150);
-        assert!((trades[0].schwab_quantity - 5.0).abs() < f64::EPSILON);
-        assert_eq!(trades[0].schwab_ticker, "MSFT");
+        assert!((trades[0].amount - 5.0).abs() < f64::EPSILON);
+        assert_eq!(trades[0].symbol, "MSFTs1");
     }
 
     #[tokio::test]
@@ -801,5 +817,83 @@ mod tests {
         let trades = backfill_events(&provider, &cache, &evm_env).await.unwrap();
 
         assert_eq!(trades.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_backfill_and_process_trades_accumulation() {
+        use crate::test_utils::setup_test_db;
+
+        let pool = setup_test_db().await;
+
+        let order = get_test_order();
+        let order_hash = keccak256(order.abi_encode());
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash,
+            deployment_block: 1,
+        };
+
+        // Create multiple take order events that should accumulate
+        let take_event1 = create_test_take_event(&order, 30_000_000, "300000000000000000"); // 0.3 shares
+        let take_event2 = create_test_take_event(&order, 40_000_000, "400000000000000000"); // 0.4 shares  
+        let take_event3 = create_test_take_event(&order, 50_000_000, "500000000000000000"); // 0.5 shares
+
+        let take_log1 = create_test_log(
+            evm_env.orderbook,
+            &take_event1,
+            50,
+            fixed_bytes!("0x1111111111111111111111111111111111111111111111111111111111111111"),
+        );
+        let take_log2 = create_test_log(
+            evm_env.orderbook,
+            &take_event2,
+            51,
+            fixed_bytes!("0x2222222222222222222222222222222222222222222222222222222222222222"),
+        );
+        let take_log3 = create_test_log(
+            evm_env.orderbook,
+            &take_event3,
+            52,
+            fixed_bytes!("0x3333333333333333333333333333333333333333333333333333333333333333"),
+        );
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::Value::from(100u64)); // get_block_number
+        asserter.push_success(&serde_json::json!([])); // clear events (empty)
+        asserter.push_success(&serde_json::json!([take_log1, take_log2, take_log3])); // take events
+
+        // Symbol calls for all three trades
+        for _ in 0..6 {
+            asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+                &"USDC".to_string(),
+            ));
+            asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+                &"MSFTs1".to_string(),
+            ));
+        }
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let cache = SymbolCache::default();
+
+        let executions = backfill_and_process_trades(&pool, &provider, &cache, &evm_env)
+            .await
+            .unwrap();
+
+        // Should trigger one execution when accumulated trades reach >= 1.0 share
+        assert_eq!(executions.len(), 1);
+        let execution = &executions[0];
+
+        assert_eq!(execution.symbol, "MSFT");
+        assert_eq!(execution.shares, 1);
+        assert_eq!(execution.direction, Direction::Buy);
+
+        // Verify accumulator state shows remaining fractional amount
+        let (calculator, _) = accumulator::find_by_symbol(&pool, "MSFT")
+            .await
+            .unwrap()
+            .unwrap();
+        // Total: 0.3 + 0.4 + 0.5 = 1.2, executed 1.0, remaining 0.2
+        assert!((calculator.accumulated_long - 0.2).abs() < f64::EPSILON);
     }
 }

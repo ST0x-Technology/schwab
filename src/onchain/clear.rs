@@ -120,6 +120,7 @@ mod tests {
             ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
             orderbook: address!("0x1111111111111111111111111111111111111111"),
             order_hash: keccak256(get_test_order().abi_encode()),
+            deployment_block: 1,
         }
     }
 

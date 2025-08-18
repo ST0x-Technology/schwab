@@ -1,7 +1,7 @@
 //! Domain-specific error types following clean error handling architecture.
 //! Separates concerns instead of mixing database, business logic, and external API errors.
 
-use alloy::primitives::{B256, ruint::FromUintError};
+use alloy::primitives::{ruint::FromUintError, B256};
 use alloy::transports::{RpcError, TransportErrorKind};
 use std::num::ParseFloatError;
 
@@ -53,17 +53,21 @@ pub enum PersistenceError {
     MissingExecutionId,
 }
 
-/// External service and API interaction errors.
 #[derive(Debug, thiserror::Error)]
-pub enum ExecutionError {
+pub enum AlloyError {
     #[error("Failed to get symbol: {0}")]
     GetSymbol(#[from] alloy::contract::Error),
     #[error("Sol type error: {0}")]
     SolType(#[from] alloy::sol_types::Error),
     #[error("RPC transport error: {0}")]
     RpcTransport(#[from] RpcError<TransportErrorKind>),
+}
+
+/// Charles Schwab API interaction errors.
+#[derive(Debug, thiserror::Error)]
+pub enum SchwabApiError {
     #[error("Schwab API error: {0}")]
-    SchwabApi(String),
+    ApiCall(String),
 }
 
 /// Unified error type for onchain trade processing with clear domain boundaries.
@@ -74,8 +78,8 @@ pub enum OnChainError {
     Validation(#[from] TradeValidationError),
     #[error("Database persistence error: {0}")]
     Persistence(#[from] PersistenceError),
-    #[error("External execution error: {0}")]
-    Execution(#[from] ExecutionError),
+    #[error("Alloy error: {0}")]
+    Alloy(#[from] AlloyError),
 }
 
 impl From<sqlx::Error> for OnChainError {
@@ -86,7 +90,7 @@ impl From<sqlx::Error> for OnChainError {
 
 impl From<alloy::contract::Error> for OnChainError {
     fn from(err: alloy::contract::Error) -> Self {
-        Self::Execution(ExecutionError::GetSymbol(err))
+        Self::Alloy(AlloyError::GetSymbol(err))
     }
 }
 
@@ -104,12 +108,12 @@ impl From<FromUintError<usize>> for OnChainError {
 
 impl From<alloy::sol_types::Error> for OnChainError {
     fn from(err: alloy::sol_types::Error) -> Self {
-        Self::Execution(ExecutionError::SolType(err))
+        Self::Alloy(AlloyError::SolType(err))
     }
 }
 
 impl From<RpcError<TransportErrorKind>> for OnChainError {
     fn from(err: RpcError<TransportErrorKind>) -> Self {
-        Self::Execution(ExecutionError::RpcTransport(err))
+        Self::Alloy(AlloyError::RpcTransport(err))
     }
 }

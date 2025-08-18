@@ -21,13 +21,13 @@
 
 ## Task 4. Integration with Trade Batching Architecture
 
-- [ ] Move @src/trade/backfill.rs to @src/onchain/backfill.rs and update imports from `trade::` to `onchain::` types
-- [ ] Update backfill.rs to work with `OnchainTrade` instead of `PartialArbTrade`
-- [ ] Update backfill processing to use `onchain::accumulator::add_trade()` instead of direct database insertion
-- [ ] Ensure backfilled trades participate in the accumulation/batching system like live trades  
-- [ ] Test that backfilled fractional trades correctly accumulate and trigger SchwabExecutions when thresholds are met
-- [ ] Add backfill module to @src/onchain/mod.rs exports
-- [ ] Remove obsolete @src/trade/ folder and update any remaining imports from `trade::` to `onchain::`
+- [x] Move @src/trade/backfill.rs to @src/onchain/backfill.rs and update imports from `trade::` to `onchain::` types
+- [x] Update backfill.rs to work with `OnchainTrade` instead of `PartialArbTrade`
+- [x] Update backfill processing to use `accumulator::add_trade()` instead of direct database insertion
+- [x] Ensure backfilled trades participate in the accumulation/batching system like live trades
+- [x] Test that backfilled fractional trades correctly accumulate and trigger SchwabExecutions when thresholds are met
+- [x] Add backfill module to @src/onchain/mod.rs exports
+- [x] Remove obsolete @src/trade/ folder and update any remaining imports from `trade::` to `onchain::`
 
 ## Task 5. Code Quality Improvements
 
