@@ -25,6 +25,11 @@ pub async fn backfill_events<P: Provider + Clone>(
     evm_env: &EvmEnv,
 ) -> Result<Vec<OnchainTrade>, OnChainError> {
     let current_block = provider.get_block_number().await?;
+
+    if evm_env.deployment_block > current_block {
+        return Ok(Vec::new());
+    }
+
     let total_blocks = current_block - evm_env.deployment_block + 1;
 
     info!(
@@ -895,5 +900,354 @@ mod tests {
             .unwrap();
         // Total: 0.3 + 0.4 + 0.5 = 1.2, executed 1.0, remaining 0.2
         assert!((calculator.accumulated_long - 0.2).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn test_backfill_events_deployment_after_current_block() {
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            deployment_block: 200,
+        };
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::Value::from(100u64));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let cache = SymbolCache::default();
+
+        let trades = backfill_events(&provider, &cache, &evm_env).await.unwrap();
+
+        assert_eq!(trades.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_backfill_events_mixed_valid_and_invalid_events() {
+        let order = get_test_order();
+        let order_hash = keccak256(order.abi_encode());
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash,
+            deployment_block: 1,
+        };
+
+        let valid_take_event = create_test_take_event(&order, 100_000_000, "9000000000000000000");
+
+        // Create different order with different hash to make it invalid
+        let mut different_order = get_test_order();
+        different_order.nonce =
+            fixed_bytes!("0x1111111111111111111111111111111111111111111111111111111111111111"); // Change nonce to make hash different
+        let invalid_take_event =
+            create_test_take_event(&different_order, 50_000_000, "5000000000000000000");
+
+        let valid_log = create_test_log(
+            evm_env.orderbook,
+            &valid_take_event,
+            50,
+            fixed_bytes!("0x1111111111111111111111111111111111111111111111111111111111111111"),
+        );
+        let invalid_log = create_test_log(
+            evm_env.orderbook,
+            &invalid_take_event,
+            51,
+            fixed_bytes!("0x2222222222222222222222222222222222222222222222222222222222222222"),
+        );
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::Value::from(100u64));
+        asserter.push_success(&serde_json::json!([]));
+        asserter.push_success(&serde_json::json!([valid_log, invalid_log]));
+
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"USDC".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            &"MSFTs1".to_string(),
+        ));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let cache = SymbolCache::default();
+
+        let trades = backfill_events(&provider, &cache, &evm_env).await.unwrap();
+
+        assert_eq!(trades.len(), 1);
+        assert_eq!(
+            trades[0].tx_hash,
+            fixed_bytes!("0x1111111111111111111111111111111111111111111111111111111111111111")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_backfill_events_mixed_clear_and_take_events() {
+        let order = get_test_order();
+        let order_hash = keccak256(order.abi_encode());
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash,
+            deployment_block: 1,
+        };
+
+        let tx_hash1 =
+            fixed_bytes!("0x1111111111111111111111111111111111111111111111111111111111111111");
+        let tx_hash2 =
+            fixed_bytes!("0x2222222222222222222222222222222222222222222222222222222222222222");
+
+        let take_event = create_test_take_event(&order, 100_000_000, "9000000000000000000");
+        let take_log = create_test_log(evm_env.orderbook, &take_event, 50, tx_hash1);
+
+        let clear_config = IOrderBookV4::ClearConfig {
+            aliceInputIOIndex: U256::from(0),
+            aliceOutputIOIndex: U256::from(1),
+            bobInputIOIndex: U256::from(1),
+            bobOutputIOIndex: U256::from(0),
+            aliceBountyVaultId: U256::ZERO,
+            bobBountyVaultId: U256::ZERO,
+        };
+
+        let clear_event = IOrderBookV4::ClearV2 {
+            sender: address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+            alice: order.clone(),
+            bob: order.clone(),
+            clearConfig: clear_config,
+        };
+
+        let clear_log = Log {
+            inner: alloy::primitives::Log {
+                address: evm_env.orderbook,
+                data: clear_event.to_log_data(),
+            },
+            block_hash: None,
+            block_number: Some(100),
+            block_timestamp: None,
+            transaction_hash: Some(tx_hash2),
+            transaction_index: None,
+            log_index: Some(1),
+            removed: false,
+        };
+
+        let after_clear_event = IOrderBookV4::AfterClear {
+            sender: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            clearStateChange: IOrderBookV4::ClearStateChange {
+                aliceOutput: U256::from_str("5000000000000000000").unwrap(), // 5 shares
+                bobOutput: U256::from(50_000_000u64),                        // 50 USDC cents
+                aliceInput: U256::from(50_000_000u64),
+                bobInput: U256::from_str("5000000000000000000").unwrap(),
+            },
+        };
+
+        let after_clear_log = Log {
+            inner: alloy::primitives::Log {
+                address: evm_env.orderbook,
+                data: after_clear_event.to_log_data(),
+            },
+            block_hash: None,
+            block_number: Some(100),
+            block_timestamp: None,
+            transaction_hash: Some(tx_hash2),
+            transaction_index: None,
+            log_index: Some(2),
+            removed: false,
+        };
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::Value::from(150u64)); // 1. get_block_number
+        asserter.push_success(&serde_json::json!([clear_log])); // 2. get_logs clear
+        asserter.push_success(&serde_json::json!([take_log])); // 3. get_logs take
+
+        // Take event processing (processed first due to earlier block)
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            // 4. symbol input
+            &"USDC".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            // 5. symbol output
+            &"AAPLs1".to_string(),
+        ));
+
+        // Clear event processing (processed second due to later block)
+        asserter.push_success(&serde_json::json!([after_clear_log])); // 6. get_logs AfterClear
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            // 7. symbol input
+            &"USDC".to_string(),
+        ));
+        asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
+            // 8. symbol output
+            &"AAPLs1".to_string(),
+        ));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let cache = SymbolCache::default();
+
+        let trades = backfill_events(&provider, &cache, &evm_env).await.unwrap();
+
+        assert_eq!(trades.len(), 2);
+
+        // Take event should be first (earlier block number)
+        assert_eq!(trades[0].tx_hash, tx_hash1);
+        assert_eq!(trades[0].symbol, "AAPLs1");
+        assert!((trades[0].amount - 9.0).abs() < f64::EPSILON);
+
+        // Clear event should be second (later block number)
+        assert_eq!(trades[1].tx_hash, tx_hash2);
+        assert_eq!(trades[1].symbol, "AAPLs1");
+        assert!((trades[1].amount - 5.0).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn test_process_batch_retry_mechanism() {
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            deployment_block: 1,
+        };
+
+        let asserter = Asserter::new();
+        // First two calls fail, third succeeds
+        asserter.push_failure_msg("RPC connection error");
+        asserter.push_failure_msg("Timeout error");
+        asserter.push_success(&serde_json::json!([])); // clear events
+        asserter.push_success(&serde_json::json!([])); // take events
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let cache = SymbolCache::default();
+
+        let result = process_batch(&provider, &cache, &evm_env, 100, 200).await;
+
+        assert!(result.is_ok());
+        let trades = result.unwrap();
+        assert_eq!(trades.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_process_batch_exhausted_retries() {
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            deployment_block: 1,
+        };
+
+        let asserter = Asserter::new();
+        // All retry attempts fail
+        for _ in 0..=BACKFILL_MAX_RETRIES {
+            asserter.push_failure_msg("Persistent RPC error");
+        }
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let cache = SymbolCache::default();
+
+        let result = process_batch(&provider, &cache, &evm_env, 100, 200).await;
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OnChainError::Alloy(_)));
+    }
+
+    #[tokio::test]
+    async fn test_backfill_events_partial_batch_failure() {
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            deployment_block: 1,
+        };
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::Value::from(2500u64));
+
+        // First batch succeeds
+        asserter.push_success(&serde_json::json!([]));
+        asserter.push_success(&serde_json::json!([]));
+
+        // Second batch fails completely (after retries)
+        for _ in 0..=BACKFILL_MAX_RETRIES {
+            asserter.push_failure_msg("Network failure");
+        }
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let cache = SymbolCache::default();
+
+        let result = backfill_events(&provider, &cache, &evm_env).await;
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), OnChainError::Alloy(_)));
+    }
+
+    #[tokio::test]
+    async fn test_backfill_events_corrupted_log_data() {
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            deployment_block: 1,
+        };
+
+        // Create malformed log with invalid event signature
+        let corrupted_log = Log {
+            inner: alloy::primitives::Log::new(
+                evm_env.orderbook,
+                Vec::new(),
+                Vec::from([0x00u8; 32]).into(),
+            )
+            .unwrap(),
+            block_hash: None,
+            block_number: Some(50),
+            block_timestamp: None,
+            transaction_hash: Some(fixed_bytes!(
+                "0x1111111111111111111111111111111111111111111111111111111111111111"
+            )),
+            transaction_index: None,
+            log_index: Some(1),
+            removed: false,
+        };
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::Value::from(100u64));
+        asserter.push_success(&serde_json::json!([corrupted_log]));
+        asserter.push_success(&serde_json::json!([]));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let cache = SymbolCache::default();
+
+        let trades = backfill_events(&provider, &cache, &evm_env).await.unwrap();
+
+        assert_eq!(trades.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_backfill_events_single_block_range() {
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            deployment_block: 42,
+        };
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::Value::from(42u64));
+        asserter.push_success(&serde_json::json!([]));
+        asserter.push_success(&serde_json::json!([]));
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let cache = SymbolCache::default();
+
+        let trades = backfill_events(&provider, &cache, &evm_env).await.unwrap();
+
+        assert_eq!(trades.len(), 0);
     }
 }

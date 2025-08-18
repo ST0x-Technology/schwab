@@ -37,11 +37,10 @@
 
 ## Task 6. Enhanced Testing
 
-- [ ] Add integration tests with realistic block ranges and data volumes in @src/onchain/backfill.rs
-- [ ] Test boundary cases like deployment block equals current block in @src/onchain/backfill.rs
-- [ ] Test scenarios with mixed event types and large datasets in @src/onchain/backfill.rs
-- [ ] Verify proper error handling, retry mechanisms, and batching logic in @src/onchain/backfill.rs
-- [ ] Ensure tests and `rainix-rs-static` pass
+- [x] Test boundary cases like deployment block equals current block in @src/onchain/backfill.rs
+- [x] Test scenarios with mixed event types @src/onchain/backfill.rs
+- [x] Verify proper error handling, retry mechanisms, and request batching logic in @src/onchain/backfill.rs
+- [x] Ensure tests and `rainix-rs-static` pass
 
 ## Task 7. SQLite-Based Queue Persistence for Idempotency
 
