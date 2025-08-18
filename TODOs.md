@@ -33,7 +33,9 @@
 
 - [ ] Extract magic numbers as named constants (batch sizes, retry attempts, concurrent limits, etc.) in @src/onchain/backfill.rs and @src/lib.rs
 - [ ] Improve type safety with more specific error types for better error handling granularity in @src/onchain/backfill.rs
+- [ ] Use itertools where appropriate to maintain functional style
 - [ ] Make error propagation more explicit and typed
+- [ ] Ensure tests and `rainix-rs-static` pass
 
 ## Task 6. Enhanced Testing
 
@@ -41,6 +43,7 @@
 - [ ] Test boundary cases like deployment block equals current block in @src/onchain/backfill.rs
 - [ ] Test scenarios with mixed event types and large datasets in @src/onchain/backfill.rs
 - [ ] Verify proper error handling, retry mechanisms, and batching logic in @src/onchain/backfill.rs
+- [ ] Ensure tests and `rainix-rs-static` pass
 
 ## Task 7. SQLite-Based Queue Persistence for Idempotency
 
@@ -64,6 +67,8 @@
 - [ ] Run backfill from `deployment_block` to `cutoff_block - 1` using @src/onchain/backfill.rs:backfill_events and persist all events to queue
 - [ ] Process all queued events chronologically (backfilled first, then buffered subscription events) from database in @src/lib.rs
 - [ ] Continue processing live subscription events by persisting to queue then processing in @src/lib.rs:step
+- [ ] Add comprehensive test coverage for the queue integration
+- [ ] Ensure tests and `rainix-rs-static` pass
 
 ## Task 9. Enhanced Block Coordination and Error Handling
 
@@ -73,6 +78,7 @@
 - [ ] Handle subscription reconnection during backfill: restart coordination process if connection drops in @src/lib.rs
 - [ ] Use database `(tx_hash, log_index)` constraint as final safety net for any edge case duplicates in @src/onchain/trade.rs:save_within_transaction
 - [ ] Add comprehensive logging for coordination phases: "Subscription started", "First event at block X", "Backfill complete", "Processing buffered events" in @src/lib.rs
+- [ ] Ensure tests and `rainix-rs-static` pass
 
 ## Focus
 
