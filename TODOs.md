@@ -1,5 +1,7 @@
 # Backfilling Improvements TODOs
 
+The focus is on making the backfilling robust for production use while keeping configuration simple. The subscription-first coordination MUST guarantee zero block gaps by ensuring the WebSocket subscription captures all events from block N forward while backfill handles everything up to block N-1. Queue-based architecture MUST ensure idempotency across multiple runs of the bot using SQLite as the persistence layer.
+
 ## Task 1. Progress Reporting
 
 - [x] Add optional logging/progress indicators for long-running backfill operations
@@ -77,6 +79,12 @@
 - [ ] Add comprehensive logging for coordination phases: "Subscription started", "First event at block X", "Backfill complete", "Processing buffered events" in @src/lib.rs
 - [ ] Ensure tests and `rainix-rs-static` pass
 
-## Focus
+## Task 10. Test Coverage Analysis and Improvement
 
-The focus is on making the backfilling robust for production use with large historical datasets while keeping configuration simple through constants. The subscription-first coordination approach guarantees zero block gaps by ensuring the WebSocket subscription captures all events from block N forward while backfill handles everything up to block N-1.
+- [ ] Run tarpaulin to generate a test coverage report
+- [ ] Analyze coverage report to identify uncovered code paths, especially in critical areas like error handling and edge cases
+- [ ] Update this planning file (@TODOs.md) with specific coverage improvement tasks based on tarpaulin findings
+- [ ] Plan and implement additional tests to improve coverage in identified gaps
+- [ ] Focus on testing failure scenarios, retry logic, and boundary conditions that may not be covered by happy path tests
+- [ ] Target achieving comprehensive coverage for core trade processing, authentication, and backfilling logic
+- [ ] Ensure tests and `rainix-rs-static` pass
