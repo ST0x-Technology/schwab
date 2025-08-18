@@ -42,17 +42,30 @@
 - [ ] Test scenarios with mixed event types and large datasets in @src/onchain/backfill.rs
 - [ ] Verify proper error handling, retry mechanisms, and batching logic in @src/onchain/backfill.rs
 
-## Task 7. Queue Integration with Subscription-First Coordination
+## Task 7. SQLite-Based Queue Persistence for Idempotency
+
+- [ ] Create `event_queue` table in SQLite schema: `id`, `tx_hash`, `log_index`, `block_number`, `event_data` (JSON), `processed` (boolean), `created_at`
+- [ ] Add `(tx_hash, log_index)` unique constraint to prevent duplicate events
+- [ ] Implement `enqueue_event()` function that saves events to database before processing
+- [ ] Implement `get_next_unprocessed_event()` function that reads oldest unprocessed event
+- [ ] Implement `mark_event_processed()` function that updates processed flag
+- [ ] Update backfill logic to enqueue all discovered events instead of processing directly
+- [ ] Update live event processing to enqueue events before processing
+- [ ] Add startup logic that processes any unprocessed events from previous runs
+- [ ] Test idempotency invariant: bot restart at any point should resume without missing/duplicating events
+- [ ] Test edge cases: restart during backfill, restart during live processing, restart with empty queue
+
+## Task 8. Queue Integration with Subscription-First Coordination
 
 - [ ] Start WebSocket subscription immediately at application startup, buffer events in `Vec<(Event, Log)>` in @src/lib.rs:run
-- [ ] Use `tokio::sync::mpsc::unbounded_channel` for final trade processing queue in @src/lib.rs
+- [ ] Replace `tokio::sync::mpsc::unbounded_channel` with SQLite queue persistence in @src/lib.rs
 - [ ] Wait for first subscription event with timeout (30s), use its `block_number` as backfill cutoff in @src/lib.rs:run
 - [ ] If timeout expires with no events, fall back to `provider.get_block_number()` as cutoff in @src/lib.rs:run
-- [ ] Run backfill from `deployment_block` to `cutoff_block - 1` using @src/onchain/backfill.rs:backfill_events
-- [ ] Process all backfilled trades first (chronologically ordered), then buffered subscription events in @src/lib.rs
-- [ ] Continue processing live subscription events normally in @src/lib.rs:step
+- [ ] Run backfill from `deployment_block` to `cutoff_block - 1` using @src/onchain/backfill.rs:backfill_events and persist all events to queue
+- [ ] Process all queued events chronologically (backfilled first, then buffered subscription events) from database in @src/lib.rs
+- [ ] Continue processing live subscription events by persisting to queue then processing in @src/lib.rs:step
 
-## Task 8. Enhanced Block Coordination and Error Handling
+## Task 9. Enhanced Block Coordination and Error Handling
 
 - [ ] Add `subscription_event_buffer: Vec<(Event, Log)>` to accumulate events during backfill phase in @src/lib.rs
 - [ ] Implement backfill timeout handling: if no subscription events arrive in 30s, use current block in @src/lib.rs:run
