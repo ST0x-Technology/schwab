@@ -19,36 +19,46 @@
 - [x] Consider creating a dedicated `trade::backfill` module to organize this functionality
 - [x] Update @TODOs.md to reference the correct module(s) in the remaining tasks
 
-## Task 4. Code Quality Improvements
+## Task 4. Integration with Trade Batching Architecture
 
-- [ ] Extract magic numbers as named constants (batch sizes, retry attempts, concurrent limits, etc.) in @src/trade/backfill.rs and @src/lib.rs
-- [ ] Improve type safety with more specific error types for better error handling granularity in @src/trade/mod.rs:TradeConversionError
+- [ ] Move @src/trade/backfill.rs to @src/onchain/backfill.rs and update imports from `trade::` to `onchain::` types
+- [ ] Update backfill.rs to work with `OnchainTrade` instead of `PartialArbTrade`
+- [ ] Update backfill processing to use `onchain::accumulator::add_trade()` instead of direct database insertion
+- [ ] Ensure backfilled trades participate in the accumulation/batching system like live trades  
+- [ ] Test that backfilled fractional trades correctly accumulate and trigger SchwabExecutions when thresholds are met
+- [ ] Add backfill module to @src/onchain/mod.rs exports
+- [ ] Remove obsolete @src/trade/ folder and update any remaining imports from `trade::` to `onchain::`
+
+## Task 5. Code Quality Improvements
+
+- [ ] Extract magic numbers as named constants (batch sizes, retry attempts, concurrent limits, etc.) in @src/onchain/backfill.rs and @src/lib.rs
+- [ ] Improve type safety with more specific error types for better error handling granularity in @src/onchain/backfill.rs
 - [ ] Make error propagation more explicit and typed
 
-## Task 5. Enhanced Testing
+## Task 6. Enhanced Testing
 
-- [ ] Add integration tests with realistic block ranges and data volumes in @src/trade/backfill.rs
-- [ ] Test boundary cases like deployment block equals current block in @src/trade/backfill.rs
-- [ ] Test scenarios with mixed event types and large datasets in @src/trade/backfill.rs
-- [ ] Verify proper error handling, retry mechanisms, and batching logic in @src/trade/backfill.rs
+- [ ] Add integration tests with realistic block ranges and data volumes in @src/onchain/backfill.rs
+- [ ] Test boundary cases like deployment block equals current block in @src/onchain/backfill.rs
+- [ ] Test scenarios with mixed event types and large datasets in @src/onchain/backfill.rs
+- [ ] Verify proper error handling, retry mechanisms, and batching logic in @src/onchain/backfill.rs
 
-## Task 6. Queue Integration with Subscription-First Coordination
+## Task 7. Queue Integration with Subscription-First Coordination
 
 - [ ] Start WebSocket subscription immediately at application startup, buffer events in `Vec<(Event, Log)>` in @src/lib.rs:run
 - [ ] Use `tokio::sync::mpsc::unbounded_channel` for final trade processing queue in @src/lib.rs
 - [ ] Wait for first subscription event with timeout (30s), use its `block_number` as backfill cutoff in @src/lib.rs:run
 - [ ] If timeout expires with no events, fall back to `provider.get_block_number()` as cutoff in @src/lib.rs:run
-- [ ] Run backfill from `deployment_block` to `cutoff_block - 1` using @src/trade/backfill.rs:backfill_events
+- [ ] Run backfill from `deployment_block` to `cutoff_block - 1` using @src/onchain/backfill.rs:backfill_events
 - [ ] Process all backfilled trades first (chronologically ordered), then buffered subscription events in @src/lib.rs
 - [ ] Continue processing live subscription events normally in @src/lib.rs:step
 
-## Task 7. Enhanced Block Coordination and Error Handling
+## Task 8. Enhanced Block Coordination and Error Handling
 
 - [ ] Add `subscription_event_buffer: Vec<(Event, Log)>` to accumulate events during backfill phase in @src/lib.rs
 - [ ] Implement backfill timeout handling: if no subscription events arrive in 30s, use current block in @src/lib.rs:run
 - [ ] Add buffer size monitoring with warnings if buffer grows beyond expected limits during backfill in @src/lib.rs
 - [ ] Handle subscription reconnection during backfill: restart coordination process if connection drops in @src/lib.rs
-- [ ] Use database `(tx_hash, log_index)` constraint as final safety net for any edge case duplicates in @src/arb.rs:try_save_to_db
+- [ ] Use database `(tx_hash, log_index)` constraint as final safety net for any edge case duplicates in @src/onchain/trade.rs:save_within_transaction
 - [ ] Add comprehensive logging for coordination phases: "Subscription started", "First event at block X", "Backfill complete", "Processing buffered events" in @src/lib.rs
 
 ## Focus
