@@ -12,18 +12,18 @@ use crate::error::EventQueueError;
 use crate::onchain::trade::TradeEvent;
 
 /// Trait for events that can be enqueued
-trait Enqueueable {
-    fn to_serializable_event(&self) -> TradeEvent;
+pub trait Enqueueable {
+    fn to_trade_event(&self) -> TradeEvent;
 }
 
 impl Enqueueable for ClearV2 {
-    fn to_serializable_event(&self) -> TradeEvent {
+    fn to_trade_event(&self) -> TradeEvent {
         TradeEvent::ClearV2(Box::new(self.clone()))
     }
 }
 
 impl Enqueueable for TakeOrderV2 {
-    fn to_serializable_event(&self) -> TradeEvent {
+    fn to_trade_event(&self) -> TradeEvent {
         TradeEvent::TakeOrderV2(Box::new(self.clone()))
     }
 }
@@ -38,33 +38,6 @@ pub struct QueuedEvent {
     pub processed: bool,
     pub created_at: Option<DateTime<Utc>>,
     pub processed_at: Option<DateTime<Utc>>,
-}
-
-impl QueuedEvent {
-    fn new(log: &Log, event: TradeEvent) -> Result<Self, EventQueueError> {
-        let tx_hash = log.transaction_hash.ok_or_else(|| {
-            EventQueueError::Processing("Log missing transaction hash".to_string())
-        })?;
-
-        let log_index = log
-            .log_index
-            .ok_or_else(|| EventQueueError::Processing("Log missing log index".to_string()))?;
-
-        let block_number = log
-            .block_number
-            .ok_or_else(|| EventQueueError::Processing("Log missing block number".to_string()))?;
-
-        Ok(Self {
-            id: None,
-            tx_hash,
-            log_index,
-            block_number,
-            event,
-            processed: false,
-            created_at: None,
-            processed_at: None,
-        })
-    }
 }
 
 async fn enqueue_event(
@@ -230,17 +203,12 @@ pub async fn enqueue<E: Enqueueable>(
     event: &E,
     log: &Log,
 ) -> Result<(), EventQueueError> {
-    let serializable_event = event.to_serializable_event();
+    let serializable_event = event.to_trade_event();
     enqueue_event(pool, log, serializable_event).await
 }
 
-/// Gets the event from a queued event (no deserialization needed since it's already typed)
-const fn get_event(queued_event: &QueuedEvent) -> &TradeEvent {
-    &queued_event.event
-}
-
 /// Enqueues buffered events that were collected during coordination phase
-pub(crate) async fn enqueue_buffer(
+pub async fn enqueue_buffer(
     pool: &sqlx::SqlitePool,
     event_buffer: Vec<(TradeEvent, alloy::rpc::types::Log)>,
 ) {

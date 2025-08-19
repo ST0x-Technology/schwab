@@ -4,6 +4,7 @@ use std::io::Write;
 use thiserror::Error;
 use tracing::{error, info};
 
+use crate::env::{Env, LogLevel};
 use crate::error::OnChainError;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
 use crate::schwab::SchwabAuthEnv;
@@ -11,7 +12,6 @@ use crate::schwab::order::{Instruction, Order, execute_schwab_order};
 use crate::schwab::run_oauth_flow;
 use crate::schwab::tokens::SchwabTokens;
 use crate::symbol::cache::SymbolCache;
-use crate::env::{Env, LogLevel};
 use alloy::primitives::B256;
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 
@@ -375,12 +375,13 @@ mod tests {
     use super::*;
     use crate::bindings::IERC20::symbolCall;
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
+    use crate::env::LogLevel;
     use crate::onchain::trade::OnchainTrade;
     use crate::schwab::execution::find_completed_executions_by_symbol;
     use crate::schwab::{Direction, SchwabInstruction};
     use crate::test_utils::get_test_order;
     use crate::test_utils::setup_test_db;
-    use crate::{LogLevel, onchain::EvmEnv, schwab::SchwabAuthEnv};
+    use crate::{onchain::EvmEnv, schwab::SchwabAuthEnv};
     use alloy::hex;
     use alloy::primitives::{IntoLogData, U256, address, fixed_bytes, keccak256};
     use alloy::providers::mock::Asserter;

@@ -70,7 +70,7 @@ pub async fn backfill_events<P: Provider + Clone>(
     Ok(())
 }
 
-pub async fn enqueue_batch_events<P: Provider + Clone>(
+async fn enqueue_batch_events<P: Provider + Clone>(
     pool: &SqlitePool,
     provider: &P,
     evm_env: &EvmEnv,
@@ -179,7 +179,7 @@ async fn enqueue_batch_inner<P: Provider + Clone>(
     Ok(enqueued_count)
 }
 
-pub fn generate_batch_ranges(start_block: u64, end_block: u64) -> Vec<(u64, u64)> {
+fn generate_batch_ranges(start_block: u64, end_block: u64) -> Vec<(u64, u64)> {
     (start_block..=end_block)
         .step_by(BACKFILL_BATCH_SIZE)
         .map(|batch_start| {
@@ -194,11 +194,11 @@ pub fn generate_batch_ranges(start_block: u64, end_block: u64) -> Vec<(u64, u64)
 #[cfg(test)]
 mod tests {
     use crate::onchain::trade::TradeEvent;
-    use crate::queue::{get_next_unprocessed_event, get_unprocessed_count, mark_event_processed};
-    use alloy::primitives::{FixedBytes, IntoLogData, U256, address, fixed_bytes, keccak256};
+    use crate::queue::{count_unprocessed, get_next_unprocessed_event, mark_event_processed};
+    use alloy::primitives::{FixedBytes, IntoLogData, U256, address, fixed_bytes};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
     use alloy::rpc::types::Log;
-    use alloy::sol_types::{SolCall, SolValue};
+    use alloy::sol_types::SolCall;
     use std::str::FromStr;
 
     use super::*;
@@ -229,7 +229,7 @@ mod tests {
             .await
             .unwrap();
 
-        let count = get_unprocessed_count(&pool).await.unwrap();
+        let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 0);
     }
 
@@ -267,11 +267,12 @@ mod tests {
     async fn test_backfill_events_with_clear_v2_events() {
         let pool = setup_test_db().await;
         let order = get_test_order();
-        let order_hash = keccak256(order.abi_encode());
         let evm_env = EvmEnv {
             ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
             orderbook: address!("0x1111111111111111111111111111111111111111"),
-            order_hash,
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
             deployment_block: 1,
         };
 
@@ -308,30 +309,6 @@ mod tests {
             removed: false,
         };
 
-        let after_clear_event = IOrderBookV4::AfterClear {
-            sender: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-            clearStateChange: IOrderBookV4::ClearStateChange {
-                aliceOutput: U256::from_str("9000000000000000000").unwrap(),
-                bobOutput: U256::from(100_000_000u64),
-                aliceInput: U256::from(100_000_000u64),
-                bobInput: U256::from_str("9000000000000000000").unwrap(),
-            },
-        };
-
-        let after_clear_log = Log {
-            inner: alloy::primitives::Log {
-                address: evm_env.orderbook,
-                data: after_clear_event.to_log_data(),
-            },
-            block_hash: None,
-            block_number: Some(50),
-            block_timestamp: None,
-            transaction_hash: Some(tx_hash),
-            transaction_index: None,
-            log_index: Some(2),
-            removed: false,
-        };
-
         let asserter = Asserter::new();
         asserter.push_success(&serde_json::Value::from(100u64)); // get_block_number
         asserter.push_success(&serde_json::json!([clear_log])); // clear events
@@ -343,7 +320,7 @@ mod tests {
             .await
             .unwrap();
 
-        let count = get_unprocessed_count(&pool).await.unwrap();
+        let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 1);
 
         // Verify the enqueued event details
@@ -357,11 +334,12 @@ mod tests {
     async fn test_backfill_events_with_take_order_v2_events() {
         let pool = setup_test_db().await;
         let order = get_test_order();
-        let order_hash = keccak256(order.abi_encode());
         let evm_env = EvmEnv {
             ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
             orderbook: address!("0x1111111111111111111111111111111111111111"),
-            order_hash,
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
             deployment_block: 1,
         };
 
@@ -411,7 +389,7 @@ mod tests {
             .unwrap();
 
         // Check that one event was enqueued
-        let count = get_unprocessed_count(&pool).await.unwrap();
+        let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 1);
 
         // Verify the enqueued event details
@@ -476,8 +454,7 @@ mod tests {
             .unwrap();
 
         // Should enqueue the event (filtering happens during queue processing, not backfill)
-        use crate::queue::get_unprocessed_count;
-        let count = get_unprocessed_count(&pool).await.unwrap();
+        let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 1);
     }
 
@@ -527,8 +504,7 @@ mod tests {
             .await
             .unwrap();
 
-        use crate::queue::get_unprocessed_count;
-        let count = get_unprocessed_count(&pool).await.unwrap();
+        let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 0);
     }
 
@@ -575,11 +551,12 @@ mod tests {
     async fn test_backfill_events_preserves_chronological_order() {
         let pool = setup_test_db().await;
         let order = get_test_order();
-        let order_hash = keccak256(order.abi_encode());
         let evm_env = EvmEnv {
             ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
             orderbook: address!("0x1111111111111111111111111111111111111111"),
-            order_hash,
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
             deployment_block: 1,
         };
 
@@ -620,7 +597,7 @@ mod tests {
             .unwrap();
 
         // Check that two events were enqueued
-        let count = get_unprocessed_count(&pool).await.unwrap();
+        let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 2);
 
         // Verify the first event (earlier block number)
@@ -667,8 +644,7 @@ mod tests {
             .unwrap();
 
         // Verifies that batching correctly handles the expected number of RPC calls
-        use crate::queue::get_unprocessed_count;
-        let count = get_unprocessed_count(&pool).await.unwrap();
+        let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 0);
     }
 
@@ -702,8 +678,7 @@ mod tests {
             .unwrap();
 
         // Verify the batching worked correctly for different deployment/current block combination
-        use crate::queue::get_unprocessed_count;
-        let count = get_unprocessed_count(&pool).await.unwrap();
+        let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 0);
     }
 
@@ -711,11 +686,12 @@ mod tests {
     async fn test_process_batch_with_realistic_data() {
         let pool = setup_test_db().await;
         let order = get_test_order();
-        let order_hash = keccak256(order.abi_encode());
         let evm_env = EvmEnv {
             ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
             orderbook: address!("0x1111111111111111111111111111111111111111"),
-            order_hash,
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
             deployment_block: 1,
         };
 
@@ -765,8 +741,7 @@ mod tests {
             .await
             .unwrap();
 
-        use crate::queue::get_unprocessed_count;
-        let count = get_unprocessed_count(&pool).await.unwrap();
+        let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 0);
     }
 
@@ -796,8 +771,7 @@ mod tests {
             .await
             .unwrap();
 
-        use crate::queue::get_unprocessed_count;
-        let count = get_unprocessed_count(&pool).await.unwrap();
+        let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 0);
     }
 
@@ -822,8 +796,7 @@ mod tests {
             .await
             .unwrap();
 
-        use crate::queue::get_unprocessed_count;
-        let count = get_unprocessed_count(&pool).await.unwrap();
+        let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 0);
     }
 
@@ -831,11 +804,12 @@ mod tests {
     async fn test_backfill_events_mixed_valid_and_invalid_events() {
         let pool = setup_test_db().await;
         let order = get_test_order();
-        let order_hash = keccak256(order.abi_encode());
         let evm_env = EvmEnv {
             ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
             orderbook: address!("0x1111111111111111111111111111111111111111"),
-            order_hash,
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
             deployment_block: 1,
         };
 
@@ -868,8 +842,7 @@ mod tests {
             .unwrap();
 
         // Both events should be enqueued (filtering happens during processing, not backfill)
-        use crate::queue::get_unprocessed_count;
-        let count = get_unprocessed_count(&pool).await.unwrap();
+        let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 2);
     }
 
@@ -877,11 +850,12 @@ mod tests {
     async fn test_backfill_events_mixed_clear_and_take_events() {
         let pool = setup_test_db().await;
         let order = get_test_order();
-        let order_hash = keccak256(order.abi_encode());
         let evm_env = EvmEnv {
             ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
             orderbook: address!("0x1111111111111111111111111111111111111111"),
-            order_hash,
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
             deployment_block: 1,
         };
 
@@ -980,7 +954,7 @@ mod tests {
             .unwrap();
 
         // Check that two events were enqueued
-        let count = get_unprocessed_count(&pool).await.unwrap();
+        let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 2);
 
         // Verify the first event (earlier block number)
@@ -1127,8 +1101,7 @@ mod tests {
             .unwrap();
 
         // Corrupted logs are silently ignored during backfill
-        use crate::queue::get_unprocessed_count;
-        let count = get_unprocessed_count(&pool).await.unwrap();
+        let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 0);
     }
 
@@ -1155,8 +1128,7 @@ mod tests {
             .await
             .unwrap();
 
-        use crate::queue::get_unprocessed_count;
-        let count = get_unprocessed_count(&pool).await.unwrap();
+        let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 0);
     }
 }

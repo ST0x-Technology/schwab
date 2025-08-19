@@ -63,13 +63,6 @@ pub enum AlloyError {
     RpcTransport(#[from] RpcError<TransportErrorKind>),
 }
 
-/// Charles Schwab API interaction errors.
-#[derive(Debug, thiserror::Error)]
-pub enum SchwabApiError {
-    #[error("Schwab API error: {0}")]
-    ApiCall(String),
-}
-
 /// Event queue persistence and processing errors.
 #[derive(Debug, thiserror::Error)]
 pub enum EventQueueError {

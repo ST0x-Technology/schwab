@@ -12,7 +12,7 @@ use super::{
     SchwabAuthEnv, SchwabError, SchwabInstruction, SchwabTokens,
     execution::{SchwabExecution, update_execution_status_within_transaction},
 };
-use crate::Env;
+use crate::env::Env;
 use crate::schwab::TradeStatus;
 
 /// Response from Schwab order placement API.

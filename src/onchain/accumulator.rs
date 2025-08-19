@@ -139,7 +139,7 @@ async fn get_or_create_within_transaction(
     }
 }
 
-pub(crate) async fn save_within_transaction(
+pub async fn save_within_transaction(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     symbol: &str,
     calculator: &PositionCalculator,
