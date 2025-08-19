@@ -105,7 +105,15 @@ The focus is on making the backfilling robust for production use while keeping c
 - [x] Verify that reprocessed events properly participate in fractional share accumulation and whole-share-based batched execution via accumulator::add_trade()
 - [x] Ensure tests and `rainix-rs-static` pass (207 tests passing)
 
-## Task 11. Test Coverage Analysis and Improvement
+## Task 11. Address AI feedback
+
+- [ ] In @CLAUDE.md around lines 175 to 181, the document references outdated error type names TradeConversionError and SchwabAuthError; update those references to the current types OnChainError and SchwabError respectively throughout the listed bullets and any surrounding text. Search the file for any occurrences of the old names, replace them with the new names, and ensure surrounding wording still reads correctly (adjust capitalization/punctuation if needed). Also run a quick repo-wide grep to confirm no other docs still reference the old types and update them similarly.
+- [ ] In @migrations/20250703115746_trades.sql around lines 30 to 39, `last_updated` is only set on insert; add a DB trigger so `last_updated` is automatically updated on any row update by creating a `BEFORE UPDATE FOR EACH ROW` trigger on `trade_accumulators` that sets `NEW.last_updated = CURRENT_TIMESTAMP` (use a `BEFORE` trigger to avoid recursive `UPDATE`s and include `IF NOT EXISTS` where supported so the migration is idempotent).
+- [ ] In @src/onchain/accumulator.rs around lines 74 to 78, the code calls `set_pending_execution_id(...)` then calls `save_within_transaction(..., None)` which immediately overwrites the `pending_execution_id` with `NULL`; update the call site to pass the actual `pending_execution_id` instead of None so the new pending id is persisted, and update the save/upsert implementation to use SQLite COALESCE on the `pending_execution_id` column during INSERT/ON CONFLICT DO UPDATE so that when the incoming value is NULL it preserves the existing `pending_execution_id` rather than clearing it.
+- [ ] `shares_from_db_i64` in @src/schwab/execution.rs has a dangerous pattern - defaulting to zero, which can lead to silent bugs and is completely unacceptable. Move the `shares_from_db_i64` implementation from @src/onchain/trade_execution_link.rs into some common place and then re-use that for all shares from i64 conversions
+- [ ] Ensure tests and `rainix-rs-static` pass (207 tests passing)
+
+## Task 12. Test Coverage Analysis and Improvement
 
 - [ ] Run tarpaulin to generate a test coverage report
 - [ ] Analyze coverage report to identify uncovered code paths, especially in critical areas like error handling and edge cases
