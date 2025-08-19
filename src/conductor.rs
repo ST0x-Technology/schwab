@@ -1,69 +1,32 @@
-use alloy::providers::{Provider, ProviderBuilder, WsConnect};
+use alloy::providers::Provider;
 use alloy::rpc::types::Log;
 use alloy::sol_types;
 use futures_util::{Stream, StreamExt};
 use sqlx::SqlitePool;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
-mod bindings;
-pub mod cli;
-pub mod env;
-mod error;
-mod lock;
-mod onchain;
-mod queue;
-pub mod schwab;
-mod symbol;
+use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
+use crate::env::Env;
+use crate::onchain::trade::TradeEvent;
+use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
+use crate::queue::{enqueue, get_all_unprocessed_events, mark_event_processed};
+use crate::schwab::{execution::find_execution_by_id, order::execute_schwab_order};
+use crate::symbol::cache::SymbolCache;
+use crate::symbol::lock::get_symbol_lock;
 
-#[cfg(test)]
-pub mod test_utils;
+pub async fn get_cutoff_block<S1, S2, P>(
+    clear_stream: &mut S1,
+    take_stream: &mut S2,
+    provider: &P,
+    pool: &SqlitePool,
+) -> anyhow::Result<u64>
+where
+    S1: Stream<Item = Result<(ClearV2, Log), sol_types::Error>> + Unpin,
+    S2: Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin,
+    P: Provider + Clone,
+{
+    info!("Starting WebSocket subscriptions and waiting for first event...");
 
-use bindings::IOrderBookV4::{ClearV2, IOrderBookV4Instance, TakeOrderV2};
-use env::{Env, LogLevel};
-use onchain::trade::TradeEvent;
-use onchain::{EvmEnv, OnchainTrade, accumulator};
-use queue::{enqueue, get_all_unprocessed_events, mark_event_processed};
-use schwab::{execution::find_execution_by_id, order::execute_schwab_order};
-use symbol::cache::SymbolCache;
-use symbol::lock::get_symbol_lock;
-
-pub async fn run(env: Env) -> anyhow::Result<()> {
-    let pool = env.get_sqlite_pool().await?;
-
-    debug!("Validating Schwab tokens...");
-    schwab::tokens::SchwabTokens::refresh_if_needed(&pool, &env.schwab_auth).await?;
-    info!("Token validation successful");
-
-    let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
-    let provider = ProviderBuilder::new().connect_ws(ws).await?;
-    let cache = SymbolCache::default();
-    let orderbook = IOrderBookV4Instance::new(env.evm_env.orderbook, &provider);
-
-    schwab::tokens::SchwabTokens::spawn_automatic_token_refresh(
-        pool.clone(),
-        env.schwab_auth.clone(),
-    );
-
-    let mut clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
-    let mut take_stream = orderbook.TakeOrderV2_filter().watch().await?.into_stream();
-
-    let cutoff_block =
-        determine_backfill_cutoff(&mut clear_stream, &mut take_stream, &provider, &env, &pool)
-            .await?;
-
-        onchain::backfill::backfill_events(&pool, &provider, &env.evm_env, cutoff_block - 1)
-            .await?;
-
-    process_unprocessed_events(&env, &env.evm_env, &pool, &cache, &provider).await?;
-
-    run_live_event_processing(env, pool, cache, provider, clear_stream, take_stream).await
-}
-
-    // Wait for first event to determine backfill cutoff block
-    let cutoff_block = if let Some(block_number) = wait_for_first_event_with_timeout(
-        &mut clear_stream,
-        &mut take_stream,
-        &mut event_buffer,
     let first_event_result = wait_for_first_event_with_timeout(
         clear_stream,
         take_stream,
@@ -74,96 +37,59 @@ pub async fn run(env: Env) -> anyhow::Result<()> {
     let Some((mut event_buffer, block_number)) = first_event_result else {
         let current_block = provider.get_block_number().await?;
         info!(
-            "Coordination Phase: No subscription events within timeout, using current block {current_block} as cutoff"
+            "No subscription events within timeout, using current block {current_block} as cutoff"
         );
         return Ok(current_block);
     };
 
-    // Backfill historical events up to cutoff block while continuing to buffer subscription events
-    if cutoff_block > env.evm_env.deployment_block {
-        info!(
-            "Coordination Phase: Backfilling events from block {} to {}",
-            env.evm_env.deployment_block,
-            cutoff_block - 1
-        );
+    buffer_live_events(clear_stream, take_stream, &mut event_buffer, block_number).await;
 
-            let backfill_future = onchain::backfill::backfill_events(
-                &pool,
-                &provider,
-                &env.evm_env,
-                block_number - 1,
-            );
+    crate::queue::enqueue_buffer(pool, event_buffer).await;
 
-            let buffer_future = buffer_live_events(
-                &mut clear_stream,
-                &mut take_stream,
-                &mut event_buffer,
-                block_number,
-            );
+    Ok(block_number)
+}
 
-        // Run both concurrently
-        let (backfill_result, ()) = tokio::join!(backfill_future, buffer_future);
-        backfill_result?;
-
-        info!("Coordination Phase: Backfill complete");
-    }
-
-    // Enqueue buffered events that arrived during backfill
-    info!(
-        "Coordination Phase: Processing {} buffered events from subscription",
-        event_buffer.len()
-    );
-    for buffered_event in event_buffer {
-        match buffered_event {
-            BufferedEvent::ClearV2(event, log) => {
-                if let Err(e) = queue::enqueue(&pool, &*event, &log).await {
-                    error!("Failed to enqueue buffered ClearV2 event: {e}");
-                }
-            }
-            BufferedEvent::TakeOrderV2(event, log) => {
-                if let Err(e) = queue::enqueue(&pool, &*event, &log).await {
-                    error!("Failed to enqueue buffered TakeOrderV2 event: {e}");
-                }
-            }
-        }
-    }
-
-    // Process any unprocessed events from the queue
-    process_unprocessed_events(&env, &env.evm_env, &pool, &cache, &provider).await?;
-
-    // Create channels for decoupling event reception from processing
+pub async fn run_live<S1, S2, P>(
+    env: Env,
+    pool: SqlitePool,
+    cache: SymbolCache,
+    provider: P,
+    mut clear_stream: S1,
+    mut take_stream: S2,
+) -> anyhow::Result<()>
+where
+    S1: Stream<Item = Result<(ClearV2, Log), sol_types::Error>> + Unpin + Send + 'static,
+    S2: Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin + Send + 'static,
+    P: Provider + Clone,
+{
     let (event_sender, mut event_receiver) =
-        tokio::sync::mpsc::unbounded_channel::<BufferedEvent>();
+        tokio::sync::mpsc::unbounded_channel::<(TradeEvent, Log)>();
 
-    // Spawn task to continuously receive events from WebSocket and send to channel
     let sender_clone = event_sender.clone();
     let event_reception_task = tokio::spawn(async move {
         loop {
             tokio::select! {
                 Some(result) = clear_stream.next() => {
-                    match result {
-                        Ok((event, log)) => {
-                            if sender_clone.send(BufferedEvent::ClearV2(Box::new(event), log)).is_err() {
-                                error!("Event receiver dropped, shutting down event reception");
-                                break;
-                            }
+                    if let Ok((event, log)) = result {
+                        if sender_clone.send((TradeEvent::ClearV2(Box::new(event)), log)).is_err() {
+                            error!("Event receiver dropped, shutting down event reception");
+                            break;
                         }
-                        Err(e) => {
-                            error!("Error in clear event stream: {e}");
-                        }
+                    } else if let Err(e) = result {
+                        error!("Error in clear event stream: {e}");
                     }
                 }
                 Some(result) = take_stream.next() => {
                     match result {
-                        Ok((event, log)) => {
-                            if sender_clone.send(BufferedEvent::TakeOrderV2(Box::new(event), log)).is_err() {
-                                error!("Event receiver dropped, shutting down event reception");
-                                break;
-                            }
+                    Ok((event, log)) => {
+                        if sender_clone.send((TradeEvent::TakeOrderV2(Box::new(event)), log)).is_err() {
+                            error!("Event receiver dropped, shutting down event reception");
+                            break;
                         }
-                        Err(e) => {
-                            error!("Error in take event stream: {e}");
-                        }
+                    },
+                    Err(e) => {
+                        error!("Error in take event stream: {e}");
+                    }
                     }
                 }
                 else => {
@@ -174,61 +100,62 @@ pub async fn run(env: Env) -> anyhow::Result<()> {
         }
     });
 
-    // Process events from the channel
-    while let Some(buffered_event) = event_receiver.recv().await {
-        match buffered_event {
-            BufferedEvent::ClearV2(event, log) => {
-                if let Err(e) = enqueue(&pool, &*event, &log).await {
-                    error!("Failed to enqueue ClearV2 event: {e}");
-                    continue;
-                }
+    while let Some((event, log)) = event_receiver.recv().await {
+        if let Err(e) = process_live_event(&env, &pool, &cache, &provider, event, log).await {
+            error!("Failed to process live event: {e}");
+        }
+    }
 
-                match OnchainTrade::try_from_clear_v2(&env.evm_env, &cache, &provider, *event, log)
-                    .await
-                {
-                    Ok(Some(trade)) => {
-                        process_trade(&env, &pool, trade).await?;
-                    }
-                    Ok(None) => {
-                        // Event doesn't result in a trade, skip
-                    }
-                    Err(e) => {
-                        error!("Failed to convert ClearV2 event to trade: {e}");
-                    }
-                }
-            }
-            BufferedEvent::TakeOrderV2(event, log) => {
-                if let Err(e) = enqueue(&pool, &*event, &log).await {
-                    error!("Failed to enqueue TakeOrderV2 event: {e}");
-                    continue;
-                }
+    error!("Event processing loop ended unexpectedly");
+    event_reception_task.await?;
+    Ok(())
+}
 
-                match OnchainTrade::try_from_take_order_if_target_order(
-                    &cache,
-                    &provider,
-                    *event,
-                    log,
-                    env.evm_env.order_hash,
-                )
+async fn process_live_event<P: Provider + Clone>(
+    env: &Env,
+    pool: &SqlitePool,
+    cache: &SymbolCache,
+    provider: &P,
+    event: TradeEvent,
+    log: Log,
+) -> anyhow::Result<()> {
+    match &event {
+        TradeEvent::ClearV2(clear_event) => {
+            enqueue(pool, clear_event.as_ref(), &log)
                 .await
-                {
-                    Ok(Some(trade)) => {
-                        process_trade(&env, &pool, trade).await?;
-                    }
-                    Ok(None) => {
-                        // Event doesn't match target order or doesn't result in a trade, skip
-                    }
-                    Err(e) => {
-                        error!("Failed to convert TakeOrderV2 event to trade: {e}");
-                    }
-                }
+                .map_err(|e| anyhow::anyhow!("Failed to enqueue ClearV2 event: {e}"))?;
+
+            if let Some(trade) = OnchainTrade::try_from_clear_v2(
+                &env.evm_env,
+                cache,
+                provider,
+                (**clear_event).clone(),
+                log,
+            )
+            .await?
+            {
+                process_trade(env, pool, trade).await?;
+            }
+        }
+        TradeEvent::TakeOrderV2(take_event) => {
+            enqueue(pool, take_event.as_ref(), &log)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to enqueue TakeOrderV2 event: {e}"))?;
+
+            if let Some(trade) = OnchainTrade::try_from_take_order_if_target_order(
+                cache,
+                provider,
+                (**take_event).clone(),
+                log,
+                env.evm_env.order_hash,
+            )
+            .await?
+            {
+                process_trade(env, pool, trade).await?;
             }
         }
     }
 
-    // If we get here, the event reception task has ended
-    error!("Event processing loop ended unexpectedly");
-    event_reception_task.await?;
     Ok(())
 }
 
@@ -237,7 +164,6 @@ async fn process_trade(
     pool: &SqlitePool,
     onchain_trade: OnchainTrade,
 ) -> anyhow::Result<()> {
-    // Acquire symbol-level lock to prevent race conditions during accumulation
     let symbol_lock = get_symbol_lock(&onchain_trade.symbol).await;
     let _guard = symbol_lock.lock().await;
 
@@ -271,7 +197,7 @@ async fn process_trade(
 
 /// Processes any unprocessed events from the queue at startup by deserializing them
 /// and running them through the full trade processing pipeline for true idempotency.
-async fn process_unprocessed_events<P: Provider + Clone>(
+pub async fn process_queue<P: Provider + Clone>(
     env: &Env,
     evm_env: &EvmEnv,
     pool: &SqlitePool,
@@ -334,7 +260,7 @@ async fn process_queued_event_with_retry<P: Provider + Clone>(
     pool: &SqlitePool,
     symbol_cache: &SymbolCache,
     provider: P,
-    queued_event: queue::QueuedEvent,
+    queued_event: crate::queue::QueuedEvent,
 ) -> anyhow::Result<()> {
     use backon::{ExponentialBuilder, Retryable};
 
@@ -369,7 +295,7 @@ async fn process_queued_event_atomic<P: Provider + Clone>(
     pool: &SqlitePool,
     symbol_cache: &SymbolCache,
     provider: P,
-    queued_event: &queue::QueuedEvent,
+    queued_event: &crate::queue::QueuedEvent,
 ) -> anyhow::Result<()> {
     let event_id = queued_event
         .id
@@ -380,7 +306,7 @@ async fn process_queued_event_atomic<P: Provider + Clone>(
 
     // Deserialize and convert event to OnchainTrade
     let onchain_trade = match &queued_event.event {
-        queue::SerializableEvent::ClearV2(clear_event) => {
+        TradeEvent::ClearV2(clear_event) => {
             OnchainTrade::try_from_clear_v2(
                 evm_env,
                 symbol_cache,
@@ -390,7 +316,7 @@ async fn process_queued_event_atomic<P: Provider + Clone>(
             )
             .await?
         }
-        queue::SerializableEvent::TakeOrderV2(take_event) => {
+        TradeEvent::TakeOrderV2(take_event) => {
             OnchainTrade::try_from_take_order_if_target_order(
                 symbol_cache,
                 &provider,
@@ -404,7 +330,6 @@ async fn process_queued_event_atomic<P: Provider + Clone>(
 
     // Only process if event converts to a valid trade
     if let Some(trade) = onchain_trade {
-        // Acquire symbol-level lock to prevent race conditions during accumulation
         let symbol_lock = get_symbol_lock(&trade.symbol).await;
         let _guard = symbol_lock.lock().await;
 
@@ -459,17 +384,16 @@ async fn process_queued_event_atomic<P: Provider + Clone>(
 }
 
 /// Reconstructs a Log with proper event data from a queued event
-fn reconstruct_log_from_queued_event(evm_env: &EvmEnv, queued_event: &queue::QueuedEvent) -> Log {
+fn reconstruct_log_from_queued_event(
+    evm_env: &EvmEnv,
+    queued_event: &crate::queue::QueuedEvent,
+) -> Log {
     use alloy::primitives::IntoLogData;
 
     // Reconstruct proper log data based on event type
     let log_data = match &queued_event.event {
-        queue::SerializableEvent::ClearV2(clear_event) => {
-            clear_event.as_ref().clone().into_log_data()
-        }
-        queue::SerializableEvent::TakeOrderV2(take_event) => {
-            take_event.as_ref().clone().into_log_data()
-        }
+        TradeEvent::ClearV2(clear_event) => clear_event.as_ref().clone().into_log_data(),
+        TradeEvent::TakeOrderV2(take_event) => take_event.as_ref().clone().into_log_data(),
     };
 
     Log {
@@ -505,13 +429,12 @@ async fn execute_pending_schwab_execution(
         .map_err(anyhow::Error::from)
 }
 
-/// Waits for the first event from either stream with a timeout, buffering any events received
+/// Waits for the first event from either stream with a timeout, returning any events received
 async fn wait_for_first_event_with_timeout<S1, S2>(
     clear_stream: &mut S1,
     take_stream: &mut S2,
-    event_buffer: &mut Vec<BufferedEvent>,
     timeout: std::time::Duration,
-) -> Option<u64>
+) -> Option<(Vec<(TradeEvent, Log)>, u64)>
 where
     S1: Stream<Item = Result<(ClearV2, Log), sol_types::Error>> + Unpin,
     S2: Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin,
@@ -519,14 +442,16 @@ where
     let deadline = tokio::time::sleep(timeout);
     tokio::pin!(deadline);
 
+    let mut events = Vec::new();
+
     loop {
         tokio::select! {
             Some(result) = clear_stream.next() => {
                 match result {
                     Ok((event, log)) => {
                         if let Some(block_number) = log.block_number {
-                            event_buffer.push(BufferedEvent::ClearV2(Box::new(event), log));
-                            return Some(block_number);
+                            events.push((TradeEvent::ClearV2(Box::new(event)), log));
+                            return Some((events, block_number));
                         }
                         error!("ClearV2 event missing block number");
                     }
@@ -539,8 +464,8 @@ where
                 match result {
                     Ok((event, log)) => {
                         if let Some(block_number) = log.block_number {
-                            event_buffer.push(BufferedEvent::TakeOrderV2(Box::new(event), log));
-                            return Some(block_number);
+                            events.push((TradeEvent::TakeOrderV2(Box::new(event)), log));
+                            return Some((events, block_number));
                         }
                         error!("TakeOrderV2 event missing block number");
                     }
@@ -557,10 +482,10 @@ where
 }
 
 /// Continues buffering events from subscription streams during backfill
-async fn continue_buffering_events<S1, S2>(
+async fn buffer_live_events<S1, S2>(
     clear_stream: &mut S1,
     take_stream: &mut S2,
-    event_buffer: &mut Vec<BufferedEvent>,
+    event_buffer: &mut Vec<(TradeEvent, Log)>,
     cutoff_block: u64,
 ) where
     S1: Stream<Item = Result<(ClearV2, Log), sol_types::Error>> + Unpin,
@@ -570,14 +495,14 @@ async fn continue_buffering_events<S1, S2>(
         tokio::select! {
             Some(result) = clear_stream.next() => match result {
                 Ok((event, log)) if log.block_number.unwrap_or(0) >= cutoff_block => {
-                    event_buffer.push(BufferedEvent::ClearV2(Box::new(event), log));
+                    event_buffer.push((TradeEvent::ClearV2(Box::new(event)), log));
                 }
                 Err(e) => error!("Error in clear event stream during backfill: {e}"),
                 _ => {}
             },
             Some(result) = take_stream.next() => match result {
                 Ok((event, log)) if log.block_number.unwrap_or(0) >= cutoff_block => {
-                    event_buffer.push(BufferedEvent::TakeOrderV2(Box::new(event), log));
+                    event_buffer.push((TradeEvent::TakeOrderV2(Box::new(event)), log));
                 }
                 Err(e) => error!("Error in take event stream during backfill: {e}"),
                 _ => {}
@@ -590,46 +515,13 @@ async fn continue_buffering_events<S1, S2>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bindings::IOrderBookV4::{ClearConfig, ClearV2};
+    use crate::env::tests::create_test_env;
     use crate::onchain::trade::OnchainTrade;
     use crate::schwab::Direction;
     use crate::test_utils::{OnchainTradeBuilder, setup_test_db};
     use alloy::primitives::{IntoLogData, address, fixed_bytes};
-    use alloy::providers::{ProviderBuilder, mock::Asserter};
-    use alloy::rpc::types::Log;
-    use alloy::sol_types::{self, SolCall, SolValue};
-    use bindings::IERC20::symbolCall;
-    use bindings::IOrderBookV4::{
-        AfterClear, ClearConfig, ClearStateChange, ClearV2, TakeOrderConfigV3, TakeOrderV2,
-    };
-    use futures_util::stream;
-    use serde_json::json;
-    use std::str::FromStr;
-
-    fn create_test_env_with_order_hash(order_hash: alloy::primitives::B256) -> Env {
-        Env {
-            database_url: ":memory:".to_string(),
-            log_level: LogLevel::Debug,
-            schwab_auth: SchwabAuthEnv {
-                app_key: "test_key".to_string(),
-                app_secret: "test_secret".to_string(),
-                redirect_uri: "https://127.0.0.1".to_string(),
-                base_url: "https://test.com".to_string(),
-                account_index: 0,
-            },
-            evm_env: EvmEnv {
-                ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
-                orderbook: address!("0x1111111111111111111111111111111111111111"),
-                order_hash,
-                deployment_block: 1,
-            },
-        }
-    }
-
-    fn create_test_env() -> Env {
-        create_test_env_with_order_hash(fixed_bytes!(
-            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        ))
-    }
+    use alloy::providers::ProviderBuilder;
 
     #[tokio::test]
     async fn test_event_enqueued_when_trade_conversion_returns_none() {
@@ -652,10 +544,12 @@ mod tests {
         let log = crate::test_utils::get_test_log();
 
         // Enqueue the event
-        queue::enqueue(&pool, &clear_event, &log).await.unwrap();
+        crate::queue::enqueue(&pool, &clear_event, &log)
+            .await
+            .unwrap();
 
         // Verify event was enqueued
-        let count = queue::get_unprocessed_count(&pool).await.unwrap();
+        let count = crate::queue::count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 1);
 
         // Verify no trades were created (since this event doesn't result in a valid trade)
@@ -751,21 +645,23 @@ mod tests {
         let log = crate::test_utils::get_test_log();
 
         // Step 1: Enqueue the event (like what happens during backfill/live processing)
-        queue::enqueue(&pool, &clear_event, &log).await.unwrap();
+        crate::queue::enqueue(&pool, &clear_event, &log)
+            .await
+            .unwrap();
 
         // Step 2: Verify event was enqueued
-        let count = queue::get_unprocessed_count(&pool).await.unwrap();
+        let count = crate::queue::count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 1);
 
         // Step 3: Get the queued event for processing
-        let queued_event = queue::get_next_unprocessed_event(&pool)
+        let queued_event = crate::queue::get_next_unprocessed_event(&pool)
             .await
             .unwrap()
             .unwrap();
 
         // Step 4: Process the event (simulate the live event processing loop)
         // This would be the equivalent of the event processing inside the channel receiver
-        if let queue::SerializableEvent::ClearV2(boxed_clear_event) = queued_event.event {
+        if let TradeEvent::ClearV2(boxed_clear_event) = queued_event.event {
             // Create a mock provider and cache for event conversion
             let cache = SymbolCache::default();
             let http_provider =
@@ -791,12 +687,12 @@ mod tests {
         }
 
         // Step 6: Mark event as processed
-        queue::mark_event_processed(&pool, queued_event.id.unwrap())
+        crate::queue::mark_event_processed(&pool, queued_event.id.unwrap())
             .await
             .unwrap();
 
         // Step 7: Verify event was marked processed
-        let remaining_count = queue::get_unprocessed_count(&pool).await.unwrap();
+        let remaining_count = crate::queue::count_unprocessed(&pool).await.unwrap();
         assert_eq!(remaining_count, 0);
     }
 
@@ -825,37 +721,37 @@ mod tests {
         // Simulate different restart scenarios
 
         // Scenario 1: Enqueue events and restart before processing
-        queue::enqueue(&pool, &event1, &log1).await.unwrap();
-        assert_eq!(queue::get_unprocessed_count(&pool).await.unwrap(), 1);
+        crate::queue::enqueue(&pool, &event1, &log1).await.unwrap();
+        assert_eq!(crate::queue::count_unprocessed(&pool).await.unwrap(), 1);
 
         // Simulate restart: process unprocessed events (mark as processed for test)
         // For now, just mark events as processed to verify the idempotency mechanism works
-        let queued_event = queue::get_next_unprocessed_event(&pool)
+        let queued_event = crate::queue::get_next_unprocessed_event(&pool)
             .await
             .unwrap()
             .unwrap();
-        queue::mark_event_processed(&pool, queued_event.id.unwrap())
+        crate::queue::mark_event_processed(&pool, queued_event.id.unwrap())
             .await
             .unwrap();
-        assert_eq!(queue::get_unprocessed_count(&pool).await.unwrap(), 0);
+        assert_eq!(crate::queue::count_unprocessed(&pool).await.unwrap(), 0);
 
         // Scenario 2: Process same event again - should be deduplicated
-        queue::enqueue(&pool, &event1, &log1).await.unwrap(); // Should be ignored due to unique constraint
-        assert_eq!(queue::get_unprocessed_count(&pool).await.unwrap(), 0); // No new events
+        crate::queue::enqueue(&pool, &event1, &log1).await.unwrap(); // Should be ignored due to unique constraint
+        assert_eq!(crate::queue::count_unprocessed(&pool).await.unwrap(), 0); // No new events
 
         // Scenario 3: Mix of processed and unprocessed events after restart
         let mut log2 = crate::test_utils::get_test_log();
         log2.log_index = Some(2); // Different log index
-        queue::enqueue(&pool, &event1, &log2).await.unwrap();
-        assert_eq!(queue::get_unprocessed_count(&pool).await.unwrap(), 1);
+        crate::queue::enqueue(&pool, &event1, &log2).await.unwrap();
+        assert_eq!(crate::queue::count_unprocessed(&pool).await.unwrap(), 1);
 
         // Verify events are processed in deterministic order (by block_number, log_index)
-        let next_event = queue::get_next_unprocessed_event(&pool)
+        let next_event = crate::queue::get_next_unprocessed_event(&pool)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(next_event.log_index, 2); // Should get log_index 2
-        queue::mark_event_processed(&pool, next_event.id.unwrap())
+        crate::queue::mark_event_processed(&pool, next_event.id.unwrap())
             .await
             .unwrap();
     }
@@ -899,7 +795,7 @@ mod tests {
                 "0x1111111111111111111111111111111111111111111111111111111111111111"
             ));
 
-            queue::enqueue(&pool, &event, &log).await.unwrap();
+            crate::queue::enqueue(&pool, &event, &log).await.unwrap();
         }
 
         // Process events and verify they come out in deterministic order
@@ -912,20 +808,20 @@ mod tests {
         ];
 
         for (expected_block, expected_log_idx) in expected_order {
-            let event = queue::get_next_unprocessed_event(&pool)
+            let event = crate::queue::get_next_unprocessed_event(&pool)
                 .await
                 .unwrap()
                 .unwrap();
             assert_eq!(event.block_number, expected_block);
             assert_eq!(event.log_index, expected_log_idx);
-            queue::mark_event_processed(&pool, event.id.unwrap())
+            crate::queue::mark_event_processed(&pool, event.id.unwrap())
                 .await
                 .unwrap();
         }
 
         // Verify no more events
         assert!(
-            queue::get_next_unprocessed_event(&pool)
+            crate::queue::get_next_unprocessed_event(&pool)
                 .await
                 .unwrap()
                 .is_none()
@@ -937,9 +833,9 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Test Case 1: Restart with empty queue
-        assert_eq!(queue::get_unprocessed_count(&pool).await.unwrap(), 0);
+        assert_eq!(crate::queue::count_unprocessed(&pool).await.unwrap(), 0);
         // Empty queue should handle gracefully - no processing needed
-        assert_eq!(queue::get_unprocessed_count(&pool).await.unwrap(), 0);
+        assert_eq!(crate::queue::count_unprocessed(&pool).await.unwrap(), 0);
 
         // Test Case 2: Restart during backfill (simulated by having mixed processed/unprocessed)
         let mut events = vec![];
@@ -964,43 +860,46 @@ mod tests {
             hash_bytes[31] = u8::try_from(i).unwrap_or(0);
             log.transaction_hash = Some(alloy::primitives::B256::from(hash_bytes));
 
-            queue::enqueue(&pool, &event, &log).await.unwrap();
+            crate::queue::enqueue(&pool, &event, &log).await.unwrap();
             events.push((event, log));
         }
 
         // Process first 2 events (simulate partial processing before restart)
         for _ in 0..2 {
-            let event = queue::get_next_unprocessed_event(&pool)
+            let event = crate::queue::get_next_unprocessed_event(&pool)
                 .await
                 .unwrap()
                 .unwrap();
-            queue::mark_event_processed(&pool, event.id.unwrap())
+            crate::queue::mark_event_processed(&pool, event.id.unwrap())
                 .await
                 .unwrap();
         }
 
         // Verify 3 events remain unprocessed
-        assert_eq!(queue::get_unprocessed_count(&pool).await.unwrap(), 3);
+        assert_eq!(crate::queue::count_unprocessed(&pool).await.unwrap(), 3);
 
         // Simulate restart: process remaining events
         let mut processed_count = 0;
-        while let Some(event) = queue::get_next_unprocessed_event(&pool).await.unwrap() {
-            queue::mark_event_processed(&pool, event.id.unwrap())
+        while let Some(event) = crate::queue::get_next_unprocessed_event(&pool)
+            .await
+            .unwrap()
+        {
+            crate::queue::mark_event_processed(&pool, event.id.unwrap())
                 .await
                 .unwrap();
             processed_count += 1;
         }
 
         assert_eq!(processed_count, 3); // Should process exactly 3 remaining events
-        assert_eq!(queue::get_unprocessed_count(&pool).await.unwrap(), 0);
+        assert_eq!(crate::queue::count_unprocessed(&pool).await.unwrap(), 0);
 
         // Test Case 3: Attempt to reprocess already processed events
         // This should be prevented by the unique constraint, but test the behavior
         for (event, log) in &events {
-            queue::enqueue(&pool, event, log).await.unwrap(); // Should be ignored
+            crate::queue::enqueue(&pool, event, log).await.unwrap(); // Should be ignored
         }
 
-        assert_eq!(queue::get_unprocessed_count(&pool).await.unwrap(), 0); // No new unprocessed events
+        assert_eq!(crate::queue::count_unprocessed(&pool).await.unwrap(), 0); // No new unprocessed events
     }
 
     #[tokio::test]
@@ -1061,23 +960,22 @@ mod tests {
         let log = crate::test_utils::get_test_log();
 
         // Enqueue the event
-        queue::enqueue(&pool, &clear_event, &log).await.unwrap();
+        crate::queue::enqueue(&pool, &clear_event, &log)
+            .await
+            .unwrap();
 
         // Verify event was enqueued
-        let count = queue::get_unprocessed_count(&pool).await.unwrap();
+        let count = crate::queue::count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 1);
 
         // Get the queued event
-        let queued_event = queue::get_next_unprocessed_event(&pool)
+        let queued_event = crate::queue::get_next_unprocessed_event(&pool)
             .await
             .unwrap()
             .unwrap();
 
         // Test deserialization
-        assert!(matches!(
-            queued_event.event,
-            queue::SerializableEvent::ClearV2(_)
-        ));
+        assert!(matches!(queued_event.event, TradeEvent::ClearV2(_)));
 
         // Test log reconstruction
         let reconstructed_log = reconstruct_log_from_queued_event(&env.evm_env, &queued_event);
@@ -1108,9 +1006,9 @@ mod tests {
         // but we've verified the deserialization and log reconstruction work correctly
 
         // Clean up
-        queue::mark_event_processed(&pool, queued_event.id.unwrap())
+        crate::queue::mark_event_processed(&pool, queued_event.id.unwrap())
             .await
             .unwrap();
-        assert_eq!(queue::get_unprocessed_count(&pool).await.unwrap(), 0);
+        assert_eq!(crate::queue::count_unprocessed(&pool).await.unwrap(), 0);
     }
 }

@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 use super::EvmEnv;
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
 use crate::error::OnChainError;
-use crate::queue::{enqueue, get_unprocessed_count};
+use crate::queue::enqueue;
 
 #[derive(Debug)]
 enum EventData {
@@ -193,6 +193,8 @@ pub fn generate_batch_ranges(start_block: u64, end_block: u64) -> Vec<(u64, u64)
 
 #[cfg(test)]
 mod tests {
+    use crate::onchain::trade::TradeEvent;
+    use crate::queue::{get_next_unprocessed_event, get_unprocessed_count, mark_event_processed};
     use alloy::primitives::{FixedBytes, IntoLogData, U256, address, fixed_bytes, keccak256};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
     use alloy::rpc::types::Log;
@@ -341,8 +343,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Check that one event was enqueued
-        use crate::queue::{SerializableEvent, get_next_unprocessed_event, get_unprocessed_count};
         let count = get_unprocessed_count(&pool).await.unwrap();
         assert_eq!(count, 1);
 
@@ -350,7 +350,7 @@ mod tests {
         let queued_event = get_next_unprocessed_event(&pool).await.unwrap().unwrap();
         assert_eq!(queued_event.tx_hash, tx_hash);
         assert_eq!(queued_event.log_index, 1);
-        assert!(matches!(queued_event.event, SerializableEvent::ClearV2(_)));
+        assert!(matches!(queued_event.event, TradeEvent::ClearV2(_)));
     }
 
     #[tokio::test]
@@ -411,7 +411,6 @@ mod tests {
             .unwrap();
 
         // Check that one event was enqueued
-        use crate::queue::{SerializableEvent, get_next_unprocessed_event, get_unprocessed_count};
         let count = get_unprocessed_count(&pool).await.unwrap();
         assert_eq!(count, 1);
 
@@ -419,10 +418,7 @@ mod tests {
         let queued_event = get_next_unprocessed_event(&pool).await.unwrap().unwrap();
         assert_eq!(queued_event.tx_hash, tx_hash);
         assert_eq!(queued_event.log_index, 1);
-        assert!(matches!(
-            queued_event.event,
-            SerializableEvent::TakeOrderV2(_)
-        ));
+        assert!(matches!(queued_event.event, TradeEvent::TakeOrderV2(_)));
     }
 
     #[tokio::test]
@@ -624,9 +620,6 @@ mod tests {
             .unwrap();
 
         // Check that two events were enqueued
-        use crate::queue::{
-            get_next_unprocessed_event, get_unprocessed_count, mark_event_processed,
-        };
         let count = get_unprocessed_count(&pool).await.unwrap();
         assert_eq!(count, 2);
 
@@ -744,7 +737,6 @@ mod tests {
         assert_eq!(enqueued_count, 1);
 
         // Verify the enqueued event
-        use crate::queue::get_next_unprocessed_event;
         let queued_event = get_next_unprocessed_event(&pool).await.unwrap().unwrap();
         assert_eq!(queued_event.tx_hash, tx_hash);
         assert_eq!(queued_event.block_number, 150);
@@ -988,9 +980,6 @@ mod tests {
             .unwrap();
 
         // Check that two events were enqueued
-        use crate::queue::{
-            get_next_unprocessed_event, get_unprocessed_count, mark_event_processed,
-        };
         let count = get_unprocessed_count(&pool).await.unwrap();
         assert_eq!(count, 2);
 

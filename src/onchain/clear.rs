@@ -9,7 +9,7 @@ use crate::onchain::{
     EvmEnv,
     trade::{OnchainTrade, OrderFill},
 };
-use crate::symbol_cache::SymbolCache;
+use crate::symbol::cache::SymbolCache;
 
 impl OnchainTrade {
     /// Creates OnchainTrade directly from ClearV2 blockchain events
@@ -106,7 +106,7 @@ mod tests {
     use super::*;
     use crate::bindings::IERC20::symbolCall;
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange};
-    use crate::symbol_cache::SymbolCache;
+    use crate::symbol::cache::SymbolCache;
     use crate::test_utils::{get_test_log, get_test_order};
     use alloy::primitives::{IntoLogData, U256, address, fixed_bytes};
     use alloy::providers::{ProviderBuilder, mock::Asserter};

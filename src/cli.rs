@@ -10,8 +10,8 @@ use crate::schwab::SchwabAuthEnv;
 use crate::schwab::order::{Instruction, Order, execute_schwab_order};
 use crate::schwab::run_oauth_flow;
 use crate::schwab::tokens::SchwabTokens;
-use crate::symbol_cache::SymbolCache;
-use crate::{Env, LogLevel};
+use crate::symbol::cache::SymbolCache;
+use crate::env::{Env, LogLevel};
 use alloy::primitives::B256;
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 

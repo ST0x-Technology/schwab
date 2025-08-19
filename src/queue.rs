@@ -1,34 +1,30 @@
 use alloy::primitives::B256;
 use alloy::rpc::types::Log;
 use chrono::{DateTime, Utc};
+use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::str::FromStr;
+use tracing::{error, info};
 
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
 use crate::error::EventQueueError;
-
-/// Union type for all blockchain events
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SerializableEvent {
-    ClearV2(Box<ClearV2>),
-    TakeOrderV2(Box<TakeOrderV2>),
-}
+use crate::onchain::trade::TradeEvent;
 
 /// Trait for events that can be enqueued
-pub trait Enqueueable {
-    fn to_serializable_event(&self) -> SerializableEvent;
+trait Enqueueable {
+    fn to_serializable_event(&self) -> TradeEvent;
 }
 
 impl Enqueueable for ClearV2 {
-    fn to_serializable_event(&self) -> SerializableEvent {
-        SerializableEvent::ClearV2(Box::new(self.clone()))
+    fn to_serializable_event(&self) -> TradeEvent {
+        TradeEvent::ClearV2(Box::new(self.clone()))
     }
 }
 
 impl Enqueueable for TakeOrderV2 {
-    fn to_serializable_event(&self) -> SerializableEvent {
-        SerializableEvent::TakeOrderV2(Box::new(self.clone()))
+    fn to_serializable_event(&self) -> TradeEvent {
+        TradeEvent::TakeOrderV2(Box::new(self.clone()))
     }
 }
 
@@ -38,14 +34,14 @@ pub struct QueuedEvent {
     pub tx_hash: B256,
     pub log_index: u64,
     pub block_number: u64,
-    pub event: SerializableEvent,
+    pub event: TradeEvent,
     pub processed: bool,
     pub created_at: Option<DateTime<Utc>>,
     pub processed_at: Option<DateTime<Utc>>,
 }
 
 impl QueuedEvent {
-    pub fn new(log: &Log, event: SerializableEvent) -> Result<Self, EventQueueError> {
+    fn new(log: &Log, event: TradeEvent) -> Result<Self, EventQueueError> {
         let tx_hash = log.transaction_hash.ok_or_else(|| {
             EventQueueError::Processing("Log missing transaction hash".to_string())
         })?;
@@ -71,10 +67,10 @@ impl QueuedEvent {
     }
 }
 
-pub async fn enqueue_event(
+async fn enqueue_event(
     pool: &SqlitePool,
     log: &Log,
-    event: SerializableEvent,
+    event: TradeEvent,
 ) -> Result<(), EventQueueError> {
     let tx_hash = log
         .transaction_hash
@@ -115,7 +111,8 @@ pub async fn enqueue_event(
     Ok(())
 }
 
-/// Gets the next unprocessed event from the queue, ordered by block number then log index for deterministic processing
+/// Gets the next unprocessed event from the queue, ordered by block number then log index
+#[cfg(test)]
 pub async fn get_next_unprocessed_event(
     pool: &SqlitePool,
 ) -> Result<Option<QueuedEvent>, EventQueueError> {
@@ -138,7 +135,7 @@ pub async fn get_next_unprocessed_event(
     let tx_hash = B256::from_str(&row.tx_hash)
         .map_err(|e| EventQueueError::Processing(format!("Invalid tx_hash format: {e}")))?;
 
-    let event: SerializableEvent = serde_json::from_str(&row.event_data)
+    let event: TradeEvent = serde_json::from_str(&row.event_data)
         .map_err(|e| EventQueueError::Processing(format!("Failed to deserialize event: {e}")))?;
 
     Ok(Some(QueuedEvent {
@@ -175,7 +172,8 @@ pub async fn mark_event_processed(pool: &SqlitePool, event_id: i64) -> Result<()
 }
 
 /// Gets count of unprocessed events in the queue
-pub async fn get_unprocessed_count(pool: &SqlitePool) -> Result<i64, EventQueueError> {
+#[cfg(test)]
+pub async fn count_unprocessed(pool: &SqlitePool) -> Result<i64, EventQueueError> {
     let row = sqlx::query!("SELECT COUNT(*) as count FROM event_queue WHERE processed = 0")
         .fetch_one(pool)
         .await?;
@@ -183,7 +181,6 @@ pub async fn get_unprocessed_count(pool: &SqlitePool) -> Result<i64, EventQueueE
     Ok(row.count)
 }
 
-/// Gets all unprocessed events from the queue in deterministic order
 pub async fn get_all_unprocessed_events(
     pool: &SqlitePool,
 ) -> Result<Vec<QueuedEvent>, EventQueueError> {
@@ -203,7 +200,7 @@ pub async fn get_all_unprocessed_events(
         let tx_hash = B256::from_str(&row.tx_hash)
             .map_err(|e| EventQueueError::Processing(format!("Invalid tx_hash format: {e}")))?;
 
-        let event: SerializableEvent = serde_json::from_str(&row.event_data).map_err(|e| {
+        let event: TradeEvent = serde_json::from_str(&row.event_data).map_err(|e| {
             EventQueueError::Processing(format!("Failed to deserialize event: {e}"))
         })?;
 
@@ -238,8 +235,42 @@ pub async fn enqueue<E: Enqueueable>(
 }
 
 /// Gets the event from a queued event (no deserialization needed since it's already typed)
-pub const fn get_event(queued_event: &QueuedEvent) -> &SerializableEvent {
+const fn get_event(queued_event: &QueuedEvent) -> &TradeEvent {
     &queued_event.event
+}
+
+/// Enqueues buffered events that were collected during coordination phase
+pub(crate) async fn enqueue_buffer(
+    pool: &sqlx::SqlitePool,
+    event_buffer: Vec<(TradeEvent, alloy::rpc::types::Log)>,
+) {
+    info!(
+        "Coordination Phase: Processing {} buffered events from subscription",
+        event_buffer.len()
+    );
+
+    const CONCURRENT_ENQUEUE_LIMIT: usize = 10;
+
+    stream::iter(event_buffer)
+        .map(|(event, log)| async move {
+            let result = match &event {
+                TradeEvent::ClearV2(clear_event) => enqueue(pool, clear_event.as_ref(), &log).await,
+                TradeEvent::TakeOrderV2(take_event) => {
+                    enqueue(pool, take_event.as_ref(), &log).await
+                }
+            };
+
+            if let Err(e) = result {
+                let event_type = match event {
+                    TradeEvent::ClearV2(_) => "ClearV2",
+                    TradeEvent::TakeOrderV2(_) => "TakeOrderV2",
+                };
+                error!("Failed to enqueue buffered {event_type} event: {e}");
+            }
+        })
+        .buffer_unordered(CONCURRENT_ENQUEUE_LIMIT)
+        .collect::<Vec<_>>()
+        .await;
 }
 
 #[cfg(test)]
@@ -274,7 +305,7 @@ mod tests {
         };
 
         // Create a test event
-        let test_event = SerializableEvent::ClearV2(Box::new(ClearV2 {
+        let test_event = TradeEvent::ClearV2(Box::new(ClearV2 {
             sender: log.inner.address,
             alice: OrderV3::default(),
             bob: OrderV3::default(),
@@ -287,7 +318,7 @@ mod tests {
             .unwrap();
 
         // Check unprocessed count
-        let count = get_unprocessed_count(&pool).await.unwrap();
+        let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 1);
 
         // Get next unprocessed event
@@ -295,7 +326,7 @@ mod tests {
         assert_eq!(queued_event.tx_hash, log.transaction_hash.unwrap());
         assert_eq!(queued_event.log_index, 5);
         assert_eq!(queued_event.block_number, 100);
-        assert!(matches!(queued_event.event, SerializableEvent::ClearV2(_)));
+        assert!(matches!(queued_event.event, TradeEvent::ClearV2(_)));
         assert!(!queued_event.processed);
 
         // Mark as processed
@@ -304,7 +335,7 @@ mod tests {
             .unwrap();
 
         // Check unprocessed count is now 0
-        let count = get_unprocessed_count(&pool).await.unwrap();
+        let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 0);
 
         // Should return None for next unprocessed
@@ -335,7 +366,7 @@ mod tests {
         };
 
         // Create a test event
-        let test_event = SerializableEvent::TakeOrderV2(Box::new(TakeOrderV2 {
+        let test_event = TradeEvent::TakeOrderV2(Box::new(TakeOrderV2 {
             sender: log.inner.address,
             config: TakeOrderConfigV3::default(),
             input: Uint::default(),
@@ -351,7 +382,7 @@ mod tests {
             .unwrap();
 
         // Should only have one event due to unique constraint
-        let count = get_unprocessed_count(&pool).await.unwrap();
+        let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 1);
     }
 
@@ -377,7 +408,7 @@ mod tests {
                 removed: false,
             };
 
-            let test_event = SerializableEvent::ClearV2(Box::new(ClearV2 {
+            let test_event = TradeEvent::ClearV2(Box::new(ClearV2 {
                 sender: log.inner.address,
                 alice: OrderV3::default(),
                 bob: OrderV3::default(),
@@ -395,7 +426,85 @@ mod tests {
                 .unwrap();
         }
 
-        let count = get_unprocessed_count(&pool).await.unwrap();
+        let count = count_unprocessed(&pool).await.unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_enqueue_buffer_mixed_events() {
+        let pool = setup_test_db().await;
+
+        let log1 = Log {
+            inner: alloy::primitives::Log {
+                address: address!("1234567890123456789012345678901234567890"),
+                data: LogData::default(),
+            },
+            block_hash: Some(b256!(
+                "1111111111111111111111111111111111111111111111111111111111111111"
+            )),
+            block_number: Some(100),
+            block_timestamp: None,
+            transaction_hash: Some(b256!(
+                "2222222222222222222222222222222222222222222222222222222222222222"
+            )),
+            transaction_index: Some(1),
+            log_index: Some(1),
+            removed: false,
+        };
+
+        let log2 = Log {
+            inner: alloy::primitives::Log {
+                address: address!("1234567890123456789012345678901234567890"),
+                data: LogData::default(),
+            },
+            block_hash: Some(b256!(
+                "3333333333333333333333333333333333333333333333333333333333333333"
+            )),
+            block_number: Some(101),
+            block_timestamp: None,
+            transaction_hash: Some(b256!(
+                "4444444444444444444444444444444444444444444444444444444444444444"
+            )),
+            transaction_index: Some(2),
+            log_index: Some(2),
+            removed: false,
+        };
+
+        let clear_event = TradeEvent::ClearV2(Box::new(ClearV2 {
+            sender: log1.inner.address,
+            alice: OrderV3::default(),
+            bob: OrderV3::default(),
+            clearConfig: ClearConfig::default(),
+        }));
+
+        let take_event = TradeEvent::TakeOrderV2(Box::new(TakeOrderV2 {
+            sender: log2.inner.address,
+            config: TakeOrderConfigV3::default(),
+            input: Uint::default(),
+            output: Uint::default(),
+        }));
+
+        let event_buffer = vec![(clear_event, log1), (take_event, log2)];
+
+        enqueue_buffer(&pool, event_buffer).await;
+
+        let count = count_unprocessed(&pool).await.unwrap();
+        assert_eq!(count, 2);
+
+        let events = get_all_unprocessed_events(&pool).await.unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0].event, TradeEvent::ClearV2(_)));
+        assert!(matches!(events[1].event, TradeEvent::TakeOrderV2(_)));
+    }
+
+    #[tokio::test]
+    async fn test_enqueue_buffer_empty() {
+        let pool = setup_test_db().await;
+        let empty_buffer = vec![];
+
+        enqueue_buffer(&pool, empty_buffer).await;
+
+        let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 0);
     }
 }

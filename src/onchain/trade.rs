@@ -3,6 +3,7 @@ use alloy::providers::Provider;
 use alloy::rpc::types::Log;
 use alloy::sol_types::SolEvent;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::num::ParseFloatError;
 
@@ -10,7 +11,14 @@ use crate::bindings::IOrderBookV4::{ClearV2, OrderV3, TakeOrderV2};
 use crate::error::{OnChainError, PersistenceError, TradeValidationError};
 use crate::onchain::EvmEnv;
 use crate::schwab::Direction;
-use crate::symbol_cache::SymbolCache;
+use crate::symbol::cache::SymbolCache;
+
+/// Union of all trade events
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TradeEvent {
+    ClearV2(Box<ClearV2>),
+    TakeOrderV2(Box<TakeOrderV2>),
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OnchainTrade {
