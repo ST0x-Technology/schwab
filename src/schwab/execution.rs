@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 
-use super::shares_from_db_i64;
+use super::{price_cents_from_db_i64, shares_from_db_i64};
 use crate::error::{OnChainError, PersistenceError};
 use crate::schwab::SchwabInstruction;
 use crate::schwab::TradeStatus;
@@ -44,8 +44,7 @@ fn row_to_execution(
             TradeStatus::Completed {
                 executed_at: DateTime::<Utc>::from_naive_utc_and_offset(executed_at, Utc),
                 order_id,
-                #[allow(clippy::cast_sign_loss)]
-                price_cents: price_cents as u64,
+                price_cents: price_cents_from_db_i64(price_cents)?,
             }
         }
         "FAILED" => {

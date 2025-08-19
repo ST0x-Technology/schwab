@@ -41,6 +41,8 @@ pub enum PersistenceError {
     InvalidTradeStatus(String),
     #[error("Invalid share quantity in database: {0}")]
     InvalidShareQuantity(i64),
+    #[error("Invalid price cents in database: {0}")]
+    InvalidPriceCents(i64),
     #[error("Failed to acquire symbol map lock")]
     SymbolMapLock,
     #[error("Execution ID mismatch for symbol {symbol}: expected {expected}, current {current:?}")]

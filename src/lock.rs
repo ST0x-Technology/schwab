@@ -297,6 +297,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_ttl_based_cleanup() {
+        let pool = setup_test_db().await;
+
+        // First, acquire a lease
+        let mut sql_tx = pool.begin().await.unwrap();
+        let result = try_acquire_execution_lease(&mut sql_tx, "AAPL")
+            .await
+            .unwrap();
+        assert!(result);
+        sql_tx.commit().await.unwrap();
+
+        // Manually update the locked_at timestamp to be older than TTL
+        let mut sql_tx = pool.begin().await.unwrap();
+        sqlx::query(
+            "UPDATE symbol_locks SET locked_at = datetime('now', '-100 minutes') WHERE symbol = ?1",
+        )
+        .bind("AAPL")
+        .execute(sql_tx.as_mut())
+        .await
+        .unwrap();
+        sql_tx.commit().await.unwrap();
+
+        // Now try to acquire the same lease - should succeed due to TTL cleanup
+        let mut sql_tx = pool.begin().await.unwrap();
+        let result = try_acquire_execution_lease(&mut sql_tx, "AAPL")
+            .await
+            .unwrap();
+        assert!(result); // Should succeed because old lock was cleaned up
+        sql_tx.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_clear_pending_execution_mismatch_preserves_lock() {
         let pool = setup_test_db().await;
 

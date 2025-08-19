@@ -74,7 +74,7 @@ This is a Rust-based arbitrage bot for tokenized equities that monitors onchain 
 - Token storage and retrieval from SQLite database
 - Comprehensive error handling for authentication failures
 
-**Symbol Caching (`src/symbol_cache.rs`)**
+**Symbol Caching (`crate::symbol::cache::SymbolCache`)**
 - Thread-safe caching of ERC20 token symbols using `tokio::sync::RwLock`
 - Prevents repeated RPC calls for the same token addresses
 

@@ -7,6 +7,7 @@ use tracing::{error, info};
 
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
 use crate::env::Env;
+use crate::error::{OnChainError, PersistenceError};
 use crate::onchain::trade::TradeEvent;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
 use crate::queue::{enqueue, get_all_unprocessed_events, mark_event_processed};
@@ -355,25 +356,30 @@ async fn process_queued_event_atomic<P: Provider + Clone>(
         let pending_execution_id = accumulator::add_trade(pool, trade).await?;
 
         if let Some(execution) = pending_execution_id {
-            info!(
-                "Trade accumulation triggered Schwab execution with ID: {}",
-                execution.id.unwrap_or(-1)
-            );
+            if let Some(execution_id) = execution.id {
+                info!(
+                    "Trade accumulation triggered Schwab execution with ID: {}",
+                    execution_id
+                );
 
-            // Execute the Schwab order
-            let env_clone = env.clone();
-            let pool_clone = pool.clone();
-            let execution_id = execution.id.unwrap_or(-1);
-            tokio::spawn(async move {
-                if let Err(e) =
-                    execute_pending_schwab_execution(&env_clone, &pool_clone, execution_id).await
-                {
-                    error!(
-                        "Failed to execute pending Schwab execution {}: {e}",
-                        execution_id
-                    );
-                }
-            });
+                // Execute the Schwab order
+                let env_clone = env.clone();
+                let pool_clone = pool.clone();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        execute_pending_schwab_execution(&env_clone, &pool_clone, execution_id)
+                            .await
+                    {
+                        error!(
+                            "Failed to execute pending Schwab execution {}: {e}",
+                            execution_id
+                        );
+                    }
+                });
+            } else {
+                error!("Execution returned from add_trade has None ID, which should not happen");
+                return Err(OnChainError::Persistence(PersistenceError::MissingExecutionId).into());
+            }
         }
     } else {
         // Even if no trade was created, mark the event as processed to avoid reprocessing

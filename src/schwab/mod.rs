@@ -154,6 +154,17 @@ pub const fn shares_from_db_i64(db_value: i64) -> Result<u64, error::OnChainErro
     }
 }
 
+pub const fn price_cents_from_db_i64(db_value: i64) -> Result<u64, error::OnChainError> {
+    if db_value < 0 {
+        Err(error::OnChainError::Persistence(
+            error::PersistenceError::InvalidPriceCents(db_value),
+        ))
+    } else {
+        #[allow(clippy::cast_sign_loss)]
+        Ok(db_value as u64)
+    }
+}
+
 fn extract_code_from_url(url: &str) -> Result<String, SchwabError> {
     let parsed_url = url::Url::parse(url)?;
 
