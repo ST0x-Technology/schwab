@@ -1131,4 +1131,283 @@ mod tests {
         let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 0);
     }
+
+    #[tokio::test]
+    async fn test_enqueue_batch_events_database_failure() {
+        let pool = setup_test_db().await;
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            deployment_block: 1,
+        };
+
+        let order = get_test_order();
+        let take_event = create_test_take_event(&order, 100_000_000, "9000000000000000000");
+        let take_log = create_test_log(
+            evm_env.orderbook,
+            &take_event,
+            50,
+            fixed_bytes!("0x1111111111111111111111111111111111111111111111111111111111111111"),
+        );
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::json!([])); // clear events
+        asserter.push_success(&serde_json::json!([take_log])); // take events
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        // Close the database to simulate connection failure
+        pool.close().await;
+
+        let result = enqueue_batch_events(&pool, &provider, &evm_env, 100, 200).await;
+
+        // Should succeed at RPC level but fail at database level
+        // The function handles enqueue failures gracefully by continuing
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0); // No events successfully enqueued
+    }
+
+    #[tokio::test]
+    async fn test_enqueue_batch_inner_filter_creation() {
+        let pool = setup_test_db().await;
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            deployment_block: 1,
+        };
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::json!([])); // clear events
+        asserter.push_success(&serde_json::json!([])); // take events
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        // Test with specific block range
+        let result = enqueue_batch_inner(&pool, &provider, &evm_env, 100, 150).await;
+        assert_eq!(result.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_enqueue_batch_events_partial_enqueue_failure() {
+        let pool = setup_test_db().await;
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            deployment_block: 1,
+        };
+
+        let order = get_test_order();
+
+        // Create multiple events
+        let take_event1 = create_test_take_event(&order, 100_000_000, "9000000000000000000");
+        let take_event2 = create_test_take_event(&order, 200_000_000, "18000000000000000000");
+
+        let take_log1 = create_test_log(
+            evm_env.orderbook,
+            &take_event1,
+            50,
+            fixed_bytes!("0x1111111111111111111111111111111111111111111111111111111111111111"),
+        );
+        let take_log2 = create_test_log(
+            evm_env.orderbook,
+            &take_event2,
+            51,
+            fixed_bytes!("0x2222222222222222222222222222222222222222222222222222222222222222"),
+        );
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::json!([])); // clear events
+        asserter.push_success(&serde_json::json!([take_log1, take_log2])); // take events
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        let result = enqueue_batch_events(&pool, &provider, &evm_env, 100, 200).await;
+
+        // Should succeed with 2 events enqueued
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_backfill_events_concurrent_batch_processing() {
+        let pool = setup_test_db().await;
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            deployment_block: 1,
+        };
+
+        let order = get_test_order();
+        let take_event = create_test_take_event(&order, 100_000_000, "9000000000000000000");
+        let take_log = create_test_log(
+            evm_env.orderbook,
+            &take_event,
+            50,
+            fixed_bytes!("0x1111111111111111111111111111111111111111111111111111111111111111"),
+        );
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::Value::from(3000u64));
+
+        // Multiple batches with events in different batches
+        for batch_idx in 0..3 {
+            // All batches start with clear events
+            asserter.push_success(&serde_json::json!([])); // clear events
+            if batch_idx == 1 {
+                // Second batch has take events
+                asserter.push_success(&serde_json::json!([take_log])); // take events
+            } else {
+                // Other batches have no take events
+                asserter.push_success(&serde_json::json!([])); // take events
+            }
+        }
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        backfill_events(&pool, &provider, &evm_env, 3000)
+            .await
+            .unwrap();
+
+        let count = count_unprocessed(&pool).await.unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_enqueue_batch_events_retry_exponential_backoff() {
+        let pool = setup_test_db().await;
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            deployment_block: 1,
+        };
+
+        let asserter = Asserter::new();
+        // Fail twice, then succeed
+        asserter.push_failure_msg("Temporary network failure");
+        asserter.push_failure_msg("Rate limit exceeded");
+        asserter.push_success(&serde_json::json!([])); // clear events
+        asserter.push_success(&serde_json::json!([])); // take events
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        let start_time = std::time::Instant::now();
+        let result = enqueue_batch_events(&pool, &provider, &evm_env, 100, 200).await;
+        let elapsed = start_time.elapsed();
+
+        // Should succeed after retries
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0);
+
+        // Should have taken at least the initial delay time due to retries
+        assert!(elapsed >= BACKFILL_INITIAL_DELAY);
+    }
+
+    #[tokio::test]
+    async fn test_backfill_events_zero_blocks() {
+        let pool = setup_test_db().await;
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            deployment_block: 100,
+        };
+
+        // No RPC calls should be made when deployment block > end block
+        let asserter = Asserter::new();
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        let result = backfill_events(&pool, &provider, &evm_env, 50).await;
+        assert!(result.is_ok());
+
+        let count = count_unprocessed(&pool).await.unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_enqueue_batch_events_mixed_log_types() {
+        let pool = setup_test_db().await;
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_hash: fixed_bytes!(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            deployment_block: 1,
+        };
+
+        let order = get_test_order();
+
+        // Create a ClearV2 event
+        let clear_event = IOrderBookV4::ClearV2 {
+            sender: address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+            alice: order.clone(),
+            bob: order.clone(),
+            clearConfig: IOrderBookV4::ClearConfig {
+                aliceInputIOIndex: U256::from(0),
+                aliceOutputIOIndex: U256::from(1),
+                bobInputIOIndex: U256::from(1),
+                bobOutputIOIndex: U256::from(0),
+                aliceBountyVaultId: U256::ZERO,
+                bobBountyVaultId: U256::ZERO,
+            },
+        };
+
+        let clear_log = Log {
+            inner: alloy::primitives::Log {
+                address: evm_env.orderbook,
+                data: clear_event.to_log_data(),
+            },
+            block_hash: None,
+            block_number: Some(50),
+            block_timestamp: None,
+            transaction_hash: Some(fixed_bytes!(
+                "0x1111111111111111111111111111111111111111111111111111111111111111"
+            )),
+            transaction_index: None,
+            log_index: Some(1),
+            removed: false,
+        };
+
+        // Create a TakeOrderV2 event
+        let take_event = create_test_take_event(&order, 100_000_000, "9000000000000000000");
+        let take_log = create_test_log(
+            evm_env.orderbook,
+            &take_event,
+            51,
+            fixed_bytes!("0x2222222222222222222222222222222222222222222222222222222222222222"),
+        );
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::json!([clear_log])); // clear events
+        asserter.push_success(&serde_json::json!([take_log])); // take events
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        let result = enqueue_batch_inner(&pool, &provider, &evm_env, 100, 200).await;
+
+        // Should process both event types
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 2);
+
+        // Verify both events were enqueued
+        let count = count_unprocessed(&pool).await.unwrap();
+        assert_eq!(count, 2);
+    }
 }

@@ -1,10 +1,10 @@
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 
+use super::shares_from_db_i64;
 use crate::error::{OnChainError, PersistenceError};
 use crate::schwab::SchwabInstruction;
 use crate::schwab::TradeStatus;
-use crate::shares_from_db_i64;
 
 /// Converts database row data to a SchwabExecution instance.
 /// Centralizes the conversion logic and casting operations.
@@ -910,5 +910,277 @@ mod tests {
             .unwrap();
         assert_eq!(pending_aapl.len(), 1);
         assert_eq!(completed_aapl.len(), 1);
+    }
+
+    #[test]
+    fn test_row_to_execution_invalid_direction() {
+        let result = row_to_execution(
+            1,
+            "AAPL".to_string(),
+            100,
+            "INVALID_DIRECTION",
+            None,
+            None,
+            "PENDING",
+            None,
+        );
+
+        assert!(matches!(
+            result.unwrap_err(),
+            OnChainError::Persistence(PersistenceError::InvalidSchwabInstruction(_))
+        ));
+    }
+
+    #[test]
+    fn test_row_to_execution_completed_missing_order_id() {
+        let result = row_to_execution(
+            1,
+            "AAPL".to_string(),
+            100,
+            "BUY",
+            None, // Missing order_id for COMPLETED status
+            Some(15000),
+            "COMPLETED",
+            Some(chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc()),
+        );
+
+        assert!(matches!(
+            result.unwrap_err(),
+            OnChainError::Persistence(PersistenceError::InvalidTradeStatus(_))
+        ));
+    }
+
+    #[test]
+    fn test_row_to_execution_completed_missing_price_cents() {
+        let result = row_to_execution(
+            1,
+            "AAPL".to_string(),
+            100,
+            "BUY",
+            Some("ORDER123".to_string()),
+            None, // Missing price_cents for COMPLETED status
+            "COMPLETED",
+            Some(chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc()),
+        );
+
+        assert!(matches!(
+            result.unwrap_err(),
+            OnChainError::Persistence(PersistenceError::InvalidTradeStatus(_))
+        ));
+    }
+
+    #[test]
+    fn test_row_to_execution_completed_missing_executed_at() {
+        let result = row_to_execution(
+            1,
+            "AAPL".to_string(),
+            100,
+            "BUY",
+            Some("ORDER123".to_string()),
+            Some(15000),
+            "COMPLETED",
+            None, // Missing executed_at for COMPLETED status
+        );
+
+        assert!(matches!(
+            result.unwrap_err(),
+            OnChainError::Persistence(PersistenceError::InvalidTradeStatus(_))
+        ));
+    }
+
+    #[test]
+    fn test_row_to_execution_invalid_status() {
+        let result = row_to_execution(
+            1,
+            "AAPL".to_string(),
+            100,
+            "BUY",
+            None,
+            None,
+            "INVALID_STATUS",
+            None,
+        );
+
+        assert!(matches!(
+            result.unwrap_err(),
+            OnChainError::Persistence(PersistenceError::InvalidTradeStatus(_))
+        ));
+    }
+
+    #[test]
+    fn test_row_to_execution_negative_shares() {
+        // Test with negative shares value
+        let result = row_to_execution(
+            1,
+            "AAPL".to_string(),
+            -100, // Negative shares
+            "BUY",
+            None,
+            None,
+            "PENDING",
+            None,
+        );
+
+        assert!(matches!(
+            result.unwrap_err(),
+            OnChainError::Persistence(PersistenceError::InvalidShareQuantity(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_execution_status_transition_failed_to_pending() {
+        let pool = setup_test_db().await;
+
+        // Create failed execution (simulating previous auth failure)
+        let execution = SchwabExecution {
+            id: None,
+            symbol: "MSFT".to_string(),
+            shares: 50,
+            direction: SchwabInstruction::Sell,
+            status: TradeStatus::Failed {
+                failed_at: Utc::now(),
+                error_reason: Some("Authentication failed".to_string()),
+            },
+        };
+
+        let mut sql_tx = pool.begin().await.unwrap();
+        let execution_id = execution
+            .save_within_transaction(&mut sql_tx)
+            .await
+            .unwrap();
+        sql_tx.commit().await.unwrap();
+
+        // Update to pending (simulating retry after auth recovery)
+        let mut sql_tx = pool.begin().await.unwrap();
+        update_execution_status_within_transaction(&mut sql_tx, execution_id, TradeStatus::Pending)
+            .await
+            .unwrap();
+        sql_tx.commit().await.unwrap();
+
+        // Verify status updated correctly
+        let found = find_execution_by_id(&pool, execution_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(found.status, TradeStatus::Pending));
+    }
+
+    #[tokio::test]
+    async fn test_database_connection_failure_handling() {
+        let pool = setup_test_db().await;
+        pool.close().await;
+        schwab_execution_db_count(&pool).await.unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn test_find_execution_by_id_with_closed_connection() {
+        let pool = setup_test_db().await;
+        pool.close().await;
+        find_execution_by_id(&pool, 1).await.unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn test_execution_save_with_database_constraint_violation() {
+        let pool = setup_test_db().await;
+
+        // Create execution with valid data first
+        let execution1 = SchwabExecution {
+            id: None,
+            symbol: "TSLA".to_string(),
+            shares: 100,
+            direction: SchwabInstruction::Buy,
+            status: TradeStatus::Pending,
+        };
+
+        let mut sql_tx1 = pool.begin().await.unwrap();
+        execution1
+            .save_within_transaction(&mut sql_tx1)
+            .await
+            .unwrap();
+        sql_tx1.commit().await.unwrap();
+
+        // Try to create another pending execution for same symbol
+        let execution2 = SchwabExecution {
+            id: None,
+            symbol: "TSLA".to_string(),
+            shares: 200,
+            direction: SchwabInstruction::Sell,
+            status: TradeStatus::Pending,
+        };
+
+        let mut sql_tx2 = pool.begin().await.unwrap();
+        let result = execution2.save_within_transaction(&mut sql_tx2).await;
+
+        // Should fail due to unique constraint on symbol for pending executions
+        assert!(result.is_err(), "Expected unique constraint violation");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("UNIQUE constraint failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_execution_status_transaction_rollback() {
+        let pool = setup_test_db().await;
+
+        let execution = SchwabExecution {
+            id: None,
+            symbol: "GOOG".to_string(),
+            shares: 25,
+            direction: SchwabInstruction::Buy,
+            status: TradeStatus::Pending,
+        };
+
+        let mut sql_tx = pool.begin().await.unwrap();
+        let execution_id = execution
+            .save_within_transaction(&mut sql_tx)
+            .await
+            .unwrap();
+        sql_tx.commit().await.unwrap();
+
+        // Start transaction but don't commit
+        let mut sql_tx = pool.begin().await.unwrap();
+        update_execution_status_within_transaction(
+            &mut sql_tx,
+            execution_id,
+            TradeStatus::Completed {
+                executed_at: Utc::now(),
+                order_id: "ORDER999".to_string(),
+                price_cents: 300_000,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Rollback instead of commit
+        sql_tx.rollback().await.unwrap();
+
+        // Verify original status preserved
+        let found = find_execution_by_id(&pool, execution_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(found.status, TradeStatus::Pending));
+    }
+
+    #[test]
+    fn test_row_to_execution_failed_missing_executed_at() {
+        let result = row_to_execution(
+            1,
+            "AAPL".to_string(),
+            100,
+            "BUY",
+            None,
+            None,
+            "FAILED",
+            None, // Missing executed_at for FAILED status
+        );
+
+        assert!(matches!(
+            result.unwrap_err(),
+            OnChainError::Persistence(PersistenceError::InvalidTradeStatus(_))
+        ));
     }
 }

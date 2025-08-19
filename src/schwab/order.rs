@@ -982,5 +982,26 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn test_handle_execution_failure_database_failure() {
+        let pool = setup_test_db().await;
+
+        // Close pool to simulate database failure
+        pool.close().await;
+
+        let test_error = SchwabError::RequestFailed {
+            action: "test".to_string(),
+            status: reqwest::StatusCode::BAD_REQUEST,
+            body: "test error".to_string(),
+        };
+
+        assert!(matches!(
+            handle_execution_failure(&pool, 123, test_error)
+                .await
+                .unwrap_err(),
+            SchwabError::Sqlx(_)
+        ));
+    }
+
     // These tests can be restored when/if the CLI functionality is migrated to the new system
 }

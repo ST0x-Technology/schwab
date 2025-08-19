@@ -522,6 +522,9 @@ mod tests {
     use crate::test_utils::{OnchainTradeBuilder, setup_test_db};
     use alloy::primitives::{IntoLogData, address, fixed_bytes};
     use alloy::providers::ProviderBuilder;
+    use alloy::providers::mock::Asserter;
+    use alloy::sol_types;
+    use futures_util::stream;
 
     #[tokio::test]
     async fn test_event_enqueued_when_trade_conversion_returns_none() {
@@ -994,21 +997,270 @@ mod tests {
         let original_log_data = clear_event.into_log_data();
         assert_eq!(reconstructed_log.inner.data, original_log_data);
 
-        // Test that the event can be processed atomically
-        let cache = SymbolCache::default();
-        let http_provider =
-            ProviderBuilder::new().connect_http("http://localhost:8545".parse().unwrap());
-
-        // Variables are intentionally unused in this test since we only verify structure
-        let _ = (cache, http_provider);
-
-        // The actual processing would fail due to RPC calls in test environment,
-        // but we've verified the deserialization and log reconstruction work correctly
-
         // Clean up
         crate::queue::mark_event_processed(&pool, queued_event.id.unwrap())
             .await
             .unwrap();
         assert_eq!(crate::queue::count_unprocessed(&pool).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_cutoff_block_with_timeout() {
+        let pool = setup_test_db().await;
+        let asserter = Asserter::new();
+
+        // Mock the eth_blockNumber call that will be made when no events arrive
+        asserter.push_success(&serde_json::Value::from(12345u64));
+        let provider = alloy::providers::ProviderBuilder::new().connect_mocked_client(asserter);
+
+        // Create empty streams that will never yield events (to trigger timeout)
+        let mut clear_stream = futures_util::stream::empty();
+        let mut take_stream = futures_util::stream::empty();
+
+        // Should return current block number when no events arrive within timeout
+        let cutoff_block = get_cutoff_block(&mut clear_stream, &mut take_stream, &provider, &pool)
+            .await
+            .unwrap();
+
+        assert_eq!(cutoff_block, 12345);
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_first_event_with_timeout_no_events() {
+        // Create empty streams
+        let mut clear_stream = stream::empty();
+        let mut take_stream = stream::empty();
+
+        let result = wait_for_first_event_with_timeout(
+            &mut clear_stream,
+            &mut take_stream,
+            std::time::Duration::from_millis(10),
+        )
+        .await;
+
+        // Should return None when timeout expires with no events
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_first_event_with_clear_event() {
+        // Create a test ClearV2 event
+        let clear_event = ClearV2 {
+            sender: address!("0x1111111111111111111111111111111111111111"),
+            alice: crate::test_utils::get_test_order(),
+            bob: crate::test_utils::get_test_order(),
+            clearConfig: ClearConfig {
+                aliceInputIOIndex: alloy::primitives::U256::from(0),
+                aliceOutputIOIndex: alloy::primitives::U256::from(1),
+                bobInputIOIndex: alloy::primitives::U256::from(1),
+                bobOutputIOIndex: alloy::primitives::U256::from(0),
+                aliceBountyVaultId: alloy::primitives::U256::ZERO,
+                bobBountyVaultId: alloy::primitives::U256::ZERO,
+            },
+        };
+        let mut log = crate::test_utils::get_test_log();
+        log.block_number = Some(1000);
+
+        // Create streams with one event each
+        let mut clear_stream = stream::iter(vec![Ok((clear_event, log.clone()))]);
+        let mut take_stream = stream::empty::<Result<(TakeOrderV2, Log), sol_types::Error>>();
+
+        let result = wait_for_first_event_with_timeout(
+            &mut clear_stream,
+            &mut take_stream,
+            std::time::Duration::from_secs(1),
+        )
+        .await;
+
+        // Should return the event and block number
+        assert!(result.is_some());
+        let (events, block_number) = result.unwrap();
+        assert_eq!(block_number, 1000);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0].0, TradeEvent::ClearV2(_)));
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_first_event_missing_block_number() {
+        // Create event with missing block number
+        let clear_event = ClearV2 {
+            sender: address!("0x1111111111111111111111111111111111111111"),
+            alice: crate::test_utils::get_test_order(),
+            bob: crate::test_utils::get_test_order(),
+            clearConfig: ClearConfig {
+                aliceInputIOIndex: alloy::primitives::U256::from(0),
+                aliceOutputIOIndex: alloy::primitives::U256::from(1),
+                bobInputIOIndex: alloy::primitives::U256::from(1),
+                bobOutputIOIndex: alloy::primitives::U256::from(0),
+                aliceBountyVaultId: alloy::primitives::U256::ZERO,
+                bobBountyVaultId: alloy::primitives::U256::ZERO,
+            },
+        };
+        let mut log = crate::test_utils::get_test_log();
+        log.block_number = None; // Missing block number
+
+        let mut clear_stream = stream::iter(vec![Ok((clear_event, log))]);
+        let mut take_stream = stream::empty::<Result<(TakeOrderV2, Log), sol_types::Error>>();
+
+        let result = wait_for_first_event_with_timeout(
+            &mut clear_stream,
+            &mut take_stream,
+            std::time::Duration::from_millis(100),
+        )
+        .await;
+
+        // Should timeout because event has no block number
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_buffer_live_events_filtering() {
+        let clear_event = ClearV2 {
+            sender: address!("0x1111111111111111111111111111111111111111"),
+            alice: crate::test_utils::get_test_order(),
+            bob: crate::test_utils::get_test_order(),
+            clearConfig: ClearConfig {
+                aliceInputIOIndex: alloy::primitives::U256::from(0),
+                aliceOutputIOIndex: alloy::primitives::U256::from(1),
+                bobInputIOIndex: alloy::primitives::U256::from(1),
+                bobOutputIOIndex: alloy::primitives::U256::from(0),
+                aliceBountyVaultId: alloy::primitives::U256::ZERO,
+                bobBountyVaultId: alloy::primitives::U256::ZERO,
+            },
+        };
+
+        // Create events with different block numbers
+        let mut early_log = crate::test_utils::get_test_log();
+        early_log.block_number = Some(99); // Below cutoff
+
+        let mut late_log = crate::test_utils::get_test_log();
+        late_log.block_number = Some(101); // Above cutoff
+
+        let events = vec![
+            Ok((clear_event.clone(), early_log)),
+            Ok((clear_event, late_log)),
+        ];
+
+        let mut clear_stream = stream::iter(events);
+        let mut take_stream = stream::empty::<Result<(TakeOrderV2, Log), sol_types::Error>>();
+        let mut event_buffer = Vec::new();
+
+        // Should only buffer events at or above cutoff block 100
+        buffer_live_events(&mut clear_stream, &mut take_stream, &mut event_buffer, 100).await;
+
+        // Should only have one event (block 101, not block 99)
+        assert_eq!(event_buffer.len(), 1);
+        assert_eq!(event_buffer[0].1.block_number.unwrap(), 101);
+    }
+
+    #[tokio::test]
+    async fn test_process_live_event_clear_v2() {
+        let pool = setup_test_db().await;
+        let env = create_test_env();
+        let cache = SymbolCache::default();
+        let asserter = Asserter::new();
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        let clear_event = ClearV2 {
+            sender: address!("0x1111111111111111111111111111111111111111"),
+            alice: crate::test_utils::get_test_order(),
+            bob: crate::test_utils::get_test_order(),
+            clearConfig: ClearConfig {
+                aliceInputIOIndex: alloy::primitives::U256::from(0),
+                aliceOutputIOIndex: alloy::primitives::U256::from(1),
+                bobInputIOIndex: alloy::primitives::U256::from(1),
+                bobOutputIOIndex: alloy::primitives::U256::from(0),
+                aliceBountyVaultId: alloy::primitives::U256::ZERO,
+                bobBountyVaultId: alloy::primitives::U256::ZERO,
+            },
+        };
+        let log = crate::test_utils::get_test_log();
+
+        // Process the live event
+        let result = process_live_event(
+            &env,
+            &pool,
+            &cache,
+            &provider,
+            TradeEvent::ClearV2(Box::new(clear_event)),
+            log,
+        )
+        .await;
+
+        // Should succeed in enqueuing even if trade conversion fails
+        assert!(result.is_ok());
+
+        // Verify event was enqueued
+        let count = crate::queue::count_unprocessed(&pool).await.unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_process_queue_empty() {
+        let pool = setup_test_db().await;
+        let env = create_test_env();
+        let cache = SymbolCache::default();
+        let asserter = Asserter::new();
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        process_queue(&env, &env.evm_env, &pool, &cache, provider)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_execute_pending_schwab_execution_not_found() {
+        let pool = setup_test_db().await;
+        let env = create_test_env();
+
+        // Try to execute non-existent execution
+        let result = execute_pending_schwab_execution(&env, &pool, 99999).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_process_queued_event_atomic_missing_id() {
+        let pool = setup_test_db().await;
+        let env = create_test_env();
+        let cache = SymbolCache::default();
+        let asserter = Asserter::new();
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        let clear_event = ClearV2 {
+            sender: address!("0x1111111111111111111111111111111111111111"),
+            alice: crate::test_utils::get_test_order(),
+            bob: crate::test_utils::get_test_order(),
+            clearConfig: ClearConfig {
+                aliceInputIOIndex: alloy::primitives::U256::from(0),
+                aliceOutputIOIndex: alloy::primitives::U256::from(1),
+                bobInputIOIndex: alloy::primitives::U256::from(1),
+                bobOutputIOIndex: alloy::primitives::U256::from(0),
+                aliceBountyVaultId: alloy::primitives::U256::ZERO,
+                bobBountyVaultId: alloy::primitives::U256::ZERO,
+            },
+        };
+
+        // Create queued event without ID (simulating database inconsistency)
+        let queued_event = crate::queue::QueuedEvent {
+            id: None, // Missing ID
+            tx_hash: fixed_bytes!(
+                "0x1111111111111111111111111111111111111111111111111111111111111111"
+            ),
+            log_index: 1,
+            block_number: 100,
+            event: crate::onchain::trade::TradeEvent::ClearV2(Box::new(clear_event)),
+            processed: false,
+            created_at: Some(chrono::Utc::now()),
+            processed_at: None,
+        };
+
+        let result =
+            process_queued_event_atomic(&env, &env.evm_env, &pool, &cache, provider, &queued_event)
+                .await;
+
+        // Should fail due to missing ID
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing ID"));
     }
 }

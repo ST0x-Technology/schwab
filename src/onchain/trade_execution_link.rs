@@ -1,8 +1,8 @@
 #[cfg(test)]
 use crate::error::OnChainError;
-use crate::schwab::{Direction, TradeStatus};
 #[cfg(test)]
-use crate::shares_from_db_i64;
+use crate::schwab::shares_from_db_i64;
+use crate::schwab::{Direction, TradeStatus};
 use chrono::{DateTime, Utc};
 #[cfg(test)]
 use sqlx::SqlitePool;

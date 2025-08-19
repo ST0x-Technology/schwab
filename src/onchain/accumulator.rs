@@ -97,14 +97,6 @@ pub async fn find_by_symbol(
     }))
 }
 
-#[cfg(test)]
-pub async fn db_count(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
-    let row = sqlx::query!("SELECT COUNT(*) as count FROM trade_accumulators")
-        .fetch_one(pool)
-        .await?;
-    Ok(row.count)
-}
-
 fn extract_base_symbol(symbol: &str) -> Result<String, OnChainError> {
     if symbol.is_empty() {
         return Err(OnChainError::Validation(
@@ -400,8 +392,7 @@ mod tests {
             created_at: None,
         };
 
-        let result = add_trade(&pool, trade).await.unwrap();
-        let execution = result.unwrap();
+        let execution = add_trade(&pool, trade).await.unwrap().unwrap();
 
         assert_eq!(execution.symbol, "MSFT");
         assert_eq!(execution.shares, 1);
@@ -547,8 +538,7 @@ mod tests {
             created_at: None,
         };
 
-        let result = add_trade(&pool, trade).await.unwrap();
-        let execution = result.unwrap();
+        let execution = add_trade(&pool, trade).await.unwrap().unwrap();
 
         assert_eq!(execution.direction, Direction::Sell);
         assert_eq!(execution.symbol, "AAPL");
@@ -572,8 +562,7 @@ mod tests {
             created_at: None,
         };
 
-        let result = add_trade(&pool, trade).await.unwrap();
-        let execution = result.unwrap();
+        let execution = add_trade(&pool, trade).await.unwrap().unwrap();
 
         assert_eq!(execution.direction, Direction::Buy);
         assert_eq!(execution.symbol, "MSFT");
@@ -795,8 +784,7 @@ mod tests {
             created_at: None,
         };
 
-        let result = add_trade(&pool, trade).await.unwrap();
-        let execution = result.unwrap();
+        let execution = add_trade(&pool, trade).await.unwrap().unwrap();
         let execution_id = execution.id.unwrap();
 
         // Verify trade-execution link was created
@@ -981,8 +969,7 @@ mod tests {
         };
 
         // Add trade and trigger execution
-        let result = add_trade(&pool, trade).await.unwrap();
-        let execution = result.unwrap();
+        let execution = add_trade(&pool, trade).await.unwrap().unwrap();
 
         // Verify only 1 share executed, not 1.2
         assert_eq!(execution.shares, 1);
