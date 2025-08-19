@@ -1,8 +1,11 @@
-use chrono::{DateTime, Utc};
-use sqlx::SqlitePool;
-
+#[cfg(test)]
 use crate::error::OnChainError;
 use crate::schwab::{Direction, TradeStatus};
+#[cfg(test)]
+use crate::shares_from_db_i64;
+use chrono::{DateTime, Utc};
+#[cfg(test)]
+use sqlx::SqlitePool;
 
 /// Links individual onchain trades to their contributing Schwab executions.
 ///
@@ -49,6 +52,7 @@ impl TradeExecutionLink {
     }
 
     /// Find all executions that a specific trade contributed to
+    #[cfg(test)]
     pub async fn find_executions_for_trade(
         pool: &SqlitePool,
         trade_id: i64,
@@ -107,6 +111,7 @@ impl TradeExecutionLink {
     }
 
     /// Find all trades that contributed to a specific execution
+    #[cfg(test)]
     pub async fn find_trades_for_execution(
         pool: &SqlitePool,
         execution_id: i64,
@@ -154,6 +159,7 @@ impl TradeExecutionLink {
     }
 
     /// Get complete audit trail for a symbol showing all trades and their executions
+    #[cfg(test)]
     pub async fn get_symbol_audit_trail(
         pool: &SqlitePool,
         symbol: &str,
@@ -284,20 +290,7 @@ pub struct AuditTrailEntry {
     pub execution_executed_at: Option<DateTime<Utc>>,
 }
 
-/// Helper function to convert database i64 to u64 for share quantities
-// Cannot be const due to error construction in non-const context
-#[allow(clippy::missing_const_for_fn)]
-fn shares_from_db_i64(db_value: i64) -> Result<u64, OnChainError> {
-    if db_value < 0 {
-        Err(OnChainError::Persistence(
-            crate::error::PersistenceError::InvalidShareQuantity(db_value),
-        ))
-    } else {
-        #[allow(clippy::cast_sign_loss)]
-        Ok(db_value as u64)
-    }
-}
-
+#[cfg(test)]
 fn parse_trade_status_from_db(
     status: &str,
     order_id: Option<&str>,
@@ -360,7 +353,7 @@ fn parse_trade_status_from_db(
 mod tests {
     use super::*;
     use crate::onchain::OnchainTrade;
-    use crate::schwab::{Direction, TradeStatus, execution::SchwabExecution};
+    use crate::schwab::execution::SchwabExecution;
     use crate::test_utils::setup_test_db;
     use alloy::primitives::fixed_bytes;
     use chrono::Utc;

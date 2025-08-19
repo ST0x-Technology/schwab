@@ -4,6 +4,7 @@ use sqlx::SqlitePool;
 use crate::error::{OnChainError, PersistenceError};
 use crate::schwab::SchwabInstruction;
 use crate::schwab::TradeStatus;
+use crate::shares_from_db_i64;
 
 /// Converts database row data to a SchwabExecution instance.
 /// Centralizes the conversion logic and casting operations.
@@ -43,7 +44,8 @@ fn row_to_execution(
             TradeStatus::Completed {
                 executed_at: DateTime::<Utc>::from_naive_utc_and_offset(executed_at, Utc),
                 order_id,
-                price_cents: shares_from_db_i64(price_cents),
+                #[allow(clippy::cast_sign_loss)]
+                price_cents: price_cents as u64,
             }
         }
         "FAILED" => {
@@ -67,23 +69,10 @@ fn row_to_execution(
     Ok(SchwabExecution {
         id: Some(id),
         symbol,
-        shares: shares_from_db_i64(shares),
+        shares: shares_from_db_i64(shares)?,
         direction: parsed_direction,
         status: parsed_status,
     })
-}
-
-/// Converts database i64 to u64 for share quantities.
-/// Database stores as i64 but shares are always positive quantities.
-const fn shares_from_db_i64(db_value: i64) -> u64 {
-    if db_value < 0 {
-        0 // Defensive programming: negative shares shouldn't exist in our domain
-    } else {
-        #[allow(clippy::cast_sign_loss)]
-        {
-            db_value as u64 // Safe: non-negative value, sign loss is intentional
-        }
-    }
 }
 
 /// Converts u64 share quantity to i64 for database storage.

@@ -110,3 +110,12 @@ CREATE TABLE event_queue (
 CREATE INDEX idx_event_queue_processed ON event_queue(processed);
 CREATE INDEX idx_event_queue_block_number ON event_queue(block_number);
 CREATE INDEX idx_event_queue_created_at ON event_queue(created_at);
+
+-- Trigger to automatically update last_updated column on trade_accumulators updates
+CREATE TRIGGER IF NOT EXISTS update_trade_accumulators_last_updated
+  BEFORE UPDATE ON trade_accumulators
+  FOR EACH ROW
+  WHEN OLD.last_updated = NEW.last_updated
+  BEGIN
+    UPDATE trade_accumulators SET last_updated = CURRENT_TIMESTAMP WHERE symbol = NEW.symbol;
+  END;

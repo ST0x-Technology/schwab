@@ -4,14 +4,17 @@ use alloy::rpc::types::Log;
 use alloy::sol_types::SolEvent;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
 use std::num::ParseFloatError;
 
 use crate::bindings::IOrderBookV4::{ClearV2, OrderV3, TakeOrderV2};
-use crate::error::{OnChainError, PersistenceError, TradeValidationError};
+#[cfg(test)]
+use crate::error::PersistenceError;
+use crate::error::{OnChainError, TradeValidationError};
 use crate::onchain::EvmEnv;
 use crate::schwab::Direction;
 use crate::symbol::cache::SymbolCache;
+#[cfg(test)]
+use sqlx::SqlitePool;
 
 /// Union of all trade events
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +63,7 @@ impl OnchainTrade {
         Ok(result.last_insert_rowid())
     }
 
+    #[cfg(test)]
     pub async fn find_by_tx_hash_and_log_index(
         pool: &SqlitePool,
         tx_hash: B256,
@@ -355,7 +359,6 @@ fn u256_to_f64(amount: U256, decimals: u8) -> Result<f64, ParseFloatError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schwab::Direction;
     use crate::test_utils::setup_test_db;
     use alloy::primitives::fixed_bytes;
 
