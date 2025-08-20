@@ -37,6 +37,8 @@ jobs:
 
       - run: nix run .#prepSolArtifacts
 
+      - run: nix develop -c pre-commit run -a
+
       - run: cp -v .env.example .env
       - run: nix develop -c sqlx db create
       - run: nix develop -c sqlx migrate run
