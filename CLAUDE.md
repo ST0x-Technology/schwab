@@ -119,7 +119,7 @@ Environment variables (can be set via `.env` file):
 
 ### Workflow Best Practices
 
-- **Always run tests, clippy, pre-commit before handing over a piece of work**
+- **Always run tests, clippy, and pre-commit before handing over a piece of work**
   - Run tests first, as changing tests can break clippy
   - Run clippy next, as fixing linting errors can break formatting
   - Deny warnings when running clippy
