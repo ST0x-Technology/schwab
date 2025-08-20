@@ -25,6 +25,10 @@
             # Rust
             taplo.enable = true;
             rustfmt.enable = true;
+
+            # Misc
+            yamlfmt.enable = true;
+            yamlfmt.settings.lint-only = false;
           };
         };
       in rec {
