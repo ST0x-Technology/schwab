@@ -1,4 +1,5 @@
 openapi: 3.0.1
+
 info:
   title: Trader API - Account Access and User Preferences
   description: Schwab Trader API access to Account, Order entry and User Preferences
@@ -12,10 +13,12 @@ security:
   - oauth:
       - read
       - write
+
 tags:
   - name: Accounts
   - name: Orders
   - name: Transactions
+
 paths:
   /accounts/accountNumbers:
     get:
