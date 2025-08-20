@@ -5,3 +5,4 @@ node_modules/
 .env
 *.db
 tarpaulin-report.html
+.pre-commit-config.yaml

@@ -4,11 +4,29 @@
   inputs = {
     rainix.url = "github:rainprotocol/rainix";
     flake-utils.url = "github:numtide/flake-utils";
+    git-hooks-nix.url = "github:cachix/git-hooks.nix";
   };
 
-  outputs = { self, flake-utils, rainix }:
+  outputs = { flake-utils, rainix, git-hooks-nix, ... }:
     flake-utils.lib.eachDefaultSystem (system:
-      let pkgs = rainix.pkgs.${system};
+      let
+        pkgs = rainix.pkgs.${system};
+
+        git-hooks = git-hooks-nix.lib.${system}.run {
+          src = ./.;
+          hooks = {
+            # Nix
+            nil.enable = true;
+            nixfmt-classic.enable = true;
+            deadnix.enable = true;
+            statix.enable = true;
+            statix.settings.ignore = [ "lib/" ];
+
+            # Rust
+            taplo.enable = true;
+            rustfmt.enable = true;
+          };
+        };
       in rec {
         packages = let rainixPkgs = rainix.packages.${system};
         in rainixPkgs // {
@@ -30,10 +48,13 @@
               cargo-tarpaulin --skip-clean --out Html
             '';
           };
+
+          pre-commit-check = git-hooks;
         };
 
         devShell = pkgs.mkShell {
-          shellHook = rainix.devShells.${system}.default.shellHook;
+          inherit (git-hooks) shellHook;
+          inherit (rainix.devShells.${system}.default) nativeBuildInputs;
           buildInputs = with pkgs;
             [
               sqlx-cli
@@ -41,8 +62,6 @@
               packages.prepSolArtifacts
               packages.checkTestCoverage
             ] ++ rainix.devShells.${system}.default.buildInputs;
-          nativeBuildInputs =
-            rainix.devShells.${system}.default.nativeBuildInputs;
         };
       });
 }
