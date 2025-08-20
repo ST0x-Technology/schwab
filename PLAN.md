@@ -11,34 +11,26 @@ This document outlines the step-by-step implementation plan for containerizing t
 - [x] Add environment files (`.env*`) for security
 - [x] Update @PLAN.md with your progress 
 
-## Task 2. Create Multi-Stage Dockerfile Base Setup
+## Task 2. Create Dockerfile, install and Configure Nix with DeterminateSystems Installer
 
-- [ ] Start with Ubuntu 22.04 LTS as base image for stability
+- [ ] Start with latest Ubuntu LTS as base image for stability
 - [ ] Install curl and other basic dependencies needed for Nix installer
-- [ ] Set up non-root user for security best practices
-- [ ] Configure proper working directory structure
-- [ ] Set up environment variables for Nix configuration
-
-## Task 3. Install and Configure Nix with DeterminateSystems Installer
-
 - [ ] Add DeterminateSystems Nix installer using their official installation script
-- [ ] Configure Nix with flakes support (should be enabled by default)
 - [ ] Set up proper Nix configuration for containerized environment
-- [ ] Ensure Nix daemon starts correctly in container
-- [ ] Test basic Nix functionality and flake support
+- [ ] Test basic Nix functionality and flake support, specifically focusing on the dev shell
+- [ ] Update @PLAN.md with your progress 
 
-## Task 4. Set Up Build Stage
+## Task 3. Set Up Build Stage
 
 - [ ] Copy `flake.nix` and `flake.lock` files to leverage existing Nix configuration
 - [ ] Copy source code and necessary build files
 - [ ] Run `nix develop` to enter development environment
 - [ ] Execute Solidity artifact preparation: `nix run .#prepSolArtifacts`
-- [ ] Build both Rust binaries: main bot (`cargo build --release --bin main`)
-- [ ] Build auth binary for OAuth setup (`cargo build --release --bin auth`)
-- [ ] Verify all binaries are built successfully
+- [ ] Build the main Rust binary: main bot (`cargo build --release --bin main`)
 - [ ] Run basic tests to ensure build integrity
+- [ ] Update @PLAN.md with your progress 
 
-## Task 5. Create Minimal Runtime Stage
+## Task 4. Create Minimal Runtime Stage
 
 - [ ] Start with minimal base image (Ubuntu 22.04 slim or distroless)
 - [ ] Create non-root user for running the application
@@ -48,7 +40,7 @@ This document outlines the step-by-step implementation plan for containerizing t
 - [ ] Set up directory for SQLite database persistence
 - [ ] Configure proper ownership and permissions
 
-## Task 6. Configure Environment Variables and Runtime
+## Task 5. Configure Environment Variables and Runtime
 
 - [ ] Document all required environment variables in Dockerfile
 - [ ] Set up `DATABASE_URL` with default SQLite path
@@ -58,7 +50,7 @@ This document outlines the step-by-step implementation plan for containerizing t
 - [ ] Set up proper working directory for runtime
 - [ ] Configure entry point for main application binary
 
-## Task 7. Add Health Check and Monitoring
+## Task 6. Add Health Check and Monitoring
 
 - [ ] Create simple health check endpoint or command
 - [ ] Configure Docker HEALTHCHECK instruction
@@ -67,7 +59,7 @@ This document outlines the step-by-step implementation plan for containerizing t
 - [ ] Add proper signal handling for graceful shutdown
 - [ ] Configure restart policies for production deployment
 
-## Task 8. Optimize Image Size and Security
+## Task 7. Optimize Image Size and Security
 
 - [ ] Use multi-stage build to minimize final image size
 - [ ] Remove unnecessary packages and files from runtime image
@@ -76,7 +68,7 @@ This document outlines the step-by-step implementation plan for containerizing t
 - [ ] Remove or secure any sensitive information in layers
 - [ ] Optimize layer caching for faster rebuilds
 
-## Task 9. Add Volume and Persistence Configuration
+## Task 8. Add Volume and Persistence Configuration
 
 - [ ] Configure volume mount for SQLite database persistence
 - [ ] Set up proper permissions for volume-mounted directories  
@@ -85,7 +77,7 @@ This document outlines the step-by-step implementation plan for containerizing t
 - [ ] Configure backup and recovery considerations
 - [ ] Add migration handling for database schema updates
 
-## Task 10. Create Build and Test Scripts
+## Task 9. Create Build and Test Scripts
 
 - [ ] Create build script for easy Docker image building
 - [ ] Add version tagging strategy for images
@@ -95,7 +87,7 @@ This document outlines the step-by-step implementation plan for containerizing t
 - [ ] Test database initialization and migration
 - [ ] Verify Schwab API connectivity from container
 
-## Task 11. Documentation and Deployment Preparation
+## Task 10. Documentation and Deployment Preparation
 
 - [ ] Update README.md with Docker deployment instructions
 - [ ] Document required environment variables and their purposes
@@ -105,7 +97,7 @@ This document outlines the step-by-step implementation plan for containerizing t
 - [ ] Document resource requirements and limits
 - [ ] Add troubleshooting guide for common container issues
 
-## Task 12. Cloud Deployment Considerations
+## Task 11. Cloud Deployment Considerations
 
 - [ ] Configure for cloud container platforms (AWS ECS, Google Cloud Run, etc.)
 - [ ] Set up proper logging for cloud environments
@@ -115,7 +107,7 @@ This document outlines the step-by-step implementation plan for containerizing t
 - [ ] Configure monitoring and alerting endpoints
 - [ ] Plan for horizontal scaling considerations
 
-## Task 13. Testing and Validation
+## Task 12. Testing and Validation
 
 - [ ] Test container build process end-to-end
 - [ ] Validate that Nix tooling versions match development environment
@@ -126,7 +118,7 @@ This document outlines the step-by-step implementation plan for containerizing t
 - [ ] Test graceful shutdown and restart procedures
 - [ ] Perform basic integration testing with mock services
 
-## Task 14. Performance and Resource Optimization
+## Task 13. Performance and Resource Optimization
 
 - [ ] Benchmark container startup time
 - [ ] Measure memory and CPU usage patterns
