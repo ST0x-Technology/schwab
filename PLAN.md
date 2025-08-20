@@ -4,12 +4,12 @@ This document outlines the step-by-step implementation plan for containerizing t
 
 ## Task 1. Set Up Docker Build Context
 
-- [ ] Create `.dockerignore` file to exclude unnecessary files from build context
-- [ ] Add `target/` directory (Rust build artifacts)
-- [ ] Add `.git/` directory and git-related files
-- [ ] Add local database files (`*.db`, `*.db-*`)
-- [ ] Add environment files (`.env*`) for security
-- [ ] Update @PLAN.md with your progress 
+- [x] Create `.dockerignore` file to exclude unnecessary files from build context
+- [x] Add `target/` directory (Rust build artifacts)
+- [x] Add `.git/` directory and git-related files
+- [x] Add local database files (`*.db`, `*.db-*`)
+- [x] Add environment files (`.env*`) for security
+- [x] Update @PLAN.md with your progress 
 
 ## Task 2. Create Multi-Stage Dockerfile Base Setup
 

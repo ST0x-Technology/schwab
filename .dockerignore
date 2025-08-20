@@ -1,0 +1,36 @@
+# Rust build artifacts
+target/
+
+# Git directories and files
+.git/
+.gitignore
+
+# Local database files
+*.db
+*.db-*
+
+# Environment files (for security)
+.env*
+
+# Development and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+
+# Coverage and test artifacts
+tarpaulin-report.html
+coverage/
+
+# Nix build results
+result
+result-*
