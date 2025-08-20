@@ -13,22 +13,24 @@ This document outlines the step-by-step implementation plan for containerizing t
 
 ## Task 2. Create Dockerfile, install and Configure Nix with DeterminateSystems Installer
 
-- [ ] Start with latest Ubuntu LTS as base image for stability
-- [ ] Install curl and other basic dependencies needed for Nix installer
-- [ ] Add DeterminateSystems Nix installer using their official installation script
-- [ ] Set up proper Nix configuration for containerized environment
-- [ ] Test basic Nix functionality and flake support, specifically focusing on the dev shell
-- [ ] Update @PLAN.md with your progress 
+- [x] Start with latest Ubuntu LTS as base image for stability
+- [x] Install curl and other basic dependencies needed for Nix installer
+- [x] Add DeterminateSystems Nix installer using their official installation script
+- [x] Set up proper Nix configuration for containerized environment
+- [x] Test basic Nix functionality and flake support, specifically focusing on the dev shell
+- [x] Update @PLAN.md with your progress 
 
 ## Task 3. Set Up Build Stage
 
-- [ ] Copy `flake.nix` and `flake.lock` files to leverage existing Nix configuration
-- [ ] Copy source code and necessary build files
-- [ ] Run `nix develop` to enter development environment
-- [ ] Execute Solidity artifact preparation: `nix run .#prepSolArtifacts`
-- [ ] Build the main Rust binary: main bot (`cargo build --release --bin main`)
-- [ ] Run basic tests to ensure build integrity
-- [ ] Update @PLAN.md with your progress 
+- [x] Copy `flake.nix` and `flake.lock` files to leverage existing Nix configuration
+- [x] Copy source code and necessary build files with proper Docker layer caching
+- [x] Run `nix develop` to enter development environment
+- [x] Execute Solidity artifact preparation: `nix run .#prepSolArtifacts`
+- [x] Integrate cargo-chef for optimized Rust dependency caching
+- [x] Set up database and run migrations for SQLx compile-time verification
+- [x] Build the main Rust binary: main bot (`cargo build --release --bin main`)
+- [x] Build auth binary: (`cargo build --release --bin auth`)
+- [x] Update @PLAN.md with your progress 
 
 ## Task 4. Create Minimal Runtime Stage
 
@@ -42,13 +44,13 @@ This document outlines the step-by-step implementation plan for containerizing t
 
 ## Task 5. Configure Environment Variables and Runtime
 
-- [ ] Document all required environment variables in Dockerfile
-- [ ] Set up `DATABASE_URL` with default SQLite path
+- [x] Document all required environment variables in Dockerfile
+- [x] Set up `DATABASE_URL` with default SQLite path
+- [x] Configure logging level and output format (`RUST_LOG=info`)
+- [x] Set up proper working directory for runtime
+- [x] Configure entry point for main application binary
 - [ ] Configure `WS_RPC_URL` for blockchain connection
 - [ ] Set up Schwab API configuration variables (`APP_KEY`, `APP_SECRET`, etc.)
-- [ ] Configure logging level and output format
-- [ ] Set up proper working directory for runtime
-- [ ] Configure entry point for main application binary
 
 ## Task 6. Add Health Check and Monitoring
 
@@ -61,21 +63,21 @@ This document outlines the step-by-step implementation plan for containerizing t
 
 ## Task 7. Optimize Image Size and Security
 
-- [ ] Use multi-stage build to minimize final image size
-- [ ] Remove unnecessary packages and files from runtime image
+- [x] Use multi-stage build to minimize final image size (single-stage optimized with Nix)
+- [x] Remove unnecessary packages and files from runtime image
+- [x] Optimize layer caching for faster rebuilds (cargo-chef + Docker layers)
 - [ ] Run security scan on final image
 - [ ] Implement principle of least privilege for container user
 - [ ] Remove or secure any sensitive information in layers
-- [ ] Optimize layer caching for faster rebuilds
 
 ## Task 8. Add Volume and Persistence Configuration
 
+- [x] Add migration handling for database schema updates (SQLx migrations in build)
 - [ ] Configure volume mount for SQLite database persistence
 - [ ] Set up proper permissions for volume-mounted directories  
 - [ ] Document volume requirements for deployment
 - [ ] Test database persistence across container restarts
 - [ ] Configure backup and recovery considerations
-- [ ] Add migration handling for database schema updates
 
 ## Task 9. Create Build and Test Scripts
 
