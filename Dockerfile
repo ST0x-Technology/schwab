@@ -51,4 +51,22 @@ RUN nix develop --command bash -c ' \
     cargo build --release --bin main --bin auth \
 '
 
+# Create non-root user
+RUN groupadd -r schwab && useradd --no-log-init -r -g schwab schwab
+
+# Create runtime directory and set permissions
+RUN chown -R schwab:schwab /app
+
+# Remove unnecessary packages and files from runtime image
+RUN apt-get remove --purge -y curl git && \
+    apt-get autoremove -y && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Remove build database file
+RUN rm -f /tmp/build_db.sqlite
+
+# Switch to non-root user
+USER schwab
+
 ENTRYPOINT ["./target/release/main"]

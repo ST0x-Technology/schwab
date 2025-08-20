@@ -1,3 +1,5 @@
+*.md
+
 # Rust build artifacts
 target/
 
@@ -30,3 +32,20 @@ coverage/
 # Nix build results
 result
 result-*
+
+# Git directory and history
+.git/
+.gitignore
+
+# Security-sensitive files
+*.key
+*.pem
+*.p12
+*.jks
+secrets/
+credentials/
+keys/
+
+# Logs that may contain sensitive information
+*.log
+logs/
