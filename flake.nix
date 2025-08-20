@@ -7,31 +7,33 @@
     git-hooks-nix.url = "github:cachix/git-hooks.nix";
   };
 
-  outputs = { flake-utils, rainix, git-hooks-nix, ... }:
+  outputs = { self, flake-utils, rainix, git-hooks-nix }:
     flake-utils.lib.eachDefaultSystem (system:
-      let
-        pkgs = rainix.pkgs.${system};
+      let pkgs = rainix.pkgs.${system};
 
-        git-hooks = git-hooks-nix.lib.${system}.run {
-          src = ./.;
-          hooks = {
-            # Nix
-            nil.enable = true;
-            nixfmt-classic.enable = true;
-            deadnix.enable = true;
-            statix.enable = true;
-            statix.settings.ignore = [ "lib/" ];
+      in rec {
+        checks = {
+          pre-commit-check = git-hooks-nix.lib.${system}.run {
+            src = ./.;
+            hooks = {
+              # Nix
+              nil.enable = true;
+              nixfmt-classic.enable = true;
+              deadnix.enable = true;
+              statix.enable = true;
+              statix.settings.ignore = [ "lib/" ];
 
-            # Rust
-            taplo.enable = true;
-            rustfmt.enable = true;
+              # Rust
+              taplo.enable = true;
+              rustfmt.enable = true;
 
-            # Misc
-            yamlfmt.enable = true;
-            yamlfmt.settings.lint-only = false;
+              # Misc
+              yamlfmt.enable = true;
+              yamlfmt.settings.lint-only = false;
+            };
           };
         };
-      in rec {
+
         packages = let rainixPkgs = rainix.packages.${system};
         in rainixPkgs // {
           prepSolArtifacts = rainix.mkTask.${system} {
@@ -52,12 +54,10 @@
               cargo-tarpaulin --skip-clean --out Html
             '';
           };
-
-          pre-commit-check = git-hooks;
         };
 
         devShell = pkgs.mkShell {
-          inherit (git-hooks) shellHook;
+          inherit (self.checks.${system}.pre-commit-check) shellHook;
           inherit (rainix.devShells.${system}.default) nativeBuildInputs;
           buildInputs = with pkgs;
             [
