@@ -48,13 +48,14 @@ arbitrage bot with automatic retry logic for expired tokens.
 
 ### Task 5: Modify Bot Flow for Retry Logic
 
-- [ ] Modify `src/lib.rs::run()` to handle `RefreshTokenExpired` error
-- [ ] Implement exponential backoff retry loop when tokens are unavailable
-- [ ] Add logging for retry attempts and token status
-- [ ] Ensure bot continues trading when tokens become available
-- [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
+- [x] Modify `src/lib.rs::run()` to handle `RefreshTokenExpired` error
+- [x] Implement constant backoff retry loop when tokens are unavailable, so that
+      when someone goes through the manual auth flow and refresh tokens become
+      available, the bot can unblock itself. Use `backon` for retries
+- [x] Add logging for retry attempts and token status
+- [x] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
       passes
-- [ ] Update @PLAN.md with progress
+- [x] Update @PLAN.md with progress
 
 ### Task 6: Create Server Binary
 
@@ -104,6 +105,6 @@ Server Binary:
 - [x] Task 2 Complete
 - [x] Task 3 Complete
 - [x] Task 4 Complete
-- [ ] Task 5 Complete
+- [x] Task 5 Complete
 - [ ] Task 6 Complete
 - [ ] Task 7 Complete
