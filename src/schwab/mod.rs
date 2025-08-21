@@ -5,14 +5,14 @@ use sqlx::SqlitePool;
 use std::io::{self, Write};
 use thiserror::Error;
 
-pub mod auth;
-pub mod execution;
-pub mod order;
-pub mod tokens;
+pub(crate) mod auth;
+pub(crate) mod execution;
+pub(crate) mod order;
+pub(crate) mod tokens;
 
-pub use auth::{AccountNumbers, SchwabAuthEnv, SchwabAuthResponse};
-pub use execution::SchwabExecution;
-pub use tokens::SchwabTokens;
+pub(crate) use auth::{AccountNumbers, SchwabAuthEnv, SchwabAuthResponse};
+pub(crate) use execution::SchwabExecution;
+pub(crate) use tokens::SchwabTokens;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TradeStatus {
@@ -52,13 +52,13 @@ impl std::str::FromStr for TradeStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
+pub(crate) enum Direction {
     Buy,
     Sell,
 }
 
 impl Direction {
-    pub const fn as_str(&self) -> &'static str {
+    pub(crate) const fn as_str(&self) -> &'static str {
         match self {
             Self::Buy => "BUY",
             Self::Sell => "SELL",
@@ -87,8 +87,8 @@ impl serde::Serialize for Direction {
     }
 }
 
-// Legacy alias for compatibility
-pub type SchwabInstruction = Direction;
+// TODO: remove
+pub(crate) type SchwabInstruction = Direction;
 
 #[derive(Error, Debug)]
 pub enum SchwabError {
@@ -143,7 +143,7 @@ pub async fn run_oauth_flow(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<()
     Ok(())
 }
 
-pub const fn shares_from_db_i64(db_value: i64) -> Result<u64, error::OnChainError> {
+pub(crate) const fn shares_from_db_i64(db_value: i64) -> Result<u64, error::OnChainError> {
     if db_value < 0 {
         Err(error::OnChainError::Persistence(
             error::PersistenceError::InvalidShareQuantity(db_value),
@@ -154,7 +154,7 @@ pub const fn shares_from_db_i64(db_value: i64) -> Result<u64, error::OnChainErro
     }
 }
 
-pub const fn price_cents_from_db_i64(db_value: i64) -> Result<u64, error::OnChainError> {
+pub(crate) const fn price_cents_from_db_i64(db_value: i64) -> Result<u64, error::OnChainError> {
     if db_value < 0 {
         Err(error::OnChainError::Persistence(
             error::PersistenceError::InvalidPriceCents(db_value),
@@ -165,7 +165,7 @@ pub const fn price_cents_from_db_i64(db_value: i64) -> Result<u64, error::OnChai
     }
 }
 
-fn extract_code_from_url(url: &str) -> Result<String, SchwabError> {
+pub(crate) fn extract_code_from_url(url: &str) -> Result<String, SchwabError> {
     let parsed_url = url::Url::parse(url)?;
 
     parsed_url
