@@ -7,7 +7,7 @@ use sqlx::SqlitePool;
 use crate::env::Env;
 use crate::schwab::extract_code_from_url;
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct HealthResponse {
     pub status: String,
     pub timestamp: DateTime<Utc>,
@@ -73,4 +73,27 @@ pub async fn auth_refresh(
 // Route Configuration
 pub fn routes() -> Vec<Route> {
     routes![health, auth_refresh]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rocket::http::Status;
+    use rocket::local::blocking::Client;
+
+    #[test]
+    fn test_health_endpoint() {
+        let rocket = rocket::build().mount("/", routes![health]);
+        let client = Client::tracked(rocket).expect("valid rocket instance");
+
+        let response = client.get("/health").dispatch();
+        assert_eq!(response.status(), Status::Ok);
+
+        let body = response.into_string().expect("response body");
+        let health_response: HealthResponse =
+            serde_json::from_str(&body).expect("valid JSON response");
+
+        assert_eq!(health_response.status, "healthy");
+        assert!(health_response.timestamp <= chrono::Utc::now());
+    }
 }
