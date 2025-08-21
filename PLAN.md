@@ -102,10 +102,10 @@ it easier to navigate the code (by having less of it) and easier to understand
 
 ## Task 9. Reduce Symbol Module Visibility
 
-- [ ] Change `pub mod cache` to `pub(crate) mod cache` in symbol/mod.rs
-- [ ] Change `pub mod lock` to `pub(crate) mod lock` in symbol/mod.rs
-- [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
-- [ ] Update PLAN.md with progress and additional plans for anything that needs
+- [x] Change `pub mod cache` to `pub(crate) mod cache` in symbol/mod.rs
+- [x] Change `pub mod lock` to `pub(crate) mod lock` in symbol/mod.rs
+- [x] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
+- [x] Update PLAN.md with progress and additional plans for anything that needs
       fixing
 
 ## Task 10. Review lib.rs Exports
@@ -138,7 +138,7 @@ it easier to navigate the code (by having less of it) and easier to understand
 6. [x] Reduce Lock Module Visibility
 7. [x] Reduce Queue Module Visibility
 8. [x] Reduce Onchain Submodule Visibility
-9. [ ] Reduce Symbol Module Visibility
+9. [x] Reduce Symbol Module Visibility
 10. [ ] Review lib.rs Exports
 11. [ ] Final Verification and Cleanup
 
