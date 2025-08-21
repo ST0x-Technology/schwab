@@ -16,7 +16,7 @@ arbitrage bot with automatic retry logic for expired tokens.
 - [x] Update binary configuration to use `server` instead of `main`
 - [x] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
       passes
-- [x] Update PLAN.md with progress
+- [x] Update @PLAN.md with progress
 
 ### Task 2: Create API Module Structure
 
@@ -24,27 +24,27 @@ arbitrage bot with automatic retry logic for expired tokens.
 - [x] Export API module from `src/lib.rs`
 - [x] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
       passes
-- [x] Update PLAN.md with progress
+- [x] Update @PLAN.md with progress
 
 ### Task 3: Implement Health Endpoint
 
-- [ ] Create basic health check handler in `src/api/handlers.rs`
-- [ ] Define health response structure in `src/api/responses.rs`
-- [ ] Add health endpoint route configuration
-- [ ] Test endpoint returns proper JSON response
-- [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
+- [x] Create basic health check endpoint in `src/api.rs`
+- [x] Add health endpoint route configuration
+- [x] Test endpoint returns proper JSON response
+- [x] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
       passes
-- [ ] Update PLAN.md with progress
+- [x] Update @PLAN.md with progress
 
 ### Task 4: Implement Manual Auth Endpoint
 
-- [ ] Create auth refresh handler that wraps existing `run_oauth_flow`
-- [ ] Define auth request/response structures for JSON API
-- [ ] Modify auth flow to accept redirect URL from request body instead of stdin
+- [ ] Create auth refresh endpoint that works similarly to the existing
+      `run_oauth_flow`
+- [ ] Accept redirect URL from request body instead of stdin
 - [ ] Add proper error handling and JSON responses
+- [ ] Extend test coverage
 - [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
       passes
-- [ ] Update PLAN.md with progress
+- [ ] Update @PLAN.md with progress
 
 ### Task 5: Modify Bot Flow for Retry Logic
 
@@ -54,7 +54,7 @@ arbitrage bot with automatic retry logic for expired tokens.
 - [ ] Ensure bot continues trading when tokens become available
 - [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
       passes
-- [ ] Update PLAN.md with progress
+- [ ] Update @PLAN.md with progress
 
 ### Task 6: Create Server Binary
 
@@ -64,7 +64,7 @@ arbitrage bot with automatic retry logic for expired tokens.
 - [ ] Configure server to bind to `0.0.0.0:8080`
 - [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
       passes
-- [ ] Update PLAN.md with progress
+- [ ] Update @PLAN.md with progress
 
 ### Task 7: Integration and Testing
 
@@ -74,7 +74,7 @@ arbitrage bot with automatic retry logic for expired tokens.
 - [ ] Verify bot automatically starts trading when tokens are available
 - [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
       passes
-- [ ] Update PLAN.md with final completion status
+- [ ] Update @PLAN.md with final completion status
 
 ## Architecture Overview
 
@@ -96,13 +96,13 @@ Server Binary:
 4. `src/api/responses.rs` - JSON response types
 5. `src/bin/server.rs` - New unified server binary (replaces main.rs)
 6. `src/lib.rs` - Export API module, modify run() for retry logic
-7. `PLAN.md` - This plan document for tracking progress
+7. @PLAN.md - This plan document for tracking progress
 
 ## Progress Tracking
 
 - [x] Task 1 Complete
 - [x] Task 2 Complete
-- [ ] Task 3 Complete
+- [x] Task 3 Complete
 - [ ] Task 4 Complete
 - [ ] Task 5 Complete
 - [ ] Task 6 Complete
