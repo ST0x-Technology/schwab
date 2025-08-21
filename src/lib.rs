@@ -1,5 +1,6 @@
 use alloy::providers::{ProviderBuilder, WsConnect};
 use backon::{ConstantBuilder, Retryable};
+use rocket::Config;
 use tracing::{debug, info, warn};
 
 pub mod api;
@@ -94,6 +95,51 @@ pub async fn run(env: Env) -> anyhow::Result<()> {
             }
         })
         .await
+}
+
+pub async fn launch(env: Env) -> anyhow::Result<()> {
+    let pool = env.get_sqlite_pool().await?;
+
+    let config = Config::figment()
+        .merge(("port", 8080))
+        .merge(("address", "0.0.0.0"));
+
+    let rocket = rocket::custom(config)
+        .mount("/", api::routes())
+        .manage(pool.clone())
+        .manage(env.clone());
+
+    let server_task = tokio::spawn(rocket.launch());
+
+    let bot_task = tokio::spawn(async move {
+        if let Err(e) = run(env).await {
+            tracing::error!("Bot failed: {}", e);
+        }
+    });
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            info!("Received shutdown signal, shutting down gracefully...");
+        }
+
+        result = server_task => {
+            match result {
+                Ok(Ok(_)) => info!("Server completed successfully"),
+                Ok(Err(e)) => tracing::error!("Server failed: {}", e),
+                Err(e) => tracing::error!("Server task panicked: {}", e),
+            }
+        }
+
+        result = bot_task => {
+            match result {
+                Ok(()) => info!("Bot task completed"),
+                Err(e) => tracing::error!("Bot task panicked: {}", e),
+            }
+        }
+    }
+
+    info!("Shutdown complete");
+    Ok(())
 }
 
 #[cfg(test)]

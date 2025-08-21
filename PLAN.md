@@ -59,18 +59,21 @@ arbitrage bot with automatic retry logic for expired tokens.
 
 ### Task 6: Create Server Binary
 
-- [ ] Create `src/bin/server.rs` to replace `main.rs`
-- [ ] Implement concurrent execution of Rocket server and bot task
-- [ ] Add graceful shutdown handling for both server and bot
-- [ ] Configure server to bind to `0.0.0.0:8080`
-- [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
+- [x] Create `src/bin/server.rs` to replace `main.rs`
+- [x] Implement concurrent execution of Rocket server and bot task in
+      `fn launch` in src/lib.rs
+- [x] Add graceful shutdown handling for both server and bot
+- [x] Configure server to bind to `0.0.0.0:8080`
+- [x] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
       passes
-- [ ] Update @PLAN.md with progress
+- [x] Update @PLAN.md with progress
 
-### Task 7: Integration and Testing
+### Task 7: Remove the auth binary and add the manual auth flow as an extra cli command
+
+### Task 8: Integration and Testing
 
 - [ ] Test complete flow: server starts, bot retries on missing tokens
-- [ ] Test manual auth endpoint with mock/real OAuth flow
+- [ ] Test manual auth endpoint with mock OAuth flow
 - [ ] Test health endpoint accessibility
 - [ ] Verify bot automatically starts trading when tokens are available
 - [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
@@ -106,5 +109,5 @@ Server Binary:
 - [x] Task 3 Complete
 - [x] Task 4 Complete
 - [x] Task 5 Complete
-- [ ] Task 6 Complete
+- [x] Task 6 Complete
 - [ ] Task 7 Complete
