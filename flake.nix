@@ -27,7 +27,8 @@
               taplo.enable = true;
               rustfmt.enable = true;
 
-              # Misc
+              # Markdown
+              denofmt.enable = true;
               yamlfmt.enable = true;
               yamlfmt.settings.lint-only = false;
             };
