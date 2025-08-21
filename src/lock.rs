@@ -2,7 +2,7 @@ use crate::error::OnChainError;
 
 /// Atomically acquires an execution lease for the given symbol.
 /// Returns true if lease was acquired, false if another worker holds it.
-pub async fn try_acquire_execution_lease(
+pub(crate) async fn try_acquire_execution_lease(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     symbol: &str,
 ) -> Result<bool, OnChainError> {
@@ -27,7 +27,7 @@ pub async fn try_acquire_execution_lease(
 }
 
 /// Clears the execution lease when no execution was created
-pub async fn clear_execution_lease(
+pub(crate) async fn clear_execution_lease(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     symbol: &str,
 ) -> Result<(), OnChainError> {
@@ -40,7 +40,7 @@ pub async fn clear_execution_lease(
 }
 
 /// Sets the actual execution ID after successful execution creation
-pub async fn set_pending_execution_id(
+pub(crate) async fn set_pending_execution_id(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     symbol: &str,
     execution_id: i64,

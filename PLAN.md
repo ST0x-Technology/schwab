@@ -66,11 +66,11 @@ it easier to navigate the code (by having less of it) and easier to understand
 
 ## Task 6. Reduce Lock Module Visibility
 
-- [ ] Change `pub async fn try_acquire_execution_lease` to `pub(crate)`
-- [ ] Change `pub async fn clear_execution_lease` to `pub(crate)`
-- [ ] Change `pub async fn set_pending_execution_id` to `pub(crate)`
-- [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
-- [ ] Update PLAN.md with progress and additional plans for anything that needs
+- [x] Change `pub async fn try_acquire_execution_lease` to `pub(crate)`
+- [x] Change `pub async fn clear_execution_lease` to `pub(crate)`
+- [x] Change `pub async fn set_pending_execution_id` to `pub(crate)`
+- [x] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
+- [x] Update PLAN.md with progress and additional plans for anything that needs
       fixing
 
 ## Task 7. Reduce Queue Module Visibility
@@ -133,7 +133,7 @@ it easier to navigate the code (by having less of it) and easier to understand
 3. [x] Make SchwabExecution Visible to Other Modules
 4. [x] Reduce Error Module Visibility
 5. [x] Reduce Conductor Module Visibility
-6. [ ] Reduce Lock Module Visibility
+6. [x] Reduce Lock Module Visibility
 7. [ ] Reduce Queue Module Visibility
 8. [ ] Reduce Onchain Submodule Visibility
 9. [ ] Reduce Symbol Module Visibility
