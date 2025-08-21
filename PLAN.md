@@ -9,68 +9,61 @@ scope explicit.
 
 ## Task 1: Fix Clippy Errors from redundant_pub_crate
 
-### Subtasks
-
 - [ ] Change `pub(crate)` to `pub` in schwab/execution.rs for:
   - [ ] `SchwabExecution` struct
   - [ ] `update_execution_status_within_transaction` function
   - [ ] `find_execution_by_id` function
 - [ ] Run `cargo test -q && rainix-rs-static`
-- [ ] Update PLAN.md with progress
+- [ ] Update PLAN.md with progress and make sure remaining issues are handled in
+      the plan
 
 ## Task 2: Remove Unused Imports in schwab/mod.rs
-
-### Subtasks
 
 - [ ] Remove unused import `AccountNumbers` from schwab/mod.rs:13
 - [ ] Remove unused import `SchwabAuthResponse` from schwab/mod.rs:13
 - [ ] Remove unused import `execution::SchwabExecution` from schwab/mod.rs:14
 - [ ] Run `cargo test -q && rainix-rs-static`
-- [ ] Update PLAN.md with progress
+- [ ] Update PLAN.md with progress and make sure remaining issues are handled in
+      the plan
 
 ## Task 3: Handle ExecutionIdMismatch Variant
-
-### Subtasks
 
 - [ ] Search for usages of ExecutionIdMismatch in the codebase
 - [ ] Either:
   - [ ] Remove the variant if unused, OR
   - [ ] Add a use case for the variant where appropriate
 - [ ] Run `cargo test -q && rainix-rs-static`
-- [ ] Update PLAN.md with progress
+- [ ] Update PLAN.md with progress and make sure remaining issues are handled in
+      the plan
 
 ## Task 4: Remove Unused Function clear_pending_execution_within_transaction
-
-### Subtasks
 
 - [ ] Verify function is not used anywhere in the codebase
 - [ ] Remove `clear_pending_execution_within_transaction` from lock.rs:64
 - [ ] Run `cargo test -q && rainix-rs-static`
-- [ ] Update PLAN.md with progress
+- [ ] Update PLAN.md with progress and make sure remaining issues are handled in
+      the plan
 
 ## Task 5: Fix Struct Field Naming in schwab/order.rs
-
-### Subtasks
 
 - [ ] Rename `order_type` to `type` in Order struct
 - [ ] Rename `order_strategy_type` to `strategy_type` in Order struct
 - [ ] Rename `order_leg_collection` to `leg_collection` in Order struct
-- [ ] Update all references to these fields throughout the codebase
+- [ ] Update all references to these fields throughout the codebase and make
+      sure remaining issues are handled in the plan
 - [ ] Run `cargo test -q && rainix-rs-static`
-- [ ] Update PLAN.md with progress
+- [ ] Update PLAN.md with progress and make sure remaining issues are handled in
+      the plan
 
 ## Task 6: Fix Trivial Pass-by-Reference
-
-### Subtasks
 
 - [ ] Change `Direction::as_str(&self)` to `Direction::as_str(self)` in
       schwab/mod.rs:61
 - [ ] Run `cargo test -q && rainix-rs-static`
-- [ ] Update PLAN.md with progress
+- [ ] Update PLAN.md with progress and make sure remaining issues are handled in
+      the plan
 
 ## Task 7: Reduce Visibility in Error Module
-
-### Subtasks
 
 - [ ] Change all `pub enum` to `pub(crate) enum` in src/error.rs for:
   - [ ] TradeValidationError
@@ -80,22 +73,20 @@ scope explicit.
   - [ ] OnChainError
 - [ ] Update all imports that reference these types
 - [ ] Run `cargo test -q && rainix-rs-static`
-- [ ] Update PLAN.md with progress
+- [ ] Update PLAN.md with progress and make sure remaining issues are handled in
+      the plan
 
 ## Task 8: Review and Reduce Conductor Module Visibility
-
-### Subtasks
 
 - [ ] Check if `get_cutoff_block` is used outside conductor module
 - [ ] Check if `run_live` is used outside conductor module
 - [ ] Check if `process_queue` is used outside conductor module
 - [ ] Reduce visibility to pub(crate) or private where appropriate
 - [ ] Run `cargo test -q && rainix-rs-static`
-- [ ] Update PLAN.md with progress
+- [ ] Update PLAN.md with progress and make sure remaining issues are handled in
+      the plan
 
 ## Task 9: Reduce Visibility in Lock Module
-
-### Subtasks
 
 - [ ] Change all `pub async fn` to `pub(crate) async fn` in src/lock.rs for:
   - [ ] try_acquire_execution_lease
@@ -103,11 +94,10 @@ scope explicit.
   - [ ] set_pending_execution_id
 - [ ] Update imports in other modules that use these functions
 - [ ] Run `cargo test -q && rainix-rs-static`
-- [ ] Update PLAN.md with progress
+- [ ] Update PLAN.md with progress and make sure remaining issues are handled in
+      the plan
 
 ## Task 10: Review Queue Module Visibility
-
-### Subtasks
 
 - [ ] Check usage of each pub function in queue.rs
 - [ ] Change to pub(crate) for:
@@ -120,21 +110,19 @@ scope explicit.
 - [ ] Keep Enqueueable trait and QueuedEvent as pub if needed by external
       modules
 - [ ] Run `cargo test -q && rainix-rs-static`
-- [ ] Update PLAN.md with progress
+- [ ] Update PLAN.md with progress and make sure remaining issues are handled in
+      the plan
 
 ## Task 11: Reduce Symbol Module Visibility
-
-### Subtasks
 
 - [ ] Change `pub mod cache` to `pub(crate) mod cache` in symbol/mod.rs
 - [ ] Change `pub mod lock` to `pub(crate) mod lock` in symbol/mod.rs
 - [ ] Update imports in other modules
 - [ ] Run `cargo test -q && rainix-rs-static`
-- [ ] Update PLAN.md with progress
+- [ ] Update PLAN.md with progress and make sure remaining issues are handled in
+      the plan
 
 ## Task 12: Review Onchain Submodule Visibility
-
-### Subtasks
 
 - [ ] Change `pub mod accumulator` to `pub(crate) mod accumulator`
 - [ ] Change `pub mod position_calculator` to
@@ -145,33 +133,30 @@ scope explicit.
 - [ ] Change `pub mod trade` to `pub(crate) mod trade`
 - [ ] Keep `pub use trade::OnchainTrade` if needed externally
 - [ ] Run `cargo test -q && rainix-rs-static`
-- [ ] Update PLAN.md with progress
+- [ ] Update PLAN.md with progress and make sure remaining issues are handled in
+      the plan
 
 ## Task 13: Clean Up Schwab Module
-
-### Subtasks
 
 - [ ] Remove SchwabInstruction type alias (use Direction directly)
 - [ ] Update all references from SchwabInstruction to Direction
 - [ ] Review if auth, execution, order, tokens submodules can be private
 - [ ] Clean up unnecessary re-exports
 - [ ] Run `cargo test -q && rainix-rs-static`
-- [ ] Update PLAN.md with progress
+- [ ] Update PLAN.md with progress and make sure remaining issues are handled in
+      the plan
 
 ## Task 14: Review lib.rs Exports
-
-### Subtasks
 
 - [ ] Check which modules are actually used by bin/main.rs, bin/auth.rs,
       bin/cli.rs
 - [ ] Change unnecessary `pub mod` to `pub(crate) mod` or private
 - [ ] Document why each public export is needed
 - [ ] Run `cargo test -q && rainix-rs-static`
-- [ ] Update PLAN.md with progress
+- [ ] Update PLAN.md with progress and make sure remaining issues are handled in
+      the plan
 
 ## Task 15: Final Verification
-
-### Subtasks
 
 - [ ] Run full test suite: `cargo test`
 - [ ] Run clippy with all checks:
@@ -179,7 +164,7 @@ scope explicit.
 - [ ] Run static analysis: `rainix-rs-static`
 - [ ] Run pre-commit hooks: `pre-commit run -a`
 - [ ] Update PLAN.md marking all completed tasks
-- [ ] Delete PLAN.md or move to completed-refactorings folder
+- [ ] Delete PLAN.md
 
 ## Progress Summary
 
