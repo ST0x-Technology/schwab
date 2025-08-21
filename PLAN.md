@@ -89,15 +89,15 @@ it easier to navigate the code (by having less of it) and easier to understand
 
 ## Task 8. Reduce Onchain Submodule Visibility
 
-- [ ] Change `pub mod accumulator` to `pub(crate) mod accumulator`
-- [ ] Change `pub mod position_calculator` to
+- [x] Change `pub mod accumulator` to `pub(crate) mod accumulator`
+- [x] Change `pub mod position_calculator` to
       `pub(crate) mod position_calculator`
-- [ ] Change `pub mod trade` to `pub(crate) mod trade`
-- [ ] Change `pub mod trade_execution_link` to
+- [x] Change `pub mod trade` to `pub(crate) mod trade`
+- [x] Change `pub mod trade_execution_link` to
       `pub(crate) mod trade_execution_link`
-- [ ] Keep `pub use trade::OnchainTrade` if used by other modules
-- [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
-- [ ] Update PLAN.md with progress and additional plans for anything that needs
+- [x] Keep `pub use trade::OnchainTrade` if used by other modules
+- [x] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
+- [x] Update PLAN.md with progress and additional plans for anything that needs
       fixing
 
 ## Task 9. Reduce Symbol Module Visibility
@@ -124,6 +124,8 @@ it easier to navigate the code (by having less of it) and easier to understand
 - [ ] Run pre-commit hooks: `pre-commit run -a`
 - [ ] Verify no unused import or dead code warnings remain
 - [ ] Mark all tasks as completed in PLAN.md
+- [ ] Update CLAUDE.md to note that we should always keep visibility as low as
+      necessary to make it easier for tooling to identify dead code
 - [ ] Delete PLAN.md
 
 ## Progress Summary
@@ -135,7 +137,7 @@ it easier to navigate the code (by having less of it) and easier to understand
 5. [x] Reduce Conductor Module Visibility
 6. [x] Reduce Lock Module Visibility
 7. [x] Reduce Queue Module Visibility
-8. [ ] Reduce Onchain Submodule Visibility
+8. [x] Reduce Onchain Submodule Visibility
 9. [ ] Reduce Symbol Module Visibility
 10. [ ] Review lib.rs Exports
 11. [ ] Final Verification and Cleanup
