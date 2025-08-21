@@ -27,10 +27,12 @@ pub struct AuthRefreshRequest {
 }
 
 #[derive(Serialize)]
-pub struct AuthRefreshResponse {
-    pub success: bool,
-    pub message: Option<String>,
-    pub error: Option<String>,
+#[serde(tag = "success")]
+pub enum AuthRefreshResponse {
+    #[serde(rename = "true")]
+    Success { message: String },
+    #[serde(rename = "false")]
+    Error { error: String },
 }
 
 #[post("/auth/refresh", format = "json", data = "<request>")]
@@ -38,42 +40,34 @@ pub async fn auth_refresh(
     request: Json<AuthRefreshRequest>,
     pool: &State<SqlitePool>,
     env: &State<Env>,
-) -> Result<Json<AuthRefreshResponse>, Json<AuthRefreshResponse>> {
+) -> Json<AuthRefreshResponse> {
     let code = match extract_code_from_url(&request.redirect_url) {
         Ok(code) => code,
         Err(e) => {
-            return Err(Json(AuthRefreshResponse {
-                success: false,
-                message: None,
-                error: Some(format!("Failed to extract authorization code: {e}")),
-            }));
+            return Json(AuthRefreshResponse::Error {
+                error: format!("Failed to extract authorization code: {e}"),
+            });
         }
     };
 
     let tokens = match env.schwab_auth.get_tokens_from_code(&code).await {
         Ok(tokens) => tokens,
         Err(e) => {
-            return Err(Json(AuthRefreshResponse {
-                success: false,
-                message: None,
-                error: Some(format!("Authentication failed: {e}")),
-            }));
+            return Json(AuthRefreshResponse::Error {
+                error: format!("Authentication failed: {e}"),
+            });
         }
     };
 
     if let Err(e) = tokens.store(pool.inner()).await {
-        return Err(Json(AuthRefreshResponse {
-            success: false,
-            message: None,
-            error: Some(format!("Failed to store tokens: {e}")),
-        }));
+        return Json(AuthRefreshResponse::Error {
+            error: format!("Failed to store tokens: {e}"),
+        });
     }
 
-    Ok(Json(AuthRefreshResponse {
-        success: true,
-        message: Some("Authentication successful".to_string()),
-        error: None,
-    }))
+    Json(AuthRefreshResponse::Success {
+        message: "Authentication successful".to_string(),
+    })
 }
 
 // Route Configuration
