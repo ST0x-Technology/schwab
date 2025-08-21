@@ -98,7 +98,8 @@ excellent async ecosystem for handling concurrent trading flows.
 - No artificial concurrency limits - process events as fast as they arrive
 - Tokio async runtime manages hundreds of concurrent trades efficiently on
   limited hardware
-- Each flow: Parse Event → SQLite Dedupe Check → Schwab API Call → Record Result
+- Each flow: Parse Event → Event Queue → Deduplication Check → Position
+  Accumulation → Schwab Execution (when threshold reached) → Record Result
 - Failed flows retry independently without affecting other trades
 
 ### **Trade Execution**
@@ -115,51 +116,32 @@ excellent async ecosystem for handling concurrent trading flows.
 
 **Idempotency Controls:**
 
-- SQLite database to track all trade attempts with unique (transaction_hash,
-  log_index) keys
-- Check database before executing any trade to prevent duplicates
-- Store trade as 'pending' before Schwab API call, update to 'completed' after
-  execution
-- Retry failed trades during operation with exponential backoff, but require
-  manual review for pending trades after bot restart
-- Record actual executed amounts and prices from both venues for spread analysis
+- Event queue table to track all events with unique (transaction_hash,
+  log_index) keys prevents duplicate processing
+- Check event queue before processing any event to prevent duplicates
+- Onchain trades are recorded immediately upon event processing
+- Position accumulation happens in dedicated accumulators table per symbol
+- Schwab executions track status ('PENDING', 'COMPLETED', 'FAILED') with retry
+  logic
+- Complete audit trail maintained linking individual trades to batch executions
 - Proper error handling and structured error logging
 
 ### **Trade Tracking and Reporting**
 
 **SQLite Trade Database:**
 
-- Store each trade with onchain input/output symbols and amounts
-- Record actual Schwab execution amounts and prices including fees
-- Calculate input/output ratios for both venues to analyze spreads
-- Track trade status (pending/completed/failed) with timestamps
-- Link trades to onchain events via transaction hash and log index
-- Handle concurrent database writes safely
+The bot uses a multi-table SQLite database to track trades and manage state. Key
+tables include: onchain trade records, Schwab execution tracking, position
+accumulators for batching fractional shares, audit trail linking, OAuth token
+storage, and event queue for idempotency. The complete database schema is
+defined in `migrations/20250703115746_trades.sql`.
 
-```sql
-trades (
-  id: primary key
-  tx_hash: text
-  log_index: integer
-  
-  onchain_input_symbol: text
-  onchain_input_amount: decimal
-  onchain_output_symbol: text  
-  onchain_output_amount: decimal
-  onchain_io_ratio: decimal
-  
-  schwab_input_symbol: text
-  schwab_input_amount: decimal
-  schwab_output_symbol: text
-  schwab_output_amount: decimal  
-  schwab_io_ratio: decimal
-  
-  status: text
-  schwab_order_id: text
-  created_at: timestamp
-  completed_at: timestamp
-)
-```
+- Store each onchain trade with symbol, amount, direction, and price
+- Track Schwab executions separately with whole share amounts and status
+- Accumulate fractional positions per symbol until execution thresholds are
+  reached
+- Maintain complete audit trail linking onchain trades to Schwab executions
+- Handle concurrent database writes safely with per-symbol locking
 
 **Reporting and Analysis:**
 
