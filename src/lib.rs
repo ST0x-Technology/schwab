@@ -82,7 +82,7 @@ pub async fn run(env: Env) -> anyhow::Result<()> {
         .when(|e| {
             if let Some(msg) = e.downcast_ref::<String>() {
                 if msg == "RefreshTokenExpired" {
-                    info!("Retrying in 30 seconds due to expired refresh token - waiting for manual authentication");
+                    info!("Retrying in {RERUN_DELAY_SECS} seconds due to expired refresh token - waiting for manual authentication");
                     return true;
                 }
             }
