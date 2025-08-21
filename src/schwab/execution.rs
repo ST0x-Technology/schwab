@@ -121,7 +121,11 @@ pub(crate) async fn update_execution_status_within_transaction(
     };
 
     sqlx::query!(
-        "UPDATE schwab_executions SET status = ?1, order_id = ?2, price_cents = ?3, executed_at = ?4 WHERE id = ?5",
+        "
+        UPDATE schwab_executions
+        SET status = ?1, order_id = ?2, price_cents = ?3, executed_at = ?4
+        WHERE id = ?5
+        ",
         status_str,
         order_id,
         price_cents_i64,
