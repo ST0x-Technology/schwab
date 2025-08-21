@@ -57,7 +57,7 @@ pub(crate) enum Direction {
 }
 
 impl Direction {
-    pub(crate) const fn as_str(&self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Buy => "BUY",
             Self::Sell => "SELL",

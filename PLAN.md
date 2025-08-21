@@ -18,23 +18,24 @@ it easier to navigate the code (by having less of it) and easier to understand
 
 ## Task 2. Remove Dead Code Exposed by Visibility Reduction
 
-- [ ] Remove `ExecutionIdMismatch` variant from PersistenceError enum in
+- [x] Remove `ExecutionIdMismatch` variant from PersistenceError enum in
       src/error.rs:49-55 (never constructed)
-- [ ] Remove `clear_pending_execution_within_transaction` function from
+- [x] Remove `clear_pending_execution_within_transaction` function from
       src/lock.rs:64 (never used)
-- [ ] Add `#[allow(dead_code)]` to unused SchwabExecutionBuilder methods or
+- [x] Add `#[allow(dead_code)]` to unused SchwabExecutionBuilder methods or
       remove them
-- [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
-- [ ] Update PLAN.md with progress and additional plans for anything that needs
+- [x] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
+- [x] Update PLAN.md with progress and additional plans for anything that needs
       fixing
 
 ## Task 3. Make SchwabExecution Visible to Other Modules
 
-- [ ] Change `SchwabExecution` struct back to `pub` in schwab/execution.rs (used
-      by lock, test_utils, onchain modules)
-- [ ] Change `update_execution_status_within_transaction` back to `pub` if
-      needed by other modules
-- [ ] Change `find_execution_by_id` back to `pub` if needed by other modules
+- [ ] Change `SchwabExecution` struct back to `pub(crate)` in
+      schwab/execution.rs
+- [ ] Change `update_execution_status_within_transaction` back to `pub(crate)`
+      if needed by other modules
+- [ ] Change `find_execution_by_id` back to `pub(crate)` if needed by other
+      modules
 - [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
 - [ ] Update PLAN.md with progress and additional plans for anything that needs
       fixing
@@ -128,7 +129,7 @@ it easier to navigate the code (by having less of it) and easier to understand
 ## Progress Summary
 
 1. [x] Fix Unused Imports from Visibility Changes
-2. [ ] Remove Dead Code Exposed by Visibility Reduction
+2. [x] Remove Dead Code Exposed by Visibility Reduction
 3. [ ] Make SchwabExecution Visible to Other Modules
 4. [ ] Reduce Error Module Visibility
 5. [ ] Reduce Conductor Module Visibility
@@ -141,6 +142,12 @@ it easier to navigate the code (by having less of it) and easier to understand
 
 ## Current Status
 
-Task 1 completed successfully. Fixed clippy issue with
-trivially_copy_pass_by_ref in Direction::as_str and struct_field_names in Order
-struct. All tests pass, static analysis passes, and pre-commit hooks pass.
+Task 1 and 2 completed successfully. Removed dead code including:
+
+- ExecutionIdMismatch variant from PersistenceError enum
+- clear_pending_execution_within_transaction function and associated test
+- Unused SchwabExecutionBuilder methods (with_shares, with_direction,
+  with_status, with_symbol)
+
+Fixed clippy issue with trivially_copy_pass_by_ref in Direction::as_str method.
+All tests pass, static analysis passes, and pre-commit hooks pass.

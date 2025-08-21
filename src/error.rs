@@ -45,12 +45,6 @@ pub enum PersistenceError {
     InvalidPriceCents(i64),
     #[error("Failed to acquire symbol map lock")]
     SymbolMapLock,
-    #[error("Execution ID mismatch for symbol {symbol}: expected {expected}, current {current:?}")]
-    ExecutionIdMismatch {
-        symbol: String,
-        expected: i64,
-        current: Option<i64>,
-    },
     #[error("Execution missing ID after database save")]
     MissingExecutionId,
 }

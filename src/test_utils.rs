@@ -172,30 +172,6 @@ impl SchwabExecutionBuilder {
         }
     }
 
-    #[must_use]
-    pub(crate) fn with_symbol(mut self, symbol: impl Into<String>) -> Self {
-        self.execution.symbol = symbol.into();
-        self
-    }
-
-    #[must_use]
-    pub(crate) fn with_shares(mut self, shares: u64) -> Self {
-        self.execution.shares = shares;
-        self
-    }
-
-    #[must_use]
-    pub(crate) fn with_direction(mut self, direction: Direction) -> Self {
-        self.execution.direction = direction;
-        self
-    }
-
-    #[must_use]
-    pub(crate) fn with_status(mut self, status: TradeStatus) -> Self {
-        self.execution.status = status;
-        self
-    }
-
     pub(crate) fn build(self) -> SchwabExecution {
         self.execution
     }
