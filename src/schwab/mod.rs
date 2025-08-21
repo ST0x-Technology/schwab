@@ -165,7 +165,7 @@ pub const fn price_cents_from_db_i64(db_value: i64) -> Result<u64, error::OnChai
     }
 }
 
-fn extract_code_from_url(url: &str) -> Result<String, SchwabError> {
+pub fn extract_code_from_url(url: &str) -> Result<String, SchwabError> {
     let parsed_url = url::Url::parse(url)?;
 
     parsed_url
