@@ -61,6 +61,7 @@
           inherit (rainix.devShells.${system}.default) nativeBuildInputs;
           buildInputs = with pkgs;
             [
+              doctl
               sqlx-cli
               cargo-tarpaulin
               cargo-chef
