@@ -95,7 +95,6 @@ mod tests {
         Env {
             database_url: ":memory:".to_string(),
             log_level: crate::env::LogLevel::Debug,
-            server_port: 8080,
             schwab_auth: SchwabAuthEnv {
                 app_key: "test_app_key".to_string(),
                 app_secret: "test_app_secret".to_string(),
