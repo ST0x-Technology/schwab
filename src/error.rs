@@ -7,7 +7,7 @@ use std::num::ParseFloatError;
 
 /// Business logic validation errors for trade processing rules.
 #[derive(Debug, thiserror::Error)]
-pub enum TradeValidationError {
+pub(crate) enum TradeValidationError {
     #[error("No transaction hash found in log")]
     NoTxHash,
     #[error("No log index found in log")]
@@ -32,7 +32,7 @@ pub enum TradeValidationError {
 
 /// Database persistence and data corruption errors.
 #[derive(Debug, thiserror::Error)]
-pub enum PersistenceError {
+pub(crate) enum PersistenceError {
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
     #[error("Invalid Schwab instruction in database: {0}")]
@@ -50,7 +50,7 @@ pub enum PersistenceError {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum AlloyError {
+pub(crate) enum AlloyError {
     #[error("Failed to get symbol: {0}")]
     GetSymbol(#[from] alloy::contract::Error),
     #[error("Sol type error: {0}")]
@@ -61,7 +61,7 @@ pub enum AlloyError {
 
 /// Event queue persistence and processing errors.
 #[derive(Debug, thiserror::Error)]
-pub enum EventQueueError {
+pub(crate) enum EventQueueError {
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
     #[error("Event queue error: {0}")]
@@ -71,7 +71,7 @@ pub enum EventQueueError {
 /// Unified error type for onchain trade processing with clear domain boundaries.
 /// Provides error mapping between layers while maintaining separation of concerns.
 #[derive(Debug, thiserror::Error)]
-pub enum OnChainError {
+pub(crate) enum OnChainError {
     #[error("Trade validation error: {0}")]
     Validation(#[from] TradeValidationError),
     #[error("Database persistence error: {0}")]

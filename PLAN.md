@@ -42,14 +42,14 @@ it easier to navigate the code (by having less of it) and easier to understand
 
 ## Task 4. Reduce Error Module Visibility
 
-- [ ] Change `pub enum TradeValidationError` to
+- [x] Change `pub enum TradeValidationError` to
       `pub(crate) enum TradeValidationError`
-- [ ] Change `pub enum PersistenceError` to `pub(crate) enum PersistenceError`
-- [ ] Change `pub enum AlloyError` to `pub(crate) enum AlloyError`
-- [ ] Change `pub enum EventQueueError` to `pub(crate) enum EventQueueError`
-- [ ] Change `pub enum OnChainError` to `pub(crate) enum OnChainError`
-- [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
-- [ ] Update PLAN.md with progress and additional plans for anything that needs
+- [x] Change `pub enum PersistenceError` to `pub(crate) enum PersistenceError`
+- [x] Change `pub enum AlloyError` to `pub(crate) enum AlloyError`
+- [x] Change `pub enum EventQueueError` to `pub(crate) enum EventQueueError`
+- [x] Change `pub enum OnChainError` to `pub(crate) enum OnChainError`
+- [x] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
+- [x] Update PLAN.md with progress and additional plans for anything that needs
       fixing
 
 ## Task 5. Reduce Conductor Module Visibility
@@ -131,7 +131,7 @@ it easier to navigate the code (by having less of it) and easier to understand
 1. [x] Fix Unused Imports from Visibility Changes
 2. [x] Remove Dead Code Exposed by Visibility Reduction
 3. [x] Make SchwabExecution Visible to Other Modules
-4. [ ] Reduce Error Module Visibility
+4. [x] Reduce Error Module Visibility
 5. [ ] Reduce Conductor Module Visibility
 6. [ ] Reduce Lock Module Visibility
 7. [ ] Reduce Queue Module Visibility
