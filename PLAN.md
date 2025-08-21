@@ -110,11 +110,11 @@ it easier to navigate the code (by having less of it) and easier to understand
 
 ## Task 10. Review lib.rs Exports
 
-- [ ] Check which modules are used by bin/main.rs, bin/auth.rs, bin/cli.rs
-- [ ] Change unused `pub mod` declarations to `pub(crate) mod`
-- [ ] Keep only necessary public exports for the binary interfaces
-- [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
-- [ ] Update PLAN.md with progress and additional plans for anything that needs
+- [x] Check which modules are used by bin/main.rs, bin/auth.rs, bin/cli.rs
+- [x] Change unused `pub mod` declarations to `pub(crate) mod`
+- [x] Keep only necessary public exports for the binary interfaces
+- [x] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
+- [x] Update PLAN.md with progress and additional plans for anything that needs
       fixing
 
 ## Task 11. Final Verification and Cleanup
@@ -139,7 +139,7 @@ it easier to navigate the code (by having less of it) and easier to understand
 7. [x] Reduce Queue Module Visibility
 8. [x] Reduce Onchain Submodule Visibility
 9. [x] Reduce Symbol Module Visibility
-10. [ ] Review lib.rs Exports
+10. [x] Review lib.rs Exports
 11. [ ] Final Verification and Cleanup
 
 ## Current Status
