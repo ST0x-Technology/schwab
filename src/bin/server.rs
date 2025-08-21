@@ -1,6 +1,6 @@
 use clap::Parser;
 use rain_schwab::env::{Env, setup_tracing};
-use rain_schwab::run;
+use rain_schwab::launch;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -8,6 +8,6 @@ async fn main() -> anyhow::Result<()> {
     let env = Env::try_parse()?;
     setup_tracing(&env.log_level);
 
-    run(env).await?;
+    launch(env).await?;
     Ok(())
 }
