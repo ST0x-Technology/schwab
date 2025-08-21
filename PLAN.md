@@ -41,7 +41,7 @@ arbitrage bot with automatic retry logic for expired tokens.
       `run_oauth_flow`
 - [x] Accept redirect URL from request body instead of stdin
 - [x] Add proper error handling and JSON responses
-- [x] Extend test coverage
+- [x] Add comprehensive test coverage for the auth endpoint
 - [x] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
       passes
 - [x] Update @PLAN.md with progress

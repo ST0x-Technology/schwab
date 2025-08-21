@@ -168,16 +168,33 @@ Environment variables (can be set via `.env` file):
 
 ### Code Quality & Best Practices
 
-- **Event-Driven Architecture**: Each trade spawns independent async task for maximum throughput
-- **SQLite Persistence**: Embedded database for trade tracking and authentication tokens
-- **Symbol Suffix Convention**: Tokenized equities use "s1" suffix to distinguish from base assets
-- **Price Direction Logic**: Onchain buy = offchain sell (and vice versa) to maintain market-neutral positions
-- **Comprehensive Error Handling**: Custom error types (`OnChainError`, `SchwabError`) with proper propagation
-- **Idiomatic Functional Programming**: Prefer iterator-based functional programming patterns over imperative loops unless it increases complexity. Use itertools to be able to do more with iterators and functional programming in Rust
-- **Comments**: Follow comprehensive commenting guidelines (see detailed section below)
-- **Spacing**: Leave an empty line in between code blocks to allow vim curly braces jumping between blocks and for easier reading
-- **Import Conventions**: Use qualified imports when they prevent ambiguity (e.g. `contract::Error` for `alloy::contract::Error`), but avoid them when the module is clear (e.g. use `info!` instead of `tracing::info!`). Generally avoid imports inside functions
-- **Error Handling**: Avoid `unwrap()` even post-validation since validation logic changes might leave panics in the codebase
+- **Event-Driven Architecture**: Each trade spawns independent async task for
+  maximum throughput
+- **SQLite Persistence**: Embedded database for trade tracking and
+  authentication tokens
+- **Symbol Suffix Convention**: Tokenized equities use "s1" suffix to
+  distinguish from base assets
+- **Price Direction Logic**: Onchain buy = offchain sell (and vice versa) to
+  maintain market-neutral positions
+- **Comprehensive Error Handling**: Custom error types (`OnChainError`,
+  `SchwabError`) with proper propagation
+- **Idiomatic Functional Programming**: Prefer iterator-based functional
+  programming patterns over imperative loops unless it increases complexity. Use
+  itertools to be able to do more with iterators and functional programming in
+  Rust
+- **Comments**: Follow comprehensive commenting guidelines (see detailed section
+  below)
+- **Spacing**: Leave an empty line in between code blocks to allow vim curly
+  braces jumping between blocks and for easier reading
+- **Import Conventions**: Use qualified imports when they prevent ambiguity
+  (e.g. `contract::Error` for `alloy::contract::Error`), but avoid them when the
+  module is clear (e.g. use `info!` instead of `tracing::info!`). Generally
+  avoid imports inside functions. We don't do function-level imports, instead we
+  do top-of-module imports. Note that I said top-of-module and not top-of-file,
+  e.g. imports required only inside a tests module should be done in the module
+  and not hidden behind #[cfg(test)] at the top of the file
+- **Error Handling**: Avoid `unwrap()` even post-validation since validation
+  logic changes might leave panics in the codebase
 
 ### Testing Strategy
 
