@@ -20,13 +20,11 @@ arbitrage bot with automatic retry logic for expired tokens.
 
 ### Task 2: Create API Module Structure
 
-- [ ] Create `src/api/mod.rs` with basic module structure
-- [ ] Create `src/api/responses.rs` for JSON response types
-- [ ] Create `src/api/handlers.rs` for endpoint handlers
-- [ ] Export API module from `src/lib.rs`
-- [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
+- [x] Create `src/api.rs` with JSON response types and endpoint handlers
+- [x] Export API module from `src/lib.rs`
+- [x] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
       passes
-- [ ] Update PLAN.md with progress
+- [x] Update PLAN.md with progress
 
 ### Task 3: Implement Health Endpoint
 
@@ -103,7 +101,7 @@ Server Binary:
 ## Progress Tracking
 
 - [x] Task 1 Complete
-- [ ] Task 2 Complete
+- [x] Task 2 Complete
 - [ ] Task 3 Complete
 - [ ] Task 4 Complete
 - [ ] Task 5 Complete
