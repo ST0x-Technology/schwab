@@ -6,19 +6,17 @@ compiler and linter by helping them identify dead code and as a result to make
 it easier to navigate the code (by having less of it) and easier to understand
 (by making the relevance scope explicit).
 
-## 1. Fix Unused Imports from Visibility Changes
+## Task 1. Fix Unused Imports from Visibility Changes
 
-- [ ] Remove `AccountNumbers` from schwab/mod.rs:13 (now unused after visibility
-      reduction)
-- [ ] Remove `SchwabAuthResponse` from schwab/mod.rs:13 (now unused after
-      visibility reduction)
-- [ ] Remove `execution::SchwabExecution` from schwab/mod.rs:14 (now unused
+- [x] Remove `AccountNumbers` from schwab/mod.rs:13
+- [x] Remove `SchwabAuthResponse` from schwab/mod.rs:13
+- [x] Remove `execution::SchwabExecution` from schwab/mod.rs:14 (now unused
       after visibility reduction)
-- [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
-- [ ] Update PLAN.md with progress and additional plans for anything that needs
+- [x] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
+- [x] Update PLAN.md with progress and additional plans for anything that needs
       fixing
 
-## 2. Remove Dead Code Exposed by Visibility Reduction
+## Task 2. Remove Dead Code Exposed by Visibility Reduction
 
 - [ ] Remove `ExecutionIdMismatch` variant from PersistenceError enum in
       src/error.rs:49-55 (never constructed)
@@ -30,7 +28,7 @@ it easier to navigate the code (by having less of it) and easier to understand
 - [ ] Update PLAN.md with progress and additional plans for anything that needs
       fixing
 
-## 3. Make SchwabExecution Visible to Other Modules
+## Task 3. Make SchwabExecution Visible to Other Modules
 
 - [ ] Change `SchwabExecution` struct back to `pub` in schwab/execution.rs (used
       by lock, test_utils, onchain modules)
@@ -41,7 +39,7 @@ it easier to navigate the code (by having less of it) and easier to understand
 - [ ] Update PLAN.md with progress and additional plans for anything that needs
       fixing
 
-## 4. Reduce Error Module Visibility
+## Task 4. Reduce Error Module Visibility
 
 - [ ] Change `pub enum TradeValidationError` to
       `pub(crate) enum TradeValidationError`
@@ -53,7 +51,7 @@ it easier to navigate the code (by having less of it) and easier to understand
 - [ ] Update PLAN.md with progress and additional plans for anything that needs
       fixing
 
-## 5. Reduce Conductor Module Visibility
+## Task 5. Reduce Conductor Module Visibility
 
 - [ ] Change `pub async fn get_cutoff_block` to `pub(crate)` if only used
       internally
@@ -65,7 +63,7 @@ it easier to navigate the code (by having less of it) and easier to understand
 - [ ] Update PLAN.md with progress and additional plans for anything that needs
       fixing
 
-## 6. Reduce Lock Module Visibility
+## Task 6. Reduce Lock Module Visibility
 
 - [ ] Change `pub async fn try_acquire_execution_lease` to `pub(crate)`
 - [ ] Change `pub async fn clear_execution_lease` to `pub(crate)`
@@ -74,7 +72,7 @@ it easier to navigate the code (by having less of it) and easier to understand
 - [ ] Update PLAN.md with progress and additional plans for anything that needs
       fixing
 
-## 7. Reduce Queue Module Visibility
+## Task 7. Reduce Queue Module Visibility
 
 - [ ] Change `pub async fn get_next_unprocessed_event` to `pub(crate)`
 - [ ] Change `pub async fn mark_event_processed` to `pub(crate)`
@@ -88,7 +86,7 @@ it easier to navigate the code (by having less of it) and easier to understand
 - [ ] Update PLAN.md with progress and additional plans for anything that needs
       fixing
 
-## 8. Reduce Onchain Submodule Visibility
+## Task 8. Reduce Onchain Submodule Visibility
 
 - [ ] Change `pub mod accumulator` to `pub(crate) mod accumulator`
 - [ ] Change `pub mod position_calculator` to
@@ -101,7 +99,7 @@ it easier to navigate the code (by having less of it) and easier to understand
 - [ ] Update PLAN.md with progress and additional plans for anything that needs
       fixing
 
-## 9. Reduce Symbol Module Visibility
+## Task 9. Reduce Symbol Module Visibility
 
 - [ ] Change `pub mod cache` to `pub(crate) mod cache` in symbol/mod.rs
 - [ ] Change `pub mod lock` to `pub(crate) mod lock` in symbol/mod.rs
@@ -109,7 +107,7 @@ it easier to navigate the code (by having less of it) and easier to understand
 - [ ] Update PLAN.md with progress and additional plans for anything that needs
       fixing
 
-## 10. Review lib.rs Exports
+## Task 10. Review lib.rs Exports
 
 - [ ] Check which modules are used by bin/main.rs, bin/auth.rs, bin/cli.rs
 - [ ] Change unused `pub mod` declarations to `pub(crate) mod`
@@ -118,7 +116,7 @@ it easier to navigate the code (by having less of it) and easier to understand
 - [ ] Update PLAN.md with progress and additional plans for anything that needs
       fixing
 
-## 11. Final Verification and Cleanup
+## Task 11. Final Verification and Cleanup
 
 - [ ] Run full test suite: `cargo test`
 - [ ] Run static analysis: `rainix-rs-static`
@@ -129,7 +127,7 @@ it easier to navigate the code (by having less of it) and easier to understand
 
 ## Progress Summary
 
-1. [ ] Fix Unused Imports from Visibility Changes
+1. [x] Fix Unused Imports from Visibility Changes
 2. [ ] Remove Dead Code Exposed by Visibility Reduction
 3. [ ] Make SchwabExecution Visible to Other Modules
 4. [ ] Reduce Error Module Visibility
@@ -143,4 +141,6 @@ it easier to navigate the code (by having less of it) and easier to understand
 
 ## Current Status
 
-Starting visibility refactoring - all tasks pending.
+Task 1 completed successfully. Fixed clippy issue with
+trivially_copy_pass_by_ref in Direction::as_str and struct_field_names in Order
+struct. All tests pass, static analysis passes, and pre-commit hooks pass.

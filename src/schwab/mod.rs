@@ -10,8 +10,7 @@ pub(crate) mod execution;
 pub(crate) mod order;
 pub(crate) mod tokens;
 
-pub(crate) use auth::{AccountNumbers, SchwabAuthEnv, SchwabAuthResponse};
-pub(crate) use execution::SchwabExecution;
+pub(crate) use auth::SchwabAuthEnv;
 pub(crate) use tokens::SchwabTokens;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
