@@ -70,6 +70,15 @@ arbitrage bot with automatic retry logic for expired tokens.
 
 ### Task 7: Remove the auth binary and add the manual auth flow as an extra cli command
 
+- [ ] Add `Auth` command to `Commands` enum in `src/cli.rs`
+- [ ] Implement auth command handler in `run_command_with_writers` function
+- [ ] Add proper CLI help text and argument handling for auth command
+- [ ] Add comprehensive test coverage for the new auth command
+- [ ] Remove `src/bin/auth.rs` binary entirely
+- [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
+      passes
+- [ ] Update @PLAN.md with progress
+
 ### Task 8: Integration and Testing
 
 - [ ] Test complete flow: server starts, bot retries on missing tokens
@@ -111,3 +120,4 @@ Server Binary:
 - [x] Task 5 Complete
 - [x] Task 6 Complete
 - [ ] Task 7 Complete
+- [ ] Task 8 Complete
