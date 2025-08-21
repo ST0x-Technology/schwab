@@ -37,14 +37,14 @@ arbitrage bot with automatic retry logic for expired tokens.
 
 ### Task 4: Implement Manual Auth Endpoint
 
-- [ ] Create auth refresh endpoint that works similarly to the existing
+- [x] Create auth refresh endpoint that works similarly to the existing
       `run_oauth_flow`
-- [ ] Accept redirect URL from request body instead of stdin
-- [ ] Add proper error handling and JSON responses
-- [ ] Extend test coverage
-- [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
+- [x] Accept redirect URL from request body instead of stdin
+- [x] Add proper error handling and JSON responses
+- [x] Extend test coverage
+- [x] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
       passes
-- [ ] Update @PLAN.md with progress
+- [x] Update @PLAN.md with progress
 
 ### Task 5: Modify Bot Flow for Retry Logic
 
@@ -103,7 +103,7 @@ Server Binary:
 - [x] Task 1 Complete
 - [x] Task 2 Complete
 - [x] Task 3 Complete
-- [ ] Task 4 Complete
+- [x] Task 4 Complete
 - [ ] Task 5 Complete
 - [ ] Task 6 Complete
 - [ ] Task 7 Complete

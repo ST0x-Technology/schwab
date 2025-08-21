@@ -21,7 +21,7 @@ pub fn health() -> Json<HealthResponse> {
     })
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct AuthRefreshRequest {
     pub redirect_url: String,
 }
@@ -95,5 +95,40 @@ mod tests {
 
         assert_eq!(health_response.status, "healthy");
         assert!(health_response.timestamp <= chrono::Utc::now());
+    }
+
+    #[test]
+    fn test_auth_refresh_route_exists() {
+        // Verify that the auth_refresh route is properly configured
+        let routes_list = routes();
+        let auth_route = routes_list.iter().find(|r| r.uri.path() == "/auth/refresh");
+
+        assert!(auth_route.is_some());
+        let route = auth_route.unwrap();
+        assert_eq!(route.method.as_str(), "POST");
+    }
+
+    #[test]
+    fn test_auth_refresh_request_deserialization() {
+        let json = r#"{"redirect_url": "https://example.com?code=abc123"}"#;
+        let request: AuthRefreshRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.redirect_url, "https://example.com?code=abc123");
+    }
+
+    #[test]
+    fn test_auth_refresh_response_serialization() {
+        let success = AuthRefreshResponse::Success {
+            message: "Test success".to_string(),
+        };
+        let json = serde_json::to_string(&success).unwrap();
+        assert!(json.contains(r#""success":"true"#));
+        assert!(json.contains(r#""message":"Test success"#));
+
+        let error = AuthRefreshResponse::Error {
+            error: "Test error".to_string(),
+        };
+        let json = serde_json::to_string(&error).unwrap();
+        assert!(json.contains(r#""success":"false"#));
+        assert!(json.contains(r#""error":"Test error"#));
     }
 }
