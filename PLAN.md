@@ -75,16 +75,16 @@ it easier to navigate the code (by having less of it) and easier to understand
 
 ## Task 7. Reduce Queue Module Visibility
 
-- [ ] Change `pub async fn get_next_unprocessed_event` to `pub(crate)`
-- [ ] Change `pub async fn mark_event_processed` to `pub(crate)`
-- [ ] Change `pub async fn count_unprocessed` to `pub(crate)`
-- [ ] Change `pub async fn get_all_unprocessed_events` to `pub(crate)`
-- [ ] Change `pub async fn enqueue` to `pub(crate)`
-- [ ] Change `pub async fn enqueue_buffer` to `pub(crate)`
-- [ ] Keep `Enqueueable` trait and `QueuedEvent` struct as `pub` if used
+- [x] Change `pub async fn get_next_unprocessed_event` to `pub(crate)`
+- [x] Change `pub async fn mark_event_processed` to `pub(crate)`
+- [x] Change `pub async fn count_unprocessed` to `pub(crate)`
+- [x] Change `pub async fn get_all_unprocessed_events` to `pub(crate)`
+- [x] Change `pub async fn enqueue` to `pub(crate)`
+- [x] Change `pub async fn enqueue_buffer` to `pub(crate)`
+- [x] Keep `Enqueueable` trait and `QueuedEvent` struct as `pub` if used
       externally
-- [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
-- [ ] Update PLAN.md with progress and additional plans for anything that needs
+- [x] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
+- [x] Update PLAN.md with progress and additional plans for anything that needs
       fixing
 
 ## Task 8. Reduce Onchain Submodule Visibility
@@ -134,7 +134,7 @@ it easier to navigate the code (by having less of it) and easier to understand
 4. [x] Reduce Error Module Visibility
 5. [x] Reduce Conductor Module Visibility
 6. [x] Reduce Lock Module Visibility
-7. [ ] Reduce Queue Module Visibility
+7. [x] Reduce Queue Module Visibility
 8. [ ] Reduce Onchain Submodule Visibility
 9. [ ] Reduce Symbol Module Visibility
 10. [ ] Review lib.rs Exports
