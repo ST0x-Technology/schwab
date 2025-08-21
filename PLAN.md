@@ -30,14 +30,14 @@ it easier to navigate the code (by having less of it) and easier to understand
 
 ## Task 3. Make SchwabExecution Visible to Other Modules
 
-- [ ] Change `SchwabExecution` struct back to `pub(crate)` in
+- [x] Change `SchwabExecution` struct back to `pub(crate)` in
       schwab/execution.rs
-- [ ] Change `update_execution_status_within_transaction` back to `pub(crate)`
+- [x] Change `update_execution_status_within_transaction` back to `pub(crate)`
       if needed by other modules
-- [ ] Change `find_execution_by_id` back to `pub(crate)` if needed by other
+- [x] Change `find_execution_by_id` back to `pub(crate)` if needed by other
       modules
-- [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
-- [ ] Update PLAN.md with progress and additional plans for anything that needs
+- [x] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
+- [x] Update PLAN.md with progress and additional plans for anything that needs
       fixing
 
 ## Task 4. Reduce Error Module Visibility
@@ -130,7 +130,7 @@ it easier to navigate the code (by having less of it) and easier to understand
 
 1. [x] Fix Unused Imports from Visibility Changes
 2. [x] Remove Dead Code Exposed by Visibility Reduction
-3. [ ] Make SchwabExecution Visible to Other Modules
+3. [x] Make SchwabExecution Visible to Other Modules
 4. [ ] Reduce Error Module Visibility
 5. [ ] Reduce Conductor Module Visibility
 6. [ ] Reduce Lock Module Visibility
