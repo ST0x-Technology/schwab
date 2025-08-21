@@ -54,14 +54,14 @@ it easier to navigate the code (by having less of it) and easier to understand
 
 ## Task 5. Reduce Conductor Module Visibility
 
-- [ ] Change `pub async fn get_cutoff_block` to `pub(crate)` if only used
+- [x] Change `pub async fn get_cutoff_block` to `pub(crate)` if only used
       internally
-- [ ] Change `pub async fn run_live` to `pub(crate)` if only used internally
-- [ ] Change `pub async fn process_queue` to `pub(crate)` if only used
+- [x] Change `pub async fn run_live` to `pub(crate)` if only used internally
+- [x] Change `pub async fn process_queue` to `pub(crate)` if only used
       internally
-- [ ] Keep functions as `pub` only if used by bin files
-- [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
-- [ ] Update PLAN.md with progress and additional plans for anything that needs
+- [x] Keep functions as `pub` only if used by bin files
+- [x] Run `cargo test -q && rainix-rs-static && pre-commit run -a`
+- [x] Update PLAN.md with progress and additional plans for anything that needs
       fixing
 
 ## Task 6. Reduce Lock Module Visibility
@@ -132,7 +132,7 @@ it easier to navigate the code (by having less of it) and easier to understand
 2. [x] Remove Dead Code Exposed by Visibility Reduction
 3. [x] Make SchwabExecution Visible to Other Modules
 4. [x] Reduce Error Module Visibility
-5. [ ] Reduce Conductor Module Visibility
+5. [x] Reduce Conductor Module Visibility
 6. [ ] Reduce Lock Module Visibility
 7. [ ] Reduce Queue Module Visibility
 8. [ ] Reduce Onchain Submodule Visibility
