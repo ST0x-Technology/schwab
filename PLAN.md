@@ -81,13 +81,13 @@ arbitrage bot with automatic retry logic for expired tokens.
 
 ### Task 8: Integration and Testing
 
-- [ ] Test complete flow: server starts, bot retries on missing tokens
-- [ ] Test manual auth endpoint with mock OAuth flow
-- [ ] Test health endpoint accessibility
-- [ ] Verify bot automatically starts trading when tokens are available
-- [ ] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
+- [x] Test complete flow: server starts, bot retries on missing tokens
+- [x] Test manual auth endpoint with mock OAuth flow
+- [x] Test health endpoint accessibility
+- [x] Verify bot automatically starts trading when tokens are available
+- [x] Run `cargo test -q && rainix-rs-static && pre-commit run -a` and ensure it
       passes
-- [ ] Update @PLAN.md with final completion status
+- [x] Update @PLAN.md with final completion status
 
 ## Architecture Overview
 
@@ -120,4 +120,4 @@ Server Binary:
 - [x] Task 5 Complete
 - [x] Task 6 Complete
 - [x] Task 7 Complete
-- [ ] Task 8 Complete
+- [x] Task 8 Complete
