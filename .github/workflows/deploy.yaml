@@ -24,7 +24,7 @@ jobs:
       - name: Install doctl
         uses: digitalocean/action-doctl@v2
         with:
-          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          token: ${{ secrets.DIGITALOCEAN_API_TOKEN }}
 
       - name: Build container image
         run: |
@@ -40,4 +40,4 @@ jobs:
       - name: Deploy to App Platform
         uses: digitalocean/app_action/deploy@v2
         with:
-          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          token: ${{ secrets.DIGITALOCEAN_API_TOKEN }}
