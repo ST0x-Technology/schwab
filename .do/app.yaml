@@ -6,7 +6,7 @@ services:
   - name: schwarbot
     image:
       registry_type: DOCR
-      repository: schwarbot
+      repository: stox
       tag: latest
       deploy_on_push:
         enabled: true
