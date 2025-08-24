@@ -1,0 +1,64 @@
+name: schwarbot
+
+region: nyc
+
+services:
+  - name: schwarbot
+    image:
+      registry_type: DOCR
+      repository: schwarbot
+      tag: latest
+      deploy_on_push:
+        enabled: true
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    instance_count: 1
+    http_port: 8080
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 30
+      period_seconds: 10
+      timeout_seconds: 5
+      failure_threshold: 3
+
+    envs:
+      # General configuration - safe to commit
+      - key: LOG_LEVEL
+        value: info
+        type: GENERAL
+
+      # Database configuration - NOTE: SQLite won't persist across deployments
+      # Consider using DigitalOcean Managed Database for production
+      - key: DATABASE_URL
+        value: "sqlite:/tmp/schwab.db"
+        type: GENERAL
+
+      # Schwab API credentials - set these in App Platform UI/CLI, not here!
+      - key: APP_KEY
+        type: SECRET
+      - key: APP_SECRET
+        type: SECRET
+
+      # Optional Schwab config (defaults in code)
+      - key: REDIRECT_URI
+        value: "https://127.0.0.1"
+        type: GENERAL
+      - key: BASE_URL
+        value: "https://api.schwabapi.com"
+        type: GENERAL
+      - key: ACCOUNT_INDEX
+        value: "0"
+        type: GENERAL
+
+      # EVM configuration - public values, safe to commit
+      - key: WS_RPC_URL
+        value: "wss://arbitrum-one-rpc.publicnode.com"
+        type: GENERAL
+      - key: ORDERBOOK
+        value: "0xf6fdcb30fd027c73cbacd54e22f02987e3116ebc"
+        type: GENERAL
+      - key: ORDER_HASH
+        value: "0xf1696030ef3f39647663ba95d8e9a8a8d55da3e008a7979e8aae34473fe91657"
+        type: GENERAL
+      - key: DEPLOYMENT_BLOCK
+        value: "353562229"
+        type: GENERAL
