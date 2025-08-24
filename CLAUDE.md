@@ -1,89 +1,186 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with
+code in this repository.
 
 ## Project Overview
 
-This is a Rust-based arbitrage bot for tokenized equities that monitors onchain trades via the Raindex orderbook and executes offsetting trades on Charles Schwab to maintain market-neutral positions. The bot bridges the gap between onchain tokenized equity markets and traditional brokerage platforms by exploiting price discrepancies.
+This is a Rust-based arbitrage bot for tokenized equities that monitors onchain
+trades via the Raindex orderbook and executes offsetting trades on Charles
+Schwab to maintain market-neutral positions. The bot bridges the gap between
+onchain tokenized equity markets and traditional brokerage platforms by
+exploiting price discrepancies.
 
 ## Key Development Commands
 
 ### Building & Running
+
 - `cargo build` - Build the project
 - `cargo run --bin main` - Run the main arbitrage bot
-- `cargo run --bin auth` - Run the authentication flow for Charles Schwab OAuth setup
+- `cargo run --bin auth` - Run the authentication flow for Charles Schwab OAuth
+  setup
+- `cargo run --bin cli` - Run the command-line interface for manual operations
 
 ### Testing
-- `cargo test` - Run all tests
-- `cargo test --lib` - Run library tests only
-- `cargo test --bin <binary>` - Run tests for specific binary
-- `cargo test <test_name>` - Run specific test
+
+- `cargo test -q` - Run all tests
+- `cargo test -q --lib` - Run library tests only
+- `cargo test -q --bin <binary>` - Run tests for specific binary
+- `cargo test -q <test_name>` - Run specific test
 
 ### Database Management
-- `sqlx db create` - Apply database migrations
+
+- `sqlx db create` - Create the database
 - `sqlx migrate run` - Apply database migrations
 - `sqlx migrate revert` - Revert last migration
 - Database URL configured via `DATABASE_URL` environment variable
 
 ### Development Tools
+
 - `rainix-rs-static` - Run Rust static analysis
-- `cargo clippy` or `cargo-clippy` in Direnv - Run Clippy for linting
+- `cargo clippy --all-targets --all-features -- -D clippy::all` - Run Clippy for
+  linting
 - `cargo fmt` - Format code
 - `cargo-tarpaulin --skip-clean --out Html` - Generate test coverage report
 
 ### Nix Development Environment
+
 - `nix develop` - Enter development shell with all dependencies
-- `nix run .#prepSolArtifacts` - Build Solidity artifacts for orderbook interface
+- `nix run .#prepSolArtifacts` - Build Solidity artifacts for orderbook
+  interface
 - `nix run .#checkTestCoverage` - Generate test coverage report
+
+## Development Workflow Notes
+
+- When running `git diff`, make sure to add `--no-pager` to avoid opening it in
+  the interactive view, e.g. `git --no-pager diff`
 
 ## Architecture Overview
 
 ### Core Event Processing Flow
 
-**Main Event Loop ([`run` function in `src/lib.rs`])**
-- Monitors two concurrent WebSocket event streams: `ClearV2` and `TakeOrderV2` from the Raindex orderbook
+**Main Event Loop (\[`run` function in `src/lib.rs`\])**
+
+- Monitors two concurrent WebSocket event streams: `ClearV2` and `TakeOrderV2`
+  from the Raindex orderbook
 - Uses `tokio::select!` to handle events from either stream without blocking
 - Converts blockchain events to structured `Trade` objects for processing
 
-**Trade Conversion Logic ([`Trade` struct and methods in `src/trade/mod.rs`])**
+**Trade Conversion Logic (\[`Trade` struct and methods in
+`src/trade/mod.rs`\])**
+
 - Parses onchain events into actionable trade data with strict validation
-- Expects symbol pairs of USDC + tokenized equity with "s1" suffix (e.g., "AAPLs1")
-- Determines Schwab trade direction: buying tokenized equity onchain → selling on Schwab
+- Expects symbol pairs of USDC + tokenized equity with "s1" suffix (e.g.,
+  "AAPLs1")
+- Determines Schwab trade direction: buying tokenized equity onchain → selling
+  on Schwab
 - Calculates prices in cents and maintains onchain/offchain trade ratios
 
 **Async Event Processing Architecture**
+
 - Each blockchain event spawns independent async execution flow
 - Handles throughput mismatch: fast onchain events vs slower Schwab API calls
 - No artificial concurrency limits - processes events as they arrive
-- Flow: Parse Event → SQLite Deduplication Check → Schwab API Call → Record Result
+- Flow: Parse Event → SQLite Deduplication Check → Schwab API Call → Record
+  Result
 
 ### Authentication & API Integration
 
 **Charles Schwab OAuth (`src/schwab.rs`)**
+
 - OAuth 2.0 flow with 30-minute access tokens and 7-day refresh tokens
 - Token storage and retrieval from SQLite database
 - Comprehensive error handling for authentication failures
 
-**Symbol Caching (`src/symbol_cache.rs`)**
+**Symbol Caching (`crate::symbol::cache::SymbolCache`)**
+
 - Thread-safe caching of ERC20 token symbols using `tokio::sync::RwLock`
 - Prevents repeated RPC calls for the same token addresses
 
 ### Database Schema & Idempotency
 
 **SQLite Tables:**
-- `trades`: Stores trade attempts with onchain/offchain details and unique `(tx_hash, log_index)` constraint
-- `schwab_auth`: Stores OAuth tokens with timestamps
+
+- `onchain_trades`: Immutable blockchain trade records
+
+  - `id`: Primary key (auto-increment)
+  - `tx_hash`: Transaction hash (66 chars, 0x-prefixed)
+  - `log_index`: Event log index (non-negative)
+  - `symbol`: Asset symbol (non-empty string)
+  - `amount`: Trade quantity (positive real number)
+  - `direction`: Trade direction ('BUY' or 'SELL')
+  - `price_usdc`: Price in USDC (positive real number)
+  - `created_at`: Timestamp (default CURRENT_TIMESTAMP)
+  - Unique constraint: `(tx_hash, log_index)`
+
+- `schwab_executions`: Schwab order execution tracking
+
+  - `id`: Primary key (auto-increment)
+  - `symbol`: Asset symbol (non-empty string)
+  - `shares`: Whole shares executed (positive integer)
+  - `direction`: Execution direction ('BUY' or 'SELL')
+  - `order_id`: Schwab order ID (nullable, non-empty if present)
+  - `price_cents`: Execution price in cents (nullable, non-negative)
+  - `status`: Execution status ('PENDING', 'COMPLETED', 'FAILED')
+  - `executed_at`: Execution timestamp (nullable)
+  - Check constraints ensure consistent status transitions
+
+- `trade_accumulators`: Unified position tracking per symbol
+
+  - `symbol`: Primary key (non-empty string)
+  - `net_position`: Running net position (real number)
+  - `accumulated_long`: Fractional shares for buying (non-negative)
+  - `accumulated_short`: Fractional shares for selling (non-negative)
+  - `pending_execution_id`: Reference to pending execution (nullable)
+  - `last_updated`: Last update timestamp (default CURRENT_TIMESTAMP)
+
+- `trade_execution_links`: Many-to-many audit trail
+
+  - `id`: Primary key (auto-increment)
+  - `trade_id`: Foreign key to onchain_trades
+  - `execution_id`: Foreign key to schwab_executions
+  - `contributed_shares`: Fractional shares contributed (positive)
+  - `created_at`: Link creation timestamp
+  - Unique constraint: `(trade_id, execution_id)`
+
+- `schwab_auth`: OAuth token storage (sensitive data)
+
+  - `id`: Primary key (constrained to 1 for singleton)
+  - `access_token`: Current access token
+  - `access_token_fetched_at`: Access token timestamp
+  - `refresh_token`: Current refresh token
+  - `refresh_token_fetched_at`: Refresh token timestamp
+
+- `event_queue`: Idempotent event processing queue
+
+  - `id`: Primary key (auto-increment)
+  - `tx_hash`: Transaction hash (66 chars, 0x-prefixed)
+  - `log_index`: Event log index (non-negative)
+  - `block_number`: Block number (non-negative)
+  - `event_data`: JSON serialized event (non-empty)
+  - `processed`: Processing status (boolean, default false)
+  - `created_at`: Queue entry timestamp
+  - `processed_at`: Processing completion timestamp (nullable)
+  - Unique constraint: `(tx_hash, log_index)`
+
+- `symbol_locks`: Per-symbol execution concurrency control
+
+  - `symbol`: Primary key (non-empty string)
+  - `locked_at`: Lock acquisition timestamp
 
 **Idempotency Controls:**
-- Uses `(tx_hash, log_index)` as unique identifier to prevent duplicate trade execution
+
+- Uses `(tx_hash, log_index)` as unique identifier to prevent duplicate trade
+  execution
 - Trade status tracking: pending → completed/failed
 - Retry logic with exponential backoff for failed trades
 
 ### Configuration
 
 Environment variables (can be set via `.env` file):
+
 - `DATABASE_URL`: SQLite database path
-- `WS_RPC_URL`: WebSocket RPC endpoint for blockchain monitoring  
+- `WS_RPC_URL`: WebSocket RPC endpoint for blockchain monitoring
 - `ORDERBOOK`: Raindex orderbook contract address
 - `ORDER_HASH`: Target order hash to monitor for trades
 - `APP_KEY`, `APP_SECRET`: Charles Schwab API credentials
@@ -92,51 +189,86 @@ Environment variables (can be set via `.env` file):
 
 ### Charles Schwab Setup Process
 
-1. Create Charles Schwab brokerage account (Charles Schwab International if outside US)
-2. Register developer account at https://developer.schwab.com/
-3. Set up as Individual Developer and request Trader API access
-4. Include your Charles Schwab account number in the API access request
-5. Wait 3-5 days for account linking approval
+1. Create Charles Schwab brokerage account (Charles Schwab International if
+   outside US)
+1. Register developer account at https://developer.schwab.com/
+1. Set up as Individual Developer and request Trader API access
+1. Include your Charles Schwab account number in the API access request
+1. Wait 3-5 days for account linking approval
 
 ### Code Quality & Best Practices
 
-- **Event-Driven Architecture**: Each trade spawns independent async task for maximum throughput
-- **SQLite Persistence**: Embedded database for trade tracking and authentication tokens
-- **Symbol Suffix Convention**: Tokenized equities use "s1" suffix to distinguish from base assets
-- **Price Direction Logic**: Onchain buy = offchain sell (and vice versa) to maintain market-neutral positions
-- **Comprehensive Error Handling**: Custom error types (`TradeConversionError`, `SchwabAuthError`) with proper propagation
-- **Idiomatic Functional Programming**: Prefer iterator-based functional programming patterns over imperative loops unless it increases complexity
-- **Comments**: Follow comprehensive commenting guidelines (see detailed section below)
-- **Spacing**: Leave an empty line in between code blocks to allow vim curly braces jumping between blocks and for easier reading
+- **Event-Driven Architecture**: Each trade spawns independent async task for
+  maximum throughput
+- **SQLite Persistence**: Embedded database for trade tracking and
+  authentication tokens
+- **Symbol Suffix Convention**: Tokenized equities use "s1" suffix to
+  distinguish from base assets
+- **Price Direction Logic**: Onchain buy = offchain sell (and vice versa) to
+  maintain market-neutral positions
+- **Comprehensive Error Handling**: Custom error types (`OnChainError`,
+  `SchwabError`) with proper propagation
+- **Idiomatic Functional Programming**: Prefer iterator-based functional
+  programming patterns over imperative loops unless it increases complexity. Use
+  itertools to be able to do more with iterators and functional programming in
+  Rust
+- **Comments**: Follow comprehensive commenting guidelines (see detailed section
+  below)
+- **Spacing**: Leave an empty line in between code blocks to allow vim curly
+  braces jumping between blocks and for easier reading
+- **Import Conventions**: Use qualified imports when they prevent ambiguity
+  (e.g. `contract::Error` for `alloy::contract::Error`), but avoid them when the
+  module is clear (e.g. use `info!` instead of `tracing::info!`). Generally
+  avoid imports inside functions. We don't do function-level imports, instead we
+  do top-of-module imports. Note that I said top-of-module and not top-of-file,
+  e.g. imports required only inside a tests module should be done in the module
+  and not hidden behind #[cfg(test)] at the top of the file
+- **Error Handling**: Avoid `unwrap()` even post-validation since validation
+  logic changes might leave panics in the codebase
 
 ### Testing Strategy
 
-- **Mock Blockchain Interactions**: Uses `alloy::providers::mock::Asserter` for deterministic testing
+- **Mock Blockchain Interactions**: Uses `alloy::providers::mock::Asserter` for
+  deterministic testing
 - **HTTP API Mocking**: `httpmock` crate for Charles Schwab API testing
 - **Database Isolation**: In-memory SQLite databases for test isolation
-- **Edge Case Coverage**: Comprehensive error scenario testing for trade conversion logic
-- **Testing Principle**: Only cover happy paths with all components working and connected in integration tests and cover everything in unit tests
+- **Edge Case Coverage**: Comprehensive error scenario testing for trade
+  conversion logic
+- **Testing Principle**: Only cover happy paths with all components working and
+  connected in integration tests and cover everything in unit tests
+- **Debugging failing tests**: When debugging tests with failing assert! macros,
+  add additional context to the assert! macro instead of adding temporary
+  println! statements
 
 ### Workflow Best Practices
 
-- **Always run tests, clippy, and pre-commit before handing over a piece of work**
+- **Always run tests, clippy, and pre-commit before handing over a piece of
+  work**
   - Run tests first, as changing tests can break clippy
   - Run clippy next, as fixing linting errors can break formatting
   - Deny warnings when running clippy
-  - Always run `pre-commit run -a` last to ensure git hooks pass. If it failed due to a formatting change then running `pre-commit run -a` again should pass
+  - Always run `pre-commit run -a` last to ensure git hooks pass. If it failed
+    due to a formatting change then running `pre-commit run -a` again should
+    pass
 
 ### Commenting Guidelines
 
-Code should be primarily self-documenting through clear naming, structure, and type modeling. Comments should only be used when they add meaningful context that cannot be expressed through code structure alone.
+Code should be primarily self-documenting through clear naming, structure, and
+type modeling. Comments should only be used when they add meaningful context
+that cannot be expressed through code structure alone.
 
 #### When to Use Comments
 
 **✅ DO comment when:**
 
-- **Complex business logic**: Explaining non-obvious domain-specific rules or calculations
-- **Algorithm rationale**: Why a particular approach was chosen over alternatives
-- **External system interactions**: Behavior that depends on external APIs or protocols
-- **Non-obvious technical constraints**: Performance considerations, platform limitations
+- **Complex business logic**: Explaining non-obvious domain-specific rules or
+  calculations
+- **Algorithm rationale**: Why a particular approach was chosen over
+  alternatives
+- **External system interactions**: Behavior that depends on external APIs or
+  protocols
+- **Non-obvious technical constraints**: Performance considerations, platform
+  limitations
 - **Test data context**: Explaining what mock values represent or test scenarios
 - **Workarounds**: Temporary solutions with context about why they exist
 
@@ -231,8 +363,9 @@ pub async fn refresh_if_needed(pool: &SqlitePool) -> Result<bool, SchwabError> {
 #### Comment Maintenance
 
 - Remove comments when refactoring makes them obsolete
-- Update comments when changing the logic they describe  
-- If a comment is needed to explain what code does, consider refactoring for clarity
+- Update comments when changing the logic they describe
+- If a comment is needed to explain what code does, consider refactoring for
+  clarity
 - Keep comments concise and focused on the "why" rather than the "what"
 
 ### Code style
@@ -243,7 +376,7 @@ Instead of
 
 ```rust
 assert!(result.is_err());
-assert!(matches!(result.unwrap_err(), SchwabAuthError::Reqwest(_)));
+assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
 ```
 
 or
@@ -256,7 +389,7 @@ assert_eq!(result.unwrap(), "refreshed_access_token");
 Write
 
 ```rust
-assert!(matches!(result.unwrap_err(), SchwabAuthError::Reqwest(_)));
+assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
 ```
 
 and
@@ -269,7 +402,8 @@ so that if we get an unexpected result value, we immediately see the value.
 
 #### Avoid deep nesting
 
-Prefer flat code over deeply nested blocks to improve readability and maintainability.
+Prefer flat code over deeply nested blocks to improve readability and
+maintainability.
 
 **Use early returns:**
 
@@ -499,7 +633,8 @@ trades
 
 #### Struct field access
 
-Avoid creating unnecessary constructors or getters when they don't add logic beyond setting/getting field values. Use public fields directly instead.
+Avoid creating unnecessary constructors or getters when they don't add logic
+beyond setting/getting field values. Use public fields directly instead.
 
 **Prefer direct field access:**
 
@@ -536,11 +671,5 @@ impl SchwabTokens {
 }
 ```
 
-This preserves argument clarity and avoids losing information about what each field represents.
-
-## Code Best Practices
-
-### Imports and Naming Conventions
-
-- **Use qualified imports when they prevent ambiguity**, e.g. use `contract::Error` for `alloy::contract::Error` to not confuse it with other `Error` types
-- **Don't use qualified imports when it's clear what module something is coming from**, e.g. use `info!` instead of `tracing::info!`
+This preserves argument clarity and avoids losing information about what each
+field represents.
