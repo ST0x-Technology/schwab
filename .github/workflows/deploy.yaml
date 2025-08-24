@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.ref }}-rainix
+  group: ${{ github.ref }}-deploy
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 permissions:
