@@ -50,14 +50,12 @@ services.
 - [ ] Add process-compose-flake input to flake inputs
 - [ ] Import process-compose-flake module in flake-parts configuration
 - [ ] Configure basic process-compose setup without services yet
-- [ ] Test process-compose commands work (`nix run .#services.up`,
-      `nix run .#services.down`)
-- [ ] Add process-compose to development shell for manual service management
+- [ ] Test process-compose commands work (`nix run .#services`)
+- [ ] Add process-compose generated package to the dev shell
 
 **Design Decisions**:
 
 - Use process-compose for local service orchestration
-- Enable both nix-managed and manual service control
 - Prepare foundation for services-flake integration
 
 ### Task 3: Add services-flake Integration
