@@ -213,10 +213,27 @@ buildInputs = with rainixPkgs; [
 
 **Subtasks**:
 
-- [ ] Document how to start PostgreSQL: `nix run .#services`
-- [ ] Document connection details: `postgresql://localhost:5432/schwab`
-- [ ] Document available psql commands for database inspection
-- [ ] Add troubleshooting guide for common PostgreSQL service issues
+- [x] Document how to start PostgreSQL: `nix run .#services`
+- [x] Document connection details: `postgresql://localhost:5432/schwab`
+- [x] Document available psql commands for database inspection
+- [x] Add troubleshooting guide for common PostgreSQL service issues
+
+**Completion Details**:
+
+- Successfully documented the PostgreSQL development environment in CLAUDE.md
+- Added comprehensive section covering service startup, connection details, and
+  database inspection
+- Included troubleshooting guide for common issues developers might encounter:
+  - Service startup problems (port conflicts, data corruption)
+  - Connection issues (service not running, firewall blocks)
+  - Permission errors (data directory permissions)
+- Documentation provides clear step-by-step instructions for:
+  - Starting services with `nix run .#services`
+  - Connecting to database with connection URL
+    `postgresql://localhost:5432/schwab`
+  - Using psql commands for database inspection (`\dt`, `\d`, `\l`, `\q`, `\x`)
+- All documentation is focused on local development only, without modifying
+  application code
 
 **Design Decisions**:
 
@@ -224,6 +241,8 @@ buildInputs = with rainixPkgs; [
 - Do not modify application code or configuration
 - Provide clear instructions for developers who want to experiment with
   PostgreSQL
+- Include practical troubleshooting steps based on common PostgreSQL setup
+  issues
 
 ## Success Criteria
 

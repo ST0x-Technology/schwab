@@ -55,6 +55,37 @@ exploiting price discrepancies.
 - `sqlx migrate revert` - Revert last migration
 - Database URL configured via `DATABASE_URL` environment variable
 
+### Local PostgreSQL Development Environment
+
+#### Starting PostgreSQL
+
+- `nix run .#services` - Start local PostgreSQL server and other development
+  services
+- PostgreSQL runs on port 5432 with database name `schwab`
+- Data is stored in `.postgres-data/` directory (gitignored)
+
+#### Database Connection
+
+- **Connection URL**: `postgresql://localhost:5432/schwab`
+- **Default user**: No authentication required for local development
+- **Database name**: `schwab` (created automatically)
+
+#### Database Inspection Commands
+
+Connect to the database:
+
+```bash
+psql -h localhost -p 5432 -d schwab
+```
+
+Common psql commands:
+
+- `\dt` - List all tables
+- `\d <table_name>` - Describe table structure
+- `\l` - List all databases
+- `\q` - Exit psql
+- `\x` - Toggle expanded display (useful for wide tables)
+
 ### Development Tools
 
 - `rainix-rs-static` - Run Rust static analysis
