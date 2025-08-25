@@ -300,7 +300,8 @@
         ],
         "nixpkgs-for-process-compose": "nixpkgs-for-process-compose",
         "process-compose-flake": "process-compose-flake",
-        "rainix": "rainix"
+        "rainix": "rainix",
+        "services-flake": "services-flake"
       }
     },
     "rust-overlay": {
@@ -318,6 +319,21 @@
       "original": {
         "owner": "oxalica",
         "repo": "rust-overlay",
+        "type": "github"
+      }
+    },
+    "services-flake": {
+      "locked": {
+        "lastModified": 1755996515,
+        "narHash": "sha256-1RQQIDhshp1g4PP5teqibcFLfk/ckTDOJRckecAHiU0=",
+        "owner": "juspay",
+        "repo": "services-flake",
+        "rev": "e316d6b994fd153f0c35d54bd07d60e53f0ad9a9",
+        "type": "github"
+      },
+      "original": {
+        "owner": "juspay",
+        "repo": "services-flake",
         "type": "github"
       }
     },

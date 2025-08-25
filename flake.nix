@@ -12,6 +12,7 @@
     nixpkgs-for-process-compose.url =
       "github:NixOS/nixpkgs/nixos-24.11"; # Go 1.23.8
     process-compose-flake.url = "github:Platonic-Systems/process-compose-flake";
+    services-flake.url = "github:juspay/services-flake";
   };
 
   outputs = inputs@{ flake-parts, ... }:
@@ -34,6 +35,8 @@
             # Override process-compose package to use one built with Go 1.21.4
             package = oldPkgs.process-compose;
 
+            imports = [ inputs.services-flake.processComposeModules.default ];
+
             settings.processes = {
               # Placeholder process to ensure process-compose works
               placeholder = {
@@ -41,7 +44,14 @@
                 availability.restart = "no";
               };
             };
+
+            # Services-flake configuration will be added here
+            # Currently empty but ready for PostgreSQL and other services
+            services = {
+              # PostgreSQL and other services will be configured here
+            };
           };
+
           packages = rainixPackages // {
             prepSolArtifacts = inputs.rainix.mkTask.${system} {
               name = "prep-sol-artifacts";
