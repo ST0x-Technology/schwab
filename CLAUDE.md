@@ -3,6 +3,26 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with
 code in this repository.
 
+## Plan & Review
+
+### Before starting work
+
+- Write a comprehensive step-by-step plan to .claude/tasks/TASK_NAME.md with
+  each task having a corresponding section and a list of subtasks as checkboxes
+  inside of it
+- The plan should be a detailed implementation plan and the reasoning behind the
+  design decisions
+- Remain focused on the task at hand, do not include unrelated improvements or
+  premature optimizations
+- Once you write the plan, ask me to review it. Do not continue until I approve
+  the plan.
+
+### While implementing
+
+- You should update the plan as you make progress
+- Upon completing a planned task, add detailed descriptions of the changes you
+  made to ease the review process
+
 ## Project Overview
 
 This is a Rust-based arbitrage bot for tokenized equities that monitors onchain
