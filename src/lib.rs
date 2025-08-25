@@ -1,7 +1,6 @@
 use alloy::providers::{ProviderBuilder, WsConnect};
 use tracing::{debug, info};
 
-pub(crate) mod api;
 mod bindings;
 pub mod cli;
 mod conductor;

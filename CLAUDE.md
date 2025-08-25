@@ -222,6 +222,11 @@ Environment variables (can be set via `.env` file):
   avoid imports inside functions
 - **Error Handling**: Avoid `unwrap()` even post-validation since validation
   logic changes might leave panics in the codebase
+- **Visibility Levels**: Always keep visibility levels as restrictive as
+  possible (prefer `pub(crate)` over `pub`, private over `pub(crate)`) to enable
+  better dead code detection by the compiler and tooling. This makes the
+  codebase easier to navigate and understand by making the relevance scope
+  explicit
 
 ### Testing Strategy
 
