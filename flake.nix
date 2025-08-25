@@ -45,7 +45,7 @@
                 enable = true;
                 port = 5432;
                 dataDir = "./.postgres-data";
-                initialDatabases = [{ name = "schwab_arbitrage"; }];
+                initialDatabases = [{ name = "schwab"; }];
               };
             };
           };

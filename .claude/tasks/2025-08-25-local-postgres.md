@@ -1,10 +1,11 @@
-# SQLite to Postgres Migration Plan
+# Local PostgreSQL Development Setup
 
 ## Overview
 
-This plan outlines the complete migration from SQLite to PostgreSQL for the
-Schwab arbitrage bot, including setting up a local development environment using
-services-flake integrated through flake-parts.
+This plan outlines setting up a local PostgreSQL development environment using
+services-flake integrated through flake-parts, without migrating the application
+from SQLite. This creates the foundation for future PostgreSQL migration while
+keeping the existing SQLite implementation intact.
 
 ## Phase 1: Nix Infrastructure Setup
 
@@ -156,8 +157,7 @@ perSystem = { config, pkgs, system, ... }:
 - Data directory `.postgres-data/` is created locally and added to .gitignore
 - PostgreSQL client tools (psql, etc.) added to development shell via
   `postgresql` package
-- Service initializes correctly with `schwab_arbitrage` database created
-  automatically
+- Service initializes correctly with `schwab` database created automatically
 - Database connectivity tested successfully using psql with basic CRUD
   operations
 - Removed placeholder process from process-compose configuration
@@ -173,7 +173,7 @@ services = {
     enable = true;
     port = 5432;
     dataDir = "./.postgres-data";
-    initialDatabases = [{ name = "schwab_arbitrage"; }];
+    initialDatabases = [{ name = "schwab"; }];
   };
 };
 ```
@@ -193,7 +193,7 @@ buildInputs = with rainixPkgs; [
 
 4. Verified service functionality:
    - Database initializes on first run with initdb
-   - Creates `schwab_arbitrage` database automatically
+   - Creates `schwab` database automatically
    - Accepts connections on localhost:5432
    - Basic SQL operations work correctly
    - Clean shutdown when process-compose stops
@@ -207,181 +207,23 @@ buildInputs = with rainixPkgs; [
 - Use services-flake PostgreSQL module for declarative configuration
 - Automatic database creation eliminates manual setup steps
 
-### Task 5: Database Connection Configuration
+### Task 5: Document PostgreSQL Development Environment
 
-**Objective**: Configure application to connect to local PostgreSQL.
-
-**Subtasks**:
-
-- [ ] Update DATABASE_URL format for PostgreSQL in .env.example
-- [ ] Document new environment variable format in README or CLAUDE.md
-- [ ] Add environment variable validation for PostgreSQL URLs
-- [ ] Test connection pooling works with PostgreSQL
-- [ ] Verify SSL configuration is appropriate for local development
-
-**Design Decisions**:
-
-- Use standard PostgreSQL connection string format
-- Maintain environment variable-based configuration
-- Default to local development settings
-- Ensure production deployment flexibility
-
-## Phase 3: Database Schema Migration
-
-### Task 6: Convert SQLite Schema to PostgreSQL
-
-**Objective**: Adapt the database schema for PostgreSQL-specific features and
-data types.
+**Objective**: Document how to use the local PostgreSQL for development.
 
 **Subtasks**:
 
-- [ ] Create new migration file for PostgreSQL schema
-- [ ] Convert SQLite-specific data types to PostgreSQL equivalents:
-  - INTEGER PRIMARY KEY AUTOINCREMENT → SERIAL PRIMARY KEY
-  - DATETIME → TIMESTAMP WITH TIME ZONE
-  - REAL → NUMERIC or DOUBLE PRECISION (evaluate precision needs)
-  - TEXT → VARCHAR or TEXT (evaluate length constraints)
-- [ ] Update CHECK constraints to use PostgreSQL syntax
-- [ ] Review and optimize indexes for PostgreSQL
-- [ ] Test migration runs successfully on fresh PostgreSQL database
-- [ ] Validate all constraints and relationships work correctly
+- [ ] Document how to start PostgreSQL: `nix run .#services`
+- [ ] Document connection details: `postgresql://localhost:5432/schwab`
+- [ ] Document available psql commands for database inspection
+- [ ] Add troubleshooting guide for common PostgreSQL service issues
 
 **Design Decisions**:
 
-- Use PostgreSQL native data types for better performance and precision
-- Choose NUMERIC over REAL for financial calculations to avoid precision loss
-- Use TIMESTAMP WITH TIME ZONE for proper timezone handling
-- Maintain existing constraint logic while optimizing for PostgreSQL
-
-### Task 7: Update Application Code for PostgreSQL
-
-**Objective**: Modify Rust code to work with PostgreSQL instead of SQLite.
-
-**Subtasks**:
-
-- [ ] Update Cargo.toml dependencies:
-  - Change sqlx features from "sqlite" to "postgres"
-  - Keep existing features (chrono, runtime-tokio-rustls)
-- [ ] Update database connection code in src/lib.rs or database module
-- [ ] Review and update any SQLite-specific SQL queries
-- [ ] Update any AUTOINCREMENT logic to work with SERIAL
-- [ ] Test all database operations work with PostgreSQL
-- [ ] Verify connection pooling and transaction handling
-
-**Design Decisions**:
-
-- Use sqlx PostgreSQL driver for consistency with existing code
-- Maintain existing database abstraction patterns
-- Preserve all existing functionality while optimizing for PostgreSQL
-- Use PostgreSQL-specific features where beneficial (better JSON support, etc.)
-
-### Task 8: Data Type Precision Improvements
-
-**Objective**: Address the TODO in migrations about precision for financial
-calculations.
-
-**Subtasks**:
-
-- [ ] Evaluate current REAL usage for financial data
-- [ ] Replace REAL with NUMERIC(precision, scale) for monetary values:
-  - onchain_input_amount: Use NUMERIC for 18-decimal precision
-  - onchain_price_per_share_cents: Use NUMERIC for exact cents
-  - schwab_price_per_share_cents: Use NUMERIC for exact cents
-- [ ] Update Rust code to handle NUMERIC types (BigDecimal or rust_decimal)
-- [ ] Add proper decimal handling dependencies if needed
-- [ ] Test precision is maintained through all calculations
-- [ ] Verify no precision loss in financial operations
-
-**Design Decisions**:
-
-- Use NUMERIC for exact financial calculations
-- Choose appropriate precision/scale for each monetary field
-- Consider rust_decimal crate for decimal arithmetic
-- Ensure precision requirements meet tokenized stock trading needs
-
-## Phase 4: Testing and Validation
-
-### Task 9: Update Test Infrastructure
-
-**Objective**: Ensure all tests work with PostgreSQL.
-
-**Subtasks**:
-
-- [ ] Update test database setup to use PostgreSQL instead of SQLite
-- [ ] Configure test database isolation (separate test DB or transactions)
-- [ ] Update any SQLite-specific test utilities
-- [ ] Verify all existing tests pass with PostgreSQL
-- [ ] Add tests for PostgreSQL-specific functionality if needed
-- [ ] Test database migration and rollback procedures
-
-**Design Decisions**:
-
-- Use separate PostgreSQL database for testing
-- Maintain test isolation between test runs
-- Preserve existing test structure and assertions
-- Add PostgreSQL-specific test cases as needed
-
-### Task 10: Integration Testing and Validation
-
-**Objective**: Comprehensive testing of the complete system with PostgreSQL.
-
-**Subtasks**:
-
-- [ ] Run full integration tests with local PostgreSQL
-- [ ] Test application startup/shutdown cycles
-- [ ] Verify all database operations under load
-- [ ] Test connection recovery and error handling
-- [ ] Validate data persistence across application restarts
-- [ ] Performance test basic operations (insert, query, update)
-- [ ] Test concurrent access patterns
-
-**Design Decisions**:
-
-- Focus on real-world usage patterns
-- Test error scenarios and recovery
-- Validate performance is acceptable
-- Ensure data consistency under concurrent access
-
-## Phase 5: Documentation and Deployment
-
-### Task 11: Update Documentation
-
-**Objective**: Update all documentation to reflect PostgreSQL usage.
-
-**Subtasks**:
-
-- [ ] Update CLAUDE.md with new database setup instructions
-- [ ] Update development workflow commands for PostgreSQL
-- [ ] Document new environment variables and configuration
-- [ ] Add troubleshooting guide for PostgreSQL issues
-- [ ] Update any deployment documentation
-- [ ] Add migration guide from SQLite for existing users
-
-**Design Decisions**:
-
-- Maintain existing documentation structure
-- Focus on practical setup and troubleshooting
-- Provide clear migration path for existing users
-- Include PostgreSQL-specific operational notes
-
-### Task 12: Production Deployment Considerations
-
-**Objective**: Prepare for production PostgreSQL deployment.
-
-**Subtasks**:
-
-- [ ] Add configuration for PostgreSQL connection pooling in production
-- [ ] Document backup and recovery procedures
-- [ ] Add monitoring and health check recommendations
-- [ ] Consider connection security and SSL requirements
-- [ ] Document scaling considerations for PostgreSQL
-
-**Design Decisions**:
-
-- Separate development and production configurations clearly
-- Focus on operational requirements
-- Provide guidance for different deployment scenarios
-- Maintain security best practices
+- Keep documentation focused on local development setup only
+- Do not modify application code or configuration
+- Provide clear instructions for developers who want to experiment with
+  PostgreSQL
 
 ## Success Criteria
 
