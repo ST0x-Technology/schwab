@@ -1,4 +1,5 @@
-use rain_schwab::{cli, setup_tracing};
+use rain_schwab::cli;
+use rain_schwab::env::setup_tracing;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
