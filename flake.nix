@@ -3,12 +3,21 @@
 
   inputs = {
     rainix.url = "github:rainprotocol/rainix";
+    nixpkgs.follows = "rainix/nixpkgs";
+
     flake-parts.url = "github:hercules-ci/flake-parts";
     git-hooks-nix.url = "github:cachix/git-hooks.nix";
+
+    # Separate nixpkgs for process-compose to avoid Go 1.23.9/1.24.3+ dlopen regression
+    nixpkgs-for-process-compose.url =
+      "github:NixOS/nixpkgs/nixos-24.11"; # Go 1.23.8
+    process-compose-flake.url = "github:Platonic-Systems/process-compose-flake";
   };
 
   outputs = inputs@{ flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
+      imports = [ inputs.process-compose-flake.flakeModule ];
+
       systems =
         [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
 
@@ -16,7 +25,23 @@
         let
           rainixPkgs = inputs.rainix.pkgs.${system};
           rainixPackages = inputs.rainix.packages.${system};
+
+          # Import older nixpkgs to build process-compose without Go regression
+          oldPkgs =
+            import inputs.nixpkgs-for-process-compose { inherit system; };
         in {
+          process-compose."services" = {
+            # Override process-compose package to use one built with Go 1.21.4
+            package = oldPkgs.process-compose;
+
+            settings.processes = {
+              # Placeholder process to ensure process-compose works
+              placeholder = {
+                command = "echo 'Process compose is ready for services'";
+                availability.restart = "no";
+              };
+            };
+          };
           packages = rainixPackages // {
             prepSolArtifacts = inputs.rainix.mkTask.${system} {
               name = "prep-sol-artifacts";
@@ -71,6 +96,7 @@
                 cargo-tarpaulin
                 config.packages.prepSolArtifacts
                 config.packages.checkTestCoverage
+                config.packages.services
               ] ++ inputs.rainix.devShells.${system}.default.buildInputs;
           };
         };

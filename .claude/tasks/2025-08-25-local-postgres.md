@@ -45,18 +45,67 @@ modularity and extensibility.
 **Objective**: Integrate process-compose-flake to manage local development
 services.
 
+**Problem Encountered During Implementation**:
+
+- Process-compose fails to build on macOS (Darwin) with error:
+  `link: duplicated definition of symbol dlopen, from github.com/ebitengine/purego`
+- This is a Go linker regression introduced in Go 1.23.9 and 1.24.3
+- Our current nixpkgs (via rainix) has Go 1.24.5 which still has this regression
+- Process-compose-flake doesn't accept nixpkgs as a direct input - it gets pkgs
+  from the perSystem context in flake-parts
+
+**Solution**:
+
+- Add a separate nixpkgs input pinned to nixos-24.11 with Go 1.23.8 (before the
+  regression)
+- Use the `package` option in process-compose configuration to override with
+  process-compose built from older nixpkgs
+- This isolates the fix to only process-compose, keeping all other dependencies
+  on current nixpkgs
+
 **Subtasks**:
 
-- [ ] Add process-compose-flake input to flake inputs
-- [ ] Import process-compose-flake module in flake-parts configuration
-- [ ] Configure basic process-compose setup without services yet
-- [ ] Test process-compose commands work (`nix run .#services`)
-- [ ] Add process-compose generated package to the dev shell
+- [x] Add nixpkgs-for-process-compose input pinned to nixos-24.11 (Go 1.23.8)
+- [x] Add process-compose-flake input to flake inputs
+- [x] Import process-compose-flake module in flake-parts configuration
+- [x] Configure process-compose with package override to use older nixpkgs
+- [x] Test process-compose commands work (`nix run .#services`)
+- [x] Add process-compose generated package to the dev shell
+
+**Implementation Details**:
+
+1. Add separate nixpkgs input in flake.nix:
+
+```nix
+nixpkgs-for-process-compose.url = "github:NixOS/nixpkgs/nixos-24.11";
+process-compose-flake.url = "github:Platonic-Systems/process-compose-flake";
+```
+
+2. In perSystem, build process-compose from older nixpkgs:
+
+```nix
+perSystem = { config, pkgs, system, ... }:
+  let
+    oldPkgs = import inputs.nixpkgs-for-process-compose { inherit system; };
+  in {
+    process-compose."services" = {
+      package = oldPkgs.process-compose;  # Override to use Go 1.23.8 build
+      settings.processes.placeholder = {
+        command = "echo 'Process compose is ready for services'";
+        availability.restart = "no";
+      };
+    };
+  };
+```
+
+3. Add to dev shell: `config.packages.services`
 
 **Design Decisions**:
 
 - Use process-compose for local service orchestration
-- Prepare foundation for services-flake integration
+- Override only the process-compose package to avoid Go regression
+- Maintain separate nixpkgs for build isolation
+- Foundation ready for services-flake integration
 
 ### Task 3: Add services-flake Integration
 
