@@ -37,18 +37,16 @@
 
             imports = [ inputs.services-flake.processComposeModules.default ];
 
-            settings.processes = {
-              # Placeholder process to ensure process-compose works
-              placeholder = {
-                command = "echo 'Process compose is ready for services'";
-                availability.restart = "no";
-              };
-            };
+            settings.processes = { };
 
-            # Services-flake configuration will be added here
-            # Currently empty but ready for PostgreSQL and other services
+            # Services-flake configuration
             services = {
-              # PostgreSQL and other services will be configured here
+              postgres."schwab-db" = {
+                enable = true;
+                port = 5432;
+                dataDir = "./.postgres-data";
+                initialDatabases = [{ name = "schwab_arbitrage"; }];
+              };
             };
           };
 
@@ -104,6 +102,7 @@
               [
                 sqlx-cli
                 cargo-tarpaulin
+                postgresql
                 config.packages.prepSolArtifacts
                 config.packages.checkTestCoverage
                 config.packages.services
