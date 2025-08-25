@@ -3,70 +3,76 @@
 
   inputs = {
     rainix.url = "github:rainprotocol/rainix";
-    flake-utils.url = "github:numtide/flake-utils";
+    flake-parts.url = "github:hercules-ci/flake-parts";
     git-hooks-nix.url = "github:cachix/git-hooks.nix";
   };
 
-  outputs = { self, flake-utils, rainix, git-hooks-nix }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let pkgs = rainix.pkgs.${system};
+  outputs = inputs@{ flake-parts, ... }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      systems =
+        [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
 
-      in rec {
-        checks = {
-          pre-commit-check = git-hooks-nix.lib.${system}.run {
-            src = ./.;
-            hooks = {
-              # Nix
-              nil.enable = true;
-              nixfmt-classic.enable = true;
-              deadnix.enable = true;
-              statix.enable = true;
-              statix.settings.ignore = [ "lib/" ];
+      perSystem = { config, pkgs, system, ... }:
+        let
+          rainixPkgs = inputs.rainix.pkgs.${system};
+          rainixPackages = inputs.rainix.packages.${system};
+        in {
+          packages = rainixPackages // {
+            prepSolArtifacts = inputs.rainix.mkTask.${system} {
+              name = "prep-sol-artifacts";
+              additionalBuildInputs = inputs.rainix.sol-build-inputs.${system};
+              body = ''
+                set -euxo pipefail
+                (cd lib/rain.orderbook.interface/ && forge build)
+                (cd lib/forge-std/ && forge build)
+              '';
+            };
 
-              # Rust
-              taplo.enable = true;
-              rustfmt.enable = true;
-
-              # Markdown
-              denofmt.enable = true;
-              yamlfmt.enable = true;
-              yamlfmt.settings.lint-only = false;
+            checkTestCoverage = inputs.rainix.mkTask.${system} {
+              name = "check-test-coverage";
+              additionalBuildInputs = [ rainixPkgs.cargo-tarpaulin ];
+              body = ''
+                set -euxo pipefail
+                cargo-tarpaulin --skip-clean --out Html
+              '';
             };
           };
-        };
 
-        packages = let rainixPkgs = rainix.packages.${system};
-        in rainixPkgs // {
-          prepSolArtifacts = rainix.mkTask.${system} {
-            name = "prep-sol-artifacts";
-            additionalBuildInputs = rainix.sol-build-inputs.${system};
-            body = ''
-              set -euxo pipefail
-              (cd lib/rain.orderbook.interface/ && forge build)
-              (cd lib/forge-std/ && forge build)
-            '';
+          checks = {
+            pre-commit-check = inputs.git-hooks-nix.lib.${system}.run {
+              src = ./.;
+              hooks = {
+                # Nix
+                nil.enable = true;
+                nixfmt-classic.enable = true;
+                deadnix.enable = true;
+                statix.enable = true;
+                statix.settings.ignore = [ "lib/" ];
+
+                # Rust
+                taplo.enable = true;
+                rustfmt.enable = true;
+
+                # Markdown
+                denofmt.enable = true;
+                yamlfmt.enable = true;
+                yamlfmt.settings.lint-only = false;
+              };
+            };
           };
 
-          checkTestCoverage = rainix.mkTask.${system} {
-            name = "check-test-coverage";
-            additionalBuildInputs = [ pkgs.cargo-tarpaulin ];
-            body = ''
-              set -euxo pipefail
-              cargo-tarpaulin --skip-clean --out Html
-            '';
+          devShells.default = rainixPkgs.mkShell {
+            inherit (config.checks.pre-commit-check) shellHook;
+            inherit (inputs.rainix.devShells.${system}.default)
+              nativeBuildInputs;
+            buildInputs = with rainixPkgs;
+              [
+                sqlx-cli
+                cargo-tarpaulin
+                config.packages.prepSolArtifacts
+                config.packages.checkTestCoverage
+              ] ++ inputs.rainix.devShells.${system}.default.buildInputs;
           };
         };
-
-        devShell = pkgs.mkShell {
-          inherit (self.checks.${system}.pre-commit-check) shellHook;
-          inherit (rainix.devShells.${system}.default) nativeBuildInputs;
-          buildInputs = with pkgs;
-            [
-              sqlx-cli
-              cargo-tarpaulin
-              packages.prepSolArtifacts
-              packages.checkTestCoverage
-            ] ++ rainix.devShells.${system}.default.buildInputs;
-        };
-      });
+    };
 }
