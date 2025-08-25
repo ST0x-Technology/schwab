@@ -19,7 +19,8 @@ code in this repository.
 
 ### While implementing
 
-- You should update the planning markdown file as you make progress
+- You should update .claude/tasks/YYYY-MM-DD-TASK_NAME.md every time you
+  complete a section
 - Upon completing a planned task, add detailed descriptions of the changes you
   made to ease the review process
 

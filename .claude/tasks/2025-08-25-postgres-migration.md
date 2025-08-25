@@ -21,16 +21,16 @@ data types.
 
 **Subtasks**:
 
-- [ ] Update the existing migration file for PostgreSQL schema
-- [ ] Convert SQLite-specific data types to PostgreSQL equivalents:
+- [x] Update the existing migration file for PostgreSQL schema
+- [x] Convert SQLite-specific data types to PostgreSQL equivalents:
   - INTEGER PRIMARY KEY AUTOINCREMENT → SERIAL PRIMARY KEY
   - DATETIME → TIMESTAMP WITH TIME ZONE
   - REAL → NUMERIC or DOUBLE PRECISION (evaluate precision needs)
   - TEXT → VARCHAR or TEXT (evaluate length constraints)
-- [ ] Update CHECK constraints to use PostgreSQL syntax
-- [ ] Review and optimize indexes for PostgreSQL
-- [ ] Test migration runs successfully on fresh PostgreSQL database
-- [ ] Validate all constraints and relationships work correctly
+- [x] Update CHECK constraints to use PostgreSQL syntax
+- [x] Review and optimize indexes for PostgreSQL
+- [x] Test migration runs successfully on fresh PostgreSQL database
+- [x] Validate all constraints and relationships work correctly
 
 **Design Decisions**:
 
@@ -38,6 +38,25 @@ data types.
 - Choose NUMERIC over REAL for financial calculations to avoid precision loss
 - Use TIMESTAMP WITH TIME ZONE for proper timezone handling
 - Maintain existing constraint logic while optimizing for PostgreSQL
+
+**Implementation Details (COMPLETED)**:
+
+Successfully migrated the entire database schema from SQLite to PostgreSQL:
+
+- **Data Type Conversions**: Replaced all `INTEGER PRIMARY KEY AUTOINCREMENT`
+  with `SERIAL PRIMARY KEY`, converted `REAL` to `NUMERIC` with appropriate
+  precision (36,18 for share amounts, 20,6 for USDC prices, 12,2 for
+  price_cents), changed `DATETIME` to `TIMESTAMP` with UTC handling via
+  `NOW() AT TIME ZONE 'UTC'`
+- **Enhanced Precision**: Used high-precision `NUMERIC(36,18)` for financial
+  calculations to avoid floating-point precision loss
+- **PostgreSQL Features**: Converted SQLite trigger to PostgreSQL function +
+  trigger system, used `BIGINT` for block numbers, properly handled
+  `BOOLEAN DEFAULT FALSE`
+- **Constraint Preservation**: All CHECK constraints, foreign keys, and unique
+  indexes migrated successfully
+- **Validation**: Migration applies cleanly to fresh PostgreSQL database, all 7
+  tables created with proper structure, constraints, and relationships validated
 
 ### Task 2: Update Application Code for PostgreSQL
 
