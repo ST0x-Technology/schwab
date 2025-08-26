@@ -2,6 +2,7 @@ use alloy::primitives::{Address, B256};
 use clap::Parser;
 
 pub mod accumulator;
+pub mod backfill;
 mod clear;
 pub mod position_calculator;
 mod take_order;
@@ -9,9 +10,6 @@ pub mod trade;
 pub mod trade_execution_link;
 
 pub use trade::OnchainTrade;
-pub use trade_execution_link::{
-    AuditTrailEntry, ExecutionContribution, TradeContribution, TradeExecutionLink,
-};
 
 #[derive(Parser, Debug, Clone)]
 pub struct EvmEnv {
@@ -21,4 +19,6 @@ pub struct EvmEnv {
     pub orderbook: Address,
     #[clap(short, long, env)]
     pub order_hash: B256,
+    #[clap(short = 'd', long, env)]
+    pub deployment_block: u64,
 }

@@ -71,12 +71,14 @@ pub async fn add_trade(
         None
     };
 
-    save_within_transaction(&mut sql_tx, &base_symbol, &calculator, None).await?;
+    let pending_execution_id = execution.as_ref().and_then(|e| e.id);
+    save_within_transaction(&mut sql_tx, &base_symbol, &calculator, pending_execution_id).await?;
 
     sql_tx.commit().await?;
     Ok(execution)
 }
 
+#[cfg(test)]
 pub async fn find_by_symbol(
     pool: &SqlitePool,
     symbol: &str,
@@ -93,14 +95,6 @@ pub async fn find_by_symbol(
         );
         (calculator, row.pending_execution_id)
     }))
-}
-
-#[cfg(test)]
-pub async fn db_count(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
-    let row = sqlx::query!("SELECT COUNT(*) as count FROM trade_accumulators")
-        .fetch_one(pool)
-        .await?;
-    Ok(row.count)
 }
 
 fn extract_base_symbol(symbol: &str) -> Result<String, OnChainError> {
@@ -139,7 +133,7 @@ async fn get_or_create_within_transaction(
     }
 }
 
-pub(crate) async fn save_within_transaction(
+pub async fn save_within_transaction(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     symbol: &str,
     calculator: &PositionCalculator,
@@ -147,7 +141,7 @@ pub(crate) async fn save_within_transaction(
 ) -> Result<(), OnChainError> {
     sqlx::query!(
         r#"
-        INSERT OR REPLACE INTO trade_accumulators (
+        INSERT INTO trade_accumulators (
             symbol,
             net_position,
             accumulated_long,
@@ -156,6 +150,12 @@ pub(crate) async fn save_within_transaction(
             last_updated
         )
         VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)
+        ON CONFLICT(symbol) DO UPDATE SET
+            net_position = excluded.net_position,
+            accumulated_long = excluded.accumulated_long,
+            accumulated_short = excluded.accumulated_short,
+            pending_execution_id = COALESCE(excluded.pending_execution_id, pending_execution_id),
+            last_updated = CURRENT_TIMESTAMP
         "#,
         symbol,
         calculator.net_position,
@@ -392,8 +392,7 @@ mod tests {
             created_at: None,
         };
 
-        let result = add_trade(&pool, trade).await.unwrap();
-        let execution = result.unwrap();
+        let execution = add_trade(&pool, trade).await.unwrap().unwrap();
 
         assert_eq!(execution.symbol, "MSFT");
         assert_eq!(execution.shares, 1);
@@ -539,8 +538,7 @@ mod tests {
             created_at: None,
         };
 
-        let result = add_trade(&pool, trade).await.unwrap();
-        let execution = result.unwrap();
+        let execution = add_trade(&pool, trade).await.unwrap().unwrap();
 
         assert_eq!(execution.direction, Direction::Sell);
         assert_eq!(execution.symbol, "AAPL");
@@ -564,8 +562,7 @@ mod tests {
             created_at: None,
         };
 
-        let result = add_trade(&pool, trade).await.unwrap();
-        let execution = result.unwrap();
+        let execution = add_trade(&pool, trade).await.unwrap().unwrap();
 
         assert_eq!(execution.direction, Direction::Buy);
         assert_eq!(execution.symbol, "MSFT");
@@ -787,8 +784,7 @@ mod tests {
             created_at: None,
         };
 
-        let result = add_trade(&pool, trade).await.unwrap();
-        let execution = result.unwrap();
+        let execution = add_trade(&pool, trade).await.unwrap().unwrap();
         let execution_id = execution.id.unwrap();
 
         // Verify trade-execution link was created
@@ -973,8 +969,7 @@ mod tests {
         };
 
         // Add trade and trigger execution
-        let result = add_trade(&pool, trade).await.unwrap();
-        let execution = result.unwrap();
+        let execution = add_trade(&pool, trade).await.unwrap().unwrap();
 
         // Verify only 1 share executed, not 1.2
         assert_eq!(execution.shares, 1);

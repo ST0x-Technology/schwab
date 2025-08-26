@@ -6,10 +6,16 @@ pub async fn try_acquire_execution_lease(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     symbol: &str,
 ) -> Result<bool, OnChainError> {
+    const LOCK_TIMEOUT_MINUTES: i32 = 5;
+
     // Clean up old locks first (older than 5 minutes)
-    sqlx::query("DELETE FROM symbol_locks WHERE locked_at < datetime('now', '-5 minutes')")
-        .execute(sql_tx.as_mut())
-        .await?;
+    let timeout_param = format!("-{LOCK_TIMEOUT_MINUTES} minutes");
+    sqlx::query!(
+        "DELETE FROM symbol_locks WHERE locked_at < datetime('now', ?1)",
+        timeout_param
+    )
+    .execute(sql_tx.as_mut())
+    .await?;
 
     // Try to acquire lock by inserting into symbol_locks table
     let result = sqlx::query("INSERT OR IGNORE INTO symbol_locks (symbol) VALUES (?1)")
@@ -288,6 +294,38 @@ mod tests {
         assert_eq!(count, 1);
 
         sql_tx.commit().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_ttl_based_cleanup() {
+        let pool = setup_test_db().await;
+
+        // First, acquire a lease
+        let mut sql_tx = pool.begin().await.unwrap();
+        let result = try_acquire_execution_lease(&mut sql_tx, "AAPL")
+            .await
+            .unwrap();
+        assert!(result);
+        sql_tx.commit().await.unwrap();
+
+        // Manually update the locked_at timestamp to be older than TTL
+        let mut sql_tx = pool.begin().await.unwrap();
+        sqlx::query(
+            "UPDATE symbol_locks SET locked_at = datetime('now', '-100 minutes') WHERE symbol = ?1",
+        )
+        .bind("AAPL")
+        .execute(sql_tx.as_mut())
+        .await
+        .unwrap();
+        sql_tx.commit().await.unwrap();
+
+        // Now try to acquire the same lease - should succeed due to TTL cleanup
+        let mut sql_tx = pool.begin().await.unwrap();
+        let result = try_acquire_execution_lease(&mut sql_tx, "AAPL")
+            .await
+            .unwrap();
+        assert!(result); // Should succeed because old lock was cleaned up
+        sql_tx.rollback().await.unwrap();
     }
 
     #[tokio::test]

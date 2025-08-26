@@ -1,3 +1,4 @@
+use crate::error;
 use chrono::{DateTime, Utc};
 use reqwest::header::InvalidHeaderValue;
 use sqlx::SqlitePool;
@@ -142,6 +143,28 @@ pub async fn run_oauth_flow(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<()
     Ok(())
 }
 
+pub const fn shares_from_db_i64(db_value: i64) -> Result<u64, error::OnChainError> {
+    if db_value < 0 {
+        Err(error::OnChainError::Persistence(
+            error::PersistenceError::InvalidShareQuantity(db_value),
+        ))
+    } else {
+        #[allow(clippy::cast_sign_loss)]
+        Ok(db_value as u64)
+    }
+}
+
+pub const fn price_cents_from_db_i64(db_value: i64) -> Result<u64, error::OnChainError> {
+    if db_value < 0 {
+        Err(error::OnChainError::Persistence(
+            error::PersistenceError::InvalidPriceCents(db_value),
+        ))
+    } else {
+        #[allow(clippy::cast_sign_loss)]
+        Ok(db_value as u64)
+    }
+}
+
 fn extract_code_from_url(url: &str) -> Result<String, SchwabError> {
     let parsed_url = url::Url::parse(url)?;
 
@@ -207,8 +230,7 @@ mod tests {
     #[test]
     fn test_extract_code_from_url_success() {
         let url = "https://127.0.0.1/?code=test_auth_code&state=xyz";
-        let result = extract_code_from_url(url);
-        assert_eq!(result.unwrap(), "test_auth_code");
+        assert_eq!(extract_code_from_url(url).unwrap(), "test_auth_code");
     }
 
     #[test]
@@ -224,8 +246,10 @@ mod tests {
     #[test]
     fn test_extract_code_from_url_invalid_url() {
         let url = "not_a_valid_url";
-        let result = extract_code_from_url(url);
-        assert!(matches!(result.unwrap_err(), SchwabError::Url(_)));
+        assert!(matches!(
+            extract_code_from_url(url).unwrap_err(),
+            SchwabError::Url(_)
+        ));
     }
 
     #[test]
@@ -236,6 +260,20 @@ mod tests {
             result.unwrap_err(),
             SchwabError::MissingAuthCode { url: ref u } if u == "https://127.0.0.1/"
         ));
+    }
+
+    #[test]
+    fn test_shares_from_db_i64_positive() {
+        assert_eq!(shares_from_db_i64(100).unwrap(), 100);
+        assert_eq!(shares_from_db_i64(0).unwrap(), 0);
+        assert_eq!(shares_from_db_i64(i64::MAX).unwrap(), i64::MAX as u64);
+    }
+
+    #[test]
+    fn test_shares_from_db_i64_negative() {
+        shares_from_db_i64(-1).unwrap_err();
+        shares_from_db_i64(-100).unwrap_err();
+        shares_from_db_i64(i64::MIN).unwrap_err();
     }
 
     #[tokio::test]
@@ -300,8 +338,10 @@ mod tests {
                 .body("invalid json");
         });
 
-        let result = env.get_tokens_from_code("test_code").await;
-        assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
+        assert!(matches!(
+            env.get_tokens_from_code("test_code").await.unwrap_err(),
+            SchwabError::Reqwest(_)
+        ));
 
         mock.assert();
     }

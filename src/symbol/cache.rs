@@ -33,9 +33,11 @@ impl SymbolCache {
             return Ok(symbol);
         }
 
+        const SYMBOL_FETCH_MAX_RETRIES: usize = 3;
+
         let erc20 = IERC20Instance::new(io.token, provider);
         let symbol = (|| async { erc20.symbol().call().await })
-            .retry(ExponentialBuilder::new().with_max_times(3))
+            .retry(ExponentialBuilder::new().with_max_times(SYMBOL_FETCH_MAX_RETRIES))
             .await?;
 
         self.map
@@ -93,7 +95,7 @@ mod tests {
         let result = cache.get_io_symbol(provider, &io).await;
         assert!(matches!(
             result.unwrap_err(),
-            OnChainError::Execution(crate::error::ExecutionError::GetSymbol(_))
+            OnChainError::Alloy(crate::error::AlloyError::GetSymbol(_))
         ));
     }
 }

@@ -430,8 +430,12 @@ mod tests {
 
         tokens.store(&pool).await.unwrap();
 
-        let result = SchwabTokens::get_valid_access_token(&pool, &env).await;
-        assert_eq!(result.unwrap(), "valid_access_token");
+        assert_eq!(
+            SchwabTokens::get_valid_access_token(&pool, &env)
+                .await
+                .unwrap(),
+            "valid_access_token"
+        );
     }
 
     #[tokio::test]
