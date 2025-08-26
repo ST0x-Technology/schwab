@@ -2,6 +2,27 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Plan & Review
+
+### Before starting work
+
+- Write a comprehensive step-by-step plan to
+  .claude/tasks/YYYY-MM-DD-TASK_NAME.md with each task having a corresponding
+  section and a list of subtasks as checkboxes inside of it
+- The plan should be a detailed implementation plan and the reasoning behind the
+  design decisions
+- Remain focused on the task at hand, do not include unrelated improvements or
+  premature optimizations
+- Once you write the plan, ask me to review it. Do not continue until I approve
+  the plan.
+
+### While implementing
+
+- You should update .claude/tasks/YYYY-MM-DD-TASK_NAME.md every time you
+  complete a section
+- Upon completing a planned task, add detailed descriptions of the changes you
+  made to ease the review process
+
 ## Project Overview
 
 This is a Rust-based arbitrage bot for tokenized equities that monitors onchain trades via the Raindex orderbook and executes offsetting trades on Charles Schwab to maintain market-neutral positions. The bot bridges the gap between onchain tokenized equity markets and traditional brokerage platforms by exploiting price discrepancies.
@@ -160,7 +181,8 @@ Environment variables (can be set via `.env` file):
 
 ### Charles Schwab Setup Process
 
-1. Create Charles Schwab brokerage account (Charles Schwab International if outside US)
+1. Create Charles Schwab brokerage account (Charles Schwab International if
+   outside US)
 2. Register developer account at https://developer.schwab.com/
 3. Set up as Individual Developer and request Trader API access
 4. Include your Charles Schwab account number in the API access request
