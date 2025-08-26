@@ -75,7 +75,7 @@ COPY --from=builder /app/migrations ./migrations
 # Set proper ownership and permissions
 RUN chown -R schwab:schwab /app
 
-# Switch to non-root user
-USER schwab
+# Switch to non-root user (temporarily disabled for volume permission fix)
+# USER schwab
 
 ENTRYPOINT ["./server"]
