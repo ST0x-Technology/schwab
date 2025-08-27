@@ -190,11 +190,11 @@ Environment variables (can be set via `.env` file):
 
 ### Workflow Best Practices
 
-- **Always run tests, clippy, and fmt before handing over a piece of work**
+- **Always run tests, clippy, and pre-commit before handing over a piece of work**
   - Run tests first, as changing tests can break clippy
   - Run clippy next, as fixing linting errors can break formatting
   - Deny warnings when running clippy
-  - Always run `cargo fmt` last to ensure clean code formatting
+  - Always run `pre-commit run -a` last to ensure git hooks pass. If it failed due to a formatting change then running `pre-commit run -a` again should pass
 
 ### Commenting Guidelines
 
