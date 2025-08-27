@@ -229,6 +229,24 @@ Environment variables (can be set via `.env` file):
   maintain market-neutral positions
 - **Comprehensive Error Handling**: Custom error types (`OnChainError`,
   `SchwabError`) with proper propagation
+- **Type Modeling**: Make invalid states unrepresentable through the type
+  system. Use algebraic data types (ADTs) and enums to encode business rules and
+  state transitions directly in types rather than relying on runtime validation.
+  Examples:
+  - Use enum variants to represent mutually exclusive states instead of multiple
+    boolean flags
+  - Encode state-specific data within enum variants rather than using nullable
+    fields
+  - Use newtypes for domain concepts to prevent mixing incompatible values
+  - Leverage the type system to enforce invariants at compile time
+- **Schema Design**: Avoid database columns that can contradict each other. Use
+  constraints and proper normalization to ensure data consistency at the
+  database level. Align database schemas with type modeling principles where
+  possible
+- **Functional Programming Patterns**: Favor FP and ADT patterns over OOP
+  patterns. Avoid unnecessary encapsulation, inheritance hierarchies, or
+  getter/setter patterns that don't make sense with Rust's algebraic data types.
+  Use pattern matching, combinators, and type-driven design
 - **Idiomatic Functional Programming**: Prefer iterator-based functional
   programming patterns over imperative loops unless it increases complexity. Use
   itertools to be able to do more with iterators and functional programming in
@@ -422,6 +440,228 @@ assert_eq!(result.unwrap(), "refreshed_access_token");
 ```
 
 so that if we get an unexpected result value, we immediately see the value.
+
+#### Type modeling examples
+
+**Make invalid states unrepresentable:**
+
+Instead of using multiple fields that can contradict each other:
+
+```rust
+// ❌ Bad: Multiple fields can be in invalid combinations
+pub struct Order {
+    pub status: String,  // "pending", "completed", "failed"
+    pub order_id: Option<String>,  // Some when completed, None when pending
+    pub executed_at: Option<DateTime<Utc>>,  // Some when completed
+    pub price_cents: Option<i64>,  // Some when completed
+    pub error_reason: Option<String>,  // Some when failed
+}
+```
+
+Use enum variants to encode valid states:
+
+```rust
+// ✅ Good: Each state has exactly the data it needs
+pub enum OrderStatus {
+    Pending,
+    Completed {
+        order_id: String,
+        executed_at: DateTime<Utc>,
+        price_cents: i64,
+    },
+    Failed {
+        failed_at: DateTime<Utc>,
+        error_reason: String,
+    },
+}
+```
+
+**Use newtypes for domain concepts:**
+
+```rust
+// ❌ Bad: Easy to mix up parameters of the same type
+fn place_order(symbol: String, account: String, amount: i64, price: i64) { }
+
+// ✅ Good: Type system prevents mixing incompatible values
+#[derive(Debug, Clone)]
+struct Symbol(String);
+
+#[derive(Debug, Clone)]
+struct AccountId(String);
+
+#[derive(Debug)]
+struct Shares(i64);
+
+#[derive(Debug)]
+struct PriceCents(i64);
+
+fn place_order(symbol: Symbol, account: AccountId, amount: Shares, price: PriceCents) { }
+```
+
+**The Typestate Pattern:**
+
+The typestate pattern encodes information about an object's runtime state in its
+compile-time type. This moves state-related errors from runtime to compile time,
+eliminating runtime checks and making illegal states unrepresentable.
+
+```rust
+// ✅ Good: Typestate pattern with zero-cost state transitions
+struct Start;
+struct InProgress;
+struct Complete;
+
+// Generic struct with state parameter
+struct Task<State> {
+    data: TaskData,
+    state: State,  // Can store state-specific data
+}
+
+// Operations only available in Start state
+impl Task<Start> {
+    fn new() -> Self {
+        Task { data: TaskData::new(), state: Start }
+    }
+    
+    fn begin(self) -> Task<InProgress> {
+        // Consumes self, returns new state
+        Task { data: self.data, state: InProgress }
+    }
+}
+
+// Operations only available in InProgress state
+impl Task<InProgress> {
+    fn work(&mut self) {
+        // Can mutate without changing state
+    }
+    
+    fn complete(self) -> Task<Complete> {
+        // State transition consumes self
+        Task { data: self.data, state: Complete }
+    }
+}
+
+// Operations available in multiple states
+impl<S> Task<S> {
+    fn description(&self) -> &str {
+        &self.data.description
+    }
+}
+```
+
+**Session Types and Protocol Enforcement:**
+
+```rust
+// ✅ Good: Enforce protocol sequences at compile time
+struct Unauthenticated;
+struct Authenticated { token: String };
+struct Active { token: String, session_id: u64 };
+
+struct Connection<State> {
+    socket: TcpStream,
+    state: State,
+}
+
+impl Connection<Unauthenticated> {
+    fn authenticate(self, credentials: &Credentials) 
+        -> Result<Connection<Authenticated>, AuthError> {
+        let token = perform_auth(&self.socket, credentials)?;
+        Ok(Connection {
+            socket: self.socket,
+            state: Authenticated { token },
+        })
+    }
+}
+
+impl Connection<Authenticated> {
+    fn start_session(self) -> Connection<Active> {
+        let session_id = generate_session_id();
+        Connection {
+            socket: self.socket,
+            state: Active { 
+                token: self.state.token,
+                session_id,
+            },
+        }
+    }
+}
+
+impl Connection<Active> {
+    fn send_message(&mut self, msg: &Message) {
+        // Can only send messages in active state
+    }
+}
+```
+
+**Builder Pattern with Typestate:**
+
+```rust
+// ✅ Good: Can't build incomplete objects at compile time
+struct NoUrl;
+struct HasUrl;
+struct NoMethod;
+struct HasMethod;
+
+struct RequestBuilder<U, M> {
+    url: Option<String>,
+    method: Option<Method>,
+    headers: Vec<Header>,
+    _url: PhantomData<U>,
+    _method: PhantomData<M>,
+}
+
+impl RequestBuilder<NoUrl, NoMethod> {
+    fn new() -> Self {
+        RequestBuilder {
+            url: None,
+            method: None,
+            headers: Vec::new(),
+            _url: PhantomData,
+            _method: PhantomData,
+        }
+    }
+}
+
+impl<M> RequestBuilder<NoUrl, M> {
+    fn url(self, url: String) -> RequestBuilder<HasUrl, M> {
+        RequestBuilder {
+            url: Some(url),
+            method: self.method,
+            headers: self.headers,
+            _url: PhantomData,
+            _method: PhantomData,
+        }
+    }
+}
+
+impl<U> RequestBuilder<U, NoMethod> {
+    fn method(self, method: Method) -> RequestBuilder<U, HasMethod> {
+        RequestBuilder {
+            url: self.url,
+            method: Some(method),
+            headers: self.headers,
+            _url: PhantomData,
+            _method: PhantomData,
+        }
+    }
+}
+
+// Can only build when we have both URL and method
+impl RequestBuilder<HasUrl, HasMethod> {
+    fn build(self) -> Request {
+        Request {
+            url: self.url.unwrap(), // Safe due to typestate
+            method: self.method.unwrap(), // Safe due to typestate
+            headers: self.headers,
+        }
+    }
+}
+
+// Usage: won't compile without setting both url and method
+let request = RequestBuilder::new()
+    .url("https://api.example.com".into())
+    .method(Method::GET)
+    .build();
+```
 
 #### Avoid deep nesting
 
