@@ -9,32 +9,42 @@ This is a Rust-based arbitrage bot for tokenized equities that monitors onchain 
 ## Key Development Commands
 
 ### Building & Running
+
 - `cargo build` - Build the project
 - `cargo run --bin main` - Run the main arbitrage bot
 - `cargo run --bin auth` - Run the authentication flow for Charles Schwab OAuth setup
+- `cargo run --bin cli` - Run the command-line interface for manual operations
 
 ### Testing
-- `cargo test` - Run all tests
-- `cargo test --lib` - Run library tests only
-- `cargo test --bin <binary>` - Run tests for specific binary
-- `cargo test <test_name>` - Run specific test
+
+- `cargo test -q` - Run all tests
+- `cargo test -q --lib` - Run library tests only
+- `cargo test -q --bin <binary>` - Run tests for specific binary
+- `cargo test -q <test_name>` - Run specific test
 
 ### Database Management
-- `sqlx db create` - Apply database migrations
+
+- `sqlx db create` - Create the database
 - `sqlx migrate run` - Apply database migrations
 - `sqlx migrate revert` - Revert last migration
 - Database URL configured via `DATABASE_URL` environment variable
 
 ### Development Tools
+
 - `rainix-rs-static` - Run Rust static analysis
-- `cargo clippy` or `cargo-clippy` in Direnv - Run Clippy for linting
+- `cargo clippy --all-targets --all-features -- -D clippy::all` - Run Clippy for linting
 - `cargo fmt` - Format code
 - `cargo-tarpaulin --skip-clean --out Html` - Generate test coverage report
 
 ### Nix Development Environment
+
 - `nix develop` - Enter development shell with all dependencies
 - `nix run .#prepSolArtifacts` - Build Solidity artifacts for orderbook interface
 - `nix run .#checkTestCoverage` - Generate test coverage report
+
+## Development Workflow Notes
+
+- When running `git diff`, make sure to add `--no-pager` to avoid opening it in the interactive view, e.g. `git --no-pager diff`
 
 ## Architecture Overview
 
@@ -64,15 +74,73 @@ This is a Rust-based arbitrage bot for tokenized equities that monitors onchain 
 - Token storage and retrieval from SQLite database
 - Comprehensive error handling for authentication failures
 
-**Symbol Caching (`src/symbol_cache.rs`)**
+**Symbol Caching (`crate::symbol::cache::SymbolCache`)**
 - Thread-safe caching of ERC20 token symbols using `tokio::sync::RwLock`
 - Prevents repeated RPC calls for the same token addresses
 
 ### Database Schema & Idempotency
 
 **SQLite Tables:**
-- `trades`: Stores trade attempts with onchain/offchain details and unique `(tx_hash, log_index)` constraint
-- `schwab_auth`: Stores OAuth tokens with timestamps
+
+- `onchain_trades`: Immutable blockchain trade records
+  - `id`: Primary key (auto-increment)
+  - `tx_hash`: Transaction hash (66 chars, 0x-prefixed)
+  - `log_index`: Event log index (non-negative)
+  - `symbol`: Asset symbol (non-empty string)
+  - `amount`: Trade quantity (positive real number)
+  - `direction`: Trade direction ('BUY' or 'SELL')
+  - `price_usdc`: Price in USDC (positive real number)
+  - `created_at`: Timestamp (default CURRENT_TIMESTAMP)
+  - Unique constraint: `(tx_hash, log_index)`
+
+- `schwab_executions`: Schwab order execution tracking
+  - `id`: Primary key (auto-increment)
+  - `symbol`: Asset symbol (non-empty string)
+  - `shares`: Whole shares executed (positive integer)
+  - `direction`: Execution direction ('BUY' or 'SELL')
+  - `order_id`: Schwab order ID (nullable, non-empty if present)
+  - `price_cents`: Execution price in cents (nullable, non-negative)
+  - `status`: Execution status ('PENDING', 'COMPLETED', 'FAILED')
+  - `executed_at`: Execution timestamp (nullable)
+  - Check constraints ensure consistent status transitions
+
+- `trade_accumulators`: Unified position tracking per symbol
+  - `symbol`: Primary key (non-empty string)
+  - `net_position`: Running net position (real number)
+  - `accumulated_long`: Fractional shares for buying (non-negative)
+  - `accumulated_short`: Fractional shares for selling (non-negative)
+  - `pending_execution_id`: Reference to pending execution (nullable)
+  - `last_updated`: Last update timestamp (default CURRENT_TIMESTAMP)
+
+- `trade_execution_links`: Many-to-many audit trail
+  - `id`: Primary key (auto-increment)
+  - `trade_id`: Foreign key to onchain_trades
+  - `execution_id`: Foreign key to schwab_executions
+  - `contributed_shares`: Fractional shares contributed (positive)
+  - `created_at`: Link creation timestamp
+  - Unique constraint: `(trade_id, execution_id)`
+
+- `schwab_auth`: OAuth token storage (sensitive data)
+  - `id`: Primary key (constrained to 1 for singleton)
+  - `access_token`: Current access token
+  - `access_token_fetched_at`: Access token timestamp
+  - `refresh_token`: Current refresh token
+  - `refresh_token_fetched_at`: Refresh token timestamp
+
+- `event_queue`: Idempotent event processing queue
+  - `id`: Primary key (auto-increment)
+  - `tx_hash`: Transaction hash (66 chars, 0x-prefixed)
+  - `log_index`: Event log index (non-negative)
+  - `block_number`: Block number (non-negative)
+  - `event_data`: JSON serialized event (non-empty)
+  - `processed`: Processing status (boolean, default false)
+  - `created_at`: Queue entry timestamp
+  - `processed_at`: Processing completion timestamp (nullable)
+  - Unique constraint: `(tx_hash, log_index)`
+
+- `symbol_locks`: Per-symbol execution concurrency control
+  - `symbol`: Primary key (non-empty string)
+  - `locked_at`: Lock acquisition timestamp
 
 **Idempotency Controls:**
 - Uses `(tx_hash, log_index)` as unique identifier to prevent duplicate trade execution
@@ -104,10 +172,12 @@ Environment variables (can be set via `.env` file):
 - **SQLite Persistence**: Embedded database for trade tracking and authentication tokens
 - **Symbol Suffix Convention**: Tokenized equities use "s1" suffix to distinguish from base assets
 - **Price Direction Logic**: Onchain buy = offchain sell (and vice versa) to maintain market-neutral positions
-- **Comprehensive Error Handling**: Custom error types (`TradeConversionError`, `SchwabAuthError`) with proper propagation
-- **Idiomatic Functional Programming**: Prefer iterator-based functional programming patterns over imperative loops unless it increases complexity
+- **Comprehensive Error Handling**: Custom error types (`OnChainError`, `SchwabError`) with proper propagation
+- **Idiomatic Functional Programming**: Prefer iterator-based functional programming patterns over imperative loops unless it increases complexity. Use itertools to be able to do more with iterators and functional programming in Rust
 - **Comments**: Follow comprehensive commenting guidelines (see detailed section below)
 - **Spacing**: Leave an empty line in between code blocks to allow vim curly braces jumping between blocks and for easier reading
+- **Import Conventions**: Use qualified imports when they prevent ambiguity (e.g. `contract::Error` for `alloy::contract::Error`), but avoid them when the module is clear (e.g. use `info!` instead of `tracing::info!`). Generally avoid imports inside functions
+- **Error Handling**: Avoid `unwrap()` even post-validation since validation logic changes might leave panics in the codebase
 
 ### Testing Strategy
 
@@ -116,6 +186,7 @@ Environment variables (can be set via `.env` file):
 - **Database Isolation**: In-memory SQLite databases for test isolation
 - **Edge Case Coverage**: Comprehensive error scenario testing for trade conversion logic
 - **Testing Principle**: Only cover happy paths with all components working and connected in integration tests and cover everything in unit tests
+- **Debugging failing tests**: When debugging tests with failing assert! macros, add additional context to the assert! macro instead of adding temporary println! statements
 
 ### Workflow Best Practices
 
@@ -243,7 +314,7 @@ Instead of
 
 ```rust
 assert!(result.is_err());
-assert!(matches!(result.unwrap_err(), SchwabAuthError::Reqwest(_)));
+assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
 ```
 
 or
@@ -256,7 +327,7 @@ assert_eq!(result.unwrap(), "refreshed_access_token");
 Write
 
 ```rust
-assert!(matches!(result.unwrap_err(), SchwabAuthError::Reqwest(_)));
+assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
 ```
 
 and
@@ -537,10 +608,3 @@ impl SchwabTokens {
 ```
 
 This preserves argument clarity and avoids losing information about what each field represents.
-
-## Code Best Practices
-
-### Imports and Naming Conventions
-
-- **Use qualified imports when they prevent ambiguity**, e.g. use `contract::Error` for `alloy::contract::Error` to not confuse it with other `Error` types
-- **Don't use qualified imports when it's clear what module something is coming from**, e.g. use `info!` instead of `tracing::info!`

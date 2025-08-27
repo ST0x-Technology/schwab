@@ -3,7 +3,7 @@ use backon::{ExponentialBuilder, Retryable};
 use std::{collections::BTreeMap, sync::RwLock};
 
 use crate::bindings::{IERC20::IERC20Instance, IOrderBookV4::IO};
-use crate::trade::TradeConversionError;
+use crate::error::{OnChainError, PersistenceError};
 
 #[derive(Debug, Default)]
 pub struct SymbolCache {
@@ -20,12 +20,12 @@ impl SymbolCache {
         &self,
         provider: P,
         io: &IO,
-    ) -> Result<String, TradeConversionError> {
+    ) -> Result<String, OnChainError> {
         let maybe_symbol = {
             let read_guard = self
                 .map
                 .read()
-                .map_err(|_| TradeConversionError::SymbolMapLock)?;
+                .map_err(|_| OnChainError::Persistence(PersistenceError::SymbolMapLock))?;
             read_guard.get(&io.token).cloned()
         };
 
@@ -33,14 +33,16 @@ impl SymbolCache {
             return Ok(symbol);
         }
 
+        const SYMBOL_FETCH_MAX_RETRIES: usize = 3;
+
         let erc20 = IERC20Instance::new(io.token, provider);
         let symbol = (|| async { erc20.symbol().call().await })
-            .retry(ExponentialBuilder::new().with_max_times(3))
+            .retry(ExponentialBuilder::new().with_max_times(SYMBOL_FETCH_MAX_RETRIES))
             .await?;
 
         self.map
             .write()
-            .map_err(|_| TradeConversionError::SymbolMapLock)?
+            .map_err(|_| OnChainError::Persistence(PersistenceError::SymbolMapLock))?
             .insert(io.token, symbol.clone());
 
         Ok(symbol)
@@ -93,7 +95,7 @@ mod tests {
         let result = cache.get_io_symbol(provider, &io).await;
         assert!(matches!(
             result.unwrap_err(),
-            TradeConversionError::GetSymbol(_)
+            OnChainError::Alloy(crate::error::AlloyError::GetSymbol(_))
         ));
     }
 }
