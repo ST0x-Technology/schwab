@@ -4,7 +4,7 @@ use chrono::Utc;
 use clap::Parser;
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use serde::Deserialize;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use tracing::{debug, info};
 
 use super::{SchwabError, tokens::SchwabTokens};
@@ -39,7 +39,7 @@ pub struct AccountNumbers {
 }
 
 impl SchwabAuthEnv {
-    pub async fn get_account_hash(&self, pool: &SqlitePool) -> Result<String, SchwabError> {
+    pub async fn get_account_hash(&self, pool: &PgPool) -> Result<String, SchwabError> {
         let access_token = SchwabTokens::get_valid_access_token(pool, self).await?;
 
         let headers = [
@@ -707,7 +707,7 @@ mod tests {
         }
     }
 
-    async fn setup_test_tokens(pool: &SqlitePool) {
+    async fn setup_test_tokens(pool: &PgPool) {
         let tokens = crate::schwab::tokens::SchwabTokens {
             access_token: "test_access_token".to_string(),
             access_token_fetched_at: Utc::now(),

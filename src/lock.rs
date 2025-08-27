@@ -3,35 +3,42 @@ use crate::error::{OnChainError, PersistenceError};
 /// Atomically acquires an execution lease for the given symbol.
 /// Returns true if lease was acquired, false if another worker holds it.
 pub async fn try_acquire_execution_lease(
-    sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    sql_tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     symbol: &str,
 ) -> Result<bool, OnChainError> {
-    const LOCK_TIMEOUT_MINUTES: i32 = 5;
-
     // Clean up old locks first (older than 5 minutes)
-    let timeout_param = format!("-{LOCK_TIMEOUT_MINUTES} minutes");
     sqlx::query!(
-        "DELETE FROM symbol_locks WHERE locked_at < datetime('now', ?1)",
-        timeout_param
+        "
+        DELETE
+        FROM symbol_locks
+        WHERE locked_at < NOW() - INTERVAL '5 minutes'
+        "
     )
     .execute(sql_tx.as_mut())
     .await?;
 
     // Try to acquire lock by inserting into symbol_locks table
-    let result = sqlx::query("INSERT OR IGNORE INTO symbol_locks (symbol) VALUES (?1)")
-        .bind(symbol)
-        .execute(sql_tx.as_mut())
-        .await?;
+    let result = sqlx::query(
+        "
+        INSERT INTO symbol_locks (symbol)
+        VALUES ($1)
+        ON CONFLICT (symbol)
+        DO NOTHING
+        ",
+    )
+    .bind(symbol)
+    .execute(sql_tx.as_mut())
+    .await?;
 
     Ok(result.rows_affected() > 0)
 }
 
 /// Clears the execution lease when no execution was created
 pub async fn clear_execution_lease(
-    sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    sql_tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     symbol: &str,
 ) -> Result<(), OnChainError> {
-    sqlx::query("DELETE FROM symbol_locks WHERE symbol = ?1")
+    sqlx::query("DELETE FROM symbol_locks WHERE symbol = $1")
         .bind(symbol)
         .execute(sql_tx.as_mut())
         .await?;
@@ -41,17 +48,17 @@ pub async fn clear_execution_lease(
 
 /// Sets the actual execution ID after successful execution creation
 pub async fn set_pending_execution_id(
-    sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    sql_tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     symbol: &str,
     execution_id: i64,
 ) -> Result<(), OnChainError> {
     sqlx::query!(
         r#"
         UPDATE trade_accumulators 
-        SET pending_execution_id = ?1, last_updated = CURRENT_TIMESTAMP
-        WHERE symbol = ?2
+        SET pending_execution_id = $1, last_updated = CURRENT_TIMESTAMP
+        WHERE symbol = $2
         "#,
-        execution_id,
+        execution_id as i32,
         symbol
     )
     .execute(sql_tx.as_mut())
@@ -62,7 +69,7 @@ pub async fn set_pending_execution_id(
 
 /// Clears pending execution within a transaction
 pub async fn clear_pending_execution_within_transaction(
-    sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    sql_tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     symbol: &str,
     execution_id: i64,
 ) -> Result<(), OnChainError> {
@@ -71,10 +78,10 @@ pub async fn clear_pending_execution_within_transaction(
         r#"
         UPDATE trade_accumulators 
         SET pending_execution_id = NULL, last_updated = CURRENT_TIMESTAMP
-        WHERE symbol = ?1 AND pending_execution_id = ?2
+        WHERE symbol = $1 AND pending_execution_id = $2
         "#,
         symbol,
-        execution_id
+        execution_id as i32
     )
     .execute(sql_tx.as_mut())
     .await?;
@@ -90,12 +97,13 @@ pub async fn clear_pending_execution_within_transaction(
     } else {
         // Query the current pending_execution_id to provide detailed error info
         let current_execution_id: Option<i64> = sqlx::query_scalar!(
-            "SELECT pending_execution_id FROM trade_accumulators WHERE symbol = ?1",
+            "SELECT pending_execution_id FROM trade_accumulators WHERE symbol = $1",
             symbol
         )
         .fetch_optional(sql_tx.as_mut())
         .await?
-        .flatten();
+        .flatten()
+        .map(|id| id as i64);
 
         Err(OnChainError::Persistence(
             PersistenceError::ExecutionIdMismatch {

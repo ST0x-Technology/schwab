@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
-use sqlx::SqlitePool;
+use num_traits::ToPrimitive;
+use sqlx::PgPool;
 
-use super::{price_cents_from_db_i64, shares_from_db_i64};
+use super::{price_cents_from_db_bigdecimal, shares_from_db_i32};
 use crate::error::{OnChainError, PersistenceError};
 use crate::schwab::SchwabInstruction;
 use crate::schwab::TradeStatus;
@@ -12,10 +13,10 @@ use crate::schwab::TradeStatus;
 fn row_to_execution(
     id: i64,
     symbol: String,
-    shares: i64,
+    shares: i32,
     direction: &str,
     order_id: Option<String>,
-    price_cents: Option<i64>,
+    price_cents: Option<sqlx::types::BigDecimal>,
     status: &str,
     executed_at: Option<chrono::NaiveDateTime>,
 ) -> Result<SchwabExecution, OnChainError> {
@@ -44,7 +45,7 @@ fn row_to_execution(
             TradeStatus::Completed {
                 executed_at: DateTime::<Utc>::from_naive_utc_and_offset(executed_at, Utc),
                 order_id,
-                price_cents: price_cents_from_db_i64(price_cents)?,
+                price_cents: price_cents_from_db_bigdecimal(price_cents)?,
             }
         }
         "FAILED" => {
@@ -68,7 +69,7 @@ fn row_to_execution(
     Ok(SchwabExecution {
         id: Some(id),
         symbol,
-        shares: shares_from_db_i64(shares)?,
+        shares: shares_from_db_i32(shares)?,
         direction: parsed_direction,
         status: parsed_status,
     })
@@ -87,6 +88,21 @@ const fn shares_to_db_i64(shares: u64) -> i64 {
     }
 }
 
+/// Converts u64 share quantity to i32 for PostgreSQL INTEGER storage.
+/// Share quantities are always within i32 range for realistic trading scenarios.
+const fn shares_to_db_i32(shares: u64) -> i32 {
+    if shares > i32::MAX as u64 {
+        i32::MAX // Defensive cap at maximum database value
+    } else {
+        shares as i32 // Safe: within i32 range, wrap is prevented by check
+    }
+}
+
+/// Converts u64 price cents to BigDecimal for PostgreSQL NUMERIC storage.
+fn price_cents_to_db_bigdecimal(price_cents: u64) -> sqlx::types::BigDecimal {
+    sqlx::types::BigDecimal::from(price_cents)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchwabExecution {
     pub id: Option<i64>,
@@ -97,13 +113,13 @@ pub struct SchwabExecution {
 }
 
 pub async fn update_execution_status_within_transaction(
-    sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    sql_tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     execution_id: i64,
     new_status: TradeStatus,
 ) -> Result<(), sqlx::Error> {
     let status_str = new_status.as_str();
 
-    let (order_id, price_cents_i64, executed_at) = match &new_status {
+    let (order_id, price_cents_bd, executed_at) = match &new_status {
         TradeStatus::Pending => (None, None, None),
         TradeStatus::Completed {
             executed_at,
@@ -111,7 +127,7 @@ pub async fn update_execution_status_within_transaction(
             price_cents,
         } => (
             Some(order_id.clone()),
-            Some(shares_to_db_i64(*price_cents)),
+            Some(price_cents_to_db_bigdecimal(*price_cents)),
             Some(executed_at.naive_utc()),
         ),
         TradeStatus::Failed {
@@ -121,10 +137,14 @@ pub async fn update_execution_status_within_transaction(
     };
 
     sqlx::query!(
-        "UPDATE schwab_executions SET status = ?1, order_id = ?2, price_cents = ?3, executed_at = ?4 WHERE id = ?5",
+        r#"
+        UPDATE schwab_executions
+        SET status = $1, order_id = $2, price_cents = $3, executed_at = $4
+        WHERE id = $5
+        "#,
         status_str,
         order_id,
-        price_cents_i64,
+        price_cents_bd,
         executed_at,
         execution_id
     )
@@ -136,7 +156,7 @@ pub async fn update_execution_status_within_transaction(
 
 /// Find executions with PENDING status
 pub async fn find_pending_executions_by_symbol(
-    pool: &SqlitePool,
+    pool: &PgPool,
     symbol: &str,
 ) -> Result<Vec<SchwabExecution>, OnChainError> {
     find_executions_by_symbol_and_status(pool, symbol, "PENDING").await
@@ -144,7 +164,7 @@ pub async fn find_pending_executions_by_symbol(
 
 /// Find executions with COMPLETED status
 pub async fn find_completed_executions_by_symbol(
-    pool: &SqlitePool,
+    pool: &PgPool,
     symbol: &str,
 ) -> Result<Vec<SchwabExecution>, OnChainError> {
     find_executions_by_symbol_and_status(pool, symbol, "COMPLETED").await
@@ -152,20 +172,20 @@ pub async fn find_completed_executions_by_symbol(
 
 /// Find executions with FAILED status
 pub async fn find_failed_executions_by_symbol(
-    pool: &SqlitePool,
+    pool: &PgPool,
     symbol: &str,
 ) -> Result<Vec<SchwabExecution>, OnChainError> {
     find_executions_by_symbol_and_status(pool, symbol, "FAILED").await
 }
 
 pub async fn find_executions_by_symbol_and_status(
-    pool: &SqlitePool,
+    pool: &PgPool,
     symbol: &str,
     status_str: &str,
 ) -> Result<Vec<SchwabExecution>, OnChainError> {
     if symbol.is_empty() {
         let rows = sqlx::query!(
-            "SELECT * FROM schwab_executions WHERE status = ?1 ORDER BY id ASC",
+            "SELECT * FROM schwab_executions WHERE status = $1 ORDER BY id ASC",
             status_str
         )
         .fetch_all(pool)
@@ -187,7 +207,7 @@ pub async fn find_executions_by_symbol_and_status(
             .collect()
     } else {
         let rows = sqlx::query!(
-            "SELECT * FROM schwab_executions WHERE symbol = ?1 AND status = ?2 ORDER BY id ASC",
+            "SELECT * FROM schwab_executions WHERE symbol = $1 AND status = $2 ORDER BY id ASC",
             symbol,
             status_str
         )
@@ -212,19 +232,19 @@ pub async fn find_executions_by_symbol_and_status(
 }
 
 pub async fn find_execution_by_id(
-    pool: &SqlitePool,
+    pool: &PgPool,
     execution_id: i64,
 ) -> Result<Option<SchwabExecution>, OnChainError> {
     let row = sqlx::query!(
-        "SELECT * FROM schwab_executions WHERE id = ?1",
-        execution_id
+        "SELECT * FROM schwab_executions WHERE id = $1",
+        execution_id as i32
     )
     .fetch_optional(pool)
     .await?;
 
     if let Some(row) = row {
         row_to_execution(
-            row.id,
+            row.id as i64,
             row.symbol,
             row.shares,
             &row.direction,
@@ -241,7 +261,7 @@ pub async fn find_execution_by_id(
 
 /// Updates execution status and clears pending execution lease atomically
 pub async fn update_execution_status_and_clear_lease(
-    pool: &SqlitePool,
+    pool: &PgPool,
     execution_id: i64,
     new_status: TradeStatus,
 ) -> Result<(), OnChainError> {
@@ -279,13 +299,13 @@ pub async fn update_execution_status_and_clear_lease(
 impl SchwabExecution {
     pub async fn save_within_transaction(
         &self,
-        sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        sql_tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<i64, sqlx::Error> {
-        let shares_i64 = shares_to_db_i64(self.shares);
+        let shares_i32 = shares_to_db_i32(self.shares);
         let direction_str = self.direction.as_str();
         let status_str = self.status.as_str();
 
-        let (order_id, price_cents_i64, executed_at) = match &self.status {
+        let (order_id, price_cents_bd, executed_at) = match &self.status {
             TradeStatus::Pending => (None, None, None),
             TradeStatus::Completed {
                 executed_at,
@@ -293,7 +313,7 @@ impl SchwabExecution {
                 price_cents,
             } => (
                 Some(order_id.clone()),
-                Some(shares_to_db_i64(*price_cents)),
+                Some(price_cents_to_db_bigdecimal(*price_cents)),
                 Some(executed_at.naive_utc()),
             ),
             TradeStatus::Failed {
@@ -305,28 +325,29 @@ impl SchwabExecution {
         let result = sqlx::query!(
             r#"
             INSERT INTO schwab_executions (symbol, shares, direction, order_id, price_cents, status, executed_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id
             "#,
             self.symbol,
-            shares_i64,
+            shares_i32,
             direction_str,
             order_id,
-            price_cents_i64,
+            price_cents_bd,
             status_str,
             executed_at
         )
-        .execute(&mut **sql_tx)
+        .fetch_one(&mut **sql_tx)
         .await?;
 
-        Ok(result.last_insert_rowid())
+        Ok(result.id)
     }
 }
 
-pub async fn schwab_execution_db_count(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+pub async fn schwab_execution_db_count(pool: &PgPool) -> Result<i64, sqlx::Error> {
     let row = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
         .fetch_one(pool)
         .await?;
-    Ok(row.count)
+    row.count.ok_or_else(|| sqlx::Error::RowNotFound)
 }
 
 #[cfg(test)]

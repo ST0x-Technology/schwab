@@ -1,4 +1,8 @@
-use sqlx::SqlitePool;
+use bigdecimal::BigDecimal;
+use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
+use sqlx::PgPool;
+use std::str::FromStr;
 use tracing::info;
 
 use super::{OnchainTrade, trade_execution_link::TradeExecutionLink};
@@ -8,8 +12,28 @@ use crate::onchain::position_calculator::{ExecutionType, PositionCalculator};
 use crate::schwab::TradeStatus;
 use crate::schwab::{Direction, execution::SchwabExecution};
 
+/// Converts a BigDecimal from the database to a Decimal for business logic
+fn bigdecimal_to_decimal(bd: BigDecimal) -> Result<Decimal, OnChainError> {
+    let bd_str = bd.to_string();
+    Decimal::from_str(&bd_str).map_err(|_| {
+        OnChainError::Persistence(crate::error::PersistenceError::InvalidDecimalConversion(
+            format!("Cannot convert BigDecimal to Decimal: {bd}"),
+        ))
+    })
+}
+
+/// Converts a Decimal from business logic to a BigDecimal for database storage
+fn decimal_to_bigdecimal(decimal: Decimal) -> Result<BigDecimal, OnChainError> {
+    let decimal_str = decimal.to_string();
+    BigDecimal::from_str(&decimal_str).map_err(|_| {
+        OnChainError::Persistence(crate::error::PersistenceError::InvalidDecimalConversion(
+            format!("Cannot convert Decimal to BigDecimal: {decimal}"),
+        ))
+    })
+}
+
 pub async fn add_trade(
-    pool: &SqlitePool,
+    pool: &PgPool,
     trade: OnchainTrade,
 ) -> Result<Option<SchwabExecution>, OnChainError> {
     let mut sql_tx = pool.begin().await?;
@@ -18,7 +42,7 @@ pub async fn add_trade(
     info!(
         trade_id = trade_id,
         symbol = %trade.symbol,
-        amount = trade.amount,
+        amount = %trade.amount,
         direction = ?trade.direction,
         tx_hash = ?trade.tx_hash,
         log_index = trade.log_index,
@@ -37,11 +61,11 @@ pub async fn add_trade(
 
     info!(
         symbol = %base_symbol,
-        net_position = calculator.net_position,
-        accumulated_long = calculator.accumulated_long,
-        accumulated_short = calculator.accumulated_short,
+        net_position = %calculator.net_position,
+        accumulated_long = %calculator.accumulated_long,
+        accumulated_short = %calculator.accumulated_short,
         execution_type = ?execution_type,
-        trade_amount = trade.amount,
+        trade_amount = %trade.amount,
         "Updated calculator"
     );
 
@@ -80,10 +104,10 @@ pub async fn add_trade(
 
 #[cfg(test)]
 pub async fn find_by_symbol(
-    pool: &SqlitePool,
+    pool: &PgPool,
     symbol: &str,
 ) -> Result<Option<(PositionCalculator, Option<i64>)>, OnChainError> {
-    let row = sqlx::query!("SELECT * FROM trade_accumulators WHERE symbol = ?1", symbol)
+    let row = sqlx::query!("SELECT * FROM trade_accumulators WHERE symbol = $1", symbol)
         .fetch_optional(pool)
         .await?;
 
@@ -113,18 +137,22 @@ fn extract_base_symbol(symbol: &str) -> Result<String, OnChainError> {
 }
 
 async fn get_or_create_within_transaction(
-    sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    sql_tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     symbol: &str,
 ) -> Result<PositionCalculator, OnChainError> {
-    let row = sqlx::query!("SELECT * FROM trade_accumulators WHERE symbol = ?1", symbol)
+    let row = sqlx::query!("SELECT * FROM trade_accumulators WHERE symbol = $1", symbol)
         .fetch_optional(&mut **sql_tx)
         .await?;
 
     if let Some(row) = row {
+        let net_position = bigdecimal_to_decimal(row.net_position)?;
+        let accumulated_long = bigdecimal_to_decimal(row.accumulated_long)?;
+        let accumulated_short = bigdecimal_to_decimal(row.accumulated_short)?;
+
         Ok(PositionCalculator::with_positions(
-            row.net_position,
-            row.accumulated_long,
-            row.accumulated_short,
+            net_position,
+            accumulated_long,
+            accumulated_short,
         ))
     } else {
         let new_calculator = PositionCalculator::new();
@@ -134,7 +162,7 @@ async fn get_or_create_within_transaction(
 }
 
 pub async fn save_within_transaction(
-    sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    sql_tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     symbol: &str,
     calculator: &PositionCalculator,
     pending_execution_id: Option<i64>,
@@ -149,18 +177,18 @@ pub async fn save_within_transaction(
             pending_execution_id,
             last_updated
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)
+        VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
         ON CONFLICT(symbol) DO UPDATE SET
             net_position = excluded.net_position,
             accumulated_long = excluded.accumulated_long,
             accumulated_short = excluded.accumulated_short,
-            pending_execution_id = COALESCE(excluded.pending_execution_id, pending_execution_id),
+            pending_execution_id = COALESCE(excluded.pending_execution_id, trade_accumulators.pending_execution_id),
             last_updated = CURRENT_TIMESTAMP
         "#,
         symbol,
-        calculator.net_position,
-        calculator.accumulated_long,
-        calculator.accumulated_short,
+        decimal_to_bigdecimal(calculator.net_position)?,
+        decimal_to_bigdecimal(calculator.accumulated_long)?,
+        decimal_to_bigdecimal(calculator.accumulated_short)?,
         pending_execution_id
     )
     .execute(sql_tx.as_mut())
@@ -170,7 +198,7 @@ pub async fn save_within_transaction(
 }
 
 async fn try_create_execution_if_ready(
-    sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    sql_tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     base_symbol: &str,
     trade_id: i64,
     calculator: &mut PositionCalculator,
@@ -183,7 +211,7 @@ async fn try_create_execution_if_ready(
 }
 
 async fn execute_position(
-    sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    sql_tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     base_symbol: &str,
     triggering_trade_id: i64,
     calculator: &mut PositionCalculator,
@@ -226,8 +254,8 @@ async fn execute_position(
         direction = ?instruction,
         execution_type = ?execution_type,
         execution_id = ?execution.id,
-        remaining_long = calculator.accumulated_long,
-        remaining_short = calculator.accumulated_short,
+        remaining_long = %calculator.accumulated_long,
+        remaining_short = %calculator.accumulated_short,
         "Created Schwab execution with trade linkages"
     );
 
@@ -237,7 +265,7 @@ async fn execute_position(
 /// Creates trade-execution linkages for an execution.
 /// Links trades to executions based on chronological order and remaining available amounts.
 async fn create_trade_execution_linkages(
-    sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    sql_tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     base_symbol: &str,
     _triggering_trade_id: i64,
     execution_id: i64,
@@ -262,7 +290,7 @@ async fn create_trade_execution_linkages(
             COALESCE(SUM(tel.contributed_shares), 0.0) as "already_allocated: f64"
         FROM onchain_trades ot
         LEFT JOIN trade_execution_links tel ON ot.id = tel.trade_id
-        WHERE ot.symbol = ?1 AND ot.direction = ?2
+        WHERE ot.symbol = $1 AND ot.direction = $2
         GROUP BY ot.id, ot.amount, ot.created_at
         HAVING (ot.amount - COALESCE(SUM(tel.contributed_shares), 0.0)) > 0.001  -- Has remaining allocation
         ORDER BY ot.created_at ASC
@@ -282,24 +310,47 @@ async fn create_trade_execution_linkages(
             break; // Execution fully allocated
         }
 
-        let available_amount = row.trade_amount - row.already_allocated.unwrap_or(0.0);
-        if available_amount <= 0.001 {
+        let trade_amount = bigdecimal_to_decimal(row.trade_amount)?;
+        let already_allocated =
+            Decimal::try_from(row.already_allocated.unwrap_or(0.0)).map_err(|_| {
+                OnChainError::Persistence(crate::error::PersistenceError::InvalidDecimalConversion(
+                    format!(
+                        "Cannot convert f64 to Decimal: {}",
+                        row.already_allocated.unwrap_or(0.0)
+                    ),
+                ))
+            })?;
+        let remaining_execution_shares_decimal = Decimal::try_from(remaining_execution_shares)
+            .map_err(|_| {
+                OnChainError::Persistence(crate::error::PersistenceError::InvalidDecimalConversion(
+                    format!("Cannot convert f64 to Decimal: {remaining_execution_shares}"),
+                ))
+            })?;
+
+        let available_amount = trade_amount - already_allocated;
+        if available_amount <= Decimal::new(1, 3) {
+            // 0.001
             continue; // Trade fully allocated to previous executions
         }
 
         // Allocate either the full remaining amount or up to execution remaining shares
-        let contribution = available_amount.min(remaining_execution_shares);
+        let contribution = available_amount.min(remaining_execution_shares_decimal);
 
         // Create the linkage
         let link = TradeExecutionLink::new(row.trade_id, execution_id, contribution);
         link.save_within_transaction(sql_tx).await?;
 
-        remaining_execution_shares -= contribution;
+        let contribution_f64 = contribution.to_f64().ok_or_else(|| {
+            OnChainError::Persistence(crate::error::PersistenceError::InvalidDecimalConversion(
+                format!("Cannot convert Decimal to f64: {contribution}"),
+            ))
+        })?;
+        remaining_execution_shares -= contribution_f64;
 
         info!(
             trade_id = row.trade_id,
             execution_id = execution_id,
-            contributed_shares = contribution,
+            contributed_shares = %contribution,
             remaining_execution_shares = remaining_execution_shares,
             "Created trade-execution linkage"
         );
@@ -321,7 +372,7 @@ async fn create_trade_execution_linkages(
 }
 
 async fn create_execution_within_transaction(
-    sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    sql_tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     symbol: &str,
     shares: u64,
     direction: Direction,

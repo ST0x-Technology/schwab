@@ -1,7 +1,7 @@
 use backon::{ExponentialBuilder, Retryable};
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use tracing::{error, info};
 
 use chrono::Utc;
@@ -58,7 +58,7 @@ impl Order {
     pub async fn place(
         &self,
         env: &SchwabAuthEnv,
-        pool: &SqlitePool,
+        pool: &PgPool,
     ) -> Result<OrderPlacementResponse, SchwabError> {
         let access_token = SchwabTokens::get_valid_access_token(pool, env).await?;
         let account_hash = env.get_account_hash(pool).await?;
@@ -249,7 +249,7 @@ const MAX_RETRIES: usize = 3;
 /// Takes a SchwabExecution and places the corresponding order via Schwab API.
 pub async fn execute_schwab_order(
     env: &Env,
-    pool: &SqlitePool,
+    pool: &PgPool,
     execution: SchwabExecution,
 ) -> Result<(), SchwabError> {
     let schwab_instruction = match execution.direction {
@@ -285,7 +285,7 @@ pub async fn execute_schwab_order(
 }
 
 async fn handle_execution_success(
-    pool: &SqlitePool,
+    pool: &PgPool,
     execution_id: i64,
     order_id: String,
 ) -> Result<(), SchwabError> {
@@ -324,7 +324,7 @@ async fn handle_execution_success(
 }
 
 async fn handle_execution_failure(
-    pool: &SqlitePool,
+    pool: &PgPool,
     execution_id: i64,
     error: SchwabError,
 ) -> Result<(), SchwabError> {
@@ -583,7 +583,7 @@ mod tests {
         }
     }
 
-    async fn setup_test_tokens(pool: &sqlx::SqlitePool) {
+    async fn setup_test_tokens(pool: &sqlx::PgPool) {
         let tokens = super::super::tokens::SchwabTokens {
             access_token: "test_access_token".to_string(),
             access_token_fetched_at: Utc::now(),

@@ -68,12 +68,14 @@ pub fn get_test_log() -> Log {
     create_log(293)
 }
 
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 /// Centralized test database setup to eliminate duplication across test files.
-/// Creates an in-memory SQLite database with all migrations applied.
-pub async fn setup_test_db() -> SqlitePool {
-    let pool = SqlitePool::connect(":memory:").await.unwrap();
+/// Creates a PostgreSQL test database with all migrations applied.
+pub async fn setup_test_db() -> PgPool {
+    let pool = PgPool::connect("postgresql://localhost:5432/schwab_test")
+        .await
+        .unwrap();
     sqlx::migrate!().run(&pool).await.unwrap();
     pool
 }

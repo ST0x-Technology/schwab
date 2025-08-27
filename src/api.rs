@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use rocket::serde::json::Json;
 use rocket::serde::{Deserialize, Serialize};
 use rocket::{Route, State, get, post, routes};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 use crate::env::Env;
 use crate::schwab::extract_code_from_url;
@@ -38,7 +38,7 @@ pub enum AuthRefreshResponse {
 #[post("/auth/refresh", format = "json", data = "<request>")]
 pub async fn auth_refresh(
     request: Json<AuthRefreshRequest>,
-    pool: &State<SqlitePool>,
+    pool: &State<PgPool>,
     env: &State<Env>,
 ) -> Json<AuthRefreshResponse> {
     let code = match extract_code_from_url(&request.redirect_url) {
@@ -93,7 +93,7 @@ mod tests {
 
     fn create_test_env_with_mock_server(mock_server: &MockServer) -> Env {
         Env {
-            database_url: ":memory:".to_string(),
+            database_url: "postgresql://localhost:5432/schwab_test".to_string(),
             log_level: crate::env::LogLevel::Debug,
             schwab_auth: SchwabAuthEnv {
                 app_key: "test_app_key".to_string(),

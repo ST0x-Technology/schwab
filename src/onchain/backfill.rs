@@ -4,7 +4,7 @@ use alloy::sol_types::SolEvent;
 use backon::{ExponentialBuilder, Retryable};
 use futures_util::future;
 use itertools::Itertools;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -25,7 +25,7 @@ const BACKFILL_INITIAL_DELAY: Duration = Duration::from_millis(1000);
 const BACKFILL_MAX_DELAY: Duration = Duration::from_secs(30);
 
 pub async fn backfill_events<P: Provider + Clone>(
-    pool: &SqlitePool,
+    pool: &PgPool,
     provider: &P,
     evm_env: &EvmEnv,
     end_block: u64,
@@ -71,7 +71,7 @@ pub async fn backfill_events<P: Provider + Clone>(
 }
 
 async fn enqueue_batch_events<P: Provider + Clone>(
-    pool: &SqlitePool,
+    pool: &PgPool,
     provider: &P,
     evm_env: &EvmEnv,
     batch_start: u64,
@@ -99,7 +99,7 @@ async fn enqueue_batch_events<P: Provider + Clone>(
 }
 
 async fn enqueue_batch_inner<P: Provider + Clone>(
-    pool: &SqlitePool,
+    pool: &PgPool,
     provider: &P,
     evm_env: &EvmEnv,
     batch_start: u64,

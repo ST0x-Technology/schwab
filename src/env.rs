@@ -1,5 +1,5 @@
 use clap::Parser;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use tracing::Level;
 
 use crate::onchain::EvmEnv;
@@ -51,8 +51,8 @@ pub struct Env {
 }
 
 impl Env {
-    pub async fn get_sqlite_pool(&self) -> Result<SqlitePool, sqlx::Error> {
-        SqlitePool::connect(&self.database_url).await
+    pub async fn get_postgres_pool(&self) -> Result<PgPool, sqlx::Error> {
+        PgPool::connect(&self.database_url).await
     }
 }
 
@@ -77,7 +77,7 @@ pub mod tests {
 
     pub fn create_test_env_with_order_hash(order_hash: alloy::primitives::B256) -> Env {
         Env {
-            database_url: ":memory:".to_string(),
+            database_url: "postgresql://localhost:5432/schwab_test".to_string(),
             log_level: LogLevel::Debug,
             schwab_auth: SchwabAuthEnv {
                 app_key: "test_key".to_string(),
@@ -125,9 +125,10 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn test_env_sqlite_pool_creation() {
-        let env = create_test_env();
-        let pool_result = env.get_sqlite_pool().await;
+    async fn test_env_postgres_pool_creation() {
+        let mut env = create_test_env();
+        env.database_url = "postgresql://localhost:5432/schwab_test".to_string();
+        let pool_result = env.get_postgres_pool().await;
         assert!(pool_result.is_ok());
     }
 

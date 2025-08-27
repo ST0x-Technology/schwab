@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::io::Write;
 use thiserror::Error;
 use tracing::{error, info};
@@ -113,19 +113,19 @@ fn validate_ticker(ticker: &str) -> Result<String, CliError> {
 
 pub async fn run(env: Env) -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let pool = env.get_sqlite_pool().await?;
+    let pool = env.get_postgres_pool().await?;
     run_command_with_writers(env, cli.command, &pool, &mut std::io::stdout()).await
 }
 
 pub async fn run_command(env: Env, command: Commands) -> anyhow::Result<()> {
-    let pool = env.get_sqlite_pool().await?;
+    let pool = env.get_postgres_pool().await?;
     run_command_with_writers(env, command, &pool, &mut std::io::stdout()).await
 }
 
 async fn run_command_with_writers<W: Write>(
     env: Env,
     command: Commands,
-    pool: &SqlitePool,
+    pool: &PgPool,
     stdout: &mut W,
 ) -> anyhow::Result<()> {
     match command {
@@ -208,7 +208,7 @@ async fn run_command_with_writers<W: Write>(
 }
 
 async fn ensure_authentication<W: Write>(
-    pool: &SqlitePool,
+    pool: &PgPool,
     schwab_auth: &crate::schwab::SchwabAuthEnv,
     stdout: &mut W,
 ) -> anyhow::Result<()> {
@@ -263,7 +263,7 @@ async fn execute_order_with_writers<W: Write>(
     quantity: u64,
     instruction: Instruction,
     env: &Env,
-    pool: &SqlitePool,
+    pool: &PgPool,
     stdout: &mut W,
 ) -> anyhow::Result<()> {
     let order = Order::new(ticker.clone(), instruction.clone(), quantity);
@@ -297,7 +297,7 @@ async fn execute_order_with_writers<W: Write>(
 async fn process_tx_with_provider<W: Write, P: Provider + Clone>(
     tx_hash: B256,
     env: &Env,
-    pool: &SqlitePool,
+    pool: &PgPool,
     stdout: &mut W,
     provider: &P,
     cache: &SymbolCache,
@@ -339,7 +339,7 @@ async fn process_tx_with_provider<W: Write, P: Provider + Clone>(
 async fn process_found_trade<W: Write>(
     onchain_trade: OnchainTrade,
     env: &Env,
-    pool: &SqlitePool,
+    pool: &PgPool,
     stdout: &mut W,
 ) -> anyhow::Result<()> {
     display_trade_details(&onchain_trade, stdout)?;
@@ -853,7 +853,7 @@ mod tests {
 
     fn create_test_env_for_cli(mock_server: &MockServer) -> Env {
         Env {
-            database_url: ":memory:".to_string(),
+            database_url: "postgresql://localhost:5432/schwab_test".to_string(),
             log_level: LogLevel::Debug,
             schwab_auth: SchwabAuthEnv {
                 app_key: "test_app_key".to_string(),
@@ -873,7 +873,7 @@ mod tests {
         }
     }
 
-    async fn setup_test_tokens(pool: &SqlitePool) {
+    async fn setup_test_tokens(pool: &PgPool) {
         let tokens = crate::schwab::tokens::SchwabTokens {
             access_token: "test_access_token".to_string(),
             access_token_fetched_at: chrono::Utc::now(),

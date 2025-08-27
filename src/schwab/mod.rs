@@ -1,7 +1,7 @@
 use crate::error;
 use chrono::{DateTime, Utc};
 use reqwest::header::InvalidHeaderValue;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::io::{self, Write};
 use thiserror::Error;
 
@@ -122,7 +122,7 @@ pub enum SchwabError {
     InvalidConfiguration(String),
 }
 
-pub async fn run_oauth_flow(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<(), SchwabError> {
+pub async fn run_oauth_flow(pool: &PgPool, env: &SchwabAuthEnv) -> Result<(), SchwabError> {
     println!(
         "Authenticate portfolio brokerage account (not dev account) and paste URL: {}",
         env.get_auth_url()
@@ -154,6 +154,16 @@ pub const fn shares_from_db_i64(db_value: i64) -> Result<u64, error::OnChainErro
     }
 }
 
+pub const fn shares_from_db_i32(db_value: i32) -> Result<u64, error::OnChainError> {
+    if db_value < 0 {
+        Err(error::OnChainError::Persistence(
+            error::PersistenceError::InvalidShareQuantity(db_value as i64),
+        ))
+    } else {
+        Ok(db_value as u64)
+    }
+}
+
 pub const fn price_cents_from_db_i64(db_value: i64) -> Result<u64, error::OnChainError> {
     if db_value < 0 {
         Err(error::OnChainError::Persistence(
@@ -163,6 +173,20 @@ pub const fn price_cents_from_db_i64(db_value: i64) -> Result<u64, error::OnChai
         #[allow(clippy::cast_sign_loss)]
         Ok(db_value as u64)
     }
+}
+
+pub fn price_cents_from_db_bigdecimal(
+    db_value: sqlx::types::BigDecimal,
+) -> Result<u64, error::OnChainError> {
+    use num_traits::ToPrimitive;
+
+    let value_i64 = db_value.to_i64().ok_or_else(|| {
+        error::OnChainError::Persistence(error::PersistenceError::InvalidDecimalConversion(
+            format!("Cannot convert price_cents BigDecimal to i64: {db_value}"),
+        ))
+    })?;
+
+    price_cents_from_db_i64(value_i64)
 }
 
 pub fn extract_code_from_url(url: &str) -> Result<String, SchwabError> {

@@ -1,6 +1,6 @@
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use tokio::time::{Duration as TokioDuration, interval};
 use tracing::{error, info, warn};
 
@@ -20,7 +20,7 @@ pub struct SchwabTokens {
 }
 
 impl SchwabTokens {
-    pub async fn store(&self, pool: &SqlitePool) -> Result<(), SchwabError> {
+    pub async fn store(&self, pool: &PgPool) -> Result<(), SchwabError> {
         sqlx::query!(
             r#"
             INSERT INTO schwab_auth (
@@ -30,7 +30,7 @@ impl SchwabTokens {
                 refresh_token,
                 refresh_token_fetched_at
             )
-            VALUES (1, ?, ?, ?, ?)
+            VALUES (1, $1, $2, $3, $4)
             ON CONFLICT(id) DO UPDATE SET
                 access_token = excluded.access_token,
                 access_token_fetched_at = excluded.access_token_fetched_at,
@@ -38,9 +38,9 @@ impl SchwabTokens {
                 refresh_token_fetched_at = excluded.refresh_token_fetched_at
             "#,
             self.access_token,
-            self.access_token_fetched_at,
+            self.access_token_fetched_at.naive_utc(),
             self.refresh_token,
-            self.refresh_token_fetched_at,
+            self.refresh_token_fetched_at.naive_utc(),
         )
         .execute(pool)
         .await?;
@@ -48,7 +48,7 @@ impl SchwabTokens {
         Ok(())
     }
 
-    pub async fn load(pool: &SqlitePool) -> Result<Self, SchwabError> {
+    pub async fn load(pool: &PgPool) -> Result<Self, SchwabError> {
         let row = sqlx::query!(
             r#"
             SELECT
@@ -106,7 +106,7 @@ impl SchwabTokens {
     }
 
     pub async fn get_valid_access_token(
-        pool: &SqlitePool,
+        pool: &PgPool,
         env: &SchwabAuthEnv,
     ) -> Result<String, SchwabError> {
         let tokens = Self::load(pool).await?;
@@ -124,14 +124,18 @@ impl SchwabTokens {
         Ok(new_tokens.access_token)
     }
 
-    pub async fn db_count(pool: &SqlitePool) -> Result<i64, SchwabError> {
+    pub async fn db_count(pool: &PgPool) -> Result<i64, SchwabError> {
         let count = sqlx::query_scalar!("SELECT COUNT(*) FROM schwab_auth")
             .fetch_one(pool)
             .await?;
-        Ok(count)
+        count.ok_or_else(|| {
+            SchwabError::InvalidConfiguration(
+                "COUNT(*) query returned NULL - database integrity compromised".to_string(),
+            )
+        })
     }
 
-    pub fn spawn_automatic_token_refresh(pool: SqlitePool, env: SchwabAuthEnv) {
+    pub fn spawn_automatic_token_refresh(pool: PgPool, env: SchwabAuthEnv) {
         tokio::spawn(async move {
             if let Err(e) = Self::start_automatic_token_refresh_loop(pool, env).await {
                 error!("Token refresh task failed: {e:?}");
@@ -140,7 +144,7 @@ impl SchwabTokens {
     }
 
     async fn start_automatic_token_refresh_loop(
-        pool: SqlitePool,
+        pool: PgPool,
         env: SchwabAuthEnv,
     ) -> Result<(), SchwabError> {
         let refresh_interval_secs = (ACCESS_TOKEN_DURATION_MINUTES - 1) * 60;
@@ -156,10 +160,7 @@ impl SchwabTokens {
         }
     }
 
-    async fn handle_token_refresh(
-        pool: &SqlitePool,
-        env: &SchwabAuthEnv,
-    ) -> Result<(), SchwabError> {
+    async fn handle_token_refresh(pool: &PgPool, env: &SchwabAuthEnv) -> Result<(), SchwabError> {
         match Self::refresh_if_needed(pool, env).await {
             Ok(refreshed) if refreshed => {
                 info!("Access token refreshed successfully");
@@ -178,7 +179,7 @@ impl SchwabTokens {
     }
 
     pub async fn refresh_if_needed(
-        pool: &SqlitePool,
+        pool: &PgPool,
         env: &SchwabAuthEnv,
     ) -> Result<bool, SchwabError> {
         let tokens = Self::load(pool).await?;

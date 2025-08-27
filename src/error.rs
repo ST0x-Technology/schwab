@@ -24,6 +24,8 @@ pub enum TradeValidationError {
     InvalidSymbolConfiguration(String, String),
     #[error("Failed to convert U256 to f64: {0}")]
     U256ToF64(#[from] ParseFloatError),
+    #[error("Invalid amount conversion")]
+    InvalidAmount,
     #[error("Transaction not found: {0}")]
     TransactionNotFound(B256),
     #[error("No AfterClear log found for ClearV2 log")]
@@ -53,6 +55,8 @@ pub enum PersistenceError {
     },
     #[error("Execution missing ID after database save")]
     MissingExecutionId,
+    #[error("Failed to convert decimal value: {0}")]
+    InvalidDecimalConversion(String),
 }
 
 #[derive(Debug, thiserror::Error)]

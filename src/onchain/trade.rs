@@ -2,9 +2,12 @@ use alloy::primitives::{B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::Log;
 use alloy::sol_types::SolEvent;
+use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::num::ParseFloatError;
+use std::str::FromStr;
 
 use crate::bindings::IOrderBookV4::{ClearV2, OrderV3, TakeOrderV2};
 #[cfg(test)]
@@ -14,7 +17,7 @@ use crate::onchain::EvmEnv;
 use crate::schwab::Direction;
 use crate::symbol::cache::SymbolCache;
 #[cfg(test)]
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 /// Union of all trade events
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,43 +32,48 @@ pub struct OnchainTrade {
     pub tx_hash: B256,
     pub log_index: u64,
     pub symbol: String,
-    pub amount: f64,
+    pub amount: Decimal,
     pub direction: Direction,
-    pub price_usdc: f64,
+    pub price_usdc: Decimal,
     pub created_at: Option<DateTime<Utc>>,
 }
 
 impl OnchainTrade {
     pub async fn save_within_transaction(
         &self,
-        sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    ) -> Result<i64, sqlx::Error> {
+        sql_tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<i64, OnChainError> {
         let tx_hash_str = self.tx_hash.to_string();
         #[allow(clippy::cast_possible_wrap)]
         let log_index_i64 = self.log_index as i64;
 
         let direction_str = self.direction.as_str();
+        let amount_bd = decimal_to_bigdecimal(self.amount)?;
+        let price_usdc_bd = decimal_to_bigdecimal(self.price_usdc)?;
+
         let result = sqlx::query!(
             r#"
             INSERT INTO onchain_trades (tx_hash, log_index, symbol, amount, direction, price_usdc)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id
             "#,
             tx_hash_str,
-            log_index_i64,
+            log_index_i64 as i32,
             self.symbol,
-            self.amount,
+            amount_bd,
             direction_str,
-            self.price_usdc
+            price_usdc_bd
         )
-        .execute(&mut **sql_tx)
-        .await?;
+        .fetch_one(&mut **sql_tx)
+        .await
+        .map_err(OnChainError::from)?;
 
-        Ok(result.last_insert_rowid())
+        Ok(result.id as i64)
     }
 
     #[cfg(test)]
     pub async fn find_by_tx_hash_and_log_index(
-        pool: &SqlitePool,
+        pool: &PgPool,
         tx_hash: B256,
         log_index: u64,
     ) -> Result<Self, OnChainError> {
@@ -73,7 +81,7 @@ impl OnchainTrade {
         #[allow(clippy::cast_possible_wrap)]
         let log_index_i64 = log_index as i64;
         let row = sqlx::query!(
-            "SELECT id, tx_hash, log_index, symbol, amount, direction, price_usdc, created_at FROM onchain_trades WHERE tx_hash = ?1 AND log_index = ?2",
+            "SELECT id, tx_hash, log_index, symbol, amount, direction, price_usdc, created_at FROM onchain_trades WHERE tx_hash = $1 AND log_index = $2",
             tx_hash_str,
             log_index_i64
         )
@@ -94,15 +102,18 @@ impl OnchainTrade {
             )))
         })?;
 
+        let amount = bigdecimal_to_decimal(row.amount)?;
+        let price_usdc = bigdecimal_to_decimal(row.price_usdc)?;
+
         Ok(Self {
-            id: Some(row.id),
+            id: Some(row.id as i64),
             tx_hash,
             #[allow(clippy::cast_sign_loss)]
             log_index: row.log_index as u64,
             symbol: row.symbol,
-            amount: row.amount,
+            amount,
             direction,
-            price_usdc: row.price_usdc,
+            price_usdc,
             created_at: row
                 .created_at
                 .map(|naive_dt| DateTime::from_naive_utc_and_offset(naive_dt, Utc)),
@@ -110,11 +121,11 @@ impl OnchainTrade {
     }
 
     #[cfg(test)]
-    pub async fn db_count(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    pub async fn db_count(pool: &PgPool) -> Result<i64, sqlx::Error> {
         let row = sqlx::query!("SELECT COUNT(*) as count FROM onchain_trades")
             .fetch_one(pool)
             .await?;
-        Ok(row.count)
+        Ok(row.count.unwrap())
     }
 
     /// Core parsing logic for converting blockchain events to trades
@@ -138,10 +149,12 @@ impl OnchainTrade {
             .get(fill.output_index)
             .ok_or(TradeValidationError::NoOutputAtIndex(fill.output_index))?;
 
-        let onchain_input_amount = u256_to_f64(fill.input_amount, input.decimals)?;
+        let onchain_input_amount = u256_to_decimal(fill.input_amount, input.decimals)
+            .map_err(|_| OnChainError::Validation(TradeValidationError::InvalidAmount))?;
         let onchain_input_symbol = cache.get_io_symbol(&provider, input).await?;
 
-        let onchain_output_amount = u256_to_f64(fill.output_amount, output.decimals)?;
+        let onchain_output_amount = u256_to_decimal(fill.output_amount, output.decimals)
+            .map_err(|_| OnChainError::Validation(TradeValidationError::InvalidAmount))?;
         let onchain_output_symbol = cache.get_io_symbol(provider, output).await?;
 
         let (schwab_ticker, schwab_direction) =
@@ -161,7 +174,7 @@ impl OnchainTrade {
             onchain_input_amount
         };
 
-        if trade_amount == 0.0 {
+        if trade_amount.is_zero() {
             return Ok(None);
         }
 
@@ -172,7 +185,7 @@ impl OnchainTrade {
             onchain_output_amount / onchain_input_amount
         };
 
-        if price_per_share_usdc.is_nan() || price_per_share_usdc <= 0.0 {
+        if price_per_share_usdc.is_zero() {
             return Ok(None);
         }
 
@@ -340,6 +353,51 @@ async fn try_convert_log_to_onchain_trade<P: Provider>(
     Ok(None)
 }
 
+/// Converts a BigDecimal from the database to a Decimal for business logic
+fn bigdecimal_to_decimal(bd: BigDecimal) -> Result<Decimal, crate::error::OnChainError> {
+    let bd_str = bd.to_string();
+    Decimal::from_str(&bd_str).map_err(|_| {
+        crate::error::OnChainError::Persistence(
+            crate::error::PersistenceError::InvalidDecimalConversion(format!(
+                "Cannot convert BigDecimal to Decimal: {bd}"
+            )),
+        )
+    })
+}
+
+/// Converts a Decimal from business logic to a BigDecimal for database storage
+fn decimal_to_bigdecimal(decimal: Decimal) -> Result<BigDecimal, crate::error::OnChainError> {
+    let decimal_str = decimal.to_string();
+    BigDecimal::from_str(&decimal_str).map_err(|_| {
+        crate::error::OnChainError::Persistence(
+            crate::error::PersistenceError::InvalidDecimalConversion(format!(
+                "Cannot convert Decimal to BigDecimal: {decimal}"
+            )),
+        )
+    })
+}
+
+/// Helper that converts a fixed-decimal U256 amount into a Decimal using the provided number of decimals.
+fn u256_to_decimal(amount: U256, decimals: u8) -> Result<Decimal, rust_decimal::Error> {
+    if amount.is_zero() {
+        return Ok(Decimal::ZERO);
+    }
+
+    let u256_str = amount.to_string();
+    let decimals = decimals as usize;
+
+    let formatted = if decimals == 0 {
+        u256_str
+    } else if u256_str.len() <= decimals {
+        format!("0.{}{}", "0".repeat(decimals - u256_str.len()), u256_str)
+    } else {
+        let (int_part, frac_part) = u256_str.split_at(u256_str.len() - decimals);
+        format!("{int_part}.{frac_part}")
+    };
+
+    Decimal::from_str(&formatted)
+}
+
 /// Helper that converts a fixed-decimal U256 amount into an f64 using the provided number of decimals.
 fn u256_to_f64(amount: U256, decimals: u8) -> Result<f64, ParseFloatError> {
     if amount.is_zero() {
@@ -378,9 +436,9 @@ mod tests {
             ),
             log_index: 42,
             symbol: "AAPLs1".to_string(),
-            amount: 10.0,
+            amount: Decimal::from(10),
             direction: Direction::Sell,
-            price_usdc: 150.25,
+            price_usdc: Decimal::new(15025, 2), // 150.25
             created_at: None,
         };
 
@@ -397,9 +455,9 @@ mod tests {
         assert_eq!(found.tx_hash, trade.tx_hash);
         assert_eq!(found.log_index, trade.log_index);
         assert_eq!(found.symbol, trade.symbol);
-        assert!((found.amount - trade.amount).abs() < f64::EPSILON);
+        assert_eq!(found.amount, trade.amount);
         assert_eq!(found.direction, trade.direction);
-        assert!((found.price_usdc - trade.price_usdc).abs() < f64::EPSILON);
+        assert_eq!(found.price_usdc, trade.price_usdc);
         assert!(found.id.is_some());
         assert!(found.created_at.is_some());
     }
@@ -545,9 +603,9 @@ mod tests {
             ),
             log_index: 100,
             symbol: "AAPLs1".to_string(),
-            amount: 10.0,
+            amount: Decimal::from(10),
             direction: Direction::Buy,
-            price_usdc: 150.0,
+            price_usdc: Decimal::from(150),
             created_at: None,
         };
 
@@ -579,9 +637,9 @@ mod tests {
             ),
             log_index: u64::MAX, // Will become -1 when cast to i64
             symbol: "AAPLs1".to_string(),
-            amount: 10.0,
+            amount: Decimal::from(10),
             direction: Direction::Buy,
-            price_usdc: 150.0,
+            price_usdc: Decimal::from(150),
             created_at: None,
         };
 
@@ -729,9 +787,9 @@ mod tests {
                 tx_hash: alloy::primitives::B256::from(tx_hash_bytes),
                 log_index: u64::from(i),
                 symbol: format!("TEST{i}s1"),
-                amount: 10.0,
+                amount: Decimal::from(10),
                 direction: Direction::Buy,
-                price_usdc: 150.0,
+                price_usdc: Decimal::from(150),
                 created_at: None,
             };
 

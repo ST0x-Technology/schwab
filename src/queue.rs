@@ -3,7 +3,7 @@ use alloy::rpc::types::Log;
 use chrono::{DateTime, Utc};
 use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::str::FromStr;
 use tracing::{error, info};
 
@@ -40,11 +40,7 @@ pub struct QueuedEvent {
     pub processed_at: Option<DateTime<Utc>>,
 }
 
-async fn enqueue_event(
-    pool: &SqlitePool,
-    log: &Log,
-    event: TradeEvent,
-) -> Result<(), EventQueueError> {
+async fn enqueue_event(pool: &PgPool, log: &Log, event: TradeEvent) -> Result<(), EventQueueError> {
     let tx_hash = log
         .transaction_hash
         .ok_or_else(|| EventQueueError::Processing("Log missing transaction hash".to_string()))?;
@@ -69,12 +65,13 @@ async fn enqueue_event(
 
     sqlx::query!(
         r#"
-        INSERT OR IGNORE INTO event_queue 
+        INSERT INTO event_queue 
         (tx_hash, log_index, block_number, event_data, processed)
-        VALUES (?, ?, ?, ?, 0)
+        VALUES ($1, $2, $3, $4, false)
+        ON CONFLICT (tx_hash, log_index) DO NOTHING
         "#,
         tx_hash_str,
-        log_index_i64,
+        log_index_i64 as i32,
         block_number_i64,
         event_json
     )
@@ -87,13 +84,13 @@ async fn enqueue_event(
 /// Gets the next unprocessed event from the queue, ordered by block number then log index
 #[cfg(test)]
 pub async fn get_next_unprocessed_event(
-    pool: &SqlitePool,
+    pool: &PgPool,
 ) -> Result<Option<QueuedEvent>, EventQueueError> {
     let row = sqlx::query!(
         r#"
         SELECT id, tx_hash, log_index, block_number, event_data, processed, created_at, processed_at
         FROM event_queue
-        WHERE processed = 0
+        WHERE processed = false
         ORDER BY block_number ASC, log_index ASC
         LIMIT 1
         "#
@@ -112,7 +109,7 @@ pub async fn get_next_unprocessed_event(
         .map_err(|e| EventQueueError::Processing(format!("Failed to deserialize event: {e}")))?;
 
     Ok(Some(QueuedEvent {
-        id: Some(row.id),
+        id: Some(row.id as i64),
         tx_hash,
         log_index: row
             .log_index
@@ -129,12 +126,12 @@ pub async fn get_next_unprocessed_event(
 }
 
 /// Marks an event as processed in the queue
-pub async fn mark_event_processed(pool: &SqlitePool, event_id: i64) -> Result<(), EventQueueError> {
+pub async fn mark_event_processed(pool: &PgPool, event_id: i64) -> Result<(), EventQueueError> {
     sqlx::query!(
         r#"
         UPDATE event_queue 
-        SET processed = 1, processed_at = CURRENT_TIMESTAMP
-        WHERE id = ?
+        SET processed = true, processed_at = CURRENT_TIMESTAMP
+        WHERE id = $1
         "#,
         event_id
     )
@@ -146,22 +143,22 @@ pub async fn mark_event_processed(pool: &SqlitePool, event_id: i64) -> Result<()
 
 /// Gets count of unprocessed events in the queue
 #[cfg(test)]
-pub async fn count_unprocessed(pool: &SqlitePool) -> Result<i64, EventQueueError> {
-    let row = sqlx::query!("SELECT COUNT(*) as count FROM event_queue WHERE processed = 0")
+pub async fn count_unprocessed(pool: &PgPool) -> Result<i64, EventQueueError> {
+    let row = sqlx::query!("SELECT COUNT(*) as count FROM event_queue WHERE processed = false")
         .fetch_one(pool)
         .await?;
 
-    Ok(row.count)
+    Ok(row.count.unwrap())
 }
 
 pub async fn get_all_unprocessed_events(
-    pool: &SqlitePool,
+    pool: &PgPool,
 ) -> Result<Vec<QueuedEvent>, EventQueueError> {
     let rows = sqlx::query!(
         r#"
         SELECT id, tx_hash, log_index, block_number, event_data, processed, created_at, processed_at
         FROM event_queue
-        WHERE processed = 0
+        WHERE processed = false
         ORDER BY block_number ASC, log_index ASC
         "#
     )
@@ -178,7 +175,7 @@ pub async fn get_all_unprocessed_events(
         })?;
 
         events.push(QueuedEvent {
-            id: Some(row.id),
+            id: Some(row.id as i64),
             tx_hash,
             log_index: row.log_index.try_into().map_err(|_| {
                 EventQueueError::Processing("Log index conversion failed".to_string())
@@ -199,7 +196,7 @@ pub async fn get_all_unprocessed_events(
 /// Generic function to enqueue any event that implements Enqueueable
 #[allow(clippy::future_not_send)]
 pub async fn enqueue<E: Enqueueable>(
-    pool: &SqlitePool,
+    pool: &PgPool,
     event: &E,
     log: &Log,
 ) -> Result<(), EventQueueError> {
@@ -209,7 +206,7 @@ pub async fn enqueue<E: Enqueueable>(
 
 /// Enqueues buffered events that were collected during coordination phase
 pub async fn enqueue_buffer(
-    pool: &sqlx::SqlitePool,
+    pool: &sqlx::PgPool,
     event_buffer: Vec<(TradeEvent, alloy::rpc::types::Log)>,
 ) {
     info!(

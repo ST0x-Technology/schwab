@@ -2,7 +2,7 @@ use alloy::providers::Provider;
 use alloy::rpc::types::Log;
 use alloy::sol_types;
 use futures_util::{Stream, StreamExt};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use tracing::{error, info};
 
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
@@ -19,7 +19,7 @@ pub async fn get_cutoff_block<S1, S2, P>(
     clear_stream: &mut S1,
     take_stream: &mut S2,
     provider: &P,
-    pool: &SqlitePool,
+    pool: &PgPool,
 ) -> anyhow::Result<u64>
 where
     S1: Stream<Item = Result<(ClearV2, Log), sol_types::Error>> + Unpin,
@@ -52,7 +52,7 @@ where
 
 pub async fn run_live<S1, S2, P>(
     env: Env,
-    pool: SqlitePool,
+    pool: PgPool,
     cache: SymbolCache,
     provider: P,
     mut clear_stream: S1,
@@ -114,7 +114,7 @@ where
 
 async fn process_live_event<P: Provider + Clone>(
     env: &Env,
-    pool: &SqlitePool,
+    pool: &PgPool,
     cache: &SymbolCache,
     provider: &P,
     event: TradeEvent,
@@ -162,7 +162,7 @@ async fn process_live_event<P: Provider + Clone>(
 
 async fn process_trade(
     env: &Env,
-    pool: &SqlitePool,
+    pool: &PgPool,
     onchain_trade: OnchainTrade,
 ) -> anyhow::Result<()> {
     let symbol_lock = get_symbol_lock(&onchain_trade.symbol).await;
@@ -201,7 +201,7 @@ async fn process_trade(
 pub async fn process_queue<P: Provider + Clone>(
     env: &Env,
     evm_env: &EvmEnv,
-    pool: &SqlitePool,
+    pool: &PgPool,
     symbol_cache: &SymbolCache,
     provider: P,
 ) -> anyhow::Result<()> {
@@ -258,7 +258,7 @@ pub async fn process_queue<P: Provider + Clone>(
 async fn process_queued_event_with_retry<P: Provider + Clone>(
     env: &Env,
     evm_env: &EvmEnv,
-    pool: &SqlitePool,
+    pool: &PgPool,
     symbol_cache: &SymbolCache,
     provider: P,
     queued_event: crate::queue::QueuedEvent,
@@ -293,7 +293,7 @@ async fn process_queued_event_with_retry<P: Provider + Clone>(
 async fn process_queued_event_atomic<P: Provider + Clone>(
     env: &Env,
     evm_env: &EvmEnv,
-    pool: &SqlitePool,
+    pool: &PgPool,
     symbol_cache: &SymbolCache,
     provider: P,
     queued_event: &crate::queue::QueuedEvent,
@@ -342,8 +342,12 @@ async fn process_queued_event_atomic<P: Provider + Clone>(
 
         // Mark as processed within the same transaction
         sqlx::query!(
-            "UPDATE event_queue SET processed = 1, processed_at = CURRENT_TIMESTAMP WHERE id = ?",
-            event_id
+            "
+            UPDATE event_queue
+            SET processed = true, processed_at = CURRENT_TIMESTAMP
+            WHERE id = $1
+            ",
+            event_id as i32
         )
         .execute(&mut *tx)
         .await?;
@@ -420,7 +424,7 @@ fn reconstruct_log_from_queued_event(
 /// Execute a pending Schwab execution by fetching it from the database and placing the order.
 async fn execute_pending_schwab_execution(
     env: &Env,
-    pool: &SqlitePool,
+    pool: &PgPool,
     execution_id: i64,
 ) -> anyhow::Result<()> {
     let execution = find_execution_by_id(pool, execution_id)

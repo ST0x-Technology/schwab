@@ -1,7 +1,7 @@
 use alloy::providers::{ProviderBuilder, WsConnect};
 use backon::{ConstantBuilder, Retryable};
 use rocket::Config;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use tracing::{debug, error, info, warn};
 
 pub mod api;
@@ -26,7 +26,7 @@ use crate::symbol::cache::SymbolCache;
 use bindings::IOrderBookV4::IOrderBookV4Instance;
 
 pub async fn launch(env: Env) -> anyhow::Result<()> {
-    let pool = env.get_sqlite_pool().await?;
+    let pool = env.get_postgres_pool().await?;
 
     // Run database migrations to ensure all tables exist
     sqlx::migrate!().run(&pool).await?;
@@ -74,7 +74,7 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
+async fn run(env: Env, pool: PgPool) -> anyhow::Result<()> {
     let run_bot = || async {
         debug!("Validating Schwab tokens...");
         match schwab::tokens::SchwabTokens::refresh_if_needed(&pool, &env.schwab_auth).await {
@@ -150,8 +150,10 @@ mod tests {
     use super::*;
     use crate::env::tests::create_test_env;
 
-    async fn create_test_pool() -> SqlitePool {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
+    async fn create_test_pool() -> PgPool {
+        let pool = PgPool::connect("postgresql://localhost:5432/schwab_test")
+            .await
+            .unwrap();
         sqlx::migrate!().run(&pool).await.unwrap();
         pool
     }

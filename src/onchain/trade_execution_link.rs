@@ -1,11 +1,33 @@
-#[cfg(test)]
 use crate::error::OnChainError;
 #[cfg(test)]
 use crate::schwab::shares_from_db_i64;
 use crate::schwab::{Direction, TradeStatus};
+use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 #[cfg(test)]
-use sqlx::SqlitePool;
+use sqlx::PgPool;
+use std::str::FromStr;
+
+/// Converts a BigDecimal from the database to a Decimal for business logic
+fn bigdecimal_to_decimal(bd: BigDecimal) -> Result<Decimal, OnChainError> {
+    let bd_str = bd.to_string();
+    Decimal::from_str(&bd_str).map_err(|_| {
+        OnChainError::Persistence(crate::error::PersistenceError::InvalidDecimalConversion(
+            format!("Cannot convert BigDecimal to Decimal: {bd}"),
+        ))
+    })
+}
+
+/// Converts a Decimal from business logic to a BigDecimal for database storage
+fn decimal_to_bigdecimal(decimal: Decimal) -> Result<BigDecimal, OnChainError> {
+    let decimal_str = decimal.to_string();
+    BigDecimal::from_str(&decimal_str).map_err(|_| {
+        OnChainError::Persistence(crate::error::PersistenceError::InvalidDecimalConversion(
+            format!("Cannot convert Decimal to BigDecimal: {decimal}"),
+        ))
+    })
+}
 
 /// Links individual onchain trades to their contributing Schwab executions.
 ///
@@ -16,12 +38,12 @@ pub struct TradeExecutionLink {
     pub id: Option<i64>,
     pub trade_id: i64,
     pub execution_id: i64,
-    pub contributed_shares: f64,
+    pub contributed_shares: Decimal,
     pub created_at: Option<DateTime<Utc>>,
 }
 
 impl TradeExecutionLink {
-    pub const fn new(trade_id: i64, execution_id: i64, contributed_shares: f64) -> Self {
+    pub const fn new(trade_id: i64, execution_id: i64, contributed_shares: Decimal) -> Self {
         Self {
             id: None,
             trade_id,
@@ -34,27 +56,30 @@ impl TradeExecutionLink {
     /// Save link within an existing transaction
     pub async fn save_within_transaction(
         &self,
-        sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    ) -> Result<i64, sqlx::Error> {
+        sql_tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<i64, OnChainError> {
+        let contributed_shares_bd = decimal_to_bigdecimal(self.contributed_shares)?;
         let result = sqlx::query!(
             r#"
             INSERT INTO trade_execution_links (trade_id, execution_id, contributed_shares)
-            VALUES (?1, ?2, ?3)
+            VALUES ($1, $2, $3)
+            RETURNING id
             "#,
-            self.trade_id,
-            self.execution_id,
-            self.contributed_shares
+            self.trade_id as i32,
+            self.execution_id as i32,
+            contributed_shares_bd
         )
-        .execute(&mut **sql_tx)
-        .await?;
+        .fetch_one(&mut **sql_tx)
+        .await
+        .map_err(OnChainError::from)?;
 
-        Ok(result.last_insert_rowid())
+        Ok(result.id as i64)
     }
 
     /// Find all executions that a specific trade contributed to
     #[cfg(test)]
     pub async fn find_executions_for_trade(
-        pool: &SqlitePool,
+        pool: &PgPool,
         trade_id: i64,
     ) -> Result<Vec<ExecutionContribution>, OnChainError> {
         let rows = sqlx::query!(
@@ -73,7 +98,7 @@ impl TradeExecutionLink {
                 se.executed_at
             FROM trade_execution_links tel
             JOIN schwab_executions se ON tel.execution_id = se.id
-            WHERE tel.trade_id = ?1
+            WHERE tel.trade_id = $1
             ORDER BY tel.created_at ASC
             "#,
             trade_id
@@ -96,10 +121,12 @@ impl TradeExecutionLink {
                     row.executed_at,
                 )?;
 
+                let contributed_shares = bigdecimal_to_decimal(row.contributed_shares)?;
+
                 Ok(ExecutionContribution {
                     link_id: row.id,
                     execution_id: row.execution_id,
-                    contributed_shares: row.contributed_shares,
+                    contributed_shares,
                     execution_symbol: row.symbol,
                     execution_total_shares: shares_from_db_i64(row.shares)?,
                     execution_direction,
@@ -113,7 +140,7 @@ impl TradeExecutionLink {
     /// Find all trades that contributed to a specific execution
     #[cfg(test)]
     pub async fn find_trades_for_execution(
-        pool: &SqlitePool,
+        pool: &PgPool,
         execution_id: i64,
     ) -> Result<Vec<TradeContribution>, OnChainError> {
         let rows = sqlx::query!(
@@ -131,7 +158,7 @@ impl TradeExecutionLink {
                 ot.price_usdc
             FROM trade_execution_links tel
             JOIN onchain_trades ot ON tel.trade_id = ot.id
-            WHERE tel.execution_id = ?1
+            WHERE tel.execution_id = $1
             ORDER BY tel.created_at ASC
             "#,
             execution_id
@@ -141,17 +168,21 @@ impl TradeExecutionLink {
 
         rows.into_iter()
             .map(|row| {
+                let contributed_shares = bigdecimal_to_decimal(row.contributed_shares)?;
+                let trade_total_amount = bigdecimal_to_decimal(row.amount)?;
+                let trade_price_usdc = bigdecimal_to_decimal(row.price_usdc)?;
+
                 Ok(TradeContribution {
                     link_id: row.id,
                     trade_id: row.trade_id,
-                    contributed_shares: row.contributed_shares,
+                    contributed_shares,
                     trade_tx_hash: row.tx_hash,
                     #[allow(clippy::cast_sign_loss)]
                     trade_log_index: row.log_index as u64,
                     trade_symbol: row.symbol,
-                    trade_total_amount: row.amount,
+                    trade_total_amount,
                     trade_direction: row.direction,
-                    trade_price_usdc: row.price_usdc,
+                    trade_price_usdc,
                     created_at: Some(DateTime::from_naive_utc_and_offset(row.created_at, Utc)),
                 })
             })
@@ -161,7 +192,7 @@ impl TradeExecutionLink {
     /// Get complete audit trail for a symbol showing all trades and their executions
     #[cfg(test)]
     pub async fn get_symbol_audit_trail(
-        pool: &SqlitePool,
+        pool: &PgPool,
         symbol: &str,
     ) -> Result<Vec<AuditTrailEntry>, OnChainError> {
         let base_symbol = symbol.strip_suffix("s1").unwrap_or(symbol).to_string();
@@ -187,7 +218,7 @@ impl TradeExecutionLink {
             FROM trade_execution_links tel
             JOIN onchain_trades ot ON tel.trade_id = ot.id
             JOIN schwab_executions se ON tel.execution_id = se.id
-            WHERE ot.symbol = ?1 OR se.symbol = ?2
+            WHERE ot.symbol = $1 OR se.symbol = $2
             ORDER BY tel.created_at ASC
             "#,
             symbol,
@@ -198,9 +229,13 @@ impl TradeExecutionLink {
 
         rows.into_iter()
             .map(|row| {
+                let contributed_shares = bigdecimal_to_decimal(row.contributed_shares)?;
+                let trade_amount = bigdecimal_to_decimal(row.trade_amount)?;
+                let trade_price_usdc = bigdecimal_to_decimal(row.price_usdc)?;
+
                 Ok(AuditTrailEntry {
                     link_id: row.link_id,
-                    contributed_shares: row.contributed_shares,
+                    contributed_shares,
                     link_created_at: Some(DateTime::from_naive_utc_and_offset(
                         row.link_created_at,
                         Utc,
@@ -209,9 +244,9 @@ impl TradeExecutionLink {
                     trade_tx_hash: row.tx_hash,
                     #[allow(clippy::cast_sign_loss)]
                     trade_log_index: row.log_index as u64,
-                    trade_amount: row.trade_amount,
+                    trade_amount,
                     trade_direction: row.trade_direction,
-                    trade_price_usdc: row.price_usdc,
+                    trade_price_usdc,
                     trade_created_at: row
                         .trade_created_at
                         .map(|naive_dt| DateTime::from_naive_utc_and_offset(naive_dt, Utc)),
@@ -242,7 +277,7 @@ impl TradeExecutionLink {
 pub struct ExecutionContribution {
     pub link_id: i64,
     pub execution_id: i64,
-    pub contributed_shares: f64,
+    pub contributed_shares: Decimal,
     pub execution_symbol: String,
     pub execution_total_shares: u64,
     pub execution_direction: Direction,
@@ -255,13 +290,13 @@ pub struct ExecutionContribution {
 pub struct TradeContribution {
     pub link_id: i64,
     pub trade_id: i64,
-    pub contributed_shares: f64,
+    pub contributed_shares: Decimal,
     pub trade_tx_hash: String,
     pub trade_log_index: u64,
     pub trade_symbol: String,
-    pub trade_total_amount: f64,
+    pub trade_total_amount: Decimal,
     pub trade_direction: String,
-    pub trade_price_usdc: f64,
+    pub trade_price_usdc: Decimal,
     pub created_at: Option<DateTime<Utc>>,
 }
 
@@ -269,16 +304,16 @@ pub struct TradeContribution {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuditTrailEntry {
     pub link_id: i64,
-    pub contributed_shares: f64,
+    pub contributed_shares: Decimal,
     pub link_created_at: Option<DateTime<Utc>>,
 
     // Trade details
     pub trade_id: i64,
     pub trade_tx_hash: String,
     pub trade_log_index: u64,
-    pub trade_amount: f64,
+    pub trade_amount: Decimal,
     pub trade_direction: String,
-    pub trade_price_usdc: f64,
+    pub trade_price_usdc: Decimal,
     pub trade_created_at: Option<DateTime<Utc>>,
 
     // Execution details
@@ -370,9 +405,9 @@ mod tests {
             ),
             log_index: 1,
             symbol: "AAPLs1".to_string(),
-            amount: 1.5,
+            amount: Decimal::new(15, 1), // 1.5
             direction: Direction::Sell,
-            price_usdc: 150.0,
+            price_usdc: Decimal::from(150),
             created_at: None,
         };
 
@@ -392,7 +427,7 @@ mod tests {
             .unwrap();
 
         // Create and save the link
-        let link = TradeExecutionLink::new(trade_id, execution_id, 1.0);
+        let link = TradeExecutionLink::new(trade_id, execution_id, Decimal::from(1));
         let link_id = link.save_within_transaction(&mut sql_tx).await.unwrap();
         sql_tx.commit().await.unwrap();
 
@@ -404,7 +439,7 @@ mod tests {
             .unwrap();
         assert_eq!(executions.len(), 1);
         assert_eq!(executions[0].execution_id, execution_id);
-        assert!((executions[0].contributed_shares - 1.0).abs() < f64::EPSILON);
+        assert_eq!(executions[0].contributed_shares, Decimal::from(1));
 
         // Test finding trades for execution
         let trades = TradeExecutionLink::find_trades_for_execution(&pool, execution_id)
@@ -412,7 +447,7 @@ mod tests {
             .unwrap();
         assert_eq!(trades.len(), 1);
         assert_eq!(trades[0].trade_id, trade_id);
-        assert!((trades[0].contributed_shares - 1.0).abs() < f64::EPSILON);
+        assert_eq!(trades[0].contributed_shares, Decimal::from(1));
     }
 
     #[tokio::test]
@@ -428,9 +463,9 @@ mod tests {
                 ),
                 log_index: 1,
                 symbol: "MSFTs1".to_string(),
-                amount: 0.5,
+                amount: Decimal::new(5, 1), // 0.5
                 direction: Direction::Buy,
-                price_usdc: 300.0,
+                price_usdc: Decimal::from(300),
                 created_at: None,
             },
             OnchainTrade {
@@ -440,9 +475,9 @@ mod tests {
                 ),
                 log_index: 2,
                 symbol: "MSFTs1".to_string(),
-                amount: 0.8,
+                amount: Decimal::new(8, 1), // 0.8
                 direction: Direction::Buy,
-                price_usdc: 305.0,
+                price_usdc: Decimal::from(305),
                 created_at: None,
             },
         ];
@@ -471,8 +506,8 @@ mod tests {
             .unwrap();
 
         // Create links
-        let link1 = TradeExecutionLink::new(trade_ids[0], execution_id, 0.5);
-        let link2 = TradeExecutionLink::new(trade_ids[1], execution_id, 0.5); // Only 0.5 of the 0.8 trade contributed
+        let link1 = TradeExecutionLink::new(trade_ids[0], execution_id, Decimal::new(5, 1)); // 0.5
+        let link2 = TradeExecutionLink::new(trade_ids[1], execution_id, Decimal::new(5, 1)); // 0.5 - Only 0.5 of the 0.8 trade contributed
 
         link1.save_within_transaction(&mut sql_tx).await.unwrap();
         link2.save_within_transaction(&mut sql_tx).await.unwrap();
@@ -485,8 +520,8 @@ mod tests {
         assert_eq!(audit_trail.len(), 2);
 
         // Verify total contributed shares add up correctly
-        let total_contributed: f64 = audit_trail.iter().map(|e| e.contributed_shares).sum();
-        assert!((total_contributed - 1.0).abs() < f64::EPSILON);
+        let total_contributed: Decimal = audit_trail.iter().map(|e| e.contributed_shares).sum();
+        assert_eq!(total_contributed, Decimal::from(1));
     }
 
     #[tokio::test]
@@ -494,7 +529,11 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Simulate multiple small trades that together trigger one execution
-        let trades = vec![(0.3, 1u64), (0.4, 2u64), (0.5, 3u64)];
+        let trades = vec![
+            (Decimal::new(3, 1), 1u64),
+            (Decimal::new(4, 1), 2u64),
+            (Decimal::new(5, 1), 3u64),
+        ];
 
         let execution = SchwabExecution {
             id: None,
@@ -517,7 +556,7 @@ mod tests {
                 symbol: "AAPLs1".to_string(),
                 amount,
                 direction: Direction::Sell,
-                price_usdc: 150.0,
+                price_usdc: Decimal::from(150),
                 created_at: None,
             };
             let trade_id = trade.save_within_transaction(&mut sql_tx).await.unwrap();
@@ -531,9 +570,9 @@ mod tests {
 
         // Create links showing how each trade contributed
         let links = vec![
-            TradeExecutionLink::new(trade_ids[0], execution_id, 0.3),
-            TradeExecutionLink::new(trade_ids[1], execution_id, 0.4),
-            TradeExecutionLink::new(trade_ids[2], execution_id, 0.3), // Only 0.3 of the 0.5 contributed to this execution
+            TradeExecutionLink::new(trade_ids[0], execution_id, Decimal::new(3, 1)), // 0.3
+            TradeExecutionLink::new(trade_ids[1], execution_id, Decimal::new(4, 1)), // 0.4
+            TradeExecutionLink::new(trade_ids[2], execution_id, Decimal::new(3, 1)), // 0.3 - Only 0.3 of the 0.5 contributed to this execution
         ];
 
         for link in links {
@@ -549,11 +588,11 @@ mod tests {
         assert_eq!(contributing_trades.len(), 3);
 
         // Verify total contributions equal exactly 1 share
-        let total_contributions: f64 = contributing_trades
+        let total_contributions: Decimal = contributing_trades
             .iter()
             .map(|t| t.contributed_shares)
             .sum();
-        assert!((total_contributions - 1.0).abs() < f64::EPSILON);
+        assert_eq!(total_contributions, Decimal::from(1));
     }
 
     #[tokio::test]
@@ -567,9 +606,9 @@ mod tests {
             ),
             log_index: 1,
             symbol: "AAPLs1".to_string(),
-            amount: 1.0,
+            amount: Decimal::from(1),
             direction: Direction::Buy,
-            price_usdc: 150.0,
+            price_usdc: Decimal::from(150),
             created_at: None,
         };
 
@@ -589,11 +628,11 @@ mod tests {
             .unwrap();
 
         // Create first link
-        let link1 = TradeExecutionLink::new(trade_id, execution_id, 0.5);
+        let link1 = TradeExecutionLink::new(trade_id, execution_id, Decimal::new(5, 1)); // 0.5
         link1.save_within_transaction(&mut sql_tx).await.unwrap();
 
         // Try to create duplicate link - should fail
-        let link2 = TradeExecutionLink::new(trade_id, execution_id, 0.5);
+        let link2 = TradeExecutionLink::new(trade_id, execution_id, Decimal::new(5, 1)); // 0.5
         let result = link2.save_within_transaction(&mut sql_tx).await;
 
         assert!(result.is_err());
