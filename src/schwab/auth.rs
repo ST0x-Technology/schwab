@@ -34,6 +34,8 @@ pub struct SchwabAuthResponse {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountNumbers {
+    // Field exists in API response but isn't currently used
+    #[allow(dead_code)]
     pub account_number: String,
     pub hash_value: String,
 }

@@ -124,6 +124,7 @@ excellent async ecosystem for handling concurrent trading flows.
 - Schwab executions track status ('PENDING', 'COMPLETED', 'FAILED') with retry
   logic
 - Complete audit trail maintained linking individual trades to batch executions
+- Record actual executed amounts and prices from both venues for spread analysis
 - Proper error handling and structured error logging
 
 ### **Trade Tracking and Reporting**

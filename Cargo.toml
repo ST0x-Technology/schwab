@@ -29,6 +29,7 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 urlencoding = "2.1"
 flate2 = "1.0"
 itertools = "0.14.0"
+rocket = { version = "0.5.1", features = ["json"] }
 
 [dev-dependencies]
 httpmock = "0.7.0"
@@ -39,12 +40,15 @@ unsafe_code = "forbid"
 [lints.clippy]
 unwrap_used = "deny"
 enum_glob_use = "deny"
+
 # `priority = -1` allow for allowing lints enabled by a group to be re-disabled
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
-missing_errors_doc = "allow"
+
 doc_markdown = "allow"
+items_after_statements = "allow"
 missing_docs_in_private_items = "allow"
+missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 must_use_candidate = "allow"
-items_after_statements = "allow"
+redundant_pub_crate = "allow"

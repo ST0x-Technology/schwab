@@ -1,13 +1,13 @@
 use alloy::primitives::{Address, B256};
 use clap::Parser;
 
-pub mod accumulator;
+pub(crate) mod accumulator;
 pub mod backfill;
 mod clear;
-pub mod position_calculator;
+pub(crate) mod position_calculator;
 mod take_order;
-pub mod trade;
-pub mod trade_execution_link;
+pub(crate) mod trade;
+pub(crate) mod trade_execution_link;
 
 pub use trade::OnchainTrade;
 
