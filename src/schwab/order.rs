@@ -11,6 +11,7 @@ use super::execution::find_execution_by_id;
 use super::{
     SchwabAuthEnv, SchwabError, SchwabInstruction, SchwabTokens,
     execution::{SchwabExecution, update_execution_status_within_transaction},
+    order_status::OrderStatusResponse,
 };
 use crate::env::Env;
 use crate::schwab::TradeStatus;
@@ -109,6 +110,62 @@ impl Order {
         let order_id = extract_order_id_from_location_header(&response)?;
 
         Ok(OrderPlacementResponse { order_id })
+    }
+
+    /// Get the status of a specific order from Schwab API.
+    /// Returns the order status response containing fill information and execution details.
+    pub async fn get_order_status(
+        order_id: &str,
+        env: &SchwabAuthEnv,
+        pool: &SqlitePool,
+    ) -> Result<OrderStatusResponse, SchwabError> {
+        let access_token = SchwabTokens::get_valid_access_token(pool, env).await?;
+        let account_hash = env.get_account_hash(pool).await?;
+
+        let headers = [
+            (
+                header::AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {access_token}"))?,
+            ),
+            (header::ACCEPT, HeaderValue::from_str("application/json")?),
+        ]
+        .into_iter()
+        .collect::<HeaderMap>();
+
+        let client = reqwest::Client::new();
+        let response = (|| async {
+            client
+                .get(format!(
+                    "{}/trader/v1/accounts/{}/orders/{}",
+                    env.base_url, account_hash, order_id
+                ))
+                .headers(headers.clone())
+                .send()
+                .await
+        })
+        .retry(ExponentialBuilder::default())
+        .await?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(SchwabError::RequestFailed {
+                action: "get order status".to_string(),
+                status,
+                body: format!("Order ID {order_id} not found"),
+            });
+        }
+
+        if !response.status().is_success() {
+            let error_body = response.text().await.unwrap_or_default();
+            return Err(SchwabError::RequestFailed {
+                action: "get order status".to_string(),
+                status,
+                body: error_body,
+            });
+        }
+
+        let order_status: OrderStatusResponse = response.json().await?;
+        Ok(order_status)
     }
 }
 
@@ -567,9 +624,11 @@ mod tests {
         account_mock.assert();
         order_mock.assert();
         let error = result.unwrap_err();
-        assert!(
-            matches!(error, super::SchwabError::RequestFailed { action, status, .. } if action == "place order" && status.as_u16() == 400)
-        );
+        assert!(matches!(
+            error,
+            SchwabError::RequestFailed { action, status, .. }
+            if action == "place order" && status.as_u16() == 400
+        ));
     }
 
     fn create_test_env_with_mock_server(
@@ -1001,6 +1060,368 @@ mod tests {
                 .await
                 .unwrap_err(),
             SchwabError::Sqlx(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_get_order_status_success_filled() {
+        let server = httpmock::MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_status_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/ABC123DEF456/orders/ORDER123")
+                .header("authorization", "Bearer test_access_token")
+                .header("accept", "application/json");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "orderId": "ORDER123",
+                    "status": "FILLED",
+                    "filledQuantity": 100.0,
+                    "remainingQuantity": 0.0,
+                    "executionLegs": [
+                        {
+                            "executionId": "EXEC001",
+                            "quantity": 100.0,
+                            "price": 150.25,
+                            "time": "2023-10-15T10:30:00Z"
+                        }
+                    ],
+                    "enteredTime": "2023-10-15T10:25:00Z",
+                    "closeTime": "2023-10-15T10:30:00Z"
+                }));
+        });
+
+        let result = Order::get_order_status("ORDER123", &env, &pool).await;
+
+        account_mock.assert();
+        order_status_mock.assert();
+        let order_status = result.unwrap();
+        assert_eq!(order_status.order_id, Some("ORDER123".to_string()));
+        assert!(order_status.is_filled());
+        assert_eq!(order_status.filled_quantity, 100.0);
+        assert_eq!(
+            order_status.calculate_weighted_average_price(),
+            Some(150.25)
+        );
+        assert_eq!(order_status.price_in_cents().unwrap(), Some(15025));
+    }
+
+    #[tokio::test]
+    async fn test_get_order_status_success_working() {
+        let server = httpmock::MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_status_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/ABC123DEF456/orders/ORDER456")
+                .header("authorization", "Bearer test_access_token")
+                .header("accept", "application/json");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "orderId": "ORDER456",
+                    "status": "WORKING",
+                    "filledQuantity": 0.0,
+                    "remainingQuantity": 100.0,
+                    "executionLegs": [],
+                    "enteredTime": "2023-10-15T10:25:00Z",
+                    "closeTime": null
+                }));
+        });
+
+        let result = Order::get_order_status("ORDER456", &env, &pool).await;
+
+        account_mock.assert();
+        order_status_mock.assert();
+        let order_status = result.unwrap();
+        assert_eq!(order_status.order_id, Some("ORDER456".to_string()));
+        assert!(order_status.is_pending());
+        assert!(!order_status.is_filled());
+        assert_eq!(order_status.filled_quantity, 0.0);
+        assert_eq!(order_status.calculate_weighted_average_price(), None);
+    }
+
+    #[tokio::test]
+    async fn test_get_order_status_partially_filled() {
+        let server = httpmock::MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_status_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/ABC123DEF456/orders/ORDER789")
+                .header("authorization", "Bearer test_access_token")
+                .header("accept", "application/json");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "orderId": "ORDER789",
+                    "status": "WORKING",
+                    "filledQuantity": 75.0,
+                    "remainingQuantity": 25.0,
+                    "executionLegs": [
+                        {
+                            "executionId": "EXEC001",
+                            "quantity": 50.0,
+                            "price": 100.00,
+                            "time": "2023-10-15T10:30:00Z"
+                        },
+                        {
+                            "executionId": "EXEC002",
+                            "quantity": 25.0,
+                            "price": 101.00,
+                            "time": "2023-10-15T10:30:05Z"
+                        }
+                    ],
+                    "enteredTime": "2023-10-15T10:25:00Z",
+                    "closeTime": null
+                }));
+        });
+
+        let result = Order::get_order_status("ORDER789", &env, &pool).await;
+
+        account_mock.assert();
+        order_status_mock.assert();
+        let order_status = result.unwrap();
+        assert_eq!(order_status.order_id, Some("ORDER789".to_string()));
+        assert!(order_status.is_pending());
+        assert!(!order_status.is_filled());
+        assert_eq!(order_status.filled_quantity, 75.0);
+        // Weighted average: (50 * 100.00 + 25 * 101.00) / 75 = (5000 + 2525) / 75 = 100.33333
+        assert!(
+            (order_status.calculate_weighted_average_price().unwrap() - 100.333_333_333_333_33)
+                .abs()
+                < 0.000_001
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_order_status_order_not_found() {
+        let server = httpmock::MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_status_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/ABC123DEF456/orders/NONEXISTENT");
+            then.status(404)
+                .header("content-type", "application/json")
+                .json_body(json!({"error": "Order not found"}));
+        });
+
+        let result = Order::get_order_status("NONEXISTENT", &env, &pool).await;
+
+        account_mock.assert();
+        order_status_mock.assert();
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            SchwabError::RequestFailed { action, status, body }
+            if action == "get order status"
+                && status == reqwest::StatusCode::NOT_FOUND
+                && body.contains("NONEXISTENT")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_get_order_status_authentication_failure() {
+        let server = httpmock::MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_status_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/ABC123DEF456/orders/ORDER123");
+            then.status(401)
+                .header("content-type", "application/json")
+                .json_body(json!({"error": "Unauthorized"}));
+        });
+
+        let result = Order::get_order_status("ORDER123", &env, &pool).await;
+
+        account_mock.assert();
+        order_status_mock.assert();
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            SchwabError::RequestFailed { action, status, .. }
+            if action == "get order status" && status == reqwest::StatusCode::UNAUTHORIZED
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_get_order_status_server_error() {
+        let server = httpmock::MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_status_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/ABC123DEF456/orders/ORDER123");
+            then.status(500)
+                .header("content-type", "application/json")
+                .json_body(json!({"error": "Internal server error"}));
+        });
+
+        let result = Order::get_order_status("ORDER123", &env, &pool).await;
+
+        account_mock.assert();
+        order_status_mock.assert();
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            SchwabError::RequestFailed { action, status, .. }
+            if action == "get order status" && status == reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_get_order_status_invalid_json_response() {
+        let server = httpmock::MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_status_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/ABC123DEF456/orders/ORDER123");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body("invalid json response");
+        });
+
+        let result = Order::get_order_status("ORDER123", &env, &pool).await;
+
+        account_mock.assert();
+        order_status_mock.assert();
+        let error = result.unwrap_err();
+        assert!(matches!(error, SchwabError::Reqwest(_)));
+    }
+
+    #[tokio::test]
+    async fn test_get_order_status_retry_on_transient_failure() {
+        let server = httpmock::MockServer::start();
+        let env = create_test_env_with_mock_server(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let account_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        // Mock that fails initially but should be retried
+        let order_status_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/trader/v1/accounts/ABC123DEF456/orders/ORDER123");
+            then.status(502) // Bad Gateway - transient error
+                .header("content-type", "application/json")
+                .json_body(json!({"error": "Bad Gateway"}));
+        });
+
+        let result = Order::get_order_status("ORDER123", &env, &pool).await;
+
+        account_mock.assert();
+        // Should have made at least one request (retry logic is handled by backon)
+        assert!(order_status_mock.hits() >= 1);
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            SchwabError::RequestFailed { action, status, .. }
+            if action == "get order status" && status == reqwest::StatusCode::BAD_GATEWAY
         ));
     }
 

@@ -52,6 +52,9 @@ exploiting price discrepancies.
 ### Database Management
 
 - `sqlx db create` - Create the database
+- `sqlx db drop` - Drop the database
+- `sqlx db reset` - Drop database, recreate, and run pending migrations
+- `sqlx db setup` - Create database and run pending migrations
 - `sqlx migrate run` - Apply database migrations
 - `sqlx migrate revert` - Revert last migration
 - Database URL configured via `DATABASE_URL` environment variable
