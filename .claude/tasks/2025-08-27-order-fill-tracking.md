@@ -1,7 +1,7 @@
 # Order Fill Tracking Implementation Plan
 
-**Date:** 2025-08-27 **Task:** Implement order fill tracking during market hours
-to capture actual execution prices for P&L calculations
+**Date:** 2025-08-27 **Task:** Implement order fill tracking to capture actual
+execution prices for P&L calculations
 
 ## Current State Analysis
 
@@ -69,19 +69,37 @@ to capture actual execution prices for P&L calculations
 - Handle partial fills by tracking multiple execution legs
 - Validate that order IDs match expected format
 
-### Section 2: Order Status Polling API Client
+### Section 2: Order Status Polling API Client ✅ COMPLETED
 
 **Objective**: Implement HTTP client to fetch order status from Schwab API
 
 #### Tasks:
 
-- [ ] Add `get_order_status()` method to order placement module
-- [ ] Implement retry logic using existing `backon::ExponentialBuilder` pattern
-- [ ] Add proper error handling for 404 (order not found), 401 (auth), etc.
-- [ ] Extract fill price information from `executionLegs`
-- [ ] Calculate weighted average fill price for multiple executions
-- [ ] Add integration tests with `httpmock` similar to existing order placement
+- [x] Add `get_order_status()` method to order placement module
+- [x] Implement retry logic using existing `backon::ExponentialBuilder` pattern
+- [x] Add proper error handling for 404 (order not found), 401 (auth), etc.
+- [x] Extract fill price information from `executionLegs`
+- [x] Calculate weighted average fill price for multiple executions
+- [x] Add integration tests with `httpmock` similar to existing order placement
       tests
+
+#### Implementation Details:
+
+- **Added `Order::get_order_status()` static method** in `src/schwab/order.rs`
+  that fetches order status from Schwab API
+- **Integrated with existing OrderStatusResponse** from Section 1 for parsing
+  API responses
+- **Comprehensive error handling** for 404 (order not found), 401
+  (unauthorized), 500 (server error), and invalid JSON responses
+- **Retry logic** uses existing `backon::ExponentialBuilder` pattern consistent
+  with order placement
+- **8 comprehensive integration tests** covering success scenarios (filled,
+  working, partially filled), error scenarios (not found, auth failure, server
+  error), and retry behavior
+- **Weighted average price calculation** leverages methods from
+  OrderStatusResponse struct
+- **Authentication integration** uses existing `SchwabTokens` and account hash
+  retrieval patterns
 
 **Design Decisions**:
 
@@ -91,29 +109,91 @@ to capture actual execution prices for P&L calculations
   backoff)
 - Handle market hours vs after-hours orders (different status progression)
 - Support partial fills by aggregating execution leg data
+- Follow existing test patterns with httpmock for consistent test structure
 
-### Section 3: Order Status Polling Service
+### Section 3: Order Status Polling Service ⚠️ IN PROGRESS
 
 **Objective**: Background service to periodically check pending orders for fills
 
 #### Tasks:
 
-- [ ] Create `OrderStatusPoller` struct with configurable polling interval
-- [ ] Implement polling loop that queries all pending executions from database
-- [ ] Add per-order polling with jittered delays to avoid API rate limits
-- [ ] Update database when orders transition from PENDING to COMPLETED
-- [ ] Handle edge cases: order cancellations, partial fills, order modifications
-- [ ] Add comprehensive logging and error handling
-- [ ] Add graceful shutdown mechanism
+- [x] Create `OrderStatusPoller` struct with configurable polling interval
+- [x] Implement polling loop that queries all pending executions from database
+- [x] Add per-order polling with jittered delays to avoid API rate limits
+- [x] Update database when orders transition from PENDING to COMPLETED
+- [x] Handle edge cases: order cancellations, partial fills, order modifications
+- [x] Add comprehensive logging and error handling
+- [x] Add graceful shutdown mechanism
+- [x] Integrate with real order IDs from database (not placeholder)
+- [ ] Fix code quality violations per CLAUDE.md:
+  - [ ] Fix visibility levels (use pub(crate) instead of pub)
+  - [ ] Remove excessive nesting and use functional patterns
+  - [ ] Fix import conventions and qualified usage
+  - [ ] Inline variables in macros where possible
+- [ ] Remove all market hours related code (out of scope)
+- [ ] Run tests to verify all changes work correctly
+- [ ] Run clippy and fix all warnings
+- [ ] Run pre-commit hooks
+
+#### Implementation Details:
+
+- **Created `src/schwab/order_poller.rs`** with polling service implementation
+- **`OrderPollerConfig` struct** provides configurable polling behavior:
+  - Default 15-second polling interval
+  - Configurable jitter up to 5 seconds between orders
+  - Currently includes market hours field that needs removal
+- **`OrderStatusPoller` service** implements async polling loop with graceful
+  shutdown
+- **Database integration** uses existing
+  `find_executions_by_symbol_and_status()` to find pending orders
+- **Status update logic** converts order status responses to appropriate
+  TradeStatus transitions
+- **Graceful shutdown** via tokio watch channel for clean service termination
+
+**Implementation Issues Found**:
+
+1. **Database Schema Constraint**: Original migration prevented storing order_id
+   with PENDING status
+   - **Resolution**: Modified migration to allow order_id in PENDING status
+   - **Impact**: Required database recreation and test updates
+
+2. **Order Workflow Change**: System was immediately marking orders as COMPLETED
+   with price_cents: 0
+   - **Resolution**: Modified `handle_execution_success()` to store order_id
+     while keeping status PENDING
+   - **Impact**: All tests needed updates to expect PENDING status with order_id
+
+3. **Real Order ID Integration**: Initial implementation used placeholder logic
+   - **Resolution**: Implemented proper database query to fetch order_id from
+     PENDING executions
+   - **Impact**: Poller now correctly retrieves and uses real order IDs
+
+4. **Code Quality Issues** (Still need addressing):
+   - Excessive visibility levels violating CLAUDE.md guidelines
+   - Excessive nesting and imperative code patterns
+   - Import management violations
+   - Variables used in macros
+   - Market hours logic that is out of scope
 
 **Design Decisions**:
 
-- Poll every 10-30 seconds during market hours (configurable via environment)
-- Use existing `find_pending_executions_by_symbol()` to get orders needing
-  status checks
-- Implement jittered delays to avoid thundering herd against Schwab API
-- Only poll orders placed during current trading session (avoid stale orders)
-- Handle Schwab API rate limits gracefully with backoff
+- Poll every 15 seconds by default (configurable via `OrderPollerConfig`)
+- Use existing `find_executions_by_symbol_and_status()` to get pending orders
+- Implement deterministic jittered delays to avoid thundering herd against
+  Schwab API
+- Use tokio::select! for responsive shutdown signaling
+- Continue polling despite individual order failures to maintain service
+  resilience
+- Query database directly for order_id when processing PENDING executions
+
+**Integration Notes**:
+
+- **Database schema**: Modified to allow order_id storage in PENDING status
+- **Order placement**: Now stores order_id in PENDING executions (not
+  immediately COMPLETED)
+- **Test updates**: 291 tests passing after updates to expect new workflow
+- **Dead code warnings**: Expected until Section 5 integrates the poller into
+  main application
 
 ### Section 4: Database Integration
 
@@ -152,15 +232,13 @@ processing
 - [ ] Add proper error handling and restart logic for poller failures
 - [ ] Add health check endpoint or logging to monitor poller status
 - [ ] Ensure poller respects application shutdown signals
-- [ ] Add configuration options for polling behavior (interval, market hours,
-      etc.)
+- [ ] Add configuration options for polling behavior (interval, jitter)
 
 **Design Decisions**:
 
-- Start poller only during market hours (9:30 AM - 4:00 PM ET, configurable)
+- Run poller continuously when application is active
 - Use existing `Env` configuration pattern for poller settings
 - Coordinate with existing blockchain event processing without blocking
-- Handle timezone conversion for market hours detection
 
 ### Section 6: Testing Strategy
 
@@ -182,15 +260,8 @@ processing
   `src/schwab/execution.rs`
 - Use in-memory SQLite for database tests to ensure isolation
 - Mock various Schwab API responses (partial fills, full fills, cancellations)
-- Test market hours boundary conditions and timezone handling
 
 ## Technical Considerations
-
-### Market Hours Handling
-
-- Only poll orders during active trading hours (9:30 AM - 4:00 PM ET)
-- Handle extended hours trading if supported by Schwab API
-- Gracefully handle market holidays and early closures
 
 ### API Rate Limiting
 
@@ -220,8 +291,8 @@ processing
 
 1. **Accurate Fill Prices**: All completed orders have actual execution prices
    from Schwab API
-2. **Real-time Updates**: Orders are detected as filled within 30 seconds during
-   market hours
+2. **Real-time Updates**: Orders are detected as filled within 30 seconds of
+   execution
 3. **Reliability**: System handles API failures gracefully without losing fill
    data
 4. **Performance**: Polling does not impact main blockchain event processing
@@ -241,6 +312,6 @@ processing
 
 ## Implementation Priority
 
-This plan focuses exclusively on capturing fill prices during market hours when
-orders execute nearly instantly. The polling approach is suitable for this use
-case and provides the foundation for future P&L calculations.
+This plan focuses exclusively on capturing fill prices when orders execute. The
+polling approach provides the foundation for future P&L calculations and order
+management features.
