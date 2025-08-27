@@ -8,6 +8,7 @@ use thiserror::Error;
 pub(crate) mod auth;
 pub(crate) mod execution;
 pub(crate) mod order;
+pub(crate) mod order_status;
 pub(crate) mod tokens;
 
 pub(crate) use auth::SchwabAuthEnv;
