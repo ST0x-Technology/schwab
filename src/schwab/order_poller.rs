@@ -185,7 +185,7 @@ impl OrderStatusPoller {
                 SchwabError::InvalidConfiguration("Missing execution price".to_string())
             })?;
 
-        let new_status = TradeState::Filled {
+        let new_state = TradeState::Filled {
             executed_at: Utc::now(),
             order_id: order_status
                 .order_id
@@ -194,7 +194,7 @@ impl OrderStatusPoller {
             price_cents,
         };
 
-        self.update_execution_status(execution_id, new_status)
+        self.update_execution_status(execution_id, new_state)
             .await?;
 
         info!(
@@ -210,12 +210,12 @@ impl OrderStatusPoller {
         execution_id: i64,
         order_status: &super::order_status::OrderStatusResponse,
     ) -> Result<(), SchwabError> {
-        let new_status = TradeState::Failed {
+        let new_state = TradeState::Failed {
             failed_at: Utc::now(),
             error_reason: Some(format!("Order status: {:?}", order_status.status)),
         };
 
-        self.update_execution_status(execution_id, new_status)
+        self.update_execution_status(execution_id, new_state)
             .await?;
 
         info!(
@@ -229,10 +229,10 @@ impl OrderStatusPoller {
     async fn update_execution_status(
         &self,
         execution_id: i64,
-        new_status: TradeState,
+        new_state: TradeState,
     ) -> Result<(), SchwabError> {
         let mut tx = self.pool.begin().await?;
-        update_execution_status_within_transaction(&mut tx, execution_id, new_status).await?;
+        update_execution_status_within_transaction(&mut tx, execution_id, new_state).await?;
         tx.commit().await?;
         Ok(())
     }

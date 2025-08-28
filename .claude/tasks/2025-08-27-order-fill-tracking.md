@@ -470,7 +470,8 @@ functions, and makes the code much more functional and type-safe.
       actual price
 - [ ] Update `update_execution_status_within_transaction()` to handle real price
       data
-- [ ] Add database migration if needed for additional fill tracking fields
+- [ ] Modify the database migration if needed for additional fill tracking
+      fields
 - [ ] Add audit logging for price updates (before/after values)
 - [ ] Ensure atomicity between status update and price recording
 - [ ] Add database constraints to prevent price_cents being NULL for COMPLETED

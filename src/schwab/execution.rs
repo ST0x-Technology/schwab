@@ -62,10 +62,10 @@ pub(crate) struct SchwabExecution {
 pub(crate) async fn update_execution_status_within_transaction(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     execution_id: i64,
-    new_status: TradeState,
+    new_state: TradeState,
 ) -> Result<(), sqlx::Error> {
-    let status_str = new_status.status_str();
-    let db_fields = new_status
+    let status_str = new_state.status_str();
+    let db_fields = new_state
         .to_db_fields()
         .map_err(|_| sqlx::Error::Protocol("Invalid state data for database conversion".into()))?;
 
