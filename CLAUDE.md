@@ -270,6 +270,140 @@ Environment variables (can be set via `.env` file):
   codebase easier to navigate and understand by making the relevance scope
   explicit
 
+### CRITICAL: Financial Data Integrity
+
+**This is a mission-critical financial application. The following patterns are
+STRICTLY FORBIDDEN and can result in catastrophic financial losses:**
+
+#### ❌ NEVER: Silent Error Masking or Data Corruption
+
+**NEVER** write code that silently provides wrong values, hides conversion
+errors, or masks failures in any way. This includes but is not limited to:
+
+- Defensive value capping that hides overflow/underflow
+- Fallback to default values on conversion failure
+- Silent truncation of precision
+- Using `unwrap_or(default_value)` on financial calculations
+- Using `unwrap_or_default()` on monetary values
+- Conversion functions that "gracefully degrade" instead of failing
+
+**Example of FORBIDDEN patterns:**
+
+```rust
+// ❌ CATASTROPHICALLY DANGEROUS - Silent data corruption
+const fn shares_to_db_i64(value: u64) -> i64 {
+    if value > i64::MAX as u64 {
+        i64::MAX  // WRONG: Silently caps at wrong value
+    } else {
+        value as i64
+    }
+}
+
+// ❌ DANGEROUS - Hides conversion errors
+fn parse_price(input: &str) -> f64 {
+    input.parse().unwrap_or(0.0)  // WRONG: 0.0 is not a safe fallback for prices
+}
+
+// ❌ DANGEROUS - Silent precision loss
+fn convert_to_cents(dollars: f64) -> i64 {
+    (dollars * 100.0) as i64  // WRONG: Truncates fractional cents
+}
+
+// ❌ DANGEROUS - Masks database constraint violations
+async fn save_trade_amount(amount: Decimal, pool: &Pool) -> Result<(), Error> {
+    let safe_amount = amount.min(Decimal::MAX).max(Decimal::ZERO);  // WRONG
+    sqlx::query!("INSERT INTO trades (amount) VALUES (?)", safe_amount)
+        .execute(pool).await?;
+    Ok(())
+}
+```
+
+#### ✅ REQUIRED: Explicit Error Handling
+
+**ALL financial operations must use explicit error handling with proper error
+propagation:**
+
+```rust
+// ✅ CORRECT - Explicit conversion with proper error handling
+fn shares_to_db_i64(value: u64) -> Result<i64, ConversionError> {
+    value.try_into()
+        .map_err(|_| ConversionError::ValueTooLarge { 
+            value, 
+            max_allowed: i64::MAX as u64 
+        })
+}
+
+// ✅ CORRECT - Parse with explicit error
+fn parse_price(input: &str) -> Result<Decimal, ParseError> {
+    Decimal::from_str(input)
+        .map_err(|e| ParseError::InvalidPrice { 
+            input: input.to_string(), 
+            source: e 
+        })
+}
+
+// ✅ CORRECT - Checked arithmetic for precision-critical operations
+fn convert_to_cents(dollars: Decimal) -> Result<i64, ArithmeticError> {
+    let cents = dollars.checked_mul(Decimal::from(100))
+        .ok_or(ArithmeticError::Overflow)?;
+    
+    if cents.fract() != Decimal::ZERO {
+        return Err(ArithmeticError::FractionalCents { value: cents });
+    }
+    
+    cents.to_i64()
+        .ok_or(ArithmeticError::ConversionFailed { value: cents })
+}
+
+// ✅ CORRECT - Let database constraints fail naturally
+async fn save_trade_amount(amount: Decimal, pool: &Pool) -> Result<(), DatabaseError> {
+    sqlx::query!("INSERT INTO trades (amount) VALUES (?)", amount)
+        .execute(pool)
+        .await
+        .map_err(DatabaseError::from)?;
+    Ok(())
+}
+```
+
+#### Error Categories That Must Fail Fast
+
+1. **Numeric Conversions**: Any conversion between numeric types must use
+   `try_into()` or equivalent
+2. **Precision Loss**: Operations that could lose precision must be explicit
+   about it
+3. **Range Violations**: Values outside expected ranges must error, not clamp
+4. **Parse Failures**: String-to-number parsing must propagate parse errors
+5. **Arithmetic Operations**: Use checked arithmetic for all financial
+   calculations
+6. **Database Constraints**: Let database constraints fail rather than masking
+   violations
+
+#### Required Error Types
+
+Every financial operation must have proper error types that preserve context:
+
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum FinancialError {
+    #[error("Value {value} exceeds maximum allowed {max_allowed}")]
+    ValueTooLarge { value: u64, max_allowed: u64 },
+    
+    #[error("Arithmetic overflow in operation: {operation}")]
+    ArithmeticOverflow { operation: String },
+    
+    #[error("Precision loss detected: {original} -> {converted}")]
+    PrecisionLoss { original: String, converted: String },
+    
+    #[error("Invalid price format: '{input}'")]
+    InvalidPrice { input: String, #[source] source: DecimalError },
+}
+```
+
+**Remember: In financial applications, it is ALWAYS better for the system to
+fail fast with a clear error than to continue with potentially corrupted data.
+Silent data corruption in financial systems can lead to massive losses,
+regulatory violations, and complete system failure.**
+
 ### Testing Strategy
 
 - **Mock Blockchain Interactions**: Uses `alloy::providers::mock::Asserter` for
