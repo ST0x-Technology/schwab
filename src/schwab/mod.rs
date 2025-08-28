@@ -13,6 +13,7 @@ pub(crate) mod order_status;
 pub(crate) mod tokens;
 
 pub(crate) use auth::SchwabAuthEnv;
+pub(crate) use order_poller::{OrderPollerConfig, OrderStatusPoller};
 pub(crate) use tokens::SchwabTokens;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -148,8 +148,6 @@ pub(crate) async fn update_execution_status_within_transaction(
 }
 
 /// Find executions with SUBMITTED status (orders that have been submitted and can be polled)
-// TODO: Remove #[allow(dead_code)] when integrating order poller in Section 5
-#[allow(dead_code)]
 pub(crate) async fn find_submitted_executions_by_symbol(
     pool: &SqlitePool,
     symbol: &str,
@@ -158,8 +156,6 @@ pub(crate) async fn find_submitted_executions_by_symbol(
 }
 
 /// Find executions with PENDING status (orders that have not been submitted yet)
-// TODO: Remove #[allow(dead_code)] when integrating order poller in Section 5
-#[allow(dead_code)]
 pub(crate) async fn find_pending_executions_by_symbol(
     pool: &SqlitePool,
     symbol: &str,
@@ -176,8 +172,6 @@ pub(crate) async fn find_filled_executions_by_symbol(
     find_executions_by_symbol_and_status(pool, symbol, "FILLED").await
 }
 
-// TODO: Remove #[allow(dead_code)] when integrating order poller in Section 5
-#[allow(dead_code)]
 pub(crate) async fn find_executions_by_symbol_and_status(
     pool: &SqlitePool,
     symbol: &str,
