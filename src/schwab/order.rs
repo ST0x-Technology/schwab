@@ -14,7 +14,7 @@ use super::{
     order_status::OrderStatusResponse,
 };
 use crate::env::Env;
-use crate::schwab::TradeStatus;
+use crate::schwab::TradeState;
 
 /// Response from Schwab order placement API.
 /// According to Schwab OpenAPI spec, successful order placement (201) returns
@@ -363,7 +363,7 @@ async fn handle_execution_success(
     update_execution_status_within_transaction(
         &mut sql_tx,
         execution_id,
-        TradeStatus::Submitted { order_id },
+        TradeState::Submitted { order_id },
     )
     .await
     .map_err(|e| {
@@ -399,7 +399,7 @@ async fn handle_execution_failure(
     if let Err(update_err) = update_execution_status_within_transaction(
         &mut sql_tx,
         execution_id,
-        TradeStatus::Failed {
+        TradeState::Failed {
             failed_at: Utc::now(),
             error_reason: Some(error.to_string()),
         },
@@ -948,7 +948,6 @@ mod tests {
     async fn test_execution_success_handling() {
         use super::super::execution::SchwabExecution;
         use crate::schwab::SchwabInstruction;
-        use crate::schwab::TradeStatus;
 
         let pool = setup_test_db().await;
 
@@ -959,7 +958,7 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 100,
             direction: SchwabInstruction::Buy,
-            status: TradeStatus::Pending,
+            state: TradeState::Pending,
         };
 
         let execution_id = execution
@@ -981,15 +980,14 @@ mod tests {
 
         // Status should be Submitted with order_id since order poller will update it when filled
         assert!(matches!(
-            updated_execution.status,
-            TradeStatus::Submitted { ref order_id } if order_id == "ORDER123"
+            updated_execution.state,
+            TradeState::Submitted { ref order_id } if order_id == "ORDER123"
         ));
     }
 
     #[tokio::test]
     async fn test_execution_failure_handling() {
         use super::super::execution::SchwabExecution;
-        use crate::schwab::TradeStatus;
         use crate::schwab::{SchwabError, SchwabInstruction};
 
         let pool = setup_test_db().await;
@@ -1001,7 +999,7 @@ mod tests {
             symbol: "TSLA".to_string(),
             shares: 50,
             direction: SchwabInstruction::Sell,
-            status: TradeStatus::Pending,
+            state: TradeState::Pending,
         };
 
         let execution_id = execution
@@ -1026,8 +1024,8 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        match &updated_execution.status {
-            TradeStatus::Failed { .. } => {
+        match &updated_execution.state {
+            TradeState::Failed { .. } => {
                 // Test passes - execution was properly marked as failed
                 // Note: error_reason is not persisted in database yet, so we don't test it
             }

@@ -5,7 +5,7 @@ use super::{OnchainTrade, trade_execution_link::TradeExecutionLink};
 use crate::error::{OnChainError, TradeValidationError};
 use crate::lock::{clear_execution_lease, set_pending_execution_id, try_acquire_execution_lease};
 use crate::onchain::position_calculator::{ExecutionType, PositionCalculator};
-use crate::schwab::TradeStatus;
+use crate::schwab::TradeState;
 use crate::schwab::{Direction, execution::SchwabExecution};
 
 pub async fn add_trade(
@@ -331,7 +331,7 @@ async fn create_execution_within_transaction(
         symbol: symbol.to_string(),
         shares,
         direction,
-        status: TradeStatus::Pending,
+        state: TradeState::Pending,
     };
 
     let execution_id = execution.save_within_transaction(sql_tx).await?;
@@ -579,7 +579,7 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 50,
             direction: Direction::Buy,
-            status: TradeStatus::Pending,
+            state: TradeState::Pending,
         };
         let mut sql_tx = pool.begin().await.unwrap();
         blocking_execution

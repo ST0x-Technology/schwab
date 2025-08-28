@@ -89,12 +89,9 @@ impl TradeExecutionLink {
                     )
                 })?;
 
-                let execution_status = parse_trade_status_from_db(
-                    &row.status,
-                    row.order_id.as_deref(),
-                    row.price_cents,
-                    row.executed_at,
-                )?;
+                let execution_status = row.status.parse::<TradeStatus>().map_err(|e| {
+                    OnChainError::Persistence(crate::error::PersistenceError::InvalidTradeStatus(e))
+                })?;
 
                 Ok(ExecutionContribution {
                     link_id: row.id,
@@ -291,69 +288,10 @@ pub struct AuditTrailEntry {
 }
 
 #[cfg(test)]
-fn parse_trade_status_from_db(
-    status: &str,
-    order_id: Option<&str>,
-    price_cents: Option<i64>,
-    executed_at: Option<chrono::NaiveDateTime>,
-) -> Result<TradeStatus, OnChainError> {
-    match status {
-        "PENDING" => Ok(TradeStatus::Pending),
-        "COMPLETED" => {
-            let order_id = order_id.ok_or(OnChainError::Persistence(
-                crate::error::PersistenceError::InvalidTradeStatus(
-                    "COMPLETED status missing order_id".to_string(),
-                ),
-            ))?;
-            let price_cents = price_cents.ok_or(OnChainError::Persistence(
-                crate::error::PersistenceError::InvalidTradeStatus(
-                    "COMPLETED status missing price_cents".to_string(),
-                ),
-            ))?;
-            let executed_at = executed_at.ok_or(OnChainError::Persistence(
-                crate::error::PersistenceError::InvalidTradeStatus(
-                    "COMPLETED status missing executed_at".to_string(),
-                ),
-            ))?;
-
-            if price_cents < 0 {
-                return Err(OnChainError::Persistence(
-                    crate::error::PersistenceError::InvalidTradeStatus(format!(
-                        "COMPLETED status has negative price_cents: {price_cents}"
-                    )),
-                ));
-            }
-
-            #[allow(clippy::cast_sign_loss)]
-            Ok(TradeStatus::Filled {
-                executed_at: DateTime::from_naive_utc_and_offset(executed_at, Utc),
-                order_id: order_id.to_string(),
-                price_cents: price_cents as u64,
-            })
-        }
-        "FAILED" => {
-            let executed_at = executed_at.ok_or(OnChainError::Persistence(
-                crate::error::PersistenceError::InvalidTradeStatus(
-                    "FAILED status missing executed_at".to_string(),
-                ),
-            ))?;
-
-            Ok(TradeStatus::Failed {
-                failed_at: DateTime::from_naive_utc_and_offset(executed_at, Utc),
-                error_reason: None, // Database doesn't store error reason currently
-            })
-        }
-        _ => Err(OnChainError::Persistence(
-            crate::error::PersistenceError::InvalidTradeStatus(format!("Invalid status: {status}")),
-        )),
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::onchain::OnchainTrade;
-    use crate::schwab::execution::SchwabExecution;
+    use crate::schwab::{TradeState, execution::SchwabExecution};
     use crate::test_utils::setup_test_db;
     use alloy::primitives::fixed_bytes;
     use chrono::Utc;
@@ -381,7 +319,7 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 1,
             direction: Direction::Sell,
-            status: TradeStatus::Pending,
+            state: TradeState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -452,7 +390,7 @@ mod tests {
             symbol: "MSFT".to_string(),
             shares: 1,
             direction: Direction::Buy,
-            status: TradeStatus::Filled {
+            state: TradeState::Filled {
                 executed_at: Utc::now(),
                 order_id: "ORDER123".to_string(),
                 price_cents: 30250,
@@ -501,7 +439,7 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 1,
             direction: Direction::Sell,
-            status: TradeStatus::Pending,
+            state: TradeState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -578,7 +516,7 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 1,
             direction: Direction::Buy,
-            status: TradeStatus::Pending,
+            state: TradeState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();

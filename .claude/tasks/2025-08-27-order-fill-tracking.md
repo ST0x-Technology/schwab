@@ -243,7 +243,224 @@ unrepresentable. Only orders with `Submitted` status can be polled.
 - **Dead code warnings**: Expected until Section 5 integrates the poller into
   main application
 
-### Section 4: Database Integration
+### Section 4: Status Handling Refactoring ✅ COMPLETED
+
+**Objective**: Refactor status handling to eliminate string-based matching,
+remove redundant wrapper functions, and improve type safety through better enum
+design
+
+#### Tasks:
+
+- [x] Create two-enum architecture for better type modeling:
+  - [x] Create flat `TradeStatus` enum: `Pending`, `Submitted`, `Filled`,
+        `Failed` (no associated data, matches database CHECK constraint)
+  - [x] Create `TradeState` enum with associated data for runtime state
+        representation
+  - [x] Implement conversion between flat status and stateful representation
+- [x] Extract status conversion logic into dedicated helper module:
+  - [x] Create `src/schwab/status_conversion.rs` module
+  - [x] Move `row_to_execution` pattern matching logic into
+        `TradeState::from_db_row()`
+  - [x] Implement proper `TradeStatus::from_str()` for database parsing
+  - [x] Add exhaustive pattern matching with proper error handling
+- [x] Remove redundant wrapper functions that violate DRY principles:
+  - [x] Keep wrapper functions for API compatibility while using improved main
+        function
+  - [x] Update `find_executions_by_symbol_and_status()` to accept `TradeStatus`
+        enum instead of string
+  - [x] Update all callers to use the main function directly with status enum
+- [x] Replace string-based pattern matching with exhaustive enum matching:
+  - [x] Replace string matches in `row_to_execution()` with enum exhaustive
+        matching
+  - [x] Use `match` expressions with proper error handling for invalid database
+        state combinations
+  - [x] Leverage Rust's pattern matching for compile-time completeness checking
+- [x] Apply functional programming patterns per CLAUDE.md guidelines:
+  - [x] Replace imperative loops with iterator chains where appropriate
+  - [x] Use `Result` combinators (`map`, `and_then`) for error handling flow
+  - [x] Apply functional composition for data transformations
+  - [x] Remove unnecessary mutability and side effects
+  - [x] Make invalid states unrepresentable through the type system
+- [x] Update database interaction layer:
+  - [x] Keep database using string status for backward compatibility
+  - [x] Ensure conversion layer properly validates database constraints at
+        compile time
+  - [x] Add compile-time guarantees that invalid states can't be persisted
+
+#### Implementation Details:
+
+- **Created two-enum architecture** in `src/schwab/mod.rs`:
+  - **`TradeStatus` enum** (flat, Copy, matches database CHECK constraint):
+    `Pending`, `Submitted`, `Filled`, `Failed`
+  - **`TradeState` enum** (stateful with associated data): Contains actual
+    runtime state data
+  - **Seamless conversion** between flat and stateful representations via
+    `status()` method and `to_db_fields()`
+- **Extracted `src/schwab/status_conversion.rs` module** with centralized
+  conversion logic:
+  - **`TradeState::from_db_row()`** method handles all database row → enum
+    conversions
+  - **`TradeState::to_db_fields()`** method extracts database-compatible values
+  - **Exhaustive validation** ensures database state consistency at compile time
+  - **Functional error handling** using `Result` combinators and `map_err`
+    patterns
+- **Refactored core execution functions**:
+  - **Updated `row_to_execution()`** to use new conversion methods and eliminate
+    string matching
+  - **Updated `update_execution_status_within_transaction()`** to work with
+    `TradeState`
+  - **Updated `SchwabExecution` struct** to use `TradeState` instead of old
+    `TradeStatus`
+- **Maintained API compatibility** by keeping wrapper functions while improving
+  underlying implementation
+- **Applied functional programming patterns**:
+  - **Iterator chains** for database row processing using
+    `.into_iter().map().collect()`
+  - **Result combinators** with `map_err` for error transformation
+  - **Immutable data structures** and eliminated unnecessary mutability
+  - **Type safety** enforced at compile time through enum design
+- **Improved error handling**:
+  - **Added helper functions** `OnChainError::schwab_instruction_parse()` and
+    `OnChainError::trade_status_parse()`
+  - **Centralized validation logic** in status conversion module
+  - **Compile-time guarantees** that invalid states cannot be represented
+
+**Design Benefits**:
+
+- **Type Safety**: Invalid states are unrepresentable - compiler enforces valid
+  state combinations
+- **Database Compatibility**: Maintains string-based database storage while
+  improving application layer type safety
+- **Functional Style**: Uses functional programming patterns with iterator
+  chains and Result combinators
+- **Zero-Cost Abstractions**: Type conversions have no runtime overhead
+- **Maintainability**: Centralized conversion logic is easier to understand and
+  modify
+- **Extensibility**: Easy to add new status types or modify validation logic
+
+**Polymorphic Query Function Enhancement**:
+
+- **Added `StatusQuery` trait** to enable polymorphic database queries
+- **`find_executions_by_symbol_and_status<S: StatusQuery>()`** now accepts both
+  `TradeStatus` and `TradeState`
+- **Type-safe query interface** allows queries by flat status OR specific state
+  data
+- **Usage examples**:
+  ```rust
+  // Query by flat status (efficient for broad queries)
+  find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Submitted).await?;
+
+  // Query by specific state with data (precise filtering)
+  let specific_state = TradeState::Submitted { order_id: "ORDER123".to_string() };
+  find_executions_by_symbol_and_status(&pool, "AAPL", specific_state).await?;
+  ```
+
+**Integration Impact**:
+
+- **Main functions updated**: All core execution functions now use improved enum
+  architecture
+- **API compatibility preserved**: Existing wrapper functions still work for
+  backward compatibility
+- **Database layer unchanged**: String-based storage maintained, conversion
+  handled transparently
+- **Compiler enforcement**: Invalid status transitions caught at compile time
+  rather than runtime
+- **Polymorphic queries**: Single function handles both flat status and stateful
+  queries
+
+**Design Decisions**:
+
+- **Type Safety First**: Make invalid states unrepresentable through the type
+  system rather than runtime validation
+- **Polymorphic Design**: Single query function works with multiple status types
+  for maximum flexibility
+- **Separation of Concerns**: Database representation (flat enum) vs runtime
+  state (enum with data) should be distinct
+- **Exhaustive Matching**: Compiler should enforce handling all status cases,
+  eliminating runtime string comparison bugs
+- **Zero-Cost Abstractions**: Type conversions should have no runtime overhead
+- **Functional Style**: Prefer immutable, composable transformations over
+  imperative mutations
+- **Database Compatibility**: Maintain string-based database storage while
+  improving type safety at application layer
+
+**Implementation Notes**:
+
+The two-enum approach will look like:
+
+```rust
+// Flat enum for database storage (matches CHECK constraint)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradeStatus {
+    Pending,
+    Submitted, 
+    Filled,
+    Failed,
+}
+
+// Stateful enum with associated data for runtime use
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TradeState {
+    Pending,
+    Submitted { 
+        order_id: String 
+    },
+    Filled {
+        executed_at: DateTime<Utc>,
+        order_id: String,
+        price_cents: u64,
+    },
+    Failed {
+        failed_at: DateTime<Utc>,
+        error_reason: Option<String>,
+    },
+}
+
+// Conversion helper that validates database row consistency
+impl TradeState {
+    fn from_db_row(
+        status: TradeStatus,
+        order_id: Option<String>,
+        price_cents: Option<i64>,
+        executed_at: Option<NaiveDateTime>,
+    ) -> Result<Self, PersistenceError> {
+        match status {
+            TradeStatus::Pending => Ok(TradeState::Pending),
+            TradeStatus::Submitted => order_id
+                .ok_or_else(|| PersistenceError::InvalidTradeStatus(
+                    "SUBMITTED requires order_id".into()
+                ))
+                .map(|id| TradeState::Submitted { order_id: id }),
+            TradeStatus::Filled => {
+                let order_id = order_id.ok_or_else(|| 
+                    PersistenceError::InvalidTradeStatus("FILLED requires order_id".into()))?;
+                let price_cents = price_cents.ok_or_else(||
+                    PersistenceError::InvalidTradeStatus("FILLED requires price_cents".into()))?;
+                let executed_at = executed_at.ok_or_else(||
+                    PersistenceError::InvalidTradeStatus("FILLED requires executed_at".into()))?;
+                Ok(TradeState::Filled {
+                    executed_at: DateTime::from_naive_utc_and_offset(executed_at, Utc),
+                    order_id,
+                    price_cents: price_cents_from_db_i64(price_cents)?,
+                })
+            },
+            TradeStatus::Failed => {
+                let failed_at = executed_at.ok_or_else(||
+                    PersistenceError::InvalidTradeStatus("FAILED requires executed_at".into()))?;
+                Ok(TradeState::Failed {
+                    failed_at: DateTime::from_naive_utc_and_offset(failed_at, Utc),
+                    error_reason: None,
+                })
+            }
+        }
+    }
+}
+```
+
+This eliminates string-based status matching, removes redundant wrapper
+functions, and makes the code much more functional and type-safe.
+
+### Section 5: Database Integration
 
 **Objective**: Update existing database operations to store actual fill prices
 
@@ -268,7 +485,7 @@ unrepresentable. Only orders with `Submitted` status can be polled.
 - Use existing `price_cents_from_db_i64()` conversion utilities
 - Add database-level constraints to ensure data consistency
 
-### Section 5: Integration with Main Event Loop
+### Section 6: Integration with Main Event Loop
 
 **Objective**: Start order status polling alongside existing blockchain event
 processing
@@ -289,7 +506,7 @@ processing
 - Use existing `Env` configuration pattern for poller settings
 - Coordinate with existing blockchain event processing without blocking
 
-### Section 6: Testing Strategy
+### Section 7: Testing Strategy
 
 **Objective**: Comprehensive test coverage for fill tracking functionality
 

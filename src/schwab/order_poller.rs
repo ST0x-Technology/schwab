@@ -10,7 +10,7 @@ use super::execution::{
     update_execution_status_within_transaction,
 };
 use super::order::Order;
-use super::{SchwabAuthEnv, SchwabError, TradeStatus};
+use super::{SchwabAuthEnv, SchwabError, TradeState, TradeStatus};
 
 // TODO: Remove #[allow(dead_code)] when integrating order poller in Section 5
 #[allow(dead_code)]
@@ -88,7 +88,7 @@ impl OrderStatusPoller {
         debug!("Starting polling cycle for submitted orders");
 
         let submitted_executions =
-            find_executions_by_symbol_and_status(&self.pool, "", "SUBMITTED")
+            find_executions_by_symbol_and_status(&self.pool, "", TradeStatus::Submitted)
                 .await
                 .map_err(|e| {
                     error!("Failed to query pending executions: {e}");
@@ -137,15 +137,15 @@ impl OrderStatusPoller {
                 SchwabError::InvalidConfiguration("Execution not found".to_string())
             })?;
 
-        let order_id = match &execution.status {
-            TradeStatus::Pending => {
+        let order_id = match &execution.state {
+            TradeState::Pending => {
                 debug!("Execution {execution_id} is PENDING but no order_id yet");
                 return Ok(());
             }
-            TradeStatus::Submitted { order_id } | TradeStatus::Filled { order_id, .. } => {
+            TradeState::Submitted { order_id } | TradeState::Filled { order_id, .. } => {
                 order_id.clone()
             }
-            TradeStatus::Failed { .. } => {
+            TradeState::Failed { .. } => {
                 debug!("Execution {execution_id} already failed, skipping poll");
                 return Ok(());
             }
@@ -185,7 +185,7 @@ impl OrderStatusPoller {
                 SchwabError::InvalidConfiguration("Missing execution price".to_string())
             })?;
 
-        let new_status = TradeStatus::Filled {
+        let new_status = TradeState::Filled {
             executed_at: Utc::now(),
             order_id: order_status
                 .order_id
@@ -210,7 +210,7 @@ impl OrderStatusPoller {
         execution_id: i64,
         order_status: &super::order_status::OrderStatusResponse,
     ) -> Result<(), SchwabError> {
-        let new_status = TradeStatus::Failed {
+        let new_status = TradeState::Failed {
             failed_at: Utc::now(),
             error_reason: Some(format!("Order status: {:?}", order_status.status)),
         };
@@ -229,7 +229,7 @@ impl OrderStatusPoller {
     async fn update_execution_status(
         &self,
         execution_id: i64,
-        new_status: TradeStatus,
+        new_status: TradeState,
     ) -> Result<(), SchwabError> {
         let mut tx = self.pool.begin().await?;
         update_execution_status_within_transaction(&mut tx, execution_id, new_status).await?;
@@ -318,7 +318,7 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 100,
             direction: Direction::Buy,
-            status: TradeStatus::Pending,
+            state: TradeState::Pending,
         };
 
         let mut tx = pool.begin().await.unwrap();
