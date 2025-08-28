@@ -12,8 +12,6 @@ use super::execution::{
 use super::order::Order;
 use super::{SchwabAuthEnv, SchwabError, TradeState, TradeStatus};
 
-// TODO: Remove #[allow(dead_code)] when integrating order poller in Section 5
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct OrderPollerConfig {
     pub(crate) polling_interval: Duration,
@@ -29,8 +27,6 @@ impl Default for OrderPollerConfig {
     }
 }
 
-// TODO: Remove #[allow(dead_code)] when integrating order poller in Section 5
-#[allow(dead_code)]
 pub(crate) struct OrderStatusPoller {
     config: OrderPollerConfig,
     env: SchwabAuthEnv,
@@ -39,8 +35,6 @@ pub(crate) struct OrderStatusPoller {
     shutdown_rx: watch::Receiver<bool>,
 }
 
-// TODO: Remove #[allow(dead_code)] when integrating order poller in Section 5
-#[allow(dead_code)]
 impl OrderStatusPoller {
     pub(crate) fn new(
         config: OrderPollerConfig,

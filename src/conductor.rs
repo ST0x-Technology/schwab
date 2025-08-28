@@ -63,6 +63,30 @@ where
     S2: Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin + Send + 'static,
     P: Provider + Clone,
 {
+    // Set up shutdown signaling for order poller
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    // Start order status poller as background task
+    let order_poller_config = env.get_order_poller_config();
+    info!(
+        "Starting order status poller with interval: {:?}, max jitter: {:?}",
+        order_poller_config.polling_interval, order_poller_config.max_jitter
+    );
+    let order_poller = crate::schwab::OrderStatusPoller::new(
+        order_poller_config,
+        env.schwab_auth.clone(),
+        pool.clone(),
+        shutdown_rx,
+    );
+
+    let order_poller_task = tokio::spawn(async move {
+        if let Err(e) = order_poller.run().await {
+            error!("Order poller failed: {e}");
+        } else {
+            info!("Order poller completed successfully");
+        }
+    });
+
     let (event_sender, mut event_receiver) =
         tokio::sync::mpsc::unbounded_channel::<(TradeEvent, Log)>();
 
@@ -107,8 +131,21 @@ where
         }
     }
 
-    error!("Event processing loop ended unexpectedly");
-    event_reception_task.await?;
+    info!("Event processing loop ended, shutting down order poller");
+    // Signal order poller to shutdown
+    if let Err(e) = shutdown_tx.send(true) {
+        error!("Failed to send shutdown signal to order poller: {e}");
+    }
+
+    // Wait for tasks to complete
+    if let Err(e) = event_reception_task.await {
+        error!("Event reception task failed: {e}");
+    }
+    if let Err(e) = order_poller_task.await {
+        error!("Order poller task failed: {e}");
+    }
+
+    info!("All background tasks completed");
     Ok(())
 }
 

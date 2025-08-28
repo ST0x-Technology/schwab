@@ -89,6 +89,8 @@ impl CliEnv {
             log_level: cli_env.log_level,
             schwab_auth: cli_env.schwab_auth,
             evm_env: cli_env.evm_env,
+            order_polling_interval: 15,
+            order_polling_max_jitter: 5,
         };
 
         Ok((env, cli_env.command))
@@ -837,6 +839,8 @@ mod tests {
                 ),
                 deployment_block: 1,
             },
+            order_polling_interval: 15,
+            order_polling_max_jitter: 5,
         }
     }
 
