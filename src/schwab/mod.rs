@@ -8,6 +8,8 @@ use thiserror::Error;
 pub(crate) mod auth;
 pub(crate) mod execution;
 pub(crate) mod order;
+pub(crate) mod order_poller;
+pub(crate) mod order_status;
 pub(crate) mod tokens;
 
 pub(crate) use auth::SchwabAuthEnv;
@@ -16,7 +18,10 @@ pub(crate) use tokens::SchwabTokens;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TradeStatus {
     Pending,
-    Completed {
+    Submitted {
+        order_id: String,
+    },
+    Filled {
         executed_at: DateTime<Utc>,
         order_id: String,
         price_cents: u64,
@@ -31,7 +36,8 @@ impl TradeStatus {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Pending => "PENDING",
-            Self::Completed { .. } => "COMPLETED",
+            Self::Submitted { .. } => "SUBMITTED",
+            Self::Filled { .. } => "FILLED",
             Self::Failed { .. } => "FAILED",
         }
     }
@@ -43,7 +49,8 @@ impl std::str::FromStr for TradeStatus {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "PENDING" => Ok(Self::Pending),
-            "COMPLETED" => Err("Cannot create Completed status without required data".to_string()),
+            "SUBMITTED" => Err("Cannot create Submitted status without required data".to_string()),
+            "FILLED" => Err("Cannot create Filled status without required data".to_string()),
             "FAILED" => Err("Cannot create Failed status without required data".to_string()),
             _ => Err(format!("Invalid trade status: {s}")),
         }

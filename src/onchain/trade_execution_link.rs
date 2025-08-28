@@ -323,7 +323,7 @@ fn parse_trade_status_from_db(
             }
 
             #[allow(clippy::cast_sign_loss)]
-            Ok(TradeStatus::Completed {
+            Ok(TradeStatus::Filled {
                 executed_at: DateTime::from_naive_utc_and_offset(executed_at, Utc),
                 order_id: order_id.to_string(),
                 price_cents: price_cents as u64,
@@ -450,7 +450,7 @@ mod tests {
             symbol: "MSFT".to_string(),
             shares: 1,
             direction: Direction::Buy,
-            status: TradeStatus::Completed {
+            status: TradeStatus::Filled {
                 executed_at: Utc::now(),
                 order_id: "ORDER123".to_string(),
                 price_cents: 30250,
