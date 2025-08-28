@@ -6,7 +6,7 @@ use crate::error::OnChainError;
 /// Order status enum matching Schwab API states
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum OrderStatus {
+pub(crate) enum OrderStatus {
     Queued,
     Working,
     Filled,
@@ -29,7 +29,7 @@ pub enum OrderStatus {
 /// Individual execution leg representing a specific fill
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ExecutionLeg {
+pub(crate) struct ExecutionLeg {
     pub execution_id: Option<String>,
     pub quantity: f64,
     pub price: f64,
@@ -39,7 +39,7 @@ pub struct ExecutionLeg {
 /// Order status response from Schwab API
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OrderStatusResponse {
+pub(crate) struct OrderStatusResponse {
     pub order_id: Option<String>,
     pub status: OrderStatus,
     pub filled_quantity: f64,
@@ -49,6 +49,8 @@ pub struct OrderStatusResponse {
     pub close_time: Option<String>,
 }
 
+// TODO: Remove #[allow(dead_code)] when integrating order poller in Section 5
+#[allow(dead_code)]
 impl OrderStatusResponse {
     /// Calculate weighted average fill price from execution legs
     pub fn calculate_weighted_average_price(&self) -> Option<f64> {
@@ -119,7 +121,6 @@ impl OrderStatusResponse {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::float_cmp)]
     use super::*;
 
     #[test]
@@ -467,12 +468,13 @@ mod tests {
 
         assert_eq!(response.order_id, Some("ORDER12345".to_string()));
         assert_eq!(response.status, OrderStatus::Filled);
-        assert_eq!(response.filled_quantity, 200.0);
-        assert_eq!(response.remaining_quantity, 0.0);
+        assert!((response.filled_quantity - 200.0).abs() < f64::EPSILON);
+        assert!(response.remaining_quantity.abs() < f64::EPSILON);
         assert_eq!(response.execution_legs.len(), 2);
 
         // Test weighted average: (150 * 100.25 + 50 * 100.75) / 200 = (15037.5 + 5037.5) / 200 = 100.375
-        assert_eq!(response.calculate_weighted_average_price(), Some(100.375));
+        let avg_price = response.calculate_weighted_average_price().unwrap();
+        assert!((avg_price - 100.375).abs() < f64::EPSILON);
         assert_eq!(response.price_in_cents().unwrap(), Some(10038)); // Rounded
     }
 

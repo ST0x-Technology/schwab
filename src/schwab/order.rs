@@ -20,14 +20,14 @@ use crate::schwab::TradeStatus;
 /// According to Schwab OpenAPI spec, successful order placement (201) returns
 /// empty body with order ID in the Location header.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OrderPlacementResponse {
+pub(crate) struct OrderPlacementResponse {
     pub order_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[allow(clippy::struct_field_names)]
-pub struct Order {
+pub(crate) struct Order {
     pub order_type: OrderType,
     pub session: Session,
     pub duration: OrderDuration,
@@ -114,6 +114,8 @@ impl Order {
 
     /// Get the status of a specific order from Schwab API.
     /// Returns the order status response containing fill information and execution details.
+    // TODO: Remove #[allow(dead_code)] when integrating order poller in Section 5
+    #[allow(dead_code)]
     pub async fn get_order_status(
         order_id: &str,
         env: &SchwabAuthEnv,
@@ -227,7 +229,7 @@ fn extract_order_id_from_location_header(
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum OrderType {
+pub(crate) enum OrderType {
     Market,
     Limit,
     Stop,
@@ -239,7 +241,7 @@ pub enum OrderType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum Instruction {
+pub(crate) enum Instruction {
     Buy,
     Sell,
     BuyToCover,
@@ -252,7 +254,7 @@ pub enum Instruction {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum Session {
+pub(crate) enum Session {
     Normal,
     Am,
     Pm,
@@ -261,14 +263,14 @@ pub enum Session {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum OrderDuration {
+pub(crate) enum OrderDuration {
     Day,
     GoodTillCancel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum OrderStrategyType {
+pub(crate) enum OrderStrategyType {
     Single,
     Oco,
     Trigger,
@@ -276,7 +278,7 @@ pub enum OrderStrategyType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum AssetType {
+pub(crate) enum AssetType {
     Equity,
     Option,
     Index,
@@ -288,7 +290,7 @@ pub enum AssetType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct OrderLeg {
+pub(crate) struct OrderLeg {
     pub instruction: Instruction,
     pub quantity: u64,
     pub instrument: Instrument,
@@ -296,7 +298,7 @@ pub struct OrderLeg {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct Instrument {
+pub(crate) struct Instrument {
     pub symbol: String,
     pub asset_type: AssetType,
 }
@@ -305,7 +307,7 @@ const MAX_RETRIES: usize = 3;
 
 /// Execute a Schwab order using the unified system.
 /// Takes a SchwabExecution and places the corresponding order via Schwab API.
-pub async fn execute_schwab_order(
+pub(crate) async fn execute_schwab_order(
     env: &Env,
     pool: &SqlitePool,
     execution: SchwabExecution,
@@ -357,21 +359,17 @@ async fn handle_execution_success(
         e
     })?;
 
-    if let Err(e) = update_execution_status_within_transaction(
+    // Update status to Submitted with order_id so order poller can track the order and update with real fill price
+    update_execution_status_within_transaction(
         &mut sql_tx,
         execution_id,
-        TradeStatus::Completed {
-            executed_at: Utc::now(),
-            order_id,
-            price_cents: 0, // TODO: Implement order status polling to get actual execution price
-        },
+        TradeStatus::Submitted { order_id },
     )
     .await
-    {
-        error!("Failed to update execution status to COMPLETED: id={execution_id}, error={e:?}",);
-        let _ = sql_tx.rollback().await;
-        return Err(SchwabError::Sqlx(e));
-    }
+    .map_err(|e| {
+        error!("Failed to update execution with order_id: id={execution_id}, error={e:?}");
+        SchwabError::Sqlx(e)
+    })?;
 
     sql_tx.commit().await.map_err(|e| {
         error!("Failed to commit execution success transaction: id={execution_id}, error={e:?}",);
@@ -975,22 +973,17 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify execution status was updated
+        // Verify execution remains PENDING with order_id stored in database
         let updated_execution = find_execution_by_id(&pool, execution_id)
             .await
             .unwrap()
             .unwrap();
-        match updated_execution.status {
-            TradeStatus::Completed {
-                order_id,
-                price_cents,
-                ..
-            } => {
-                assert_eq!(order_id, "ORDER123");
-                assert_eq!(price_cents, 0); // Still using placeholder
-            }
-            _ => panic!("Expected Completed status"),
-        }
+
+        // Status should be Submitted with order_id since order poller will update it when filled
+        assert!(matches!(
+            updated_execution.status,
+            TradeStatus::Submitted { ref order_id } if order_id == "ORDER123"
+        ));
     }
 
     #[tokio::test]
@@ -1113,11 +1106,9 @@ mod tests {
         let order_status = result.unwrap();
         assert_eq!(order_status.order_id, Some("ORDER123".to_string()));
         assert!(order_status.is_filled());
-        assert_eq!(order_status.filled_quantity, 100.0);
-        assert_eq!(
-            order_status.calculate_weighted_average_price(),
-            Some(150.25)
-        );
+        assert!((order_status.filled_quantity - 100.0).abs() < f64::EPSILON);
+        let avg_price = order_status.calculate_weighted_average_price().unwrap();
+        assert!((avg_price - 150.25).abs() < f64::EPSILON);
         assert_eq!(order_status.price_in_cents().unwrap(), Some(15025));
     }
 
@@ -1165,7 +1156,7 @@ mod tests {
         assert_eq!(order_status.order_id, Some("ORDER456".to_string()));
         assert!(order_status.is_pending());
         assert!(!order_status.is_filled());
-        assert_eq!(order_status.filled_quantity, 0.0);
+        assert!(order_status.filled_quantity.abs() < f64::EPSILON);
         assert_eq!(order_status.calculate_weighted_average_price(), None);
     }
 
@@ -1226,7 +1217,7 @@ mod tests {
         assert_eq!(order_status.order_id, Some("ORDER789".to_string()));
         assert!(order_status.is_pending());
         assert!(!order_status.is_filled());
-        assert_eq!(order_status.filled_quantity, 75.0);
+        assert!((order_status.filled_quantity - 75.0).abs() < f64::EPSILON);
         // Weighted average: (50 * 100.00 + 25 * 101.00) / 75 = (5000 + 2525) / 75 = 100.33333
         assert!(
             (order_status.calculate_weighted_average_price().unwrap() - 100.333_333_333_333_33)

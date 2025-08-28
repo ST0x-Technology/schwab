@@ -377,7 +377,7 @@ mod tests {
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
     use crate::env::LogLevel;
     use crate::onchain::trade::OnchainTrade;
-    use crate::schwab::execution::find_completed_executions_by_symbol;
+    use crate::schwab::execution::find_submitted_executions_by_symbol;
     use crate::schwab::{Direction, SchwabInstruction};
     use crate::test_utils::get_test_order;
     use crate::test_utils::setup_test_db;
@@ -1542,12 +1542,27 @@ mod tests {
         assert!((trade.amount - 9.0).abs() < f64::EPSILON); // Amount from the test data
 
         // Verify SchwabExecution was created (due to TradeAccumulator)
-        let executions = find_completed_executions_by_symbol(&pool, "AAPL")
+        // Executions are now in SUBMITTED status with order_id stored for order status polling
+        let executions = find_submitted_executions_by_symbol(&pool, "AAPL")
             .await
             .unwrap();
         assert_eq!(executions.len(), 1);
         assert_eq!(executions[0].shares, 9);
         assert_eq!(executions[0].direction, SchwabInstruction::Buy);
+
+        // Verify order_id was stored in database
+        let execution_id = executions[0].id.unwrap();
+        let row = sqlx::query!(
+            "SELECT order_id FROM schwab_executions WHERE id = ?1",
+            execution_id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            row.order_id.is_some(),
+            "Order ID should be stored for polling"
+        );
 
         // Verify Schwab API was called
         account_mock.assert();

@@ -25,23 +25,31 @@ fn row_to_execution(
 
     let parsed_status = match status {
         "PENDING" => TradeStatus::Pending,
-        "COMPLETED" => {
+        "SUBMITTED" => {
             let order_id = order_id.ok_or_else(|| {
                 OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "COMPLETED status requires order_id".to_string(),
+                    "SUBMITTED status requires order_id".to_string(),
+                ))
+            })?;
+            TradeStatus::Submitted { order_id }
+        }
+        "FILLED" => {
+            let order_id = order_id.ok_or_else(|| {
+                OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
+                    "FILLED status requires order_id".to_string(),
                 ))
             })?;
             let price_cents = price_cents.ok_or_else(|| {
                 OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "COMPLETED status requires price_cents".to_string(),
+                    "FILLED status requires price_cents".to_string(),
                 ))
             })?;
             let executed_at = executed_at.ok_or_else(|| {
                 OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "COMPLETED status requires executed_at".to_string(),
+                    "FILLED status requires executed_at".to_string(),
                 ))
             })?;
-            TradeStatus::Completed {
+            TradeStatus::Filled {
                 executed_at: DateTime::<Utc>::from_naive_utc_and_offset(executed_at, Utc),
                 order_id,
                 price_cents: price_cents_from_db_i64(price_cents)?,
@@ -105,7 +113,8 @@ pub(crate) async fn update_execution_status_within_transaction(
 
     let (order_id, price_cents_i64, executed_at) = match &new_status {
         TradeStatus::Pending => (None, None, None),
-        TradeStatus::Completed {
+        TradeStatus::Submitted { order_id } => (Some(order_id.clone()), None, None),
+        TradeStatus::Filled {
             executed_at,
             order_id,
             price_cents,
@@ -138,8 +147,19 @@ pub(crate) async fn update_execution_status_within_transaction(
     Ok(())
 }
 
-/// Find executions with PENDING status
-#[cfg(test)]
+/// Find executions with SUBMITTED status (orders that have been submitted and can be polled)
+// TODO: Remove #[allow(dead_code)] when integrating order poller in Section 5
+#[allow(dead_code)]
+pub(crate) async fn find_submitted_executions_by_symbol(
+    pool: &SqlitePool,
+    symbol: &str,
+) -> Result<Vec<SchwabExecution>, OnChainError> {
+    find_executions_by_symbol_and_status(pool, symbol, "SUBMITTED").await
+}
+
+/// Find executions with PENDING status (orders that have not been submitted yet)
+// TODO: Remove #[allow(dead_code)] when integrating order poller in Section 5
+#[allow(dead_code)]
 pub(crate) async fn find_pending_executions_by_symbol(
     pool: &SqlitePool,
     symbol: &str,
@@ -147,16 +167,17 @@ pub(crate) async fn find_pending_executions_by_symbol(
     find_executions_by_symbol_and_status(pool, symbol, "PENDING").await
 }
 
-/// Find executions with COMPLETED status
+/// Find executions with FILLED status
 #[cfg(test)]
-pub(crate) async fn find_completed_executions_by_symbol(
+pub(crate) async fn find_filled_executions_by_symbol(
     pool: &SqlitePool,
     symbol: &str,
 ) -> Result<Vec<SchwabExecution>, OnChainError> {
-    find_executions_by_symbol_and_status(pool, symbol, "COMPLETED").await
+    find_executions_by_symbol_and_status(pool, symbol, "FILLED").await
 }
 
-#[cfg(test)]
+// TODO: Remove #[allow(dead_code)] when integrating order poller in Section 5
+#[allow(dead_code)]
 pub(crate) async fn find_executions_by_symbol_and_status(
     pool: &SqlitePool,
     symbol: &str,
@@ -249,7 +270,8 @@ impl SchwabExecution {
 
         let (order_id, price_cents_i64, executed_at) = match &self.status {
             TradeStatus::Pending => (None, None, None),
-            TradeStatus::Completed {
+            TradeStatus::Submitted { order_id } => (Some(order_id.clone()), None, None),
+            TradeStatus::Filled {
                 executed_at,
                 order_id,
                 price_cents,
@@ -333,7 +355,7 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 25,
             direction: SchwabInstruction::Sell,
-            status: TradeStatus::Completed {
+            status: TradeStatus::Filled {
                 executed_at: Utc::now(),
                 order_id: "ORDER123".to_string(),
                 price_cents: 15025,
@@ -377,7 +399,7 @@ mod tests {
         assert_eq!(pending_aapl[0].shares, 50);
         assert_eq!(pending_aapl[0].direction, SchwabInstruction::Buy);
 
-        let completed_aapl = find_completed_executions_by_symbol(&pool, "AAPL")
+        let completed_aapl = find_filled_executions_by_symbol(&pool, "AAPL")
             .await
             .unwrap();
 
@@ -386,7 +408,7 @@ mod tests {
         assert_eq!(completed_aapl[0].direction, SchwabInstruction::Sell);
         assert!(matches!(
             &completed_aapl[0].status,
-            TradeStatus::Completed { order_id, price_cents, .. }
+            TradeStatus::Filled { order_id, price_cents, .. }
             if order_id == "ORDER123" && *price_cents == 15025
         ));
     }
@@ -424,7 +446,7 @@ mod tests {
             .unwrap();
         assert_eq!(result.len(), 0);
 
-        let result = find_completed_executions_by_symbol(&pool, "AAPL")
+        let result = find_filled_executions_by_symbol(&pool, "AAPL")
             .await
             .unwrap();
         assert_eq!(result.len(), 0);
@@ -455,7 +477,7 @@ mod tests {
                 symbol: "AAPL".to_string(),
                 shares: 200,
                 direction: SchwabInstruction::Buy,
-                status: TradeStatus::Completed {
+                status: TradeStatus::Filled {
                     executed_at: Utc::now(),
                     order_id: "ORDER123".to_string(),
                     price_cents: 15000,
@@ -478,10 +500,10 @@ mod tests {
             .unwrap();
         assert_eq!(pending_all.len(), 2); // AAPL and MSFT pending
 
-        let completed_all = find_executions_by_symbol_and_status(&pool, "", "COMPLETED")
+        let filled_all = find_executions_by_symbol_and_status(&pool, "", "FILLED")
             .await
             .unwrap();
-        assert_eq!(completed_all.len(), 1); // Only AAPL completed
+        assert_eq!(filled_all.len(), 1); // Only AAPL filled
 
         let failed_all = find_executions_by_symbol_and_status(&pool, "", "FAILED")
             .await
@@ -626,7 +648,7 @@ mod tests {
             symbol: "TEST".to_string(),
             shares: 12345,
             direction: SchwabInstruction::Sell,
-            status: TradeStatus::Completed {
+            status: TradeStatus::Filled {
                 executed_at: Utc::now(),
                 order_id: "ORDER789".to_string(),
                 price_cents: 98765,
@@ -640,7 +662,7 @@ mod tests {
             .unwrap();
         sql_tx.commit().await.unwrap();
 
-        let result = find_completed_executions_by_symbol(&pool, "TEST")
+        let result = find_filled_executions_by_symbol(&pool, "TEST")
             .await
             .unwrap();
 
@@ -653,7 +675,7 @@ mod tests {
         assert_eq!(found.direction, SchwabInstruction::Sell);
         assert!(matches!(
             &found.status,
-            TradeStatus::Completed { order_id, price_cents, .. }
+            TradeStatus::Filled { order_id, price_cents, .. }
             if order_id == "ORDER789" && *price_cents == 98765
         ));
         assert!(found.id.is_some());
@@ -731,7 +753,7 @@ mod tests {
         update_execution_status_within_transaction(
             &mut sql_tx,
             id,
-            TradeStatus::Completed {
+            TradeStatus::Filled {
                 executed_at: Utc::now(),
                 order_id: "ORDER456".to_string(),
                 price_cents: 20050,
@@ -742,14 +764,14 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Verify the update persisted by finding executions with the new status
-        let completed_executions = find_completed_executions_by_symbol(&pool, "TSLA")
+        let completed_executions = find_filled_executions_by_symbol(&pool, "TSLA")
             .await
             .unwrap();
 
         assert_eq!(completed_executions.len(), 1);
         assert!(matches!(
             &completed_executions[0].status,
-            TradeStatus::Completed { order_id, price_cents, .. }
+            TradeStatus::Filled { order_id, price_cents, .. }
             if order_id == "ORDER456" && *price_cents == 20050
         ));
     }
@@ -850,7 +872,7 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 200,
             direction: SchwabInstruction::Sell,
-            status: TradeStatus::Completed {
+            status: TradeStatus::Filled {
                 executed_at: Utc::now(),
                 order_id: "ORDER123".to_string(),
                 price_cents: 15000,
@@ -867,7 +889,7 @@ mod tests {
         let pending_aapl = find_pending_executions_by_symbol(&pool, "AAPL")
             .await
             .unwrap();
-        let completed_aapl = find_completed_executions_by_symbol(&pool, "AAPL")
+        let completed_aapl = find_filled_executions_by_symbol(&pool, "AAPL")
             .await
             .unwrap();
         assert_eq!(pending_aapl.len(), 1);
@@ -1107,7 +1129,7 @@ mod tests {
         update_execution_status_within_transaction(
             &mut sql_tx,
             execution_id,
-            TradeStatus::Completed {
+            TradeStatus::Filled {
                 executed_at: Utc::now(),
                 order_id: "ORDER999".to_string(),
                 price_cents: 300_000,

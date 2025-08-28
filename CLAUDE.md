@@ -283,6 +283,53 @@ Environment variables (can be set via `.env` file):
 - **Debugging failing tests**: When debugging tests with failing assert! macros,
   add additional context to the assert! macro instead of adding temporary
   println! statements
+- **Test Quality**: Never write tests that only exercise language features
+  without testing our application logic. Tests should verify actual business
+  logic, not just struct field assignments or basic language operations
+
+#### Writing Meaningful Tests
+
+Tests should verify our application logic, not just language features. Avoid
+tests that only exercise struct construction or field access without testing any
+business logic.
+
+**❌ Bad: Testing language features instead of our code**
+
+```rust
+#[test]
+fn test_order_poller_config_custom() {
+    let config = OrderPollerConfig {
+        polling_interval: Duration::from_secs(30),
+        max_jitter: Duration::from_secs(10),
+    };
+
+    assert_eq!(config.polling_interval, Duration::from_secs(30));
+    assert_eq!(config.max_jitter, Duration::from_secs(10));
+}
+```
+
+This test creates a struct and verifies field assignments, but doesn't test any
+of our code logic - it only tests Rust's struct field assignment mechanism.
+
+**✅ Good: Testing actual business logic**
+
+```rust
+#[test]
+fn test_order_poller_respects_jitter_bounds() {
+    let config = OrderPollerConfig {
+        polling_interval: Duration::from_secs(60),
+        max_jitter: Duration::from_secs(10),
+    };
+    
+    let actual_delay = config.calculate_next_poll_delay();
+    
+    assert!(actual_delay >= Duration::from_secs(60));
+    assert!(actual_delay <= Duration::from_secs(70));
+}
+```
+
+This test verifies that our jitter calculation logic works correctly within
+expected bounds.
 
 ### Workflow Best Practices
 
