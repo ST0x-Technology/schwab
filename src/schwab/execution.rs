@@ -1,6 +1,6 @@
 use sqlx::SqlitePool;
 
-use super::{Direction, HasTradeStatus, TradeState, TradeStatus, shares_from_db_i64};
+use super::{Direction, HasTradeStatus, TradeState, shares_from_db_i64};
 use crate::error::{OnChainError, PersistenceError};
 
 /// Converts database row data to a SchwabExecution instance.
@@ -85,45 +85,6 @@ pub(crate) async fn update_execution_status_within_transaction(
     .await?;
 
     Ok(())
-}
-
-/// Find executions with SUBMITTED status (orders that have been submitted and can be polled)
-pub(crate) async fn find_submitted_executions_by_symbol(
-    pool: &SqlitePool,
-    symbol: &str,
-) -> Result<Vec<SchwabExecution>, OnChainError> {
-    find_executions_by_symbol_and_status(pool, symbol, TradeStatus::Submitted).await
-}
-
-/// Find executions with PENDING status (orders that have not been submitted yet)
-pub(crate) async fn find_pending_executions_by_symbol(
-    pool: &SqlitePool,
-    symbol: &str,
-) -> Result<Vec<SchwabExecution>, OnChainError> {
-    find_executions_by_symbol_and_status(pool, symbol, TradeStatus::Pending).await
-}
-
-/// Find executions with FILLED status
-#[cfg(test)]
-pub(crate) async fn find_filled_executions_by_symbol(
-    pool: &SqlitePool,
-    symbol: &str,
-) -> Result<Vec<SchwabExecution>, OnChainError> {
-    find_executions_by_symbol_and_status(pool, symbol, TradeStatus::Filled).await
-}
-
-/// Find executions by symbol and specific status state (allows filtering by specific state data)
-/// Example: Find all orders submitted with a specific order_id
-/// ```ignore
-/// let specific_submitted_state = TradeState::Submitted { order_id: "ORDER123".to_string() };
-/// let executions = find_executions_by_symbol_and_state(&pool, "AAPL", specific_submitted_state).await?;
-/// ```
-pub(crate) async fn find_executions_by_symbol_and_state(
-    pool: &SqlitePool,
-    symbol: &str,
-    state: TradeState,
-) -> Result<Vec<SchwabExecution>, OnChainError> {
-    find_executions_by_symbol_and_status(pool, symbol, state).await
 }
 
 pub(crate) async fn find_executions_by_symbol_and_status<S: HasTradeStatus>(
@@ -252,6 +213,7 @@ pub(crate) async fn schwab_execution_db_count(pool: &SqlitePool) -> Result<i64, 
 
 #[cfg(test)]
 mod tests {
+    use super::super::TradeStatus;
     use super::*;
     use crate::test_utils::{SchwabExecutionBuilder, setup_test_db};
     use chrono::Utc;
@@ -328,17 +290,19 @@ mod tests {
             .unwrap();
         sql_tx3.commit().await.unwrap();
 
-        let pending_aapl = find_pending_executions_by_symbol(&pool, "AAPL")
-            .await
-            .unwrap();
+        let pending_aapl =
+            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
+                .await
+                .unwrap();
 
         assert_eq!(pending_aapl.len(), 1);
         assert_eq!(pending_aapl[0].shares, 50);
         assert_eq!(pending_aapl[0].direction, Direction::Buy);
 
-        let completed_aapl = find_filled_executions_by_symbol(&pool, "AAPL")
-            .await
-            .unwrap();
+        let completed_aapl =
+            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Filled)
+                .await
+                .unwrap();
 
         assert_eq!(completed_aapl.len(), 1);
         assert_eq!(completed_aapl[0].shares, 25);
@@ -354,7 +318,7 @@ mod tests {
     async fn test_find_by_symbol_and_status_empty_database() {
         let pool = setup_test_db().await;
 
-        let result = find_pending_executions_by_symbol(&pool, "AAPL")
+        let result = find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
             .await
             .unwrap();
         assert_eq!(result.len(), 0);
@@ -378,12 +342,13 @@ mod tests {
             .unwrap();
         sql_tx.commit().await.unwrap();
 
-        let result = find_pending_executions_by_symbol(&pool, "NONEXISTENT")
-            .await
-            .unwrap();
+        let result =
+            find_executions_by_symbol_and_status(&pool, "NONEXISTENT", TradeStatus::Pending)
+                .await
+                .unwrap();
         assert_eq!(result.len(), 0);
 
-        let result = find_filled_executions_by_symbol(&pool, "AAPL")
+        let result = find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Filled)
             .await
             .unwrap();
         assert_eq!(result.len(), 0);
@@ -488,19 +453,19 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Test ordering for each symbol individually
-        let aapl_result = find_pending_executions_by_symbol(&pool, "AAPL")
+        let aapl_result = find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
             .await
             .unwrap();
         assert_eq!(aapl_result.len(), 1);
         assert_eq!(aapl_result[0].shares, 100);
 
-        let tsla_result = find_pending_executions_by_symbol(&pool, "TSLA")
+        let tsla_result = find_executions_by_symbol_and_status(&pool, "TSLA", TradeStatus::Pending)
             .await
             .unwrap();
         assert_eq!(tsla_result.len(), 1);
         assert_eq!(tsla_result[0].shares, 200);
 
-        let msft_result = find_pending_executions_by_symbol(&pool, "MSFT")
+        let msft_result = find_executions_by_symbol_and_status(&pool, "MSFT", TradeStatus::Pending)
             .await
             .unwrap();
         assert_eq!(msft_result.len(), 1);
@@ -526,17 +491,17 @@ mod tests {
             .unwrap();
         sql_tx.commit().await.unwrap();
 
-        let result = find_pending_executions_by_symbol(&pool, "AAPL")
+        let result = find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
             .await
             .unwrap();
         assert_eq!(result.len(), 1);
 
-        let result = find_pending_executions_by_symbol(&pool, "aapl")
+        let result = find_executions_by_symbol_and_status(&pool, "aapl", TradeStatus::Pending)
             .await
             .unwrap();
         assert_eq!(result.len(), 0);
 
-        let result = find_pending_executions_by_symbol(&pool, "Aapl")
+        let result = find_executions_by_symbol_and_status(&pool, "Aapl", TradeStatus::Pending)
             .await
             .unwrap();
         assert_eq!(result.len(), 0);
@@ -568,7 +533,7 @@ mod tests {
 
         // Test each symbol can be found
         for symbol in ["BRK.B", "BF-B", "TEST123", "A-B_C.D"] {
-            let result = find_pending_executions_by_symbol(&pool, symbol)
+            let result = find_executions_by_symbol_and_status(&pool, symbol, TradeStatus::Pending)
                 .await
                 .unwrap();
             assert_eq!(result.len(), 1, "Failed to find symbol: {symbol}");
@@ -599,7 +564,7 @@ mod tests {
             .unwrap();
         sql_tx.commit().await.unwrap();
 
-        let result = find_filled_executions_by_symbol(&pool, "TEST")
+        let result = find_executions_by_symbol_and_status(&pool, "TEST", TradeStatus::Filled)
             .await
             .unwrap();
 
@@ -701,9 +666,10 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Verify the update persisted by finding executions with the new status
-        let completed_executions = find_filled_executions_by_symbol(&pool, "TSLA")
-            .await
-            .unwrap();
+        let completed_executions =
+            find_executions_by_symbol_and_status(&pool, "TSLA", TradeStatus::Filled)
+                .await
+                .unwrap();
 
         assert_eq!(completed_executions.len(), 1);
         assert!(matches!(
@@ -823,12 +789,14 @@ mod tests {
         sql_tx2.commit().await.unwrap();
 
         // Should have both executions for AAPL now
-        let pending_aapl = find_pending_executions_by_symbol(&pool, "AAPL")
-            .await
-            .unwrap();
-        let completed_aapl = find_filled_executions_by_symbol(&pool, "AAPL")
-            .await
-            .unwrap();
+        let pending_aapl =
+            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
+                .await
+                .unwrap();
+        let completed_aapl =
+            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Filled)
+                .await
+                .unwrap();
         assert_eq!(pending_aapl.len(), 1);
         assert_eq!(completed_aapl.len(), 1);
     }
@@ -1040,6 +1008,51 @@ mod tests {
                 .to_string()
                 .contains("UNIQUE constraint failed")
         );
+    }
+
+    #[tokio::test]
+    async fn test_filled_status_requires_price_cents() {
+        let pool = setup_test_db().await;
+        let order_id_1 = Some("ORDER123");
+        let order_id_2 = Some("ORDER456");
+        let timestamp = Some(chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc());
+
+        // Test that database constraint prevents FILLED status with NULL price_cents
+        let result = sqlx::query!(
+            "INSERT INTO schwab_executions (symbol, shares, direction, order_id, price_cents, status, executed_at) 
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "TEST",
+            100i64,
+            "BUY",
+            order_id_1,
+            None::<i64>, // NULL price_cents with FILLED status should be rejected
+            "FILLED",
+            timestamp
+        )
+        .execute(&pool)
+        .await;
+
+        // Should fail due to CHECK constraint requiring price_cents for FILLED status
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("CHECK constraint failed"));
+
+        // Verify valid FILLED execution with price_cents succeeds
+        let result = sqlx::query!(
+            "INSERT INTO schwab_executions (symbol, shares, direction, order_id, price_cents, status, executed_at) 
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "TEST2",
+            100i64,
+            "BUY", 
+            order_id_2,
+            Some(15025i64), // Valid price_cents for FILLED status
+            "FILLED",
+            timestamp
+        )
+        .execute(&pool)
+        .await;
+
+        assert!(result.is_ok());
     }
 
     #[tokio::test]

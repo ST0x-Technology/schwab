@@ -379,7 +379,8 @@ mod tests {
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
     use crate::env::LogLevel;
     use crate::onchain::trade::OnchainTrade;
-    use crate::schwab::execution::find_submitted_executions_by_symbol;
+    use crate::schwab::TradeStatus;
+    use crate::schwab::execution::find_executions_by_symbol_and_status;
     use crate::schwab::{Direction, SchwabInstruction};
     use crate::test_utils::get_test_order;
     use crate::test_utils::setup_test_db;
@@ -1547,9 +1548,10 @@ mod tests {
 
         // Verify SchwabExecution was created (due to TradeAccumulator)
         // Executions are now in SUBMITTED status with order_id stored for order status polling
-        let executions = find_submitted_executions_by_symbol(&pool, "AAPL")
-            .await
-            .unwrap();
+        let executions =
+            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Submitted)
+                .await
+                .unwrap();
         assert_eq!(executions.len(), 1);
         assert_eq!(executions[0].shares, 9);
         assert_eq!(executions[0].direction, SchwabInstruction::Buy);

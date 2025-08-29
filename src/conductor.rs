@@ -3,6 +3,8 @@ use alloy::rpc::types::Log;
 use alloy::sol_types;
 use futures_util::{Stream, StreamExt};
 use sqlx::SqlitePool;
+use tokio::sync::{mpsc::UnboundedSender, watch};
+use tokio::task::JoinHandle;
 use tracing::{error, info};
 
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
@@ -11,9 +13,120 @@ use crate::error::{OnChainError, PersistenceError};
 use crate::onchain::trade::TradeEvent;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
 use crate::queue::{enqueue, get_all_unprocessed_events, mark_event_processed};
-use crate::schwab::{execution::find_execution_by_id, order::execute_schwab_order};
+use crate::schwab::{
+    OrderStatusPoller, execution::find_execution_by_id, order::execute_schwab_order,
+    tokens::SchwabTokens,
+};
 use crate::symbol::cache::SymbolCache;
 use crate::symbol::lock::get_symbol_lock;
+
+pub(crate) struct BackgroundTasks {
+    pub(crate) token_refresher: JoinHandle<()>,
+    pub(crate) order_poller: JoinHandle<()>,
+    pub(crate) event_receiver: JoinHandle<()>,
+}
+
+impl BackgroundTasks {
+    pub(crate) fn spawn(
+        env: &Env,
+        pool: &SqlitePool,
+        event_sender: UnboundedSender<(TradeEvent, Log)>,
+        shutdown_rx: watch::Receiver<bool>,
+        clear_stream: impl Stream<Item = Result<(ClearV2, Log), sol_types::Error>>
+        + Unpin
+        + Send
+        + 'static,
+        take_stream: impl Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>>
+        + Unpin
+        + Send
+        + 'static,
+    ) -> Self {
+        info!("Starting token refresh service");
+        let token_refresher =
+            SchwabTokens::spawn_automatic_token_refresh(pool.clone(), env.schwab_auth.clone());
+
+        let config = env.get_order_poller_config();
+        info!(
+            "Starting order status poller with interval: {:?}, max jitter: {:?}",
+            config.polling_interval, config.max_jitter
+        );
+        let poller =
+            OrderStatusPoller::new(config, env.schwab_auth.clone(), pool.clone(), shutdown_rx);
+        let order_poller = tokio::spawn(async move {
+            if let Err(e) = poller.run().await {
+                error!("Order poller failed: {e}");
+            } else {
+                info!("Order poller completed successfully");
+            }
+        });
+
+        info!("Starting blockchain event receiver");
+        let event_receiver = tokio::spawn(receive_blockchain_events(
+            clear_stream,
+            take_stream,
+            event_sender,
+        ));
+
+        Self {
+            token_refresher,
+            order_poller,
+            event_receiver,
+        }
+    }
+
+    pub(crate) async fn wait_for_completion(self) -> Result<(), anyhow::Error> {
+        let (token_result, poller_result, receiver_result) =
+            tokio::join!(self.token_refresher, self.order_poller, self.event_receiver);
+
+        if let Err(e) = token_result {
+            error!("Token refresher task panicked: {e}");
+        }
+        if let Err(e) = poller_result {
+            error!("Order poller task panicked: {e}");
+        }
+        if let Err(e) = receiver_result {
+            error!("Event receiver task panicked: {e}");
+        }
+
+        Ok(())
+    }
+}
+
+async fn receive_blockchain_events<S1, S2>(
+    mut clear_stream: S1,
+    mut take_stream: S2,
+    event_sender: UnboundedSender<(TradeEvent, Log)>,
+) where
+    S1: Stream<Item = Result<(ClearV2, Log), sol_types::Error>> + Unpin,
+    S2: Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin,
+{
+    loop {
+        let event_result = tokio::select! {
+            Some(result) = clear_stream.next() => {
+                result.map(|(event, log)| (TradeEvent::ClearV2(Box::new(event)), log))
+            }
+            Some(result) = take_stream.next() => {
+                result.map(|(event, log)| (TradeEvent::TakeOrderV2(Box::new(event)), log))
+            }
+            else => {
+                error!("All event streams ended, shutting down event receiver");
+                break;
+            }
+        };
+
+        match event_result {
+            Ok(event_with_log) => {
+                if event_sender.send(event_with_log).is_err() {
+                    error!("Event receiver dropped, shutting down");
+                    break;
+                }
+            }
+            Err(e) => {
+                error!("Error in event stream: {e}");
+            }
+        }
+    }
+}
 
 pub(crate) async fn get_cutoff_block<S1, S2, P>(
     clear_stream: &mut S1,
@@ -55,75 +168,26 @@ pub(crate) async fn run_live<S1, S2, P>(
     pool: SqlitePool,
     cache: SymbolCache,
     provider: P,
-    mut clear_stream: S1,
-    mut take_stream: S2,
+    clear_stream: S1,
+    take_stream: S2,
 ) -> anyhow::Result<()>
 where
     S1: Stream<Item = Result<(ClearV2, Log), sol_types::Error>> + Unpin + Send + 'static,
     S2: Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin + Send + 'static,
     P: Provider + Clone,
 {
-    // Set up shutdown signaling for order poller
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-
-    // Start order status poller as background task
-    let order_poller_config = env.get_order_poller_config();
-    info!(
-        "Starting order status poller with interval: {:?}, max jitter: {:?}",
-        order_poller_config.polling_interval, order_poller_config.max_jitter
-    );
-    let order_poller = crate::schwab::OrderStatusPoller::new(
-        order_poller_config,
-        env.schwab_auth.clone(),
-        pool.clone(),
-        shutdown_rx,
-    );
-
-    let order_poller_task = tokio::spawn(async move {
-        if let Err(e) = order_poller.run().await {
-            error!("Order poller failed: {e}");
-        } else {
-            info!("Order poller completed successfully");
-        }
-    });
-
     let (event_sender, mut event_receiver) =
         tokio::sync::mpsc::unbounded_channel::<(TradeEvent, Log)>();
 
-    let sender_clone = event_sender.clone();
-    let event_reception_task = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                Some(result) = clear_stream.next() => {
-                    if let Ok((event, log)) = result {
-                        if sender_clone.send((TradeEvent::ClearV2(Box::new(event)), log)).is_err() {
-                            error!("Event receiver dropped, shutting down event reception");
-                            break;
-                        }
-                    } else if let Err(e) = result {
-                        error!("Error in clear event stream: {e}");
-                    }
-                }
-                Some(result) = take_stream.next() => {
-                    match result {
-                    Ok((event, log)) => {
-                        if sender_clone.send((TradeEvent::TakeOrderV2(Box::new(event)), log)).is_err() {
-                            error!("Event receiver dropped, shutting down event reception");
-                            break;
-                        }
-                    },
-                    Err(e) => {
-                        error!("Error in take event stream: {e}");
-                    }
-                    }
-                }
-                else => {
-                    error!("All event streams ended, shutting down event reception");
-                    break;
-                }
-            }
-        }
-    });
+    let background_tasks = BackgroundTasks::spawn(
+        &env,
+        &pool,
+        event_sender,
+        shutdown_rx,
+        clear_stream,
+        take_stream,
+    );
 
     while let Some((event, log)) = event_receiver.recv().await {
         if let Err(e) = process_live_event(&env, &pool, &cache, &provider, event, log).await {
@@ -131,20 +195,12 @@ where
         }
     }
 
-    info!("Event processing loop ended, shutting down order poller");
-    // Signal order poller to shutdown
+    info!("Event processing loop ended, shutting down background tasks");
     if let Err(e) = shutdown_tx.send(true) {
-        error!("Failed to send shutdown signal to order poller: {e}");
+        error!("Failed to send shutdown signal: {e}");
     }
 
-    // Wait for tasks to complete
-    if let Err(e) = event_reception_task.await {
-        error!("Event reception task failed: {e}");
-    }
-    if let Err(e) = order_poller_task.await {
-        error!("Order poller task failed: {e}");
-    }
-
+    background_tasks.wait_for_completion().await?;
     info!("All background tasks completed");
     Ok(())
 }
