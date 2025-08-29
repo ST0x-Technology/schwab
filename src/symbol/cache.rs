@@ -11,11 +11,6 @@ pub struct SymbolCache {
 }
 
 impl SymbolCache {
-    #[cfg(test)]
-    pub fn insert_for_test(&self, address: Address, symbol: String) {
-        self.map.write().unwrap().insert(address, symbol);
-    }
-
     pub async fn get_io_symbol<P: Provider>(
         &self,
         provider: P,

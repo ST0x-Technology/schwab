@@ -18,11 +18,12 @@ CREATE TABLE schwab_executions (
   direction TEXT CHECK (direction IN ('BUY', 'SELL')) NOT NULL,
   order_id TEXT CHECK (order_id IS NULL OR order_id != ''),  -- Valid order ID or NULL
   price_cents INTEGER CHECK (price_cents IS NULL OR price_cents >= 0),  -- Price must be non-negative or NULL
-  status TEXT CHECK (status IN ('PENDING', 'COMPLETED', 'FAILED')) NOT NULL DEFAULT 'PENDING',
+  status TEXT CHECK (status IN ('PENDING', 'SUBMITTED', 'FILLED', 'FAILED')) NOT NULL DEFAULT 'PENDING',
   executed_at TIMESTAMP,
   CHECK (
-    (status = 'PENDING' AND order_id IS NULL AND executed_at IS NULL) OR
-    (status = 'COMPLETED' AND order_id IS NOT NULL AND executed_at IS NOT NULL) OR
+    (status = 'PENDING' AND executed_at IS NULL) OR
+    (status = 'SUBMITTED' AND order_id IS NOT NULL AND executed_at IS NULL) OR
+    (status = 'FILLED' AND order_id IS NOT NULL AND executed_at IS NOT NULL AND price_cents IS NOT NULL) OR
     (status = 'FAILED' AND executed_at IS NOT NULL)
   )
 );
@@ -63,13 +64,13 @@ CREATE INDEX idx_trade_execution_links_created_at ON trade_execution_links(creat
 CREATE INDEX idx_trade_execution_links_trade_exec ON trade_execution_links(trade_id, execution_id);
 
 -- Data integrity constraints
--- Ensure only one pending execution per symbol (prevents race conditions)
-CREATE UNIQUE INDEX idx_unique_pending_execution_per_symbol
+-- Ensure only one in-progress execution per symbol (prevents race conditions)
+CREATE UNIQUE INDEX idx_unique_in_progress_execution_per_symbol
 ON schwab_executions(symbol)
-WHERE status = 'PENDING';
+WHERE status IN ('PENDING', 'SUBMITTED');
 
--- Ensure only one pending execution reference per symbol in accumulators
-CREATE UNIQUE INDEX idx_unique_pending_execution_in_accumulator
+-- Ensure only one in-progress execution reference per symbol in accumulators
+CREATE UNIQUE INDEX idx_unique_in_progress_execution_in_accumulator
 ON trade_accumulators(pending_execution_id)
 WHERE pending_execution_id IS NOT NULL;
 
