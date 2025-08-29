@@ -1,7 +1,6 @@
 use clap::Parser;
 use rain_schwab::env::{Env, setup_tracing};
-use rain_schwab::schwab::run_oauth_flow;
-use tracing::debug;
+use rain_schwab::launch;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -9,10 +8,6 @@ async fn main() -> anyhow::Result<()> {
     let env = Env::try_parse()?;
     setup_tracing(&env.log_level);
 
-    debug!("Connecting to SQLite...");
-    let pool = env.get_sqlite_pool().await?;
-
-    run_oauth_flow(&pool, &env.schwab_auth).await?;
-
+    launch(env).await?;
     Ok(())
 }

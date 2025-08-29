@@ -33,6 +33,7 @@ rocket = { version = "0.5.1", features = ["json"] }
 
 [dev-dependencies]
 httpmock = "0.7.0"
+serial_test = "3.2.0"
 
 [lints.rust]
 unsafe_code = "forbid"
