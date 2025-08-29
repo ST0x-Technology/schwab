@@ -49,11 +49,9 @@ pub(crate) struct OrderStatusResponse {
     pub close_time: Option<String>,
 }
 
-// TODO: Remove #[allow(dead_code)] when integrating order poller in Section 5
-#[allow(dead_code)]
 impl OrderStatusResponse {
     /// Calculate weighted average fill price from execution legs
-    pub fn calculate_weighted_average_price(&self) -> Option<f64> {
+    pub(crate) fn calculate_weighted_average_price(&self) -> Option<f64> {
         if self.execution_legs.is_empty() {
             return None;
         }
@@ -74,7 +72,7 @@ impl OrderStatusResponse {
     }
 
     /// Convert price to cents for database storage
-    pub fn price_in_cents(&self) -> Result<Option<u64>, OnChainError> {
+    pub(crate) fn price_in_cents(&self) -> Result<Option<u64>, OnChainError> {
         self.calculate_weighted_average_price().map_or_else(
             || Ok(None),
             |price| {
@@ -87,12 +85,13 @@ impl OrderStatusResponse {
     }
 
     /// Check if order is completely filled
-    pub const fn is_filled(&self) -> bool {
+    pub(crate) const fn is_filled(&self) -> bool {
         matches!(self.status, OrderStatus::Filled)
     }
 
     /// Check if order is still pending/working
-    pub const fn is_pending(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) const fn is_pending(&self) -> bool {
         matches!(
             self.status,
             OrderStatus::Queued
@@ -111,7 +110,7 @@ impl OrderStatusResponse {
     }
 
     /// Check if order was canceled or rejected
-    pub const fn is_terminal_failure(&self) -> bool {
+    pub(crate) const fn is_terminal_failure(&self) -> bool {
         matches!(
             self.status,
             OrderStatus::Canceled | OrderStatus::Rejected | OrderStatus::Expired

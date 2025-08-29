@@ -345,6 +345,7 @@ async fn create_execution_within_transaction(
 mod tests {
     use super::*;
     use crate::onchain::trade_execution_link::TradeExecutionLink;
+    use crate::schwab::TradeStatus;
     use crate::schwab::execution::schwab_execution_db_count;
     use crate::test_utils::setup_test_db;
     use alloy::primitives::fixed_bytes;
@@ -619,9 +620,13 @@ mod tests {
         assert!(accumulator_result.is_none());
 
         // Verify only the original execution remains
-        let executions = crate::schwab::execution::find_pending_executions_by_symbol(&pool, "AAPL")
-            .await
-            .unwrap();
+        let executions = crate::schwab::execution::find_executions_by_symbol_and_status(
+            &pool,
+            "AAPL",
+            TradeStatus::Pending,
+        )
+        .await
+        .unwrap();
         assert_eq!(executions.len(), 1);
         assert_eq!(executions[0].shares, 50);
     }

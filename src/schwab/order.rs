@@ -113,8 +113,6 @@ impl Order {
 
     /// Get the status of a specific order from Schwab API.
     /// Returns the order status response containing fill information and execution details.
-    // TODO: Remove #[allow(dead_code)] when integrating order poller in Section 5
-    #[allow(dead_code)]
     pub async fn get_order_status(
         order_id: &str,
         env: &SchwabAuthEnv,

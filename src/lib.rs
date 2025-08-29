@@ -42,6 +42,9 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
 
     let server_task = tokio::spawn(rocket.launch());
 
+    let mut clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
+    let mut take_stream = orderbook.TakeOrderV2_filter().watch().await?.into_stream();
+
     let bot_pool = pool.clone();
     let bot_task = tokio::spawn(async move {
         if let Err(e) = run(env, bot_pool).await {
