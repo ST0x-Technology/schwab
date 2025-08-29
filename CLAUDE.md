@@ -12,6 +12,7 @@ code in this repository.
   section and a list of subtasks as checkboxes inside of it
 - The plan should be a detailed implementation plan and the reasoning behind the
   design decisions
+- Do not include timelines in the plan as they tend to be inaccurate
 - Remain focused on the task at hand, do not include unrelated improvements or
   premature optimizations
 - Once you write the plan, ask me to review it. Do not continue until I approve
