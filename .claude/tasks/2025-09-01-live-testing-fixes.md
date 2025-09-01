@@ -337,11 +337,79 @@ format issue)
 
 **Files**: `src/lock.rs`
 
-- [ ] Debug why the lock cleanup datetime comparison isn't working
-- [ ] Fix the cleanup logic in `try_acquire_execution_lease`
-- [ ] Manually clear the stale GME lock from August 29th
-- [ ] Add test for stale lock cleanup
-- [ ] Add logging when locks are cleaned up
+- [x] Debug why the lock cleanup datetime comparison isn't working
+- [x] Fix the cleanup logic in `try_acquire_execution_lease`
+- [x] Manually clear the stale GME lock from August 29th
+- [x] Add test for stale lock cleanup
+- [x] Add logging when locks are cleaned up
+- [x] Run `cargo test -q` (330 tests pass)
+- [x] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
+- [x] Run `pre-commit run -a`
+
+**Completed Implementation**: Fixed the stale lock cleanup issue that was
+preventing accumulated trades from executing.
+
+**Root Cause**: The cleanup logic in `try_acquire_execution_lease()` was working
+correctly, but it only ran when attempting to acquire a lease for the same
+symbol. Since no new GME trades had arrived since August 29th, the stale GME
+lock was never cleaned up, permanently blocking the accumulated 1.21 GME shares
+from executing.
+
+**Key Changes**:
+
+- **Enhanced proactive cleanup**: Modified `try_acquire_execution_lease()` to
+  clean up ALL stale locks (not just for the current symbol), ensuring any stale
+  locks get cleaned when any trade processing occurs
+- **Added comprehensive logging**: Added info/warn logs for lock acquisition,
+  cleanup, and clearing to improve observability
+- **Added test coverage**: Added `test_cleanup_multiple_stale_locks()` to verify
+  that acquiring a lease for one symbol cleans up stale locks for all symbols
+- **Manual fix applied**: Cleared the stale GME lock from August 29th,
+  immediately unblocking the accumulated trades
+
+**Critical Fix**: The arbitrage bot can now recover from stale locks
+automatically without manual intervention. When any new trade arrives for any
+symbol, it will clean up stale locks for all symbols, ensuring no symbol remains
+permanently blocked.
+
+## Task 10: Fix Accumulated Trades Not Executing
+
+**Issue**: Accumulated trades don't execute when no new events arrive for that
+symbol
+
+**Root Cause**: The execution check only happens inside `process_trade` when
+processing each individual trade. If multiple trades accumulate to >= 1.0 shares
+but the LAST trade doesn't push it over the threshold, the execution never
+happens. Additionally, if no new trades arrive after accumulation, the position
+sits idle forever.
+
+**Example Scenario**:
+
+- 10 GME trades processed, accumulating to 1.21 shares
+- First execution of 1 share completes successfully
+- Remaining 0.21 shares stay accumulated
+- No new GME trades arrive → 0.21 shares wait forever
+- Eventually more trades would push it over 1.0 again, but they never come
+
+**Current Behavior**:
+
+- `process_trade` adds trade amount to accumulator
+- Checks if ready to execute ONLY for that specific trade
+- If that trade alone doesn't trigger execution, waits for next trade
+- If no next trade comes, accumulated amount sits idle indefinitely
+
+**Solution**: Add post-processing checks to ensure accumulated positions are
+executed:
+
+1. After processing all unprocessed events on startup
+2. After each individual trade is committed (check again outside transaction)
+
+**Files**: `src/conductor.rs`, `src/onchain/accumulator.rs`
+
+- [ ] Add `check_all_accumulated_positions` function to accumulator.rs
+- [ ] Call it after processing unprocessed events in conductor.rs
+- [ ] Add post-commit check after each trade in process_queued_event
+- [ ] Add test coverage for accumulated position execution
 - [ ] Run `cargo test -q`
 - [ ] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
 - [ ] Run `pre-commit run -a`
