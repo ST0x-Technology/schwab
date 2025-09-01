@@ -1,26 +1,73 @@
 # Live Testing Fixes - September 1, 2025
 
-Four verified fixes discovered during live testing of the Schwab integration.
+Verified fixes discovered during live testing of the Schwab integration.
 
 **General Principle**: When fixing issues, add test coverage for the
 corresponding problem to prevent future regressions.
 
-## Task 1: Schwab API Response Format Fix (CRITICAL)
+## Task 1: Fix orderId Format Handling
 
-**Issue**: Schwab returns `orderId` as int64, not string; execution data in
-`orderActivityCollection` **Source**:
-`account_orders_openapi.yaml:1364,1472,1518,2506` defines
-`orderId: type: integer, format: int64` **Files**: `src/schwab/order_status.rs`,
-`src/schwab/order.rs`
+**Issue**: Schwab API returns `orderId` as int64, not string **Source**:
+`account_orders_openapi.yaml:1364` defines
+`orderId: type: integer, format: int64` **Files**: `src/schwab/order_status.rs`
+(lines 11-17)
 
-- [x] Apply changes from stash
-- [x] Review implementation
-- [x] Verify test coverage for orderId format handling
-- [x] Run `cargo test -q`
+- [x] Add custom deserializer to convert int64 orderId to string
+- [x] Update test mocks to use numeric orderIds
+- [x] Add test coverage for orderId format handling
+- [x] Run `cargo test -q` (324 tests pass)
 - [x] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
 - [x] Run `pre-commit run -a`
 
-## Task 2: Duplicate Event Handling
+## Task 2: Remove Incorrect executionLegs Field & Fix Financial Data Safety
+
+**Issue**: We have a top-level `executionLegs` field that doesn't exist in the
+Schwab API. The OpenAPI spec (lines 1299-1408) shows the Order schema has NO
+top-level executionLegs field. Execution data is only nested inside
+`orderActivityCollection[].executionLegs`. Additionally, using
+`#[serde(default)]` on financial fields is dangerous as it silently provides
+`0.0` defaults that could corrupt calculations.
+
+**Source**: `account_orders_openapi.yaml:1386-1392` defines
+orderActivityCollection, lines 1545-1551 show executionLegs only exists inside
+OrderActivity **Files**: `src/schwab/order_status.rs`
+
+- [x] Remove top-level `execution_legs` field from OrderStatusResponse
+- [x] Simplify `calculate_weighted_average_price()` to only parse from
+      orderActivityCollection
+- [x] Update all test mocks to put execution data inside orderActivityCollection
+- [x] Remove dangerous `#[serde(default)]` attributes from financial fields
+- [x] Create proper `OrderActivity` and `ExecutionLeg` types to replace
+      `Vec<serde_json::Value>`
+- [x] Update `OrderStatusResponse` to use `Option<T>` for all fields except
+      `order_id`
+- [x] Remove `Default` derive from `OrderStatusResponse` to prevent silent
+      defaults
+- [x] Update `calculate_weighted_average_price()` to handle `Option` types
+      explicitly
+- [x] Fix all tests to work with new `Option<T>` field types
+- [x] Run `cargo test -q` (323 tests pass)
+- [x] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
+- [x] Run `pre-commit run -a`
+
+**Key Safety Improvement**: Financial fields like `filled_quantity` and
+`remaining_quantity` are now `Option<f64>` instead of defaulting to `0.0`,
+preventing silent data corruption in financial calculations.
+
+## Task 3: Add Default Trait Implementations
+
+**Issue**: Missing fields in API responses cause parsing failures **Source**:
+Many fields in OpenAPI spec are optional (not in required arrays) **Files**:
+`src/schwab/order_status.rs` (lines 42-46, 59-60)
+
+- [ ] Add Default trait for OrderStatus enum
+- [ ] Add Default trait for OrderStatusResponse struct
+- [ ] Update tests to verify partial response handling
+- [ ] Run `cargo test -q`
+- [ ] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
+- [ ] Run `pre-commit run -a`
+
+## Task 4: Duplicate Event Handling
 
 **Issue**: System fails on duplicate events instead of handling gracefully
 **Verification**: UNIQUE constraints on `(tx_hash, log_index)` exist; graceful
@@ -34,7 +81,7 @@ handling needed for event redelivery **Files**: `src/onchain/accumulator.rs`,
 - [ ] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
 - [ ] Run `pre-commit run -a`
 
-## Task 3: Stale Execution Cleanup
+## Task 5: Stale Execution Cleanup
 
 **Issue**: Executions stuck in SUBMITTED state cause deadlocks **Verification**:
 No existing cleanup mechanism; `pending_execution_id` blocks new executions
@@ -47,7 +94,7 @@ No existing cleanup mechanism; `pending_execution_id` blocks new executions
 - [ ] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
 - [ ] Run `pre-commit run -a`
 
-## Task 4: Improved Logging
+## Task 6: Improved Logging
 
 **Issue**: Insufficient logging for debugging production issues
 **Verification**: Additional info! statements for observability **Files**:
