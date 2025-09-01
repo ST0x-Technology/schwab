@@ -1,4 +1,5 @@
 use crate::error::OnChainError;
+use tracing::{info, warn};
 
 /// Atomically acquires an execution lease for the given symbol.
 /// Returns true if lease was acquired, false if another worker holds it.
@@ -8,14 +9,22 @@ pub(crate) async fn try_acquire_execution_lease(
 ) -> Result<bool, OnChainError> {
     const LOCK_TIMEOUT_MINUTES: i32 = 5;
 
-    // Clean up old locks first (older than 5 minutes)
+    // Clean up ALL old locks first (older than 5 minutes), not just for this symbol
     let timeout_param = format!("-{LOCK_TIMEOUT_MINUTES} minutes");
-    sqlx::query!(
+    let cleanup_result = sqlx::query!(
         "DELETE FROM symbol_locks WHERE locked_at < datetime('now', ?1)",
         timeout_param
     )
     .execute(sql_tx.as_mut())
     .await?;
+
+    if cleanup_result.rows_affected() > 0 {
+        info!(
+            "Cleaned up {} stale lock(s) older than {} minutes",
+            cleanup_result.rows_affected(),
+            LOCK_TIMEOUT_MINUTES
+        );
+    }
 
     // Try to acquire lock by inserting into symbol_locks table
     let result = sqlx::query("INSERT OR IGNORE INTO symbol_locks (symbol) VALUES (?1)")
@@ -23,7 +32,17 @@ pub(crate) async fn try_acquire_execution_lease(
         .execute(sql_tx.as_mut())
         .await?;
 
-    Ok(result.rows_affected() > 0)
+    let lease_acquired = result.rows_affected() > 0;
+    if lease_acquired {
+        info!("Acquired execution lease for symbol: {}", symbol);
+    } else {
+        warn!(
+            "Failed to acquire execution lease for symbol: {} (already held)",
+            symbol
+        );
+    }
+
+    Ok(lease_acquired)
 }
 
 /// Clears the execution lease when no execution was created
@@ -31,10 +50,14 @@ pub(crate) async fn clear_execution_lease(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     symbol: &str,
 ) -> Result<(), OnChainError> {
-    sqlx::query("DELETE FROM symbol_locks WHERE symbol = ?1")
+    let result = sqlx::query("DELETE FROM symbol_locks WHERE symbol = ?1")
         .bind(symbol)
         .execute(sql_tx.as_mut())
         .await?;
+
+    if result.rows_affected() > 0 {
+        info!("Cleared execution lease for symbol: {}", symbol);
+    }
 
     Ok(())
 }
@@ -242,6 +265,46 @@ mod tests {
             .unwrap();
         assert!(result); // Should succeed because old lock was cleaned up
         sql_tx.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_multiple_stale_locks() {
+        let pool = setup_test_db().await;
+
+        // Create multiple stale locks
+        let mut sql_tx = pool.begin().await.unwrap();
+        for symbol in ["AAPL", "MSFT", "TSLA"] {
+            sqlx::query(
+                "INSERT INTO symbol_locks (symbol, locked_at) VALUES (?1, datetime('now', '-100 minutes'))"
+            )
+            .bind(symbol)
+            .execute(sql_tx.as_mut())
+            .await
+            .unwrap();
+        }
+        sql_tx.commit().await.unwrap();
+
+        // Verify all locks exist
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM symbol_locks")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 3);
+
+        // Acquire lease for a different symbol - should cleanup all stale locks
+        let mut sql_tx = pool.begin().await.unwrap();
+        let result = try_acquire_execution_lease(&mut sql_tx, "GME")
+            .await
+            .unwrap();
+        assert!(result);
+        sql_tx.commit().await.unwrap();
+
+        // Verify all stale locks were cleaned up, only GME lock remains
+        let remaining_locks: Vec<String> = sqlx::query_scalar("SELECT symbol FROM symbol_locks")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining_locks, vec!["GME"]);
     }
 
     #[tokio::test]
