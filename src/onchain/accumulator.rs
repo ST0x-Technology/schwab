@@ -45,9 +45,6 @@ pub async fn add_trade(
         "Updated calculator"
     );
 
-    // Clean up stale executions before trying to acquire new lease
-    clean_up_stale_executions(&mut sql_tx, &base_symbol).await?;
-
     let execution = if try_acquire_execution_lease(&mut sql_tx, &base_symbol).await? {
         let result =
             try_create_execution_if_ready(&mut sql_tx, &base_symbol, trade_id, &mut calculator)

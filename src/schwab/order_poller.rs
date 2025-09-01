@@ -371,7 +371,7 @@ mod tests {
             shares: 100,
             direction: Direction::Buy,
             state: TradeState::Submitted {
-                order_id: "ORDER12345".to_string(),
+                order_id: "1004055538999".to_string(),
             },
         };
 
@@ -396,29 +396,32 @@ mod tests {
         assert_eq!(saved_execution.direction, Direction::Buy);
         assert!(matches!(
             &saved_execution.state,
-            TradeState::Submitted { order_id } if order_id == "ORDER12345"
+            TradeState::Submitted { order_id } if order_id == "1004055538999"
         ));
 
         // Step 3: Mock order status polling with sequence - first WORKING, then FILLED
         let order_status_mock = server.mock(|when, then| {
             when.method(GET)
-                .path("/trader/v1/accounts/ABC123DEF456/orders/ORDER12345")
+                .path("/trader/v1/accounts/ABC123DEF456/orders/1004055538999")
                 .header("authorization", "Bearer test_access_token");
             then.status(200)
                 .header("content-type", "application/json")
                 .json_body(json!({
-                    "orderId": "ORDER12345",
+                    "orderId": 1_004_055_538_123_i64,
                     "status": "FILLED",
                     "filledQuantity": 100.0,
                     "remainingQuantity": 0.0,
-                    "executionLegs": [{
-                        "executionId": "EXEC123",
-                        "quantity": 100.0,
-                        "price": 150.25,
-                        "time": "2023-10-15T10:30:00Z"
-                    }],
                     "enteredTime": "2023-10-15T10:25:00Z",
-                    "closeTime": "2023-10-15T10:30:00Z"
+                    "closeTime": "2023-10-15T10:30:00Z",
+                    "orderActivityCollection": [{
+                        "activityType": "EXECUTION",
+                        "executionLegs": [{
+                            "executionId": "EXEC123",
+                            "quantity": 100.0,
+                            "price": 150.25,
+                            "time": "2023-10-15T10:30:00Z"
+                        }]
+                    }]
                 }));
         });
 
@@ -441,7 +444,7 @@ mod tests {
         assert!(matches!(
             &final_execution.state,
             TradeState::Filled { order_id, price_cents, .. }
-            if order_id == "ORDER12345" && *price_cents == 15025  // 150.25 * 100 cents
+            if order_id == "1004055538123" && *price_cents == 15025  // 150.25 * 100 cents
         ));
 
         // Step 7: Verify no more SUBMITTED executions for this symbol
@@ -553,18 +556,21 @@ mod tests {
                 then.status(200)
                     .header("content-type", "application/json")
                     .json_body(json!({
-                        "orderId": order_id,
+                        "orderId": i as u64 + 1_004_055_538_000,
                         "status": "FILLED",
                         "filledQuantity": (i as f64).mul_add(10.0, 100.0),
                         "remainingQuantity": 0.0,
-                        "executionLegs": [{
-                            "executionId": format!("EXEC{i:04}"),
-                            "quantity": (i as f64).mul_add(10.0, 100.0),
-                            "price": price,
-                            "time": "2023-10-15T10:30:00Z"
-                        }],
                         "enteredTime": "2023-10-15T10:25:00Z",
-                        "closeTime": "2023-10-15T10:30:00Z"
+                        "closeTime": "2023-10-15T10:30:00Z",
+                        "orderActivityCollection": [{
+                            "activityType": "EXECUTION",
+                            "executionLegs": [{
+                                "executionId": format!("EXEC{i:04}"),
+                                "quantity": (i as f64).mul_add(10.0, 100.0),
+                                "price": price,
+                                "time": "2023-10-15T10:30:00Z"
+                            }]
+                        }]
                     }));
             });
         }
