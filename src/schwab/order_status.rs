@@ -39,12 +39,6 @@ pub(crate) enum OrderStatus {
     Replaced,
 }
 
-impl Default for OrderStatus {
-    fn default() -> Self {
-        Self::Queued
-    }
-}
-
 /// Order status response from Schwab API
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -673,6 +667,23 @@ mod tests {
         assert_eq!(parsed.entered_time, None);
         assert_eq!(parsed.close_time, None);
         assert_eq!(parsed.order_activity_collection, None);
+    }
+
+    #[test]
+    fn test_missing_status_field_none() {
+        let no_status_response = r#"{
+            "orderId": 1004055538123,
+            "filledQuantity": 0.0,
+            "remainingQuantity": 100.0
+        }"#;
+
+        let parsed: OrderStatusResponse =
+            serde_json::from_str(no_status_response).expect("Should parse response without status");
+
+        assert_eq!(parsed.order_id, Some("1004055538123".to_string()));
+        assert_eq!(parsed.status, None);
+        assert_eq!(parsed.filled_quantity, Some(0.0));
+        assert_eq!(parsed.remaining_quantity, Some(100.0));
     }
 
     #[test]
