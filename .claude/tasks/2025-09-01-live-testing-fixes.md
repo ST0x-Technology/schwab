@@ -215,17 +215,108 @@ growth.
    - Clear `pending_execution_id` in `trade_accumulators` where symbol matches
    - Clear any execution lease/lock if applicable
 
-- [ ] Apply manual fix to clear current stale pending_execution_id:
+- [x] Apply manual fix to clear current stale pending_execution_id:
   ```sql
   UPDATE trade_accumulators 
   SET pending_execution_id = NULL 
   WHERE symbol = 'GME' AND pending_execution_id = 1;
   ```
-- [ ] Add logic to fetch symbol from execution in both handler functions
-- [ ] Clear pending_execution_id when marking execution as FILLED
-- [ ] Clear pending_execution_id when marking execution as FAILED
-- [ ] Add test coverage for pending_execution_id cleanup
-- [ ] Test that new executions can be created after previous one completes
+- [x] Add `clear_pending_execution_id` function to `src/lock.rs`
+- [x] Add logic to fetch symbol from execution in both handler functions
+- [x] Clear pending_execution_id when marking execution as FILLED
+- [x] Clear pending_execution_id when marking execution as FAILED
+- [x] Add test coverage for `clear_pending_execution_id` function
+- [x] Add test coverage for pending_execution_id cleanup in order_poller
+- [x] Test that pending_execution_id is cleared when orders complete
+- [x] Run `cargo test -q` (329 tests pass)
+- [x] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
+- [x] Run `pre-commit run -a`
+
+**Completed Implementation**: Fixed the critical issue where order poller
+doesn't clear `pending_execution_id` from trade_accumulators when orders are
+filled or failed.
+
+**Key Changes**:
+
+- Added `clear_pending_execution_id` function in `src/lock.rs`
+- Updated both `handle_filled_order` and `handle_failed_order` in
+  `src/schwab/order_poller.rs` to:
+  - Fetch the symbol from the execution record before updating status
+  - Clear `pending_execution_id` from `trade_accumulators` table
+  - Clear execution lease from `symbol_locks` table
+  - Use proper transaction management for atomicity
+- Added comprehensive test coverage for both successful and failed order
+  scenarios
+- Applied immediate database fix to unblock the stale GME execution
+
+**Critical Fix**: This resolves the permanent deadlock issue where symbols
+become permanently blocked after their first execution completes, ensuring the
+arbitrage bot can continue placing offsetting trades for all symbols.
+
+## Task 8: Fix Trade Direction Semantic Issue
+
+**Issue**: The `direction` field in `onchain_trades` table stores the Schwab
+offsetting direction instead of the actual onchain trade direction
+
+**Root Cause**: `determine_schwab_trade_details` returns the Schwab offsetting
+direction (e.g., BUY on Schwab to offset an onchain SELL), but this is being
+stored as the trade direction and misinterpreted by the accumulator.
+
+**Impact**:
+
+- Onchain SELLs are stored as "BUY" in the database
+- Accumulator treats them as Long positions instead of Short
+- Trades accumulate in the wrong bucket (accumulated_long vs accumulated_short)
+- While Schwab executions are correct, the position tracking is wrong
+
+**Solution**:
+
+1. Fix `determine_schwab_trade_details` to return the actual onchain trade
+   direction
+2. Update the accumulator mapping to handle onchain directions correctly
+3. Manually fix existing database records
+
+**Files**: `src/onchain/trade.rs`, `src/onchain/accumulator.rs`
+
+- [ ] Modify `determine_schwab_trade_details` to return onchain direction (SELL
+      when giving away stock for USDC)
+- [ ] Update accumulator to map onchain directions to correct execution types
+      (SELL → Short → Schwab BUY)
+- [ ] Manually update existing GME trades in database (change BUY to SELL)
+- [ ] Manually move GME's accumulated_long to accumulated_short
+- [ ] Update tests to verify onchain SELL → accumulated_short → Schwab BUY flow
+- [ ] Run `cargo test -q`
+- [ ] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
+- [ ] Run `pre-commit run -a`
+
+## Task 9: Fix Stale Lock Cleanup Issue
+
+**Issue**: Symbol locks from months ago are not being cleaned up, blocking new
+executions
+
+**Root Cause**: The `try_acquire_execution_lease` function attempts to clean up
+locks older than 5 minutes, but the cleanup isn't working (likely datetime
+format issue)
+
+**Impact**:
+
+- Old locks persist indefinitely
+- Prevents accumulated trades from executing
+- Currently blocking 1.21 GME shares from being executed
+
+**Solution**:
+
+1. Fix the datetime comparison in lock cleanup
+2. Clear stale locks manually as immediate mitigation
+3. Add monitoring/logging for lock cleanup
+
+**Files**: `src/lock.rs`
+
+- [ ] Debug why the lock cleanup datetime comparison isn't working
+- [ ] Fix the cleanup logic in `try_acquire_execution_lease`
+- [ ] Manually clear the stale GME lock from August 29th
+- [ ] Add test for stale lock cleanup
+- [ ] Add logging when locks are cleaned up
 - [ ] Run `cargo test -q`
 - [ ] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
 - [ ] Run `pre-commit run -a`

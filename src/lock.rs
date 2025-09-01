@@ -60,6 +60,21 @@ pub(crate) async fn set_pending_execution_id(
     Ok(())
 }
 
+/// Clears the pending execution ID when an execution completes or fails
+pub(crate) async fn clear_pending_execution_id(
+    sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    symbol: &str,
+) -> Result<(), OnChainError> {
+    sqlx::query!(
+        "UPDATE trade_accumulators SET pending_execution_id = NULL WHERE symbol = ?1",
+        symbol
+    )
+    .execute(sql_tx.as_mut())
+    .await?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,5 +242,58 @@ mod tests {
             .unwrap();
         assert!(result); // Should succeed because old lock was cleaned up
         sql_tx.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_clear_pending_execution_id() {
+        let pool = setup_test_db().await;
+
+        let execution = SchwabExecution {
+            id: None,
+            symbol: "TSLA".to_string(),
+            shares: 100,
+            direction: Direction::Buy,
+            state: TradeState::Pending,
+        };
+
+        let mut sql_tx = pool.begin().await.unwrap();
+        let execution_id = execution
+            .save_within_transaction(&mut sql_tx)
+            .await
+            .unwrap();
+
+        let calculator = PositionCalculator::new();
+        save_within_transaction(&mut sql_tx, "TSLA", &calculator, Some(execution_id))
+            .await
+            .unwrap();
+
+        sql_tx.commit().await.unwrap();
+
+        // Verify pending_execution_id is set
+        let row = sqlx::query!(
+            "SELECT pending_execution_id FROM trade_accumulators WHERE symbol = ?1",
+            "TSLA"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.pending_execution_id, Some(execution_id));
+
+        // Clear pending execution ID
+        let mut sql_tx = pool.begin().await.unwrap();
+        clear_pending_execution_id(&mut sql_tx, "TSLA")
+            .await
+            .unwrap();
+        sql_tx.commit().await.unwrap();
+
+        // Verify pending_execution_id is now NULL
+        let row = sqlx::query!(
+            "SELECT pending_execution_id FROM trade_accumulators WHERE symbol = ?1",
+            "TSLA"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.pending_execution_id, None);
     }
 }
