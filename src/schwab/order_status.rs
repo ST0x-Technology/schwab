@@ -1,7 +1,20 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::price_cents_from_db_i64;
 use crate::error::OnChainError;
+
+/// Deserialize orderId from Schwab API as int64 and convert to string for database compatibility.
+///
+/// NOTE: Schwab API spec defines orderId as int64, but our database schema stores it as TEXT.
+/// This conversion bridges the API format to our storage format. We may want to change the
+/// database schema to INTEGER before production deployment.
+fn deserialize_order_id<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    (Option::<u64>::deserialize(deserializer)?)
+        .map_or_else(|| Ok(None), |order_id| Ok(Some(order_id.to_string())))
+}
 
 /// Order status enum matching Schwab API states
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,6 +37,12 @@ pub(crate) enum OrderStatus {
     AwaitingReleaseTime,
     PendingReplace,
     Replaced,
+}
+
+impl Default for OrderStatus {
+    fn default() -> Self {
+        Self::Queued
+    }
 }
 
 /// Individual execution leg representing a specific fill
@@ -183,6 +202,7 @@ mod tests {
             }],
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: Some("2023-10-15T10:30:00Z".to_string()),
+            order_activity_collection: vec![],
         };
 
         assert_eq!(response.calculate_weighted_average_price(), Some(150.25));
@@ -211,6 +231,7 @@ mod tests {
             ],
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: Some("2023-10-15T10:30:10Z".to_string()),
+            order_activity_collection: vec![],
         };
 
         assert_eq!(response.calculate_weighted_average_price(), Some(150.5));
@@ -239,6 +260,7 @@ mod tests {
             ],
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: Some("2023-10-15T10:30:10Z".to_string()),
+            order_activity_collection: vec![],
         };
 
         // (200 * 150.00 + 100 * 153.00) / 300 = (30000 + 15300) / 300 = 151.00
@@ -255,6 +277,7 @@ mod tests {
             execution_legs: vec![],
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: None,
+            order_activity_collection: vec![],
         };
 
         assert_eq!(response.calculate_weighted_average_price(), None);
@@ -275,6 +298,7 @@ mod tests {
             }],
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: Some("2023-10-15T10:30:00Z".to_string()),
+            order_activity_collection: vec![],
         };
 
         assert_eq!(response.price_in_cents().unwrap(), Some(15025));
@@ -290,6 +314,7 @@ mod tests {
             execution_legs: vec![],
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: None,
+            order_activity_collection: vec![],
         };
 
         assert_eq!(response.price_in_cents().unwrap(), None);
@@ -310,6 +335,7 @@ mod tests {
             }],
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: Some("2023-10-15T10:30:00Z".to_string()),
+            order_activity_collection: vec![],
         };
 
         assert_eq!(response.price_in_cents().unwrap(), Some(15025));
@@ -325,6 +351,7 @@ mod tests {
             execution_legs: vec![],
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: Some("2023-10-15T10:30:00Z".to_string()),
+            order_activity_collection: vec![],
         };
 
         assert!(response.is_filled());
@@ -359,6 +386,7 @@ mod tests {
                 execution_legs: vec![],
                 entered_time: Some("2023-10-15T10:25:00Z".to_string()),
                 close_time: None,
+                order_activity_collection: vec![],
             };
             assert!(response.is_pending(), "Status {status:?} should be pending");
         }
@@ -380,6 +408,7 @@ mod tests {
                 execution_legs: vec![],
                 entered_time: Some("2023-10-15T10:25:00Z".to_string()),
                 close_time: Some("2023-10-15T10:30:00Z".to_string()),
+                order_activity_collection: vec![],
             };
             assert!(
                 !response.is_pending(),
@@ -405,6 +434,7 @@ mod tests {
                 execution_legs: vec![],
                 entered_time: Some("2023-10-15T10:25:00Z".to_string()),
                 close_time: Some("2023-10-15T10:30:00Z".to_string()),
+                order_activity_collection: vec![],
             };
             assert!(
                 response.is_terminal_failure(),
@@ -428,6 +458,7 @@ mod tests {
                 execution_legs: vec![],
                 entered_time: Some("2023-10-15T10:25:00Z".to_string()),
                 close_time: None,
+                order_activity_collection: vec![],
             };
             assert!(
                 !response.is_terminal_failure(),
@@ -492,9 +523,188 @@ mod tests {
             }],
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: None,
+            order_activity_collection: vec![],
         };
 
         assert_eq!(response.calculate_weighted_average_price(), None);
         assert_eq!(response.price_in_cents().unwrap(), None);
+    }
+
+    #[test]
+    fn test_actual_schwab_api_response_filled_order() {
+        // This is the actual response format returned by Schwab API for a filled GME order
+        let actual_response = r#"{
+            "session":"NORMAL",
+            "duration":"DAY",
+            "orderType":"MARKET",
+            "complexOrderStrategyType":"NONE",
+            "quantity":1.0,
+            "filledQuantity":1.0,
+            "remainingQuantity":0.0,
+            "requestedDestination":"AUTO",
+            "destinationLinkName":"HRTF",
+            "orderLegCollection":[{
+                "orderLegType":"EQUITY",
+                "legId":1,
+                "instrument":{
+                    "assetType":"EQUITY",
+                    "cusip":"36467W109",
+                    "symbol":"GME",
+                    "instrumentId":4430271
+                },
+                "instruction":"BUY",
+                "positionEffect":"OPENING",
+                "quantity":1.0
+            }],
+            "orderStrategyType":"SINGLE",
+            "orderId":1004055538153,
+            "cancelable":false,
+            "editable":false,
+            "status":"FILLED",
+            "enteredTime":"2025-08-29T17:15:17+0000",
+            "closeTime":"2025-08-29T17:15:18+0000",
+            "tag":"TA_nickmagliocchetticom1751890824",
+            "accountNumber":49359741,
+            "orderActivityCollection":[{
+                "activityType":"EXECUTION",
+                "activityId":102102029816,
+                "executionType":"FILL",
+                "quantity":1.0,
+                "orderRemainingQuantity":0.0,
+                "executionLegs":[{
+                    "legId":1,
+                    "quantity":1.0,
+                    "mismarkedQuantity":0.0,
+                    "price":22.7299,
+                    "time":"2025-08-29T17:15:18+0000",
+                    "instrumentId":4430271
+                }]
+            }]
+        }"#;
+
+        // This should parse successfully now
+        let parsed: OrderStatusResponse =
+            serde_json::from_str(actual_response).expect("Should parse actual Schwab API response");
+
+        // Verify the parsed values
+        assert_eq!(parsed.order_id, Some("1004055538153".to_string()));
+        assert_eq!(parsed.status, OrderStatus::Filled);
+        assert!((parsed.filled_quantity - 1.0).abs() < f64::EPSILON);
+        assert!(parsed.remaining_quantity.abs() < f64::EPSILON);
+        assert_eq!(
+            parsed.entered_time,
+            Some("2025-08-29T17:15:17+0000".to_string())
+        );
+        assert_eq!(
+            parsed.close_time,
+            Some("2025-08-29T17:15:18+0000".to_string())
+        );
+
+        // Verify price extraction from orderActivityCollection
+        let avg_price = parsed.calculate_weighted_average_price();
+        assert!(avg_price.is_some());
+        assert!((avg_price.unwrap() - 22.7299).abs() < f64::EPSILON);
+
+        // Verify price in cents conversion
+        let price_cents = parsed.price_in_cents().unwrap();
+        assert_eq!(price_cents, Some(2273)); // 22.7299 * 100 rounded = 2273 cents
+    }
+
+    #[test]
+    fn test_order_id_as_string() {
+        // Test that we can handle orderId as a string
+        let response_json = r#"{
+            "orderId": "ORDER123",
+            "status": "WORKING",
+            "filledQuantity": 0.0,
+            "remainingQuantity": 100.0
+        }"#;
+
+        let parsed: OrderStatusResponse =
+            serde_json::from_str(response_json).expect("Should parse orderId as string");
+
+        assert_eq!(parsed.order_id, Some("ORDER123".to_string()));
+        assert_eq!(parsed.status, OrderStatus::Working);
+    }
+
+    #[test]
+    fn test_order_id_as_number() {
+        // Test that we can handle orderId as a number (actual Schwab format)
+        let response_json = r#"{
+            "orderId": 1004055538153,
+            "status": "FILLED",
+            "filledQuantity": 1.0,
+            "remainingQuantity": 0.0
+        }"#;
+
+        let parsed: OrderStatusResponse =
+            serde_json::from_str(response_json).expect("Should parse orderId as number");
+
+        assert_eq!(parsed.order_id, Some("1004055538153".to_string()));
+        assert_eq!(parsed.status, OrderStatus::Filled);
+    }
+
+    #[test]
+    fn test_order_id_missing() {
+        // Test that we can handle missing orderId field
+        let response_json = r#"{
+            "status": "QUEUED",
+            "filledQuantity": 0.0,
+            "remainingQuantity": 100.0
+        }"#;
+
+        let parsed: OrderStatusResponse =
+            serde_json::from_str(response_json).expect("Should parse response without orderId");
+
+        assert_eq!(parsed.order_id, None);
+        assert_eq!(parsed.status, OrderStatus::Queued);
+    }
+
+    #[test]
+    fn test_missing_optional_fields() {
+        // Test that we can handle responses with missing optional fields
+        let minimal_response = r#"{
+            "status": "QUEUED"
+        }"#;
+
+        let parsed: OrderStatusResponse =
+            serde_json::from_str(minimal_response).expect("Should parse minimal response");
+
+        assert_eq!(parsed.order_id, None);
+        assert_eq!(parsed.status, OrderStatus::Queued);
+        assert!(parsed.filled_quantity.abs() < f64::EPSILON);
+        assert!(parsed.remaining_quantity.abs() < f64::EPSILON);
+        assert_eq!(parsed.execution_legs.len(), 0);
+        assert_eq!(parsed.entered_time, None);
+        assert_eq!(parsed.close_time, None);
+        assert_eq!(parsed.order_activity_collection.len(), 0);
+    }
+
+    #[test]
+    fn test_price_calculation_from_order_activity_collection() {
+        // Test price calculation specifically from orderActivityCollection
+        let response_json = r#"{
+            "status": "FILLED",
+            "filledQuantity": 2.0,
+            "remainingQuantity": 0.0,
+            "orderActivityCollection": [{
+                "activityType": "EXECUTION",
+                "executionLegs": [{
+                    "quantity": 1.0,
+                    "price": 100.50
+                }, {
+                    "quantity": 1.0,
+                    "price": 101.50
+                }]
+            }]
+        }"#;
+
+        let parsed: OrderStatusResponse = serde_json::from_str(response_json)
+            .expect("Should parse response with orderActivityCollection");
+
+        // Should calculate weighted average: (1.0 * 100.50 + 1.0 * 101.50) / 2.0 = 101.0
+        let avg_price = parsed.calculate_weighted_average_price();
+        assert!(avg_price.is_some());
+        assert!((avg_price.unwrap() - 101.0).abs() < f64::EPSILON);
     }
 }

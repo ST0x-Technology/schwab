@@ -2,6 +2,9 @@
 
 Four verified fixes discovered during live testing of the Schwab integration.
 
+**General Principle**: When fixing issues, add test coverage for the
+corresponding problem to prevent future regressions.
+
 ## Task 1: Schwab API Response Format Fix (CRITICAL)
 
 **Issue**: Schwab returns `orderId` as int64, not string; execution data in
@@ -10,11 +13,12 @@ Four verified fixes discovered during live testing of the Schwab integration.
 `orderId: type: integer, format: int64` **Files**: `src/schwab/order_status.rs`,
 `src/schwab/order.rs`
 
-- [ ] Apply changes from stash
-- [ ] Review implementation
-- [ ] Run `cargo test -q`
-- [ ] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
-- [ ] Run `pre-commit run -a`
+- [x] Apply changes from stash
+- [x] Review implementation
+- [x] Verify test coverage for orderId format handling
+- [x] Run `cargo test -q`
+- [x] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
+- [x] Run `pre-commit run -a`
 
 ## Task 2: Duplicate Event Handling
 
@@ -25,6 +29,7 @@ handling needed for event redelivery **Files**: `src/onchain/accumulator.rs`,
 
 - [ ] Apply changes from stash
 - [ ] Review implementation
+- [ ] Add test coverage for duplicate event scenarios
 - [ ] Run `cargo test -q`
 - [ ] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
 - [ ] Run `pre-commit run -a`
@@ -37,6 +42,7 @@ No existing cleanup mechanism; `pending_execution_id` blocks new executions
 
 - [ ] Apply changes from stash
 - [ ] Review implementation
+- [ ] Add test coverage for stale execution cleanup scenarios
 - [ ] Run `cargo test -q`
 - [ ] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
 - [ ] Run `pre-commit run -a`
@@ -49,6 +55,7 @@ No existing cleanup mechanism; `pending_execution_id` blocks new executions
 
 - [ ] Apply changes from stash
 - [ ] Review implementation
+- [ ] Verify logging coverage is adequate
 - [ ] Run `cargo test -q`
 - [ ] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
 - [ ] Run `pre-commit run -a`

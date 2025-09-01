@@ -163,8 +163,26 @@ impl Order {
             });
         }
 
-        let order_status: OrderStatusResponse = response.json().await?;
-        Ok(order_status)
+        // Capture response text for debugging parse errors
+        let response_text = response.text().await?;
+
+        // Log successful response in debug mode to understand API structure
+        tracing::debug!("Schwab order status response: {}", response_text);
+
+        match serde_json::from_str::<OrderStatusResponse>(&response_text) {
+            Ok(order_status) => Ok(order_status),
+            Err(parse_error) => {
+                error!(
+                    order_id = %order_id,
+                    response_text = %response_text,
+                    parse_error = %parse_error,
+                    "Failed to parse Schwab order status response"
+                );
+                Err(SchwabError::InvalidConfiguration(format!(
+                    "Failed to parse order status response: {parse_error}"
+                )))
+            }
+        }
     }
 }
 
@@ -960,7 +978,7 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Test successful execution handling
-        handle_execution_success(&pool, execution_id, "ORDER123".to_string())
+        handle_execution_success(&pool, execution_id, "1004055538123".to_string())
             .await
             .unwrap();
 
@@ -973,7 +991,7 @@ mod tests {
         // Status should be Submitted with order_id since order poller will update it when filled
         assert!(matches!(
             updated_execution.state,
-            TradeState::Submitted { ref order_id } if order_id == "ORDER123"
+            TradeState::Submitted { ref order_id } if order_id == "1004055538123"
         ));
     }
 
@@ -1067,35 +1085,36 @@ mod tests {
 
         let order_status_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
-                .path("/trader/v1/accounts/ABC123DEF456/orders/ORDER123")
+                .path("/trader/v1/accounts/ABC123DEF456/orders/1004055538123")
                 .header("authorization", "Bearer test_access_token")
                 .header("accept", "application/json");
             then.status(200)
                 .header("content-type", "application/json")
                 .json_body(json!({
-                    "orderId": "ORDER123",
+                    "orderId": 1_004_055_538_123_i64,
                     "status": "FILLED",
                     "filledQuantity": 100.0,
                     "remainingQuantity": 0.0,
-                    "executionLegs": [
-                        {
+                    "enteredTime": "2023-10-15T10:25:00Z",
+                    "closeTime": "2023-10-15T10:30:00Z",
+                    "orderActivityCollection": [{
+                        "activityType": "EXECUTION",
+                        "executionLegs": [{
                             "executionId": "EXEC001",
                             "quantity": 100.0,
                             "price": 150.25,
                             "time": "2023-10-15T10:30:00Z"
-                        }
-                    ],
-                    "enteredTime": "2023-10-15T10:25:00Z",
-                    "closeTime": "2023-10-15T10:30:00Z"
+                        }]
+                    }]
                 }));
         });
 
-        let result = Order::get_order_status("ORDER123", &env, &pool).await;
+        let result = Order::get_order_status("1004055538123", &env, &pool).await;
 
         account_mock.assert();
         order_status_mock.assert();
         let order_status = result.unwrap();
-        assert_eq!(order_status.order_id, Some("ORDER123".to_string()));
+        assert_eq!(order_status.order_id, Some("1004055538123".to_string()));
         assert!(order_status.is_filled());
         assert!((order_status.filled_quantity - 100.0).abs() < f64::EPSILON);
         let avg_price = order_status.calculate_weighted_average_price().unwrap();
@@ -1123,28 +1142,28 @@ mod tests {
 
         let order_status_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
-                .path("/trader/v1/accounts/ABC123DEF456/orders/ORDER456")
+                .path("/trader/v1/accounts/ABC123DEF456/orders/1004055538456")
                 .header("authorization", "Bearer test_access_token")
                 .header("accept", "application/json");
             then.status(200)
                 .header("content-type", "application/json")
                 .json_body(json!({
-                    "orderId": "ORDER456",
+                    "orderId": 1_004_055_538_456_i64,
                     "status": "WORKING",
                     "filledQuantity": 0.0,
                     "remainingQuantity": 100.0,
-                    "executionLegs": [],
+                    "orderActivityCollection": [],
                     "enteredTime": "2023-10-15T10:25:00Z",
                     "closeTime": null
                 }));
         });
 
-        let result = Order::get_order_status("ORDER456", &env, &pool).await;
+        let result = Order::get_order_status("1004055538456", &env, &pool).await;
 
         account_mock.assert();
         order_status_mock.assert();
         let order_status = result.unwrap();
-        assert_eq!(order_status.order_id, Some("ORDER456".to_string()));
+        assert_eq!(order_status.order_id, Some("1004055538456".to_string()));
         assert!(order_status.is_pending());
         assert!(!order_status.is_filled());
         assert!(order_status.filled_quantity.abs() < f64::EPSILON);
@@ -1171,41 +1190,44 @@ mod tests {
 
         let order_status_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
-                .path("/trader/v1/accounts/ABC123DEF456/orders/ORDER789")
+                .path("/trader/v1/accounts/ABC123DEF456/orders/1004055538789")
                 .header("authorization", "Bearer test_access_token")
                 .header("accept", "application/json");
             then.status(200)
                 .header("content-type", "application/json")
                 .json_body(json!({
-                    "orderId": "ORDER789",
+                    "orderId": 1_004_055_538_789_i64,
                     "status": "WORKING",
                     "filledQuantity": 75.0,
                     "remainingQuantity": 25.0,
-                    "executionLegs": [
-                        {
-                            "executionId": "EXEC001",
-                            "quantity": 50.0,
-                            "price": 100.00,
-                            "time": "2023-10-15T10:30:00Z"
-                        },
-                        {
-                            "executionId": "EXEC002",
-                            "quantity": 25.0,
-                            "price": 101.00,
-                            "time": "2023-10-15T10:30:05Z"
-                        }
-                    ],
                     "enteredTime": "2023-10-15T10:25:00Z",
-                    "closeTime": null
+                    "closeTime": null,
+                    "orderActivityCollection": [{
+                        "activityType": "EXECUTION",
+                        "executionLegs": [
+                            {
+                                "executionId": "EXEC001",
+                                "quantity": 50.0,
+                                "price": 100.00,
+                                "time": "2023-10-15T10:30:00Z"
+                            },
+                            {
+                                "executionId": "EXEC002",
+                                "quantity": 25.0,
+                                "price": 101.00,
+                                "time": "2023-10-15T10:30:05Z"
+                            }
+                        ]
+                    }]
                 }));
         });
 
-        let result = Order::get_order_status("ORDER789", &env, &pool).await;
+        let result = Order::get_order_status("1004055538789", &env, &pool).await;
 
         account_mock.assert();
         order_status_mock.assert();
         let order_status = result.unwrap();
-        assert_eq!(order_status.order_id, Some("ORDER789".to_string()));
+        assert_eq!(order_status.order_id, Some("1004055538789".to_string()));
         assert!(order_status.is_pending());
         assert!(!order_status.is_filled());
         assert!((order_status.filled_quantity - 75.0).abs() < f64::EPSILON);
@@ -1277,13 +1299,13 @@ mod tests {
 
         let order_status_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
-                .path("/trader/v1/accounts/ABC123DEF456/orders/ORDER123");
+                .path("/trader/v1/accounts/ABC123DEF456/orders/1004055538123");
             then.status(401)
                 .header("content-type", "application/json")
                 .json_body(json!({"error": "Unauthorized"}));
         });
 
-        let result = Order::get_order_status("ORDER123", &env, &pool).await;
+        let result = Order::get_order_status("1004055538123", &env, &pool).await;
 
         account_mock.assert();
         order_status_mock.assert();
@@ -1315,13 +1337,13 @@ mod tests {
 
         let order_status_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
-                .path("/trader/v1/accounts/ABC123DEF456/orders/ORDER123");
+                .path("/trader/v1/accounts/ABC123DEF456/orders/1004055538123");
             then.status(500)
                 .header("content-type", "application/json")
                 .json_body(json!({"error": "Internal server error"}));
         });
 
-        let result = Order::get_order_status("ORDER123", &env, &pool).await;
+        let result = Order::get_order_status("1004055538123", &env, &pool).await;
 
         account_mock.assert();
         order_status_mock.assert();
@@ -1353,13 +1375,13 @@ mod tests {
 
         let order_status_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
-                .path("/trader/v1/accounts/ABC123DEF456/orders/ORDER123");
+                .path("/trader/v1/accounts/ABC123DEF456/orders/1004055538123");
             then.status(200)
                 .header("content-type", "application/json")
                 .body("invalid json response");
         });
 
-        let result = Order::get_order_status("ORDER123", &env, &pool).await;
+        let result = Order::get_order_status("1004055538123", &env, &pool).await;
 
         account_mock.assert();
         order_status_mock.assert();
@@ -1388,13 +1410,13 @@ mod tests {
         // Mock that fails initially but should be retried
         let order_status_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
-                .path("/trader/v1/accounts/ABC123DEF456/orders/ORDER123");
+                .path("/trader/v1/accounts/ABC123DEF456/orders/1004055538123");
             then.status(502) // Bad Gateway - transient error
                 .header("content-type", "application/json")
                 .json_body(json!({"error": "Bad Gateway"}));
         });
 
-        let result = Order::get_order_status("ORDER123", &env, &pool).await;
+        let result = Order::get_order_status("1004055538123", &env, &pool).await;
 
         account_mock.assert();
         // Should have made at least one request (retry logic is handled by backon)

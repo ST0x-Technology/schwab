@@ -452,7 +452,7 @@ mod tests {
             direction: Direction::Buy,
             state: TradeState::Filled {
                 executed_at: Utc::now(),
-                order_id: "ORDER123".to_string(),
+                order_id: "1004055538123".to_string(),
                 price_cents: 30250,
             },
         };

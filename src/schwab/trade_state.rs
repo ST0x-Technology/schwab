@@ -182,7 +182,7 @@ mod tests {
     fn test_from_db_row_submitted() {
         let result = TradeState::from_db_row(
             TradeStatus::Submitted,
-            Some("ORDER123".to_string()),
+            Some("1004055538123".to_string()),
             None,
             None,
         )
@@ -190,7 +190,7 @@ mod tests {
         assert_eq!(
             result,
             TradeState::Submitted {
-                order_id: "ORDER123".to_string()
+                order_id: "1004055538123".to_string()
             }
         );
     }
@@ -200,7 +200,7 @@ mod tests {
         let timestamp = Utc::now().naive_utc();
         let result = TradeState::from_db_row(
             TradeStatus::Filled,
-            Some("ORDER123".to_string()),
+            Some("1004055538123".to_string()),
             Some(15000),
             Some(timestamp),
         )
@@ -212,7 +212,7 @@ mod tests {
                 order_id,
                 price_cents,
             } => {
-                assert_eq!(order_id, "ORDER123");
+                assert_eq!(order_id, "1004055538123");
                 assert_eq!(price_cents, 15000);
                 assert_eq!(executed_at.naive_utc(), timestamp);
             }
@@ -257,7 +257,7 @@ mod tests {
         let timestamp = Utc::now().naive_utc();
         let result = TradeState::from_db_row(
             TradeStatus::Filled,
-            Some("ORDER123".to_string()),
+            Some("1004055538123".to_string()),
             None,
             Some(timestamp),
         );
@@ -268,7 +268,7 @@ mod tests {
     fn test_from_db_row_filled_missing_executed_at() {
         let result = TradeState::from_db_row(
             TradeStatus::Filled,
-            Some("ORDER123".to_string()),
+            Some("1004055538123".to_string()),
             Some(15000),
             None,
         );
@@ -293,10 +293,10 @@ mod tests {
     #[test]
     fn test_to_db_fields_submitted() {
         let state = TradeState::Submitted {
-            order_id: "ORDER123".to_string(),
+            order_id: "1004055538123".to_string(),
         };
         let db_fields = state.to_db_fields().unwrap();
-        assert_eq!(db_fields.order_id, Some("ORDER123".to_string()));
+        assert_eq!(db_fields.order_id, Some("1004055538123".to_string()));
         assert_eq!(db_fields.price_cents, None);
         assert_eq!(db_fields.executed_at, None);
     }
@@ -306,11 +306,11 @@ mod tests {
         let timestamp = Utc::now();
         let state = TradeState::Filled {
             executed_at: timestamp,
-            order_id: "ORDER123".to_string(),
+            order_id: "1004055538123".to_string(),
             price_cents: 15000,
         };
         let db_fields = state.to_db_fields().unwrap();
-        assert_eq!(db_fields.order_id, Some("ORDER123".to_string()));
+        assert_eq!(db_fields.order_id, Some("1004055538123".to_string()));
         assert_eq!(db_fields.price_cents, Some(15000));
         assert_eq!(db_fields.executed_at, Some(timestamp.naive_utc()));
     }
@@ -333,7 +333,7 @@ mod tests {
         assert_eq!(TradeState::Pending.status(), TradeStatus::Pending);
         assert_eq!(
             TradeState::Submitted {
-                order_id: "ORDER123".to_string()
+                order_id: "1004055538123".to_string()
             }
             .status(),
             TradeStatus::Submitted
@@ -341,7 +341,7 @@ mod tests {
         assert_eq!(
             TradeState::Filled {
                 executed_at: Utc::now(),
-                order_id: "ORDER123".to_string(),
+                order_id: "1004055538123".to_string(),
                 price_cents: 15000,
             }
             .status(),
