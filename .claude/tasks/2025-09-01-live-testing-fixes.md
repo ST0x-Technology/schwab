@@ -179,3 +179,53 @@ new executions indefinitely **Files**: `src/onchain/accumulator.rs`
 Key improvements include detailed trade information logging (symbol, amount,
 direction, price, tx_hash, log_index) and execution status tracking for better
 production debugging without overwhelming debug mode output.
+
+## Task 7: Clear pending_execution_id When Orders Complete
+
+**Issue**: Order poller doesn't clear `pending_execution_id` from
+trade_accumulators when orders are filled or failed, causing permanent deadlock
+
+**Root Cause**: When the order poller (`src/schwab/order_poller.rs`) marks an
+execution as FILLED or FAILED, it only updates the `schwab_executions` table but
+does NOT clear the `pending_execution_id` from the `trade_accumulators` table.
+This leaves the accumulator permanently blocked, preventing any new executions
+for that symbol.
+
+**Current Behavior**:
+
+- Execution created → `pending_execution_id` set in accumulator
+- Order filled on Schwab → poller updates execution status to FILLED
+- `pending_execution_id` remains set → accumulator blocked forever
+- New trades accumulate but can't trigger executions
+
+**Impact**: After the first execution completes, no further offsetting trades
+can be placed on Schwab for that symbol, causing unbounded position imbalance
+growth.
+
+**Files**: `src/schwab/order_poller.rs`
+
+**Solution**:
+
+1. Modify `handle_filled_order()` to clear `pending_execution_id` after marking
+   as FILLED
+2. Modify `handle_failed_order()` to clear `pending_execution_id` after marking
+   as FAILED
+3. Both functions need to:
+   - Fetch the symbol from the execution record
+   - Clear `pending_execution_id` in `trade_accumulators` where symbol matches
+   - Clear any execution lease/lock if applicable
+
+- [ ] Apply manual fix to clear current stale pending_execution_id:
+  ```sql
+  UPDATE trade_accumulators 
+  SET pending_execution_id = NULL 
+  WHERE symbol = 'GME' AND pending_execution_id = 1;
+  ```
+- [ ] Add logic to fetch symbol from execution in both handler functions
+- [ ] Clear pending_execution_id when marking execution as FILLED
+- [ ] Clear pending_execution_id when marking execution as FAILED
+- [ ] Add test coverage for pending_execution_id cleanup
+- [ ] Test that new executions can be created after previous one completes
+- [ ] Run `cargo test -q`
+- [ ] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
+- [ ] Run `pre-commit run -a`
