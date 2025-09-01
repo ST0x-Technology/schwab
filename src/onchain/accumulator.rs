@@ -8,11 +8,47 @@ use crate::onchain::position_calculator::{ExecutionType, PositionCalculator};
 use crate::schwab::TradeState;
 use crate::schwab::{Direction, execution::SchwabExecution};
 
-pub async fn add_trade(
+/// Processes an onchain trade through the accumulation system with duplicate detection.
+///
+/// This function handles the complete trade processing pipeline:
+/// 1. Checks for duplicate trades (same tx_hash + log_index) and skips if already processed
+/// 2. Saves the trade to the onchain_trades table
+/// 3. Updates the position accumulator for the symbol
+/// 4. Attempts to create a Schwab execution if position thresholds are met
+///
+/// Returns `Some(SchwabExecution)` if a Schwab order was created, `None` if the trade
+/// was accumulated but didn't trigger an execution (or was a duplicate).
+pub async fn process_onchain_trade(
     pool: &SqlitePool,
     trade: OnchainTrade,
 ) -> Result<Option<SchwabExecution>, OnChainError> {
     let mut sql_tx = pool.begin().await?;
+
+    // Check if trade already exists to handle duplicates gracefully
+    let tx_hash_str = trade.tx_hash.to_string();
+    #[allow(clippy::cast_possible_wrap)]
+    let log_index_i64 = trade.log_index as i64;
+
+    let existing_trade = sqlx::query!(
+        "
+        SELECT id
+        FROM onchain_trades
+        WHERE tx_hash = ?1 AND log_index = ?2
+        ",
+        tx_hash_str,
+        log_index_i64
+    )
+    .fetch_optional(&mut *sql_tx)
+    .await?;
+
+    if existing_trade.is_some() {
+        info!(
+            "Trade already exists (tx_hash={:?}, log_index={}), skipping duplicate processing",
+            trade.tx_hash, trade.log_index
+        );
+        sql_tx.rollback().await?;
+        return Ok(None);
+    }
 
     let trade_id = trade.save_within_transaction(&mut sql_tx).await?;
     info!(
@@ -367,7 +403,7 @@ mod tests {
             created_at: None,
         };
 
-        let result = add_trade(&pool, trade).await.unwrap();
+        let result = process_onchain_trade(&pool, trade).await.unwrap();
         assert!(result.is_none());
 
         let (calculator, _) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
@@ -393,7 +429,7 @@ mod tests {
             created_at: None,
         };
 
-        let execution = add_trade(&pool, trade).await.unwrap().unwrap();
+        let execution = process_onchain_trade(&pool, trade).await.unwrap().unwrap();
 
         assert_eq!(execution.symbol, "MSFT");
         assert_eq!(execution.shares, 1);
@@ -421,7 +457,7 @@ mod tests {
             created_at: None,
         };
 
-        let result1 = add_trade(&pool, trade1).await.unwrap();
+        let result1 = process_onchain_trade(&pool, trade1).await.unwrap();
         assert!(result1.is_none());
 
         let trade2 = OnchainTrade {
@@ -437,7 +473,7 @@ mod tests {
             created_at: None,
         };
 
-        let result2 = add_trade(&pool, trade2).await.unwrap();
+        let result2 = process_onchain_trade(&pool, trade2).await.unwrap();
         assert!(result2.is_none());
 
         let trade3 = OnchainTrade {
@@ -453,7 +489,7 @@ mod tests {
             created_at: None,
         };
 
-        let result3 = add_trade(&pool, trade3).await.unwrap();
+        let result3 = process_onchain_trade(&pool, trade3).await.unwrap();
         let execution = result3.unwrap();
 
         assert_eq!(execution.symbol, "AAPL");
@@ -482,7 +518,7 @@ mod tests {
             created_at: None,
         };
 
-        let result = add_trade(&pool, trade).await;
+        let result = process_onchain_trade(&pool, trade).await;
         assert!(matches!(
             result.unwrap_err(),
             OnChainError::Validation(TradeValidationError::InvalidSymbolConfiguration(_, _))
@@ -506,7 +542,7 @@ mod tests {
             created_at: None,
         };
 
-        let result = add_trade(&pool, trade).await;
+        let result = process_onchain_trade(&pool, trade).await;
         assert!(matches!(
             result.unwrap_err(),
             OnChainError::Validation(TradeValidationError::InvalidSymbolConfiguration(_, _))
@@ -539,7 +575,7 @@ mod tests {
             created_at: None,
         };
 
-        let execution = add_trade(&pool, trade).await.unwrap().unwrap();
+        let execution = process_onchain_trade(&pool, trade).await.unwrap().unwrap();
 
         assert_eq!(execution.direction, Direction::Sell);
         assert_eq!(execution.symbol, "AAPL");
@@ -563,7 +599,7 @@ mod tests {
             created_at: None,
         };
 
-        let execution = add_trade(&pool, trade).await.unwrap().unwrap();
+        let execution = process_onchain_trade(&pool, trade).await.unwrap().unwrap();
 
         assert_eq!(execution.direction, Direction::Buy);
         assert_eq!(execution.symbol, "MSFT");
@@ -604,7 +640,7 @@ mod tests {
         };
 
         // Attempt to add trade - should fail when trying to save execution due to unique constraint
-        let result = add_trade(&pool, trade).await;
+        let result = process_onchain_trade(&pool, trade).await;
 
         // Verify the operation failed due to execution save failure (unique constraint violation)
         assert!(result.is_err());
@@ -663,11 +699,11 @@ mod tests {
         };
 
         // Add first trade (should not trigger execution)
-        let result1 = add_trade(&pool, trade1).await.unwrap();
+        let result1 = process_onchain_trade(&pool, trade1).await.unwrap();
         assert!(result1.is_none());
 
         // Add second trade (should trigger execution)
-        let result2 = add_trade(&pool, trade2).await.unwrap();
+        let result2 = process_onchain_trade(&pool, trade2).await.unwrap();
         let execution = result2.unwrap();
 
         // Verify execution created for exactly 1 share
@@ -725,8 +761,8 @@ mod tests {
         let pool_clone2 = pool.clone();
 
         let (result1, result2) = tokio::join!(
-            add_trade(&pool_clone1, trade1),
-            add_trade(&pool_clone2, trade2)
+            process_onchain_trade(&pool_clone1, trade1),
+            process_onchain_trade(&pool_clone2, trade2)
         );
 
         // Both should succeed without error
@@ -789,7 +825,7 @@ mod tests {
             created_at: None,
         };
 
-        let execution = add_trade(&pool, trade).await.unwrap().unwrap();
+        let execution = process_onchain_trade(&pool, trade).await.unwrap().unwrap();
         let execution_id = execution.id.unwrap();
 
         // Verify trade-execution link was created
@@ -852,14 +888,20 @@ mod tests {
         ];
 
         // Add first two trades - should not trigger execution
-        let result1 = add_trade(&pool, trades[0].clone()).await.unwrap();
+        let result1 = process_onchain_trade(&pool, trades[0].clone())
+            .await
+            .unwrap();
         assert!(result1.is_none());
 
-        let result2 = add_trade(&pool, trades[1].clone()).await.unwrap();
+        let result2 = process_onchain_trade(&pool, trades[1].clone())
+            .await
+            .unwrap();
         assert!(result2.is_none());
 
         // Third trade should trigger execution
-        let result3 = add_trade(&pool, trades[2].clone()).await.unwrap();
+        let result3 = process_onchain_trade(&pool, trades[2].clone())
+            .await
+            .unwrap();
         let execution = result3.unwrap();
         let execution_id = execution.id.unwrap();
 
@@ -919,11 +961,15 @@ mod tests {
         ];
 
         // Add first trade - no execution
-        let result1 = add_trade(&pool, trades[0].clone()).await.unwrap();
+        let result1 = process_onchain_trade(&pool, trades[0].clone())
+            .await
+            .unwrap();
         assert!(result1.is_none());
 
         // Add second trade - triggers execution
-        let result2 = add_trade(&pool, trades[1].clone()).await.unwrap();
+        let result2 = process_onchain_trade(&pool, trades[1].clone())
+            .await
+            .unwrap();
         let execution = result2.unwrap();
 
         // Test audit trail completeness
@@ -974,7 +1020,7 @@ mod tests {
         };
 
         // Add trade and trigger execution
-        let execution = add_trade(&pool, trade).await.unwrap().unwrap();
+        let execution = process_onchain_trade(&pool, trade).await.unwrap().unwrap();
 
         // Verify only 1 share executed, not 1.2
         assert_eq!(execution.shares, 1);
@@ -1026,8 +1072,8 @@ mod tests {
         };
 
         // Execute both trades
-        let buy_result = add_trade(&pool, buy_trade).await.unwrap();
-        let sell_result = add_trade(&pool, sell_trade).await.unwrap();
+        let buy_result = process_onchain_trade(&pool, buy_trade).await.unwrap();
+        let sell_result = process_onchain_trade(&pool, sell_trade).await.unwrap();
 
         let buy_execution = buy_result.unwrap();
         let sell_execution = sell_result.unwrap();

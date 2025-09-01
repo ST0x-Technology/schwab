@@ -265,7 +265,7 @@ async fn process_trade(
     let tx_hash = onchain_trade.tx_hash;
     let log_index = onchain_trade.log_index;
 
-    let execution = accumulator::add_trade(pool, onchain_trade).await?;
+    let execution = accumulator::process_onchain_trade(pool, onchain_trade).await?;
     let execution_id = execution.and_then(|exec| exec.id);
 
     if let Some(exec_id) = execution_id {
@@ -455,7 +455,7 @@ async fn process_queued_event_atomic<P: Provider + Clone>(
 
         // After successful commit, process accumulation outside transaction
         // (accumulator handles its own database operations)
-        let pending_execution_id = accumulator::add_trade(pool, trade).await?;
+        let pending_execution_id = accumulator::process_onchain_trade(pool, trade).await?;
 
         if let Some(execution) = pending_execution_id {
             if let Some(execution_id) = execution.id {
@@ -479,7 +479,9 @@ async fn process_queued_event_atomic<P: Provider + Clone>(
                     }
                 });
             } else {
-                error!("Execution returned from add_trade has None ID, which should not happen");
+                error!(
+                    "Execution returned from process_onchain_trade has None ID, which should not happen"
+                );
                 return Err(OnChainError::Persistence(PersistenceError::MissingExecutionId).into());
             }
         }
