@@ -95,8 +95,8 @@ exploiting price discrepancies.
 `src/trade/mod.rs`\])**
 
 - Parses onchain events into actionable trade data with strict validation
-- Expects symbol pairs of USDC + tokenized equity with "s1" suffix (e.g.,
-  "AAPLs1")
+- Expects symbol pairs of USDC + tokenized equity with "0x" suffix (e.g.,
+  "AAPL0x")
 - Determines Schwab trade direction: buying tokenized equity onchain → selling
   on Schwab
 - Calculates prices in cents and maintains onchain/offchain trade ratios
@@ -227,7 +227,7 @@ Environment variables (can be set via `.env` file):
   maximum throughput
 - **SQLite Persistence**: Embedded database for trade tracking and
   authentication tokens
-- **Symbol Suffix Convention**: Tokenized equities use "s1" suffix to
+- **Symbol Suffix Convention**: Tokenized equities use "0x" suffix to
   distinguish from base assets
 - **Price Direction Logic**: Onchain buy = offchain sell (and vice versa) to
   maintain market-neutral positions
@@ -512,12 +512,12 @@ that cannot be expressed through code structure alone.
 #### Good Comment Examples
 
 ```rust
-// If the on-chain order has USDC as input and an s1 tokenized stock as
-// output then it means the order received USDC and gave away an s1  
+// If the on-chain order has USDC as input and an 0x tokenized stock as
+// output then it means the order received USDC and gave away an 0x  
 // tokenized stock, i.e. sold, which means that to take the opposite
 // trade in schwab we need to buy and vice versa.
 let (schwab_ticker, schwab_instruction) = 
-    if onchain_input_symbol == "USDC" && onchain_output_symbol.ends_with("s1") {
+    if onchain_input_symbol == "USDC" && onchain_output_symbol.ends_with("0x") {
         // ... complex mapping logic
     }
 
@@ -908,8 +908,8 @@ fn process_blockchain_event(event: &Event, db: &Database) -> Result<(), Processi
                 for trade in &trade_data.trades {
                     if trade.token_pair.len() == 2 {
                         if let (Some(token_a), Some(token_b)) = (&trade.token_pair[0], &trade.token_pair[1]) {
-                            if token_a.symbol.ends_with("s1") || token_b.symbol.ends_with("s1") {
-                                let (equity_token, usdc_token) = if token_a.symbol.ends_with("s1") {
+                            if token_a.symbol.ends_with("0x") || token_b.symbol.ends_with("0x") {
+                                let (equity_token, usdc_token) = if token_a.symbol.ends_with("0x") {
                                     (token_a, token_b)
                                 } else {
                                     (token_b, token_a)
@@ -990,9 +990,9 @@ fn extract_valid_token_pair(trade: &TradeInfo) -> Result<Option<(&Token, &Token)
     }
     
     let (token_a, token_b) = (&trade.token_pair[0], &trade.token_pair[1]);
-    let (equity_token, usdc_token) = if token_a.symbol.ends_with("s1") {
+    let (equity_token, usdc_token) = if token_a.symbol.ends_with("0x") {
         (token_a, token_b)
-    } else if token_b.symbol.ends_with("s1") {
+    } else if token_b.symbol.ends_with("0x") {
         (token_b, token_a)
     } else {
         return Ok(None);

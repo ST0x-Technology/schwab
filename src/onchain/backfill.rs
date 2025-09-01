@@ -379,7 +379,7 @@ mod tests {
             &"USDC".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"MSFTs1".to_string(),
+            &"MSFT0x".to_string(),
         ));
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
@@ -581,13 +581,13 @@ mod tests {
             &"USDC".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"MSFTs1".to_string(),
+            &"MSFT0x".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"MSFTs1".to_string(),
+            &"MSFT0x".to_string(),
         ));
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
@@ -933,7 +933,7 @@ mod tests {
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             // 5. symbol output
-            &"AAPLs1".to_string(),
+            &"AAPL0x".to_string(),
         ));
 
         // Clear event processing (processed second due to later block)
@@ -944,7 +944,7 @@ mod tests {
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             // 8. symbol output
-            &"AAPLs1".to_string(),
+            &"AAPL0x".to_string(),
         ));
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);

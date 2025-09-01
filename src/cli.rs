@@ -384,7 +384,7 @@ fn display_trade_details<W: Write>(
 ) -> anyhow::Result<()> {
     let schwab_ticker = onchain_trade
         .symbol
-        .strip_suffix("s1")
+        .strip_suffix("0x")
         .unwrap_or(&onchain_trade.symbol);
 
     writeln!(stdout, "✅ Found opposite-side trade opportunity:")?;
@@ -1558,7 +1558,7 @@ mod tests {
         let (account_mock, order_mock) = setup_schwab_api_mocks(&server);
 
         // Set up the mock provider
-        let provider = setup_mock_provider_for_process_tx(&mock_data, "USDC", "AAPLs1");
+        let provider = setup_mock_provider_for_process_tx(&mock_data, "USDC", "AAPL0x");
         let cache = SymbolCache::default();
 
         let mut stdout = Vec::new();
@@ -1576,7 +1576,7 @@ mod tests {
         let trade = OnchainTrade::find_by_tx_hash_and_log_index(&pool, tx_hash, 0)
             .await
             .unwrap();
-        assert_eq!(trade.symbol, "AAPLs1"); // Tokenized symbol
+        assert_eq!(trade.symbol, "AAPL0x"); // Tokenized symbol
         assert!((trade.amount - 9.0).abs() < f64::EPSILON); // Amount from the test data
 
         // Verify SchwabExecution was created (due to TradeAccumulator)
@@ -1666,7 +1666,7 @@ mod tests {
             &"USDC".to_string(),
         ));
         asserter1.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"TSLAs1".to_string(),
+            &"TSLA0x".to_string(),
         ));
 
         let provider1 = ProviderBuilder::new().connect_mocked_client(asserter1);
@@ -1683,7 +1683,7 @@ mod tests {
         let trade = OnchainTrade::find_by_tx_hash_and_log_index(&pool, tx_hash, 0)
             .await
             .unwrap();
-        assert_eq!(trade.symbol, "TSLAs1"); // Tokenized symbol
+        assert_eq!(trade.symbol, "TSLA0x"); // Tokenized symbol
         assert!((trade.amount - 5.0).abs() < f64::EPSILON); // Amount from the test data
 
         // Verify stdout output for first call
@@ -1700,7 +1700,7 @@ mod tests {
             &"USDC".to_string(),
         ));
         asserter2.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"TSLAs1".to_string(),
+            &"TSLA0x".to_string(),
         ));
 
         let provider2 = ProviderBuilder::new().connect_mocked_client(asserter2);
@@ -1758,7 +1758,7 @@ mod tests {
             id: None,
             tx_hash,
             log_index: 42,
-            symbol: "GOOGs1".to_string(),
+            symbol: "GOOG0x".to_string(),
             amount: 2.5,
             direction: Direction::Buy,
             price_usdc: 20000.0,
@@ -1788,7 +1788,7 @@ mod tests {
 
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 42);
-        assert_eq!(trade.symbol, "GOOGs1");
+        assert_eq!(trade.symbol, "GOOG0x");
         assert!((trade.amount - 2.5).abs() < f64::EPSILON);
         assert!((trade.price_usdc - 20000.0).abs() < f64::EPSILON);
     }

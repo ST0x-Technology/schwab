@@ -208,7 +208,7 @@ mod tests {
             &"USDC".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"AAPLs1".to_string(),
+            &"AAPL0x".to_string(),
         ));
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
@@ -218,7 +218,7 @@ mod tests {
                 .unwrap();
 
         let trade = result.unwrap();
-        assert_eq!(trade.symbol, "AAPLs1");
+        assert_eq!(trade.symbol, "AAPL0x");
         assert!((trade.amount - 9.0).abs() < f64::EPSILON);
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 1);
@@ -274,7 +274,7 @@ mod tests {
         let asserter = Asserter::new();
         asserter.push_success(&json!([after_clear_log]));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"AAPLs1".to_string(),
+            &"AAPL0x".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
@@ -287,7 +287,7 @@ mod tests {
                 .unwrap();
 
         let trade = result.unwrap();
-        assert_eq!(trade.symbol, "AAPLs1");
+        assert_eq!(trade.symbol, "AAPL0x");
         assert!((trade.amount - 9.0).abs() < f64::EPSILON);
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 1);
@@ -567,7 +567,7 @@ mod tests {
             &"USDC".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"AAPLs1".to_string(),
+            &"AAPL0x".to_string(),
         ));
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
@@ -578,7 +578,7 @@ mod tests {
 
         // Should process Alice first (alice_hash_matches is checked first)
         let trade = result.unwrap();
-        assert_eq!(trade.symbol, "AAPLs1");
+        assert_eq!(trade.symbol, "AAPL0x");
         assert!((trade.amount - 9.0).abs() < f64::EPSILON);
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 1);

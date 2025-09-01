@@ -20,7 +20,7 @@ pub(crate) enum TradeValidationError {
     NoInputAtIndex(usize),
     #[error("No output found at index: {0}")]
     NoOutputAtIndex(usize),
-    #[error("Expected IO to contain USDC and one s1-suffixed symbol but got {0} and {1}")]
+    #[error("Expected IO to contain USDC and one 0x-suffixed symbol but got {0} and {1}")]
     InvalidSymbolConfiguration(String, String),
     #[error("Failed to convert U256 to f64: {0}")]
     U256ToF64(#[from] ParseFloatError),

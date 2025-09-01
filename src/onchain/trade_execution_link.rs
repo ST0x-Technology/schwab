@@ -161,7 +161,7 @@ impl TradeExecutionLink {
         pool: &SqlitePool,
         symbol: &str,
     ) -> Result<Vec<AuditTrailEntry>, OnChainError> {
-        let base_symbol = symbol.strip_suffix("s1").unwrap_or(symbol).to_string();
+        let base_symbol = symbol.strip_suffix("0x").unwrap_or(symbol).to_string();
         let rows = sqlx::query!(
             r#"
             SELECT 
@@ -307,7 +307,7 @@ mod tests {
                 "0x1111111111111111111111111111111111111111111111111111111111111111"
             ),
             log_index: 1,
-            symbol: "AAPLs1".to_string(),
+            symbol: "AAPL0x".to_string(),
             amount: 1.5,
             direction: Direction::Sell,
             price_usdc: 150.0,
@@ -365,7 +365,7 @@ mod tests {
                     "0x2222222222222222222222222222222222222222222222222222222222222222"
                 ),
                 log_index: 1,
-                symbol: "MSFTs1".to_string(),
+                symbol: "MSFT0x".to_string(),
                 amount: 0.5,
                 direction: Direction::Buy,
                 price_usdc: 300.0,
@@ -377,7 +377,7 @@ mod tests {
                     "0x3333333333333333333333333333333333333333333333333333333333333333"
                 ),
                 log_index: 2,
-                symbol: "MSFTs1".to_string(),
+                symbol: "MSFT0x".to_string(),
                 amount: 0.8,
                 direction: Direction::Buy,
                 price_usdc: 305.0,
@@ -417,7 +417,7 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Test audit trail
-        let audit_trail = TradeExecutionLink::get_symbol_audit_trail(&pool, "MSFTs1")
+        let audit_trail = TradeExecutionLink::get_symbol_audit_trail(&pool, "MSFT0x")
             .await
             .unwrap();
         assert_eq!(audit_trail.len(), 2);
@@ -452,7 +452,7 @@ mod tests {
                     "0x4444444444444444444444444444444444444444444444444444444444444444"
                 ),
                 log_index,
-                symbol: "AAPLs1".to_string(),
+                symbol: "AAPL0x".to_string(),
                 amount,
                 direction: Direction::Sell,
                 price_usdc: 150.0,
@@ -504,7 +504,7 @@ mod tests {
                 "0x5555555555555555555555555555555555555555555555555555555555555555"
             ),
             log_index: 1,
-            symbol: "AAPLs1".to_string(),
+            symbol: "AAPL0x".to_string(),
             amount: 1.0,
             direction: Direction::Buy,
             price_usdc: 150.0,

@@ -1369,7 +1369,7 @@ mod tests {
         account_mock.assert();
         order_status_mock.assert();
         let error = result.unwrap_err();
-        assert!(matches!(error, SchwabError::Reqwest(_)));
+        assert!(matches!(error, SchwabError::InvalidConfiguration(_)));
     }
 
     #[tokio::test]
