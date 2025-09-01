@@ -115,16 +115,44 @@ handling needed for event redelivery **Files**: `src/onchain/accumulator.rs`,
 
 ## Task 5: Stale Execution Cleanup
 
-**Issue**: Executions stuck in SUBMITTED state cause deadlocks **Verification**:
-No existing cleanup mechanism; `pending_execution_id` blocks new executions
-**Files**: `src/onchain/accumulator.rs` (clean_up_stale_executions function)
+**Issue**: Executions stuck in SUBMITTED state cause deadlocks
 
-- [ ] Apply changes from stash
-- [ ] Review implementation
-- [ ] Add test coverage for stale execution cleanup scenarios
-- [ ] Run `cargo test -q`
-- [ ] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
-- [ ] Run `pre-commit run -a`
+**Motivation**: When a Schwab order is submitted, we set the execution status to
+SUBMITTED and store the `pending_execution_id` in the accumulator. This blocks
+new executions for that symbol until the order completes. However, if the order
+status polling fails (due to network issues, API errors, or process crashes),
+the execution remains stuck in SUBMITTED state forever. This permanently blocks
+all future trades for that symbol, causing the bot to accumulate trades without
+ever executing them.
+
+**Current Behavior**:
+
+- Accumulator checks `pending_execution_id` before executing new trades
+- If non-null, it skips execution and continues accumulating
+- No mechanism exists to detect or recover from stale SUBMITTED executions
+- Results in permanent deadlock for affected symbols
+
+**Real-World Impact**:
+
+- Orders that fail to poll (e.g., network timeout) block the symbol indefinitely
+- Bot continues receiving onchain events but can't execute offsetting trades
+- Position imbalance grows unbounded as trades accumulate
+- Manual database intervention required to clear stuck executions
+
+**Solution**: Implement automatic cleanup of stale SUBMITTED executions that
+haven't transitioned to COMPLETED/FAILED within a reasonable time window (e.g.,
+5 minutes). This ensures temporary failures don't cause permanent deadlocks.
+
+**Verification**: No existing cleanup mechanism; `pending_execution_id` blocks
+new executions indefinitely **Files**: `src/onchain/accumulator.rs`
+(clean_up_stale_executions function)
+
+- [x] Apply changes from stash
+- [x] Review implementation
+- [x] Add test coverage for stale execution cleanup scenarios
+- [x] Run `cargo test -q` (327 tests pass)
+- [x] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
+- [x] Run `pre-commit run -a`
 
 ## Task 6: Improved Logging
 

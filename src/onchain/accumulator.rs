@@ -81,6 +81,9 @@ pub async fn process_onchain_trade(
         "Updated calculator"
     );
 
+    // Clean up any stale executions for this symbol before attempting new execution
+    clean_up_stale_executions(&mut sql_tx, &base_symbol).await?;
+
     let execution = if try_acquire_execution_lease(&mut sql_tx, &base_symbol).await? {
         let result =
             try_create_execution_if_ready(&mut sql_tx, &base_symbol, trade_id, &mut calculator)
@@ -375,6 +378,76 @@ async fn create_execution_within_transaction(
     execution_with_id.id = Some(execution_id);
 
     Ok(execution_with_id)
+}
+
+/// Clean up stale executions that have been in SUBMITTED state for too long
+async fn clean_up_stale_executions(
+    sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    base_symbol: &str,
+) -> Result<(), OnChainError> {
+    const STALE_EXECUTION_MINUTES: i32 = 10;
+
+    // Find executions that are SUBMITTED but the accumulator was last updated more than timeout ago
+    let timeout_param = format!("-{STALE_EXECUTION_MINUTES} minutes");
+    let stale_executions = sqlx::query!(
+        r#"
+        SELECT se.id, se.symbol
+        FROM schwab_executions se
+        JOIN trade_accumulators ta ON ta.pending_execution_id = se.id
+        WHERE ta.symbol = ?1 
+          AND se.status = 'SUBMITTED'
+          AND ta.last_updated < datetime('now', ?2)
+        "#,
+        base_symbol,
+        timeout_param
+    )
+    .fetch_all(sql_tx.as_mut())
+    .await?;
+
+    for stale_execution in stale_executions {
+        let execution_id = stale_execution.id;
+
+        info!(
+            symbol = %base_symbol,
+            execution_id = execution_id,
+            timeout_minutes = STALE_EXECUTION_MINUTES,
+            "Cleaning up stale execution"
+        );
+
+        // Mark execution as failed due to timeout
+        let failed_state = TradeState::Failed {
+            failed_at: chrono::Utc::now(),
+            error_reason: Some(format!(
+                "Execution timed out after {STALE_EXECUTION_MINUTES} minutes without status update"
+            )),
+        };
+
+        crate::schwab::execution::update_execution_status_within_transaction(
+            sql_tx,
+            execution_id,
+            failed_state,
+        )
+        .await?;
+
+        // Clear the pending execution ID from accumulator
+        sqlx::query!(
+            "UPDATE trade_accumulators SET pending_execution_id = NULL WHERE symbol = ?1",
+            base_symbol
+        )
+        .execute(sql_tx.as_mut())
+        .await?;
+
+        // Clear the symbol lock to allow new executions
+        crate::lock::clear_execution_lease(sql_tx, base_symbol).await?;
+
+        info!(
+            symbol = %base_symbol,
+            execution_id = execution_id,
+            "Cleared stale execution and released lock"
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1098,5 +1171,232 @@ mod tests {
             buy_execution_trades[0].trade_id,
             sell_execution_trades[0].trade_id
         );
+    }
+
+    #[tokio::test]
+    async fn test_stale_execution_cleanup_clears_block() {
+        let pool = setup_test_db().await;
+
+        // Create a submitted execution that is stale
+        let stale_execution = SchwabExecution {
+            id: None,
+            symbol: "AAPL".to_string(),
+            shares: 1,
+            direction: Direction::Buy,
+            state: TradeState::Submitted {
+                order_id: "123456".to_string(),
+            },
+        };
+
+        let mut sql_tx = pool.begin().await.unwrap();
+        let execution_id = stale_execution
+            .save_within_transaction(&mut sql_tx)
+            .await
+            .unwrap();
+
+        // Set up accumulator with pending execution
+        let calculator = PositionCalculator::new();
+        save_within_transaction(&mut sql_tx, "AAPL", &calculator, Some(execution_id))
+            .await
+            .unwrap();
+
+        // Manually set last_updated to be stale (15 minutes ago)
+        sqlx::query!(
+            "UPDATE trade_accumulators SET last_updated = datetime('now', '-15 minutes') WHERE symbol = ?1",
+            "AAPL"
+        )
+        .execute(sql_tx.as_mut())
+        .await
+        .unwrap();
+
+        sql_tx.commit().await.unwrap();
+
+        // Now process a new trade - it should clean up the stale execution
+        let trade = OnchainTrade {
+            id: None,
+            tx_hash: fixed_bytes!(
+                "0x1234567890123456789012345678901234567890123456789012345678901234"
+            ),
+            log_index: 1,
+            symbol: "AAPL0x".to_string(),
+            amount: 1.5,
+            direction: Direction::Sell,
+            price_usdc: 150.0,
+            created_at: None,
+        };
+
+        let result = process_onchain_trade(&pool, trade).await.unwrap();
+
+        // Should succeed and create new execution (because stale one was cleaned up)
+        assert!(result.is_some());
+        let new_execution = result.unwrap();
+        assert_eq!(new_execution.symbol, "AAPL");
+        assert_eq!(new_execution.shares, 1);
+
+        // Verify the stale execution was marked as failed
+        let stale_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
+            &pool,
+            "AAPL",
+            crate::schwab::TradeStatus::Failed,
+        )
+        .await
+        .unwrap();
+        assert_eq!(stale_executions.len(), 1);
+        assert_eq!(stale_executions[0].id.unwrap(), execution_id);
+
+        // Verify the new execution was created and is pending
+        let pending_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
+            &pool,
+            "AAPL",
+            crate::schwab::TradeStatus::Pending,
+        )
+        .await
+        .unwrap();
+        assert_eq!(pending_executions.len(), 1);
+        assert_ne!(pending_executions[0].id.unwrap(), execution_id);
+    }
+
+    #[tokio::test]
+    async fn test_stale_execution_cleanup_timeout_boundary() {
+        let pool = setup_test_db().await;
+
+        // Create executions at different ages
+        let recent_execution = SchwabExecution {
+            id: None,
+            symbol: "MSFT".to_string(),
+            shares: 1,
+            direction: Direction::Buy,
+            state: TradeState::Submitted {
+                order_id: "recent123".to_string(),
+            },
+        };
+
+        let stale_execution = SchwabExecution {
+            id: None,
+            symbol: "TSLA".to_string(),
+            shares: 1,
+            direction: Direction::Sell,
+            state: TradeState::Submitted {
+                order_id: "stale456".to_string(),
+            },
+        };
+
+        let mut sql_tx = pool.begin().await.unwrap();
+
+        let recent_id = recent_execution
+            .save_within_transaction(&mut sql_tx)
+            .await
+            .unwrap();
+        let stale_id = stale_execution
+            .save_within_transaction(&mut sql_tx)
+            .await
+            .unwrap();
+
+        // Set up accumulators
+        let calculator = PositionCalculator::new();
+        save_within_transaction(&mut sql_tx, "MSFT", &calculator, Some(recent_id))
+            .await
+            .unwrap();
+        save_within_transaction(&mut sql_tx, "TSLA", &calculator, Some(stale_id))
+            .await
+            .unwrap();
+
+        // Make TSLA accumulator stale (15 minutes ago) but leave MSFT recent
+        sqlx::query!(
+            "UPDATE trade_accumulators SET last_updated = datetime('now', '-15 minutes') WHERE symbol = ?1",
+            "TSLA"
+        )
+        .execute(sql_tx.as_mut())
+        .await
+        .unwrap();
+
+        sql_tx.commit().await.unwrap();
+
+        // Test cleanup only affects stale execution (TSLA)
+        let mut test_tx = pool.begin().await.unwrap();
+        clean_up_stale_executions(&mut test_tx, "TSLA")
+            .await
+            .unwrap();
+        test_tx.commit().await.unwrap();
+
+        // Verify recent execution (MSFT) is still submitted
+        let msft_submitted = crate::schwab::execution::find_executions_by_symbol_and_status(
+            &pool,
+            "MSFT",
+            crate::schwab::TradeStatus::Submitted,
+        )
+        .await
+        .unwrap();
+        assert_eq!(msft_submitted.len(), 1);
+        assert_eq!(msft_submitted[0].id.unwrap(), recent_id);
+
+        // Verify stale execution (TSLA) was failed
+        let tsla_failed = crate::schwab::execution::find_executions_by_symbol_and_status(
+            &pool,
+            "TSLA",
+            crate::schwab::TradeStatus::Failed,
+        )
+        .await
+        .unwrap();
+        assert_eq!(tsla_failed.len(), 1);
+        assert_eq!(tsla_failed[0].id.unwrap(), stale_id);
+
+        // Verify TSLA accumulator pending_execution_id was cleared
+        let (_, pending_id) = find_by_symbol(&pool, "TSLA").await.unwrap().unwrap();
+        assert!(pending_id.is_none());
+
+        // Verify MSFT accumulator pending_execution_id is still set
+        let (_, msft_pending_id) = find_by_symbol(&pool, "MSFT").await.unwrap().unwrap();
+        assert_eq!(msft_pending_id, Some(recent_id));
+    }
+
+    #[tokio::test]
+    async fn test_no_stale_executions_cleanup_is_noop() {
+        let pool = setup_test_db().await;
+
+        // Create only recent executions (not stale)
+        let recent_execution = SchwabExecution {
+            id: None,
+            symbol: "NVDA".to_string(),
+            shares: 2,
+            direction: Direction::Buy,
+            state: TradeState::Submitted {
+                order_id: "recent789".to_string(),
+            },
+        };
+
+        let mut sql_tx = pool.begin().await.unwrap();
+        let execution_id = recent_execution
+            .save_within_transaction(&mut sql_tx)
+            .await
+            .unwrap();
+
+        let calculator = PositionCalculator::new();
+        save_within_transaction(&mut sql_tx, "NVDA", &calculator, Some(execution_id))
+            .await
+            .unwrap();
+        sql_tx.commit().await.unwrap();
+
+        // Run cleanup - should be no-op
+        let mut test_tx = pool.begin().await.unwrap();
+        clean_up_stale_executions(&mut test_tx, "NVDA")
+            .await
+            .unwrap();
+        test_tx.commit().await.unwrap();
+
+        // Verify execution is still submitted (not failed)
+        let submitted_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
+            &pool,
+            "NVDA",
+            crate::schwab::TradeStatus::Submitted,
+        )
+        .await
+        .unwrap();
+        assert_eq!(submitted_executions.len(), 1);
+        assert_eq!(submitted_executions[0].id.unwrap(), execution_id);
+
+        // Verify accumulator pending_execution_id is still set
+        let (_, pending_id) = find_by_symbol(&pool, "NVDA").await.unwrap().unwrap();
+        assert_eq!(pending_id, Some(execution_id));
     }
 }
