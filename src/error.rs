@@ -22,6 +22,13 @@ pub(crate) enum TradeValidationError {
     NoOutputAtIndex(usize),
     #[error("Expected IO to contain USDC and one 0x-suffixed symbol but got {0} and {1}")]
     InvalidSymbolConfiguration(String, String),
+    #[error(
+        "Could not fully allocate execution shares for symbol {symbol}. Remaining: {remaining_shares}"
+    )]
+    InsufficientTradeAllocation {
+        symbol: String,
+        remaining_shares: f64,
+    },
     #[error("Failed to convert U256 to f64: {0}")]
     U256ToF64(#[from] ParseFloatError),
     #[error("Transaction not found: {0}")]

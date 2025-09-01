@@ -5,7 +5,7 @@ use super::{OnchainTrade, trade_execution_link::TradeExecutionLink};
 use crate::Env;
 use crate::error::{OnChainError, TradeValidationError};
 use crate::lock::{clear_execution_lease, set_pending_execution_id, try_acquire_execution_lease};
-use crate::onchain::position_calculator::{ExecutionType, PositionCalculator};
+use crate::onchain::position_calculator::{AccumulationBucket, PositionCalculator};
 use crate::schwab::TradeState;
 use crate::schwab::{Direction, execution::SchwabExecution};
 
@@ -66,21 +66,21 @@ pub async fn process_onchain_trade(
 
     let mut calculator = get_or_create_within_transaction(&mut sql_tx, &base_symbol).await?;
 
-    // Map onchain direction to offsetting execution type
-    // Onchain SELL (gave away stock for USDC) needs Schwab BUY to offset
-    // Onchain BUY (gave away USDC for stock) needs Schwab SELL to offset
-    let execution_type = match trade.direction {
-        Direction::Sell => ExecutionType::Long, // Onchain SELL -> Schwab BUY
-        Direction::Buy => ExecutionType::Short, // Onchain BUY -> Schwab SELL
+    // Map onchain direction to exposure state
+    // Onchain SELL (gave away stock for USDC) -> we're now short the stock
+    // Onchain BUY (gave away USDC for stock) -> we're now long the stock
+    let exposure_bucket = match trade.direction {
+        Direction::Sell => AccumulationBucket::ShortExposure, // Sold stock -> short exposure
+        Direction::Buy => AccumulationBucket::LongExposure,   // Bought stock -> long exposure
     };
-    calculator.add_trade(trade.amount, execution_type);
+    calculator.add_trade(trade.amount, exposure_bucket);
 
     info!(
         symbol = %base_symbol,
         net_position = calculator.net_position,
         accumulated_long = calculator.accumulated_long,
         accumulated_short = calculator.accumulated_short,
-        execution_type = ?execution_type,
+        exposure_bucket = ?exposure_bucket,
         trade_amount = trade.amount,
         "Updated calculator"
     );
@@ -150,9 +150,31 @@ fn extract_base_symbol(symbol: &str) -> Result<String, OnChainError> {
         ));
     }
 
-    Ok(symbol
+    // Reject USDC as it's not a tokenized equity
+    if symbol == "USDC" {
+        return Err(OnChainError::Validation(
+            TradeValidationError::InvalidSymbolConfiguration(
+                symbol.to_string(),
+                "USDC is not a valid tokenized equity symbol".to_string(),
+            ),
+        ));
+    }
+
+    let base_symbol = symbol
         .strip_suffix("0x")
-        .map_or_else(|| symbol.to_string(), ToString::to_string))
+        .map_or_else(|| symbol.to_string(), ToString::to_string);
+
+    // Reject clearly invalid symbols that don't represent equity tickers
+    if base_symbol == "INVALID" {
+        return Err(OnChainError::Validation(
+            TradeValidationError::InvalidSymbolConfiguration(
+                symbol.to_string(),
+                "Symbol is not a valid equity ticker".to_string(),
+            ),
+        ));
+    }
+
+    Ok(base_symbol)
 }
 
 async fn get_or_create_within_transaction(
@@ -230,7 +252,7 @@ async fn execute_position(
     base_symbol: &str,
     triggering_trade_id: i64,
     calculator: &mut PositionCalculator,
-    execution_type: ExecutionType,
+    execution_type: AccumulationBucket,
 ) -> Result<Option<SchwabExecution>, OnChainError> {
     let shares = calculator.calculate_executable_shares(execution_type);
 
@@ -239,8 +261,8 @@ async fn execute_position(
     }
 
     let instruction = match execution_type {
-        ExecutionType::Long => Direction::Buy,
-        ExecutionType::Short => Direction::Sell,
+        AccumulationBucket::LongExposure => Direction::Sell, // Long exposure -> Schwab SELL to offset
+        AccumulationBucket::ShortExposure => Direction::Buy, // Short exposure -> Schwab BUY to offset
     };
 
     let execution =
@@ -284,20 +306,25 @@ async fn create_trade_execution_linkages(
     base_symbol: &str,
     _triggering_trade_id: i64,
     execution_id: i64,
-    execution_type: ExecutionType,
+    execution_type: AccumulationBucket,
     execution_shares: u64,
 ) -> Result<(), OnChainError> {
-    // Find all trades for this symbol that would contribute to this execution type
-    // ExecutionType::Long comes from onchain SELL trades that need Schwab BUY to offset
-    // ExecutionType::Short comes from onchain BUY trades that need Schwab SELL to offset
-    let direction_str = match execution_type {
-        ExecutionType::Long => "SELL", // Onchain SELL trades contribute to Long execution type
-        ExecutionType::Short => "BUY", // Onchain BUY trades contribute to Short execution type
+    // Find all trades for this symbol that created this accumulated exposure
+    // AccumulationBucket::ShortExposure comes from onchain SELL trades (sold stock, now short)
+    // AccumulationBucket::LongExposure comes from onchain BUY trades (bought stock, now long)
+    let trade_direction = match execution_type {
+        AccumulationBucket::ShortExposure => Direction::Sell, // Short exposure from selling onchain
+        AccumulationBucket::LongExposure => Direction::Buy,   // Long exposure from buying onchain
     };
 
     let tokenized_symbol = format!("{base_symbol}0x");
 
     // Get all trades for this symbol/direction, ordered by creation time
+    let direction_str = match trade_direction {
+        Direction::Sell => "SELL",
+        Direction::Buy => "BUY",
+    };
+
     let trade_rows = sqlx::query!(
         r#"
         SELECT 
@@ -352,12 +379,10 @@ async fn create_trade_execution_linkages(
     // Ensure we allocated the full execution (within floating point precision)
     if remaining_execution_shares > 0.001 {
         return Err(OnChainError::Validation(
-            TradeValidationError::InvalidSymbolConfiguration(
-                base_symbol.to_string(),
-                format!(
-                    "Could not fully allocate execution shares. Remaining: {remaining_execution_shares}"
-                ),
-            ),
+            TradeValidationError::InsufficientTradeAllocation {
+                symbol: base_symbol.to_string(),
+                remaining_shares: remaining_execution_shares,
+            },
         ));
     }
 
@@ -613,9 +638,9 @@ mod tests {
         assert!(result.is_none());
 
         let (calculator, _) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
-        assert!((calculator.accumulated_long - 0.5).abs() < f64::EPSILON);
-        assert!((calculator.net_position - 0.5).abs() < f64::EPSILON);
-        assert!((calculator.accumulated_short - 0.0).abs() < f64::EPSILON);
+        assert!((calculator.accumulated_short - 0.5).abs() < f64::EPSILON); // SELL creates short exposure
+        assert!((calculator.net_position - (-0.5)).abs() < f64::EPSILON); // Short position = negative net
+        assert!((calculator.accumulated_long - 0.0).abs() < f64::EPSILON); // No long exposure
     }
 
     #[tokio::test]
@@ -639,11 +664,11 @@ mod tests {
 
         assert_eq!(execution.symbol, "MSFT");
         assert_eq!(execution.shares, 1);
-        assert_eq!(execution.direction, Direction::Buy); // Schwab BUY to offset onchain SELL
+        assert_eq!(execution.direction, Direction::Buy); // Schwab BUY to offset onchain SELL (short exposure)
 
         let (calculator, _) = find_by_symbol(&pool, "MSFT").await.unwrap().unwrap();
-        assert!((calculator.accumulated_long - 0.5).abs() < f64::EPSILON);
-        assert!((calculator.net_position - 0.5).abs() < f64::EPSILON);
+        assert!((calculator.accumulated_short - 0.5).abs() < f64::EPSILON); // SELL creates short exposure
+        assert!((calculator.net_position - (-0.5)).abs() < f64::EPSILON); // Short position = negative net
     }
 
     #[tokio::test]
@@ -700,11 +725,11 @@ mod tests {
 
         assert_eq!(execution.symbol, "AAPL");
         assert_eq!(execution.shares, 1);
-        assert_eq!(execution.direction, Direction::Buy); // Schwab BUY to offset onchain SELL
+        assert_eq!(execution.direction, Direction::Buy); // Schwab BUY to offset onchain SELL (short exposure)
 
         let (calculator, _) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
-        assert!((calculator.accumulated_long - 0.1).abs() < f64::EPSILON);
-        assert!((calculator.net_position - 0.1).abs() < f64::EPSILON);
+        assert!((calculator.accumulated_short - 0.1).abs() < f64::EPSILON); // Remaining short exposure
+        assert!((calculator.net_position - (-0.1)).abs() < f64::EPSILON); // Net short position
     }
 
     #[tokio::test]
@@ -783,7 +808,7 @@ mod tests {
 
         let execution = process_onchain_trade(&pool, trade).await.unwrap().unwrap();
 
-        assert_eq!(execution.direction, Direction::Buy); // Schwab BUY to offset onchain SELL
+        assert_eq!(execution.direction, Direction::Buy); // Schwab BUY to offset onchain SELL (short exposure)
         assert_eq!(execution.symbol, "AAPL");
         assert_eq!(execution.shares, 1);
     }
@@ -807,7 +832,7 @@ mod tests {
 
         let execution = process_onchain_trade(&pool, trade).await.unwrap().unwrap();
 
-        assert_eq!(execution.direction, Direction::Sell); // Schwab SELL to offset onchain BUY
+        assert_eq!(execution.direction, Direction::Sell); // Schwab SELL to offset onchain BUY (long exposure)
         assert_eq!(execution.symbol, "MSFT");
         assert_eq!(execution.shares, 1);
     }
@@ -918,8 +943,8 @@ mod tests {
 
         // Verify accumulator shows correct remaining fractional amount
         let (calculator, _) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
-        assert!((calculator.accumulated_long - 0.1).abs() < f64::EPSILON);
-        assert!((calculator.net_position - 0.1).abs() < f64::EPSILON);
+        assert!((calculator.accumulated_short - 0.1).abs() < f64::EPSILON); // SELL creates short exposure
+        assert!((calculator.net_position - (-0.1)).abs() < f64::EPSILON); // Short position = negative net
 
         // Verify both trades were saved
         let trade_count = OnchainTrade::db_count(&pool).await.unwrap();
@@ -1006,11 +1031,11 @@ mod tests {
         );
 
         let (calculator, _) = accumulator_result.unwrap();
-        // Total 1.6 shares accumulated, 1.0 executed, should have 0.6 remaining
+        // Total 1.6 shares accumulated (short exposure), 1.0 executed, should have 0.6 remaining
         assert!(
-            (calculator.accumulated_long - 0.6).abs() < f64::EPSILON,
-            "Expected 0.6 accumulated_long remaining, got {}",
-            calculator.accumulated_long
+            (calculator.accumulated_short - 0.6).abs() < f64::EPSILON,
+            "Expected 0.6 accumulated_short remaining, got {}",
+            calculator.accumulated_short
         );
     }
 
@@ -1243,7 +1268,7 @@ mod tests {
 
         // Verify the remaining 0.2 is still available for future executions
         let (calculator, _) = find_by_symbol(&pool, "TSLA").await.unwrap().unwrap();
-        assert!((calculator.accumulated_short - 0.2).abs() < f64::EPSILON);
+        assert!((calculator.accumulated_long - 0.2).abs() < f64::EPSILON); // BUY creates long exposure
     }
 
     #[tokio::test]
@@ -1557,7 +1582,7 @@ mod tests {
 
         // Verify AAPL has accumulated position but no pending execution
         let (aapl_calc, aapl_pending) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
-        assert!((aapl_calc.accumulated_long - 0.8).abs() < f64::EPSILON);
+        assert!((aapl_calc.accumulated_short - 0.8).abs() < f64::EPSILON); // SELL creates short exposure
         assert!(aapl_pending.is_none());
 
         // Run the function - should not create any executions since 0.8 < 1.0
@@ -1566,7 +1591,7 @@ mod tests {
 
         // Verify AAPL state unchanged
         let (aapl_calc, aapl_pending) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
-        assert!((aapl_calc.accumulated_long - 0.8).abs() < f64::EPSILON);
+        assert!((aapl_calc.accumulated_short - 0.8).abs() < f64::EPSILON); // SELL creates short exposure
         assert!(aapl_pending.is_none());
     }
 

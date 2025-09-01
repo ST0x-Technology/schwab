@@ -464,7 +464,126 @@ execute them. Now properly spawns async tasks to call
 `execute_pending_schwab_execution` for each created execution, matching the
 pattern used elsewhere in the codebase.
 
-## Task 11: Investigate Auth "test_auth_code" Issue
+## Task 11: Fix Early Return Bug in process_queue
+
+**Issue**: Bot not executing accumulated GME position (1.21 shares) despite
+fixes to Task 10
+
+**Root Cause**: `process_queue` returns early when no unprocessed events exist,
+skipping `check_all_accumulated_positions` call entirely (line 364 early return
+prevents reaching line 411)
+
+**Key Changes**:
+
+- [x] Move accumulated position check before early return in `process_queue`
+- [x] Extract `check_and_execute_accumulated_positions` helper function to avoid
+      deep nesting
+- [x] Add periodic accumulated position checker (60s interval) as background
+      task
+- [x] Update `BackgroundTasks` struct to include position checker
+- [x] Split complex spawn function to satisfy clippy cognitive complexity
+
+**Files Modified**: `src/conductor.rs`
+
+## Task 12: Fix Symbol Direction Logic Inconsistency
+
+**Current Problem**: Symbol direction mappings are inconsistent and confusing
+
+**What We Know**:
+
+- Database state: GME has `accumulated_short = 1.21` from 10 onchain SELL trades
+- Current error: "Expected IO to contain USDC and one 0x-suffixed symbol but got
+  GME and Could not fully allocate execution shares. Remaining: 1"
+- The accumulated position check is now working but failing due to direction
+  logic
+
+**Desired Logic Flow**:
+
+1. **Onchain trade**: User sells GME0x for USDC (Direction::Sell)
+2. **Exposure state**: We're now short GME → accumulate into `accumulated_short`
+3. **Schwab offset**: To neutralize, we need to buy GME on Schwab
+   (Direction::Buy)
+4. **Trade linkage**: When executing, find the original SELL trades that created
+   the short exposure
+
+**Current State Analysis**:
+
+- Database: 10 GME onchain SELL trades totaling 2.21 shares
+- Database: GME accumulator shows `accumulated_short = 1.21` (after 1 share
+  executed)
+- Database: 1 share already linked to execution_id 1
+- Error: "Could not fully allocate execution shares. Remaining: 1" suggests
+  linkage failure
+
+**Root Issue**: Direction logic inconsistency between:
+
+1. How trades accumulate (SELL → accumulated_short)
+2. How linkage finds trades (ShortExposure → looks for SELL trades)
+3. What Schwab direction we need (short exposure → need BUY to offset)
+
+**Current Problematic Issues**:
+
+1. Enum name `ExecutionType` is misleading (partially renamed to
+   `AccumulationBucket`)
+2. Trade linkage uses string conversion instead of Direction enum
+3. Misleading error: using `InvalidSymbolConfiguration` for allocation failures
+4. Comments and logic are contradictory about direction flow
+
+**Desired Clear Logic**:
+
+- Onchain SELL → accumulated_short → Schwab BUY → neutral position
+- Onchain BUY → accumulated_long → Schwab SELL → neutral position
+- Trade linkage should find the original onchain trades that created the
+  exposure
+
+**Files**: `src/onchain/accumulator.rs`, `src/onchain/position_calculator.rs`,
+`src/error.rs`
+
+- [x] Fix critical typos in `determine_execution_type` function
+      (`LongExposureExposure` -> `LongExposure`)
+- [x] Correct direction mapping: `LongExposure -> Direction::Sell`,
+      `ShortExposure -> Direction::Buy`
+- [x] Fix trade linkage to use Direction enum instead of string conversion
+- [x] Add new `InsufficientTradeAllocation` error type for allocation failures
+- [x] Replace misleading `InvalidSymbolConfiguration` usage with proper error
+      type
+- [x] Update all test comments and assertions to match corrected direction flow
+- [x] Add symbol validation in `extract_base_symbol` to reject invalid symbols
+- [x] Run `cargo test -q` (333 tests pass)
+- [x] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
+- [x] Run `pre-commit run -a`
+
+**Completed Implementation**: Fixed critical symbol direction logic
+inconsistencies that were causing the accumulator to fail on execution attempts.
+
+**Key Changes**:
+
+- **Fixed critical typos** in `determine_execution_type()` function where
+  `LongExposureExposure` and `ShortExposureExposure` prevented any executions
+  from being created
+- **Corrected direction mapping** in `execute_position()`:
+  - `AccumulationBucket::LongExposure` → `Direction::Sell` (offset long exposure
+    with Schwab sell)
+  - `AccumulationBucket::ShortExposure` → `Direction::Buy` (offset short
+    exposure with Schwab buy)
+- **Improved trade linkage** to use `Direction` enum instead of string
+  conversion for type safety
+- **Added proper error type**: `InsufficientTradeAllocation` for allocation
+  failures instead of misleading `InvalidSymbolConfiguration`
+- **Updated all test assertions** to reflect correct direction flow:
+  - Onchain SELL trades → `accumulated_short` → Schwab BUY execution
+  - Onchain BUY trades → `accumulated_long` → Schwab SELL execution
+- **Added symbol validation** in `extract_base_symbol()` to properly reject
+  invalid symbols like "INVALID" and "USDC" during processing
+- **Fixed all comments** throughout the codebase to accurately describe the
+  direction logic
+
+**Critical Fix**: The direction logic now correctly implements the intended
+arbitrage flow where onchain SELL trades create short exposure that gets offset
+by Schwab BUY orders, and vice versa. This resolves the "Could not fully
+allocate execution shares" error and ensures proper position tracking.
+
+## Task 13: Investigate Auth "test_auth_code" Issue
 
 **Issue**: During live testing, "test_auth_code" appears in token refresh logs,
 suggesting test data contamination in auth flow
