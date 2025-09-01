@@ -1116,7 +1116,7 @@ mod tests {
         let order_status = result.unwrap();
         assert_eq!(order_status.order_id, Some("1004055538123".to_string()));
         assert!(order_status.is_filled());
-        assert!((order_status.filled_quantity - 100.0).abs() < f64::EPSILON);
+        assert!((order_status.filled_quantity.unwrap() - 100.0).abs() < f64::EPSILON);
         let avg_price = order_status.calculate_weighted_average_price().unwrap();
         assert!((avg_price - 150.25).abs() < f64::EPSILON);
         assert_eq!(order_status.price_in_cents().unwrap(), Some(15025));
@@ -1166,7 +1166,7 @@ mod tests {
         assert_eq!(order_status.order_id, Some("1004055538456".to_string()));
         assert!(order_status.is_pending());
         assert!(!order_status.is_filled());
-        assert!(order_status.filled_quantity.abs() < f64::EPSILON);
+        assert!(order_status.filled_quantity.unwrap_or(0.0).abs() < f64::EPSILON);
         assert_eq!(order_status.calculate_weighted_average_price(), None);
     }
 
@@ -1230,7 +1230,7 @@ mod tests {
         assert_eq!(order_status.order_id, Some("1004055538789".to_string()));
         assert!(order_status.is_pending());
         assert!(!order_status.is_filled());
-        assert!((order_status.filled_quantity - 75.0).abs() < f64::EPSILON);
+        assert!((order_status.filled_quantity.unwrap() - 75.0).abs() < f64::EPSILON);
         // Weighted average: (50 * 100.00 + 25 * 101.00) / 75 = (5000 + 2525) / 75 = 100.33333
         assert!(
             (order_status.calculate_weighted_average_price().unwrap() - 100.333_333_333_333_33)

@@ -12,8 +12,8 @@ fn deserialize_order_id<'de, D>(deserializer: D) -> Result<Option<String>, D::Er
 where
     D: Deserializer<'de>,
 {
-    (Option::<u64>::deserialize(deserializer)?)
-        .map_or_else(|| Ok(None), |order_id| Ok(Some(order_id.to_string())))
+    let opt_value = Option::<u64>::deserialize(deserializer)?;
+    Ok(opt_value.map(|order_id| order_id.to_string()))
 }
 
 /// Order status enum matching Schwab API states
@@ -45,43 +45,50 @@ impl Default for OrderStatus {
     }
 }
 
-/// Individual execution leg representing a specific fill
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ExecutionLeg {
-    pub execution_id: Option<String>,
-    pub quantity: f64,
-    pub price: f64,
-    pub time: Option<String>,
-}
-
 /// Order status response from Schwab API
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OrderStatusResponse {
+    #[serde(default, deserialize_with = "deserialize_order_id")]
     pub order_id: Option<String>,
-    pub status: OrderStatus,
-    pub filled_quantity: f64,
-    pub remaining_quantity: f64,
-    pub execution_legs: Vec<ExecutionLeg>,
+    pub status: Option<OrderStatus>,
+    pub filled_quantity: Option<f64>,
+    pub remaining_quantity: Option<f64>,
     pub entered_time: Option<String>,
     pub close_time: Option<String>,
+    #[serde(rename = "orderActivityCollection")]
+    pub order_activity_collection: Option<Vec<OrderActivity>>,
+}
+
+/// Order activity from Schwab API orderActivityCollection
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OrderActivity {
+    pub activity_type: Option<String>,
+    pub execution_legs: Option<Vec<ExecutionLeg>>,
+}
+
+/// Execution leg details from Schwab API
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExecutionLeg {
+    pub quantity: f64,
+    pub price: f64,
 }
 
 impl OrderStatusResponse {
-    /// Calculate weighted average fill price from execution legs
+    /// Calculate weighted average fill price from orderActivityCollection
     pub(crate) fn calculate_weighted_average_price(&self) -> Option<f64> {
-        if self.execution_legs.is_empty() {
-            return None;
-        }
+        let activities = self.order_activity_collection.as_ref()?;
 
-        let mut total_value = 0.0;
-        let mut total_quantity = 0.0;
-
-        for leg in &self.execution_legs {
-            total_value += leg.price * leg.quantity;
-            total_quantity += leg.quantity;
-        }
+        let (total_value, total_quantity) = activities
+            .iter()
+            .filter_map(|activity| activity.execution_legs.as_ref())
+            .flat_map(|legs| legs.iter())
+            .map(|leg| (leg.price * leg.quantity, leg.quantity))
+            .fold((0.0, 0.0), |(acc_value, acc_qty), (value, qty)| {
+                (acc_value + value, acc_qty + qty)
+            });
 
         if total_quantity > 0.0 {
             Some(total_value / total_quantity)
@@ -105,7 +112,7 @@ impl OrderStatusResponse {
 
     /// Check if order is completely filled
     pub(crate) const fn is_filled(&self) -> bool {
-        matches!(self.status, OrderStatus::Filled)
+        matches!(self.status, Some(OrderStatus::Filled))
     }
 
     /// Check if order is still pending/working
@@ -113,18 +120,20 @@ impl OrderStatusResponse {
     pub(crate) const fn is_pending(&self) -> bool {
         matches!(
             self.status,
-            OrderStatus::Queued
-                | OrderStatus::Working
-                | OrderStatus::PendingActivation
-                | OrderStatus::PendingReview
-                | OrderStatus::Accepted
-                | OrderStatus::AwaitingParentOrder
-                | OrderStatus::AwaitingCondition
-                | OrderStatus::AwaitingManualReview
-                | OrderStatus::AwaitingStopCondition
-                | OrderStatus::New
-                | OrderStatus::AwaitingReleaseTime
-                | OrderStatus::PendingReplace
+            Some(
+                OrderStatus::Queued
+                    | OrderStatus::Working
+                    | OrderStatus::PendingActivation
+                    | OrderStatus::PendingReview
+                    | OrderStatus::Accepted
+                    | OrderStatus::AwaitingParentOrder
+                    | OrderStatus::AwaitingCondition
+                    | OrderStatus::AwaitingManualReview
+                    | OrderStatus::AwaitingStopCondition
+                    | OrderStatus::New
+                    | OrderStatus::AwaitingReleaseTime
+                    | OrderStatus::PendingReplace
+            )
         )
     }
 
@@ -132,7 +141,7 @@ impl OrderStatusResponse {
     pub(crate) const fn is_terminal_failure(&self) -> bool {
         matches!(
             self.status,
-            OrderStatus::Canceled | OrderStatus::Rejected | OrderStatus::Expired
+            Some(OrderStatus::Canceled | OrderStatus::Rejected | OrderStatus::Expired)
         )
     }
 }
@@ -152,57 +161,54 @@ mod tests {
     }
 
     #[test]
-    fn test_execution_leg_serialization() {
-        let leg = ExecutionLeg {
-            execution_id: Some("EXEC123".to_string()),
-            quantity: 100.0,
-            price: 150.25,
-            time: Some("2023-10-15T10:30:00Z".to_string()),
-        };
+    fn test_order_status_response_deserialization() {
+        // Test parsing a typical API response with orderActivityCollection
+        let json_response = r#"{
+            "orderId": 1004055538123,
+            "status": "FILLED",
+            "filledQuantity": 100.0,
+            "remainingQuantity": 0.0,
+            "enteredTime": "2023-10-15T10:25:00Z",
+            "closeTime": "2023-10-15T10:30:00Z",
+            "orderActivityCollection": [{
+                "activityType": "EXECUTION",
+                "executionLegs": [{
+                    "executionId": "EXEC123",
+                    "quantity": 100.0,
+                    "price": 150.25,
+                    "time": "2023-10-15T10:30:00Z"
+                }]
+            }]
+        }"#;
 
-        let json = serde_json::to_string(&leg).unwrap();
-        let deserialized: ExecutionLeg = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized, leg);
-    }
+        let response: OrderStatusResponse = serde_json::from_str(json_response).unwrap();
 
-    #[test]
-    fn test_order_status_response_serialization() {
-        let response = OrderStatusResponse {
-            order_id: Some("ORDER123".to_string()),
-            status: OrderStatus::Filled,
-            filled_quantity: 100.0,
-            remaining_quantity: 0.0,
-            execution_legs: vec![ExecutionLeg {
-                execution_id: Some("EXEC123".to_string()),
-                quantity: 100.0,
-                price: 150.25,
-                time: Some("2023-10-15T10:30:00Z".to_string()),
-            }],
-            entered_time: Some("2023-10-15T10:25:00Z".to_string()),
-            close_time: Some("2023-10-15T10:30:00Z".to_string()),
-        };
-
-        let json = serde_json::to_string(&response).unwrap();
-        let deserialized: OrderStatusResponse = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized, response);
+        assert_eq!(response.order_id, Some("1004055538123".to_string()));
+        assert_eq!(response.status, Some(OrderStatus::Filled));
+        assert!((response.filled_quantity.unwrap() - 100.0).abs() < f64::EPSILON);
+        assert!(response.remaining_quantity.unwrap().abs() < f64::EPSILON);
+        assert_eq!(
+            response.order_activity_collection.as_ref().unwrap().len(),
+            1
+        );
     }
 
     #[test]
     fn test_calculate_weighted_average_price_single_leg() {
         let response = OrderStatusResponse {
-            order_id: Some("ORDER123".to_string()),
-            status: OrderStatus::Filled,
-            filled_quantity: 100.0,
-            remaining_quantity: 0.0,
-            execution_legs: vec![ExecutionLeg {
-                execution_id: Some("EXEC123".to_string()),
-                quantity: 100.0,
-                price: 150.25,
-                time: Some("2023-10-15T10:30:00Z".to_string()),
-            }],
+            order_id: Some("1004055538123".to_string()),
+            status: Some(OrderStatus::Filled),
+            filled_quantity: Some(100.0),
+            remaining_quantity: Some(0.0),
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: Some("2023-10-15T10:30:00Z".to_string()),
-            order_activity_collection: vec![],
+            order_activity_collection: Some(vec![OrderActivity {
+                activity_type: Some("EXECUTION".to_string()),
+                execution_legs: Some(vec![ExecutionLeg {
+                    quantity: 100.0,
+                    price: 150.25,
+                }]),
+            }]),
         };
 
         assert_eq!(response.calculate_weighted_average_price(), Some(150.25));
@@ -211,27 +217,25 @@ mod tests {
     #[test]
     fn test_calculate_weighted_average_price_multiple_legs() {
         let response = OrderStatusResponse {
-            order_id: Some("ORDER123".to_string()),
-            status: OrderStatus::Filled,
-            filled_quantity: 200.0,
-            remaining_quantity: 0.0,
-            execution_legs: vec![
-                ExecutionLeg {
-                    execution_id: Some("EXEC123".to_string()),
-                    quantity: 100.0,
-                    price: 150.00,
-                    time: Some("2023-10-15T10:30:00Z".to_string()),
-                },
-                ExecutionLeg {
-                    execution_id: Some("EXEC124".to_string()),
-                    quantity: 100.0,
-                    price: 151.00,
-                    time: Some("2023-10-15T10:30:10Z".to_string()),
-                },
-            ],
+            order_id: Some("1004055538123".to_string()),
+            status: Some(OrderStatus::Filled),
+            filled_quantity: Some(200.0),
+            remaining_quantity: Some(0.0),
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: Some("2023-10-15T10:30:10Z".to_string()),
-            order_activity_collection: vec![],
+            order_activity_collection: Some(vec![OrderActivity {
+                activity_type: Some("EXECUTION".to_string()),
+                execution_legs: Some(vec![
+                    ExecutionLeg {
+                        quantity: 100.0,
+                        price: 150.00,
+                    },
+                    ExecutionLeg {
+                        quantity: 100.0,
+                        price: 151.00,
+                    },
+                ]),
+            }]),
         };
 
         assert_eq!(response.calculate_weighted_average_price(), Some(150.5));
@@ -240,44 +244,40 @@ mod tests {
     #[test]
     fn test_calculate_weighted_average_price_weighted() {
         let response = OrderStatusResponse {
-            order_id: Some("ORDER123".to_string()),
-            status: OrderStatus::Filled,
-            filled_quantity: 300.0,
-            remaining_quantity: 0.0,
-            execution_legs: vec![
-                ExecutionLeg {
-                    execution_id: Some("EXEC123".to_string()),
-                    quantity: 200.0, // 2/3 of total
-                    price: 150.00,
-                    time: Some("2023-10-15T10:30:00Z".to_string()),
-                },
-                ExecutionLeg {
-                    execution_id: Some("EXEC124".to_string()),
-                    quantity: 100.0, // 1/3 of total
-                    price: 153.00,
-                    time: Some("2023-10-15T10:30:10Z".to_string()),
-                },
-            ],
+            order_id: Some("1004055538123".to_string()),
+            status: Some(OrderStatus::Filled),
+            filled_quantity: Some(300.0),
+            remaining_quantity: Some(0.0),
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: Some("2023-10-15T10:30:10Z".to_string()),
-            order_activity_collection: vec![],
+            order_activity_collection: Some(vec![OrderActivity {
+                activity_type: Some("EXECUTION".to_string()),
+                execution_legs: Some(vec![
+                    ExecutionLeg {
+                        quantity: 200.0,
+                        price: 150.00,
+                    },
+                    ExecutionLeg {
+                        quantity: 100.0,
+                        price: 153.00,
+                    },
+                ]),
+            }]),
         };
 
-        // (200 * 150.00 + 100 * 153.00) / 300 = (30000 + 15300) / 300 = 151.00
         assert_eq!(response.calculate_weighted_average_price(), Some(151.0));
     }
 
     #[test]
     fn test_calculate_weighted_average_price_empty_legs() {
         let response = OrderStatusResponse {
-            order_id: Some("ORDER123".to_string()),
-            status: OrderStatus::Working,
-            filled_quantity: 0.0,
-            remaining_quantity: 100.0,
-            execution_legs: vec![],
+            order_id: Some("1004055538123".to_string()),
+            status: Some(OrderStatus::Working),
+            filled_quantity: Some(0.0),
+            remaining_quantity: Some(100.0),
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: None,
-            order_activity_collection: vec![],
+            order_activity_collection: Some(vec![]),
         };
 
         assert_eq!(response.calculate_weighted_average_price(), None);
@@ -286,19 +286,19 @@ mod tests {
     #[test]
     fn test_price_in_cents_conversion() {
         let response = OrderStatusResponse {
-            order_id: Some("ORDER123".to_string()),
-            status: OrderStatus::Filled,
-            filled_quantity: 100.0,
-            remaining_quantity: 0.0,
-            execution_legs: vec![ExecutionLeg {
-                execution_id: Some("EXEC123".to_string()),
-                quantity: 100.0,
-                price: 150.25,
-                time: Some("2023-10-15T10:30:00Z".to_string()),
-            }],
+            order_id: Some("1004055538123".to_string()),
+            status: Some(OrderStatus::Filled),
+            filled_quantity: Some(100.0),
+            remaining_quantity: Some(0.0),
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: Some("2023-10-15T10:30:00Z".to_string()),
-            order_activity_collection: vec![],
+            order_activity_collection: Some(vec![OrderActivity {
+                activity_type: Some("EXECUTION".to_string()),
+                execution_legs: Some(vec![ExecutionLeg {
+                    quantity: 100.0,
+                    price: 150.25,
+                }]),
+            }]),
         };
 
         assert_eq!(response.price_in_cents().unwrap(), Some(15025));
@@ -307,14 +307,13 @@ mod tests {
     #[test]
     fn test_price_in_cents_no_executions() {
         let response = OrderStatusResponse {
-            order_id: Some("ORDER123".to_string()),
-            status: OrderStatus::Working,
-            filled_quantity: 0.0,
-            remaining_quantity: 100.0,
-            execution_legs: vec![],
+            order_id: Some("1004055538123".to_string()),
+            status: Some(OrderStatus::Working),
+            filled_quantity: Some(0.0),
+            remaining_quantity: Some(100.0),
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: None,
-            order_activity_collection: vec![],
+            order_activity_collection: Some(vec![]),
         };
 
         assert_eq!(response.price_in_cents().unwrap(), None);
@@ -323,19 +322,19 @@ mod tests {
     #[test]
     fn test_price_in_cents_rounding() {
         let response = OrderStatusResponse {
-            order_id: Some("ORDER123".to_string()),
-            status: OrderStatus::Filled,
-            filled_quantity: 100.0,
-            remaining_quantity: 0.0,
-            execution_legs: vec![ExecutionLeg {
-                execution_id: Some("EXEC123".to_string()),
-                quantity: 100.0,
-                price: 150.254, // Should round to 150.25
-                time: Some("2023-10-15T10:30:00Z".to_string()),
-            }],
+            order_id: Some("1004055538123".to_string()),
+            status: Some(OrderStatus::Filled),
+            filled_quantity: Some(100.0),
+            remaining_quantity: Some(0.0),
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: Some("2023-10-15T10:30:00Z".to_string()),
-            order_activity_collection: vec![],
+            order_activity_collection: Some(vec![OrderActivity {
+                activity_type: Some("EXECUTION".to_string()),
+                execution_legs: Some(vec![ExecutionLeg {
+                    quantity: 100.0,
+                    price: 150.254,
+                }]),
+            }]),
         };
 
         assert_eq!(response.price_in_cents().unwrap(), Some(15025));
@@ -344,19 +343,18 @@ mod tests {
     #[test]
     fn test_is_filled() {
         let mut response = OrderStatusResponse {
-            order_id: Some("ORDER123".to_string()),
-            status: OrderStatus::Filled,
-            filled_quantity: 100.0,
-            remaining_quantity: 0.0,
-            execution_legs: vec![],
+            order_id: Some("1004055538123".to_string()),
+            status: Some(OrderStatus::Filled),
+            filled_quantity: Some(100.0),
+            remaining_quantity: Some(0.0),
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: Some("2023-10-15T10:30:00Z".to_string()),
-            order_activity_collection: vec![],
+            order_activity_collection: Some(vec![]),
         };
 
         assert!(response.is_filled());
 
-        response.status = OrderStatus::Working;
+        response.status = Some(OrderStatus::Working);
         assert!(!response.is_filled());
     }
 
@@ -379,14 +377,13 @@ mod tests {
 
         for status in pending_states {
             let response = OrderStatusResponse {
-                order_id: Some("ORDER123".to_string()),
-                status,
-                filled_quantity: 0.0,
-                remaining_quantity: 100.0,
-                execution_legs: vec![],
+                order_id: Some("1004055538123".to_string()),
+                status: Some(status),
+                filled_quantity: Some(0.0),
+                remaining_quantity: Some(100.0),
                 entered_time: Some("2023-10-15T10:25:00Z".to_string()),
                 close_time: None,
-                order_activity_collection: vec![],
+                order_activity_collection: Some(vec![]),
             };
             assert!(response.is_pending(), "Status {status:?} should be pending");
         }
@@ -401,14 +398,13 @@ mod tests {
 
         for status in non_pending_states {
             let response = OrderStatusResponse {
-                order_id: Some("ORDER123".to_string()),
-                status,
-                filled_quantity: 100.0,
-                remaining_quantity: 0.0,
-                execution_legs: vec![],
+                order_id: Some("1004055538123".to_string()),
+                status: Some(status),
+                filled_quantity: Some(100.0),
+                remaining_quantity: Some(0.0),
                 entered_time: Some("2023-10-15T10:25:00Z".to_string()),
                 close_time: Some("2023-10-15T10:30:00Z".to_string()),
-                order_activity_collection: vec![],
+                order_activity_collection: Some(vec![]),
             };
             assert!(
                 !response.is_pending(),
@@ -427,14 +423,13 @@ mod tests {
 
         for status in failure_states {
             let response = OrderStatusResponse {
-                order_id: Some("ORDER123".to_string()),
-                status,
-                filled_quantity: 0.0,
-                remaining_quantity: 100.0,
-                execution_legs: vec![],
+                order_id: Some("1004055538123".to_string()),
+                status: Some(status),
+                filled_quantity: Some(0.0),
+                remaining_quantity: Some(100.0),
                 entered_time: Some("2023-10-15T10:25:00Z".to_string()),
                 close_time: Some("2023-10-15T10:30:00Z".to_string()),
-                order_activity_collection: vec![],
+                order_activity_collection: Some(vec![]),
             };
             assert!(
                 response.is_terminal_failure(),
@@ -451,14 +446,13 @@ mod tests {
 
         for status in non_failure_states {
             let response = OrderStatusResponse {
-                order_id: Some("ORDER123".to_string()),
-                status,
-                filled_quantity: 0.0,
-                remaining_quantity: 100.0,
-                execution_legs: vec![],
+                order_id: Some("1004055538123".to_string()),
+                status: Some(status),
+                filled_quantity: Some(0.0),
+                remaining_quantity: Some(100.0),
                 entered_time: Some("2023-10-15T10:25:00Z".to_string()),
                 close_time: None,
-                order_activity_collection: vec![],
+                order_activity_collection: Some(vec![]),
             };
             assert!(
                 !response.is_terminal_failure(),
@@ -471,36 +465,42 @@ mod tests {
     fn test_complex_api_response_parsing() {
         let json_response = r#"
         {
-            "orderId": "ORDER12345",
+            "orderId": 1004055538999,
             "status": "FILLED",
             "filledQuantity": 200.0,
             "remainingQuantity": 0.0,
-            "executionLegs": [
-                {
-                    "executionId": "EXEC001",
-                    "quantity": 150.0,
-                    "price": 100.25,
-                    "time": "2023-10-15T10:30:00Z"
-                },
-                {
-                    "executionId": "EXEC002",
-                    "quantity": 50.0,
-                    "price": 100.75,
-                    "time": "2023-10-15T10:30:05Z"
-                }
-            ],
             "enteredTime": "2023-10-15T10:25:00Z",
-            "closeTime": "2023-10-15T10:30:05Z"
+            "closeTime": "2023-10-15T10:30:05Z",
+            "orderActivityCollection": [{
+                "activityType": "EXECUTION",
+                "executionLegs": [
+                    {
+                        "executionId": "EXEC001",
+                        "quantity": 150.0,
+                        "price": 100.25,
+                        "time": "2023-10-15T10:30:00Z"
+                    },
+                    {
+                        "executionId": "EXEC002",
+                        "quantity": 50.0,
+                        "price": 100.75,
+                        "time": "2023-10-15T10:30:05Z"
+                    }
+                ]
+            }]
         }
         "#;
 
         let response: OrderStatusResponse = serde_json::from_str(json_response).unwrap();
 
-        assert_eq!(response.order_id, Some("ORDER12345".to_string()));
-        assert_eq!(response.status, OrderStatus::Filled);
-        assert!((response.filled_quantity - 200.0).abs() < f64::EPSILON);
-        assert!(response.remaining_quantity.abs() < f64::EPSILON);
-        assert_eq!(response.execution_legs.len(), 2);
+        assert_eq!(response.order_id, Some("1004055538999".to_string()));
+        assert_eq!(response.status, Some(OrderStatus::Filled));
+        assert!((response.filled_quantity.unwrap() - 200.0).abs() < f64::EPSILON);
+        assert!(response.remaining_quantity.unwrap().abs() < f64::EPSILON);
+        assert_eq!(
+            response.order_activity_collection.as_ref().unwrap().len(),
+            1
+        );
 
         // Test weighted average: (150 * 100.25 + 50 * 100.75) / 200 = (15037.5 + 5037.5) / 200 = 100.375
         let avg_price = response.calculate_weighted_average_price().unwrap();
@@ -511,19 +511,19 @@ mod tests {
     #[test]
     fn test_edge_case_zero_quantity_legs() {
         let response = OrderStatusResponse {
-            order_id: Some("ORDER123".to_string()),
-            status: OrderStatus::Working,
-            filled_quantity: 0.0,
-            remaining_quantity: 100.0,
-            execution_legs: vec![ExecutionLeg {
-                execution_id: Some("EXEC123".to_string()),
-                quantity: 0.0, // Zero quantity
-                price: 150.25,
-                time: Some("2023-10-15T10:30:00Z".to_string()),
-            }],
+            order_id: Some("1004055538123".to_string()),
+            status: Some(OrderStatus::Working),
+            filled_quantity: Some(0.0),
+            remaining_quantity: Some(100.0),
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: None,
-            order_activity_collection: vec![],
+            order_activity_collection: Some(vec![OrderActivity {
+                activity_type: Some("EXECUTION".to_string()),
+                execution_legs: Some(vec![ExecutionLeg {
+                    quantity: 0.0,
+                    price: 150.25,
+                }]),
+            }]),
         };
 
         assert_eq!(response.calculate_weighted_average_price(), None);
@@ -588,9 +588,9 @@ mod tests {
 
         // Verify the parsed values
         assert_eq!(parsed.order_id, Some("1004055538153".to_string()));
-        assert_eq!(parsed.status, OrderStatus::Filled);
-        assert!((parsed.filled_quantity - 1.0).abs() < f64::EPSILON);
-        assert!(parsed.remaining_quantity.abs() < f64::EPSILON);
+        assert_eq!(parsed.status, Some(OrderStatus::Filled));
+        assert!((parsed.filled_quantity.unwrap() - 1.0).abs() < f64::EPSILON);
+        assert!(parsed.remaining_quantity.unwrap().abs() < f64::EPSILON);
         assert_eq!(
             parsed.entered_time,
             Some("2025-08-29T17:15:17+0000".to_string())
@@ -611,23 +611,6 @@ mod tests {
     }
 
     #[test]
-    fn test_order_id_as_string() {
-        // Test that we can handle orderId as a string
-        let response_json = r#"{
-            "orderId": "ORDER123",
-            "status": "WORKING",
-            "filledQuantity": 0.0,
-            "remainingQuantity": 100.0
-        }"#;
-
-        let parsed: OrderStatusResponse =
-            serde_json::from_str(response_json).expect("Should parse orderId as string");
-
-        assert_eq!(parsed.order_id, Some("ORDER123".to_string()));
-        assert_eq!(parsed.status, OrderStatus::Working);
-    }
-
-    #[test]
     fn test_order_id_as_number() {
         // Test that we can handle orderId as a number (actual Schwab format)
         let response_json = r#"{
@@ -641,7 +624,21 @@ mod tests {
             serde_json::from_str(response_json).expect("Should parse orderId as number");
 
         assert_eq!(parsed.order_id, Some("1004055538153".to_string()));
-        assert_eq!(parsed.status, OrderStatus::Filled);
+        assert_eq!(parsed.status, Some(OrderStatus::Filled));
+    }
+
+    #[test]
+    fn test_order_id_as_string_should_fail() {
+        // Test that we reject orderId as string (not the actual API format)
+        let response_json = r#"{
+            "orderId": "ORDER123",
+            "status": "WORKING",
+            "filledQuantity": 0.0,
+            "remainingQuantity": 100.0
+        }"#;
+
+        let result = serde_json::from_str::<OrderStatusResponse>(response_json);
+        assert!(result.is_err(), "Should reject string orderId format");
     }
 
     #[test]
@@ -657,12 +654,11 @@ mod tests {
             serde_json::from_str(response_json).expect("Should parse response without orderId");
 
         assert_eq!(parsed.order_id, None);
-        assert_eq!(parsed.status, OrderStatus::Queued);
+        assert_eq!(parsed.status, Some(OrderStatus::Queued));
     }
 
     #[test]
     fn test_missing_optional_fields() {
-        // Test that we can handle responses with missing optional fields
         let minimal_response = r#"{
             "status": "QUEUED"
         }"#;
@@ -671,18 +667,16 @@ mod tests {
             serde_json::from_str(minimal_response).expect("Should parse minimal response");
 
         assert_eq!(parsed.order_id, None);
-        assert_eq!(parsed.status, OrderStatus::Queued);
-        assert!(parsed.filled_quantity.abs() < f64::EPSILON);
-        assert!(parsed.remaining_quantity.abs() < f64::EPSILON);
-        assert_eq!(parsed.execution_legs.len(), 0);
+        assert_eq!(parsed.status, Some(OrderStatus::Queued));
+        assert_eq!(parsed.filled_quantity, None);
+        assert_eq!(parsed.remaining_quantity, None);
         assert_eq!(parsed.entered_time, None);
         assert_eq!(parsed.close_time, None);
-        assert_eq!(parsed.order_activity_collection.len(), 0);
+        assert_eq!(parsed.order_activity_collection, None);
     }
 
     #[test]
     fn test_price_calculation_from_order_activity_collection() {
-        // Test price calculation specifically from orderActivityCollection
         let response_json = r#"{
             "status": "FILLED",
             "filledQuantity": 2.0,
@@ -702,7 +696,10 @@ mod tests {
         let parsed: OrderStatusResponse = serde_json::from_str(response_json)
             .expect("Should parse response with orderActivityCollection");
 
-        // Should calculate weighted average: (1.0 * 100.50 + 1.0 * 101.50) / 2.0 = 101.0
+        assert_eq!(parsed.status, Some(OrderStatus::Filled));
+        assert!((parsed.filled_quantity.unwrap() - 2.0).abs() < f64::EPSILON);
+        assert!(parsed.remaining_quantity.unwrap().abs() < f64::EPSILON);
+
         let avg_price = parsed.calculate_weighted_average_price();
         assert!(avg_price.is_some());
         assert!((avg_price.unwrap() - 101.0).abs() < f64::EPSILON);
