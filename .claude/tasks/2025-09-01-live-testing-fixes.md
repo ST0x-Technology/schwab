@@ -54,18 +54,33 @@ OrderActivity **Files**: `src/schwab/order_status.rs`
 `remaining_quantity` are now `Option<f64>` instead of defaulting to `0.0`,
 preventing silent data corruption in financial calculations.
 
-## Task 3: Add Default Trait Implementations
+## Task 3: Handle Optional Fields Explicitly
 
-**Issue**: Missing fields in API responses cause parsing failures **Source**:
-Many fields in OpenAPI spec are optional (not in required arrays) **Files**:
-`src/schwab/order_status.rs` (lines 42-46, 59-60)
+**Issue**: Missing fields in API responses cause parsing failures\
+**Source**: Many fields in OpenAPI spec are optional (not in required arrays)\
+**Files**: `src/schwab/order_status.rs` (lines 42-46, 59-60)
 
-- [ ] Add Default trait for OrderStatus enum
-- [ ] Add Default trait for OrderStatusResponse struct
-- [ ] Update tests to verify partial response handling
-- [ ] Run `cargo test -q`
-- [ ] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
-- [ ] Run `pre-commit run -a`
+**Important Design Decision**: We will NOT use Default traits or
+`#[serde(default)]` for financial data fields. Defaults are dangerous and can
+lead to surprising implicit behaviors. Silent defaults can corrupt financial
+calculations and mask API response issues. Instead:
+
+- Fields that are genuinely optional should remain `Option<T>` and be handled
+  explicitly
+- Fields that we absolutely need should fail parsing if missing, alerting us to
+  API changes
+- Only fields with truly sensible defaults (like `status` potentially defaulting
+  to a known state) should have explicit, non-silent fallbacks with proper
+  logging
+
+- [x] Keep all financial fields as `Option<T>` without defaults
+- [x] Add explicit error handling for missing required fields
+- [x] Remove dangerous `Default` trait implementation from `OrderStatus` enum
+- [x] Update tests to verify proper handling of missing fields (should fail for
+      required, handle gracefully for optional)
+- [x] Run `cargo test -q` (324 tests pass)
+- [x] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
+- [x] Run `pre-commit run -a`
 
 ## Task 4: Duplicate Event Handling
 
