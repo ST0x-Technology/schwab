@@ -2,6 +2,7 @@ use sqlx::SqlitePool;
 use tracing::info;
 
 use super::{OnchainTrade, trade_execution_link::TradeExecutionLink};
+use crate::Env;
 use crate::error::{OnChainError, TradeValidationError};
 use crate::lock::{clear_execution_lease, set_pending_execution_id, try_acquire_execution_lease};
 use crate::onchain::position_calculator::{ExecutionType, PositionCalculator};
@@ -452,6 +453,134 @@ async fn clean_up_stale_executions(
     }
 
     Ok(())
+}
+
+/// Checks all accumulated positions and executes any that are ready for execution.
+///
+/// This function is designed to be called after processing batches of events
+/// to ensure accumulated positions execute even when no new events arrive for those symbols.
+/// It prevents positions from sitting idle indefinitely when they've accumulated
+/// enough shares to execute but the triggering trade didn't push them over the threshold.
+pub async fn check_all_accumulated_positions(
+    _env: &Env,
+    pool: &SqlitePool,
+) -> Result<Vec<SchwabExecution>, OnChainError> {
+    info!("Checking all accumulated positions for ready executions");
+
+    // Query all symbols with accumulated positions >= 1.0 shares (either long or short)
+    // and no pending execution
+    let ready_symbols = sqlx::query!(
+        r#"
+        SELECT 
+            symbol,
+            net_position,
+            accumulated_long,
+            accumulated_short,
+            pending_execution_id
+        FROM trade_accumulators 
+        WHERE pending_execution_id IS NULL
+          AND (accumulated_long >= 1.0 OR accumulated_short >= 1.0)
+        ORDER BY last_updated ASC
+        "#
+    )
+    .fetch_all(pool)
+    .await?;
+
+    if ready_symbols.is_empty() {
+        info!("No accumulated positions found ready for execution");
+        return Ok(vec![]);
+    }
+
+    info!(
+        "Found {} symbols with positions ready for execution",
+        ready_symbols.len()
+    );
+
+    let mut executions = Vec::new();
+
+    // Process each symbol individually to respect locking
+    for row in ready_symbols {
+        let symbol = &row.symbol;
+        info!(
+            symbol = %symbol,
+            accumulated_long = row.accumulated_long,
+            accumulated_short = row.accumulated_short,
+            net_position = row.net_position,
+            "Checking symbol for execution"
+        );
+
+        let mut sql_tx = pool.begin().await?;
+
+        // Clean up any stale executions for this symbol
+        clean_up_stale_executions(&mut sql_tx, symbol).await?;
+
+        // Try to acquire execution lease for this symbol
+        if try_acquire_execution_lease(&mut sql_tx, symbol).await? {
+            // Re-fetch calculator to get current state
+            let mut calculator = get_or_create_within_transaction(&mut sql_tx, symbol).await?;
+
+            // Check if still ready after potentially concurrent processing
+            if let Some(execution_type) = calculator.determine_execution_type() {
+                // Create dummy trade_id (0) since this isn't triggered by a specific trade
+                // The linkage system will handle allocating the oldest available trades
+                let result =
+                    execute_position(&mut sql_tx, symbol, 0, &mut calculator, execution_type)
+                        .await?;
+
+                if let Some(execution) = &result {
+                    let execution_id = execution
+                        .id
+                        .ok_or(crate::error::PersistenceError::MissingExecutionId)?;
+                    set_pending_execution_id(&mut sql_tx, symbol, execution_id).await?;
+
+                    info!(
+                        symbol = %symbol,
+                        execution_id = ?execution.id,
+                        shares = execution.shares,
+                        direction = ?execution.direction,
+                        "Created execution for accumulated position"
+                    );
+
+                    executions.push(execution.clone());
+                } else {
+                    clear_execution_lease(&mut sql_tx, symbol).await?;
+                    info!(
+                        symbol = %symbol,
+                        "No execution created for symbol (insufficient shares after re-check)"
+                    );
+                }
+
+                // Save updated calculator state
+                let pending_execution_id = result.as_ref().and_then(|e| e.id);
+                save_within_transaction(&mut sql_tx, symbol, &calculator, pending_execution_id)
+                    .await?;
+            } else {
+                clear_execution_lease(&mut sql_tx, symbol).await?;
+                info!(
+                    symbol = %symbol,
+                    "No execution needed for symbol (insufficient shares after cleanup)"
+                );
+            }
+        } else {
+            info!(
+                symbol = %symbol,
+                "Another worker holds execution lease, skipping"
+            );
+        }
+
+        sql_tx.commit().await?;
+    }
+
+    if executions.is_empty() {
+        info!("No new executions created from accumulated positions");
+    } else {
+        info!(
+            "Created {} new executions from accumulated positions",
+            executions.len()
+        );
+    }
+
+    Ok(executions)
 }
 
 #[cfg(test)]
@@ -1402,5 +1531,94 @@ mod tests {
         // Verify accumulator pending_execution_id is still set
         let (_, pending_id) = find_by_symbol(&pool, "NVDA").await.unwrap().unwrap();
         assert_eq!(pending_id, Some(execution_id));
+    }
+
+    #[tokio::test]
+    async fn test_check_all_accumulated_positions_finds_ready_symbols() {
+        let pool = setup_test_db().await;
+        let env = crate::test_utils::setup_test_env();
+
+        // Create some accumulated positions using the normal flow
+        let aapl_trade = OnchainTrade {
+            id: None,
+            tx_hash: fixed_bytes!(
+                "0x1111111111111111111111111111111111111111111111111111111111111111"
+            ),
+            log_index: 1,
+            symbol: "AAPL0x".to_string(),
+            amount: 0.8,
+            direction: Direction::Sell,
+            price_usdc: 150.0,
+            created_at: None,
+        };
+
+        let result = process_onchain_trade(&pool, aapl_trade).await.unwrap();
+        assert!(result.is_none()); // Should not execute yet (below 1.0)
+
+        // Verify AAPL has accumulated position but no pending execution
+        let (aapl_calc, aapl_pending) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
+        assert!((aapl_calc.accumulated_long - 0.8).abs() < f64::EPSILON);
+        assert!(aapl_pending.is_none());
+
+        // Run the function - should not create any executions since 0.8 < 1.0
+        let executions = check_all_accumulated_positions(&env, &pool).await.unwrap();
+        assert_eq!(executions.len(), 0);
+
+        // Verify AAPL state unchanged
+        let (aapl_calc, aapl_pending) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
+        assert!((aapl_calc.accumulated_long - 0.8).abs() < f64::EPSILON);
+        assert!(aapl_pending.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_check_all_accumulated_positions_no_ready_positions() {
+        let pool = setup_test_db().await;
+        let env = crate::test_utils::setup_test_env();
+
+        // Run the function on empty database
+        let executions = check_all_accumulated_positions(&env, &pool).await.unwrap();
+
+        // Should create no executions
+        assert_eq!(executions.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_check_all_accumulated_positions_skips_pending_executions() {
+        let pool = setup_test_db().await;
+        let env = crate::test_utils::setup_test_env();
+
+        // Create a pending execution first
+        let pending_execution = SchwabExecution {
+            id: None,
+            symbol: "AAPL".to_string(),
+            shares: 1,
+            direction: Direction::Buy,
+            state: TradeState::Pending,
+        };
+
+        let mut sql_tx = pool.begin().await.unwrap();
+        let execution_id = pending_execution
+            .save_within_transaction(&mut sql_tx)
+            .await
+            .unwrap();
+
+        // AAPL: Has enough accumulated but already has pending execution (should skip)
+        let aapl_calculator = PositionCalculator::with_positions(1.5, 1.5, 0.0);
+        save_within_transaction(&mut sql_tx, "AAPL", &aapl_calculator, Some(execution_id))
+            .await
+            .unwrap();
+
+        sql_tx.commit().await.unwrap();
+
+        // Run the function
+        let executions = check_all_accumulated_positions(&env, &pool).await.unwrap();
+
+        // Should create no executions since AAPL has pending execution
+        assert_eq!(executions.len(), 0);
+
+        // Verify AAPL was unchanged (still has pending execution)
+        let (aapl_calc, aapl_pending) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
+        assert!((aapl_calc.accumulated_long - 1.5).abs() < f64::EPSILON); // Unchanged
+        assert_eq!(aapl_pending, Some(execution_id)); // Still has same pending execution
     }
 }

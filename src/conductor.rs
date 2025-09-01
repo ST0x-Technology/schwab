@@ -5,7 +5,7 @@ use futures_util::{Stream, StreamExt};
 use sqlx::SqlitePool;
 use tokio::sync::{mpsc::UnboundedSender, watch};
 use tokio::task::JoinHandle;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
 use crate::env::Env;
@@ -24,6 +24,7 @@ pub(crate) struct BackgroundTasks {
     pub(crate) token_refresher: JoinHandle<()>,
     pub(crate) order_poller: JoinHandle<()>,
     pub(crate) event_receiver: JoinHandle<()>,
+    pub(crate) position_checker: JoinHandle<()>,
 }
 
 impl BackgroundTasks {
@@ -31,7 +32,7 @@ impl BackgroundTasks {
         env: &Env,
         pool: &SqlitePool,
         event_sender: UnboundedSender<(TradeEvent, Log)>,
-        shutdown_rx: watch::Receiver<bool>,
+        shutdown_rx: &watch::Receiver<bool>,
         clear_stream: impl Stream<Item = Result<(ClearV2, Log), sol_types::Error>>
         + Unpin
         + Send
@@ -41,42 +42,88 @@ impl BackgroundTasks {
         + Send
         + 'static,
     ) -> Self {
-        info!("Starting token refresh service");
-        let token_refresher =
-            SchwabTokens::spawn_automatic_token_refresh(pool.clone(), env.schwab_auth.clone());
-
-        let config = env.get_order_poller_config();
-        info!(
-            "Starting order status poller with interval: {:?}, max jitter: {:?}",
-            config.polling_interval, config.max_jitter
-        );
-        let poller =
-            OrderStatusPoller::new(config, env.schwab_auth.clone(), pool.clone(), shutdown_rx);
-        let order_poller = tokio::spawn(async move {
-            if let Err(e) = poller.run().await {
-                error!("Order poller failed: {e}");
-            } else {
-                info!("Order poller completed successfully");
-            }
-        });
-
-        info!("Starting blockchain event receiver");
-        let event_receiver = tokio::spawn(receive_blockchain_events(
-            clear_stream,
-            take_stream,
-            event_sender,
-        ));
+        let token_refresher = Self::spawn_token_refresher(env, pool);
+        let order_poller = Self::spawn_order_poller(env, pool, shutdown_rx);
+        let event_receiver = Self::spawn_event_receiver(event_sender, clear_stream, take_stream);
+        let position_checker = Self::spawn_position_checker(env, pool, shutdown_rx);
 
         Self {
             token_refresher,
             order_poller,
             event_receiver,
+            position_checker,
         }
     }
 
+    fn spawn_token_refresher(env: &Env, pool: &SqlitePool) -> JoinHandle<()> {
+        info!("Starting token refresh service");
+        SchwabTokens::spawn_automatic_token_refresh(pool.clone(), env.schwab_auth.clone())
+    }
+
+    fn spawn_order_poller(
+        env: &Env,
+        pool: &SqlitePool,
+        shutdown_rx: &watch::Receiver<bool>,
+    ) -> JoinHandle<()> {
+        let config = env.get_order_poller_config();
+        info!(
+            "Starting order status poller with interval: {:?}, max jitter: {:?}",
+            config.polling_interval, config.max_jitter
+        );
+        let poller = OrderStatusPoller::new(
+            config,
+            env.schwab_auth.clone(),
+            pool.clone(),
+            shutdown_rx.clone(),
+        );
+        tokio::spawn(async move {
+            if let Err(e) = poller.run().await {
+                error!("Order poller failed: {e}");
+            } else {
+                info!("Order poller completed successfully");
+            }
+        })
+    }
+
+    fn spawn_event_receiver(
+        event_sender: UnboundedSender<(TradeEvent, Log)>,
+        clear_stream: impl Stream<Item = Result<(ClearV2, Log), sol_types::Error>>
+        + Unpin
+        + Send
+        + 'static,
+        take_stream: impl Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>>
+        + Unpin
+        + Send
+        + 'static,
+    ) -> JoinHandle<()> {
+        info!("Starting blockchain event receiver");
+        tokio::spawn(receive_blockchain_events(
+            clear_stream,
+            take_stream,
+            event_sender,
+        ))
+    }
+
+    fn spawn_position_checker(
+        env: &Env,
+        pool: &SqlitePool,
+        shutdown_rx: &watch::Receiver<bool>,
+    ) -> JoinHandle<()> {
+        info!("Starting periodic accumulated position checker");
+        tokio::spawn(periodic_accumulated_position_check(
+            env.clone(),
+            pool.clone(),
+            shutdown_rx.clone(),
+        ))
+    }
+
     pub(crate) async fn wait_for_completion(self) -> Result<(), anyhow::Error> {
-        let (token_result, poller_result, receiver_result) =
-            tokio::join!(self.token_refresher, self.order_poller, self.event_receiver);
+        let (token_result, poller_result, receiver_result, position_result) = tokio::join!(
+            self.token_refresher,
+            self.order_poller,
+            self.event_receiver,
+            self.position_checker
+        );
 
         if let Err(e) = token_result {
             error!("Token refresher task panicked: {e}");
@@ -87,8 +134,39 @@ impl BackgroundTasks {
         if let Err(e) = receiver_result {
             error!("Event receiver task panicked: {e}");
         }
+        if let Err(e) = position_result {
+            error!("Position checker task panicked: {e}");
+        }
 
         Ok(())
+    }
+}
+
+async fn periodic_accumulated_position_check(
+    env: Env,
+    pool: SqlitePool,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+    let mut interval = tokio::time::interval(CHECK_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                debug!("Running periodic accumulated position check");
+                if let Err(e) = check_and_execute_accumulated_positions(&env, &pool).await {
+                    error!("Periodic accumulated position check failed: {e}");
+                }
+            }
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("Shutting down periodic accumulated position checker");
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -188,7 +266,7 @@ where
         &env,
         &pool,
         event_sender,
-        shutdown_rx,
+        &shutdown_rx,
         clear_stream,
         take_stream,
     );
@@ -361,6 +439,7 @@ pub(crate) async fn process_queue<P: Provider + Clone>(
 
     if unprocessed_events.is_empty() {
         info!("No unprocessed events found");
+        check_and_execute_accumulated_positions(env, pool).await?;
         return Ok(());
     }
 
@@ -405,6 +484,8 @@ pub(crate) async fn process_queue<P: Provider + Clone>(
         "Successfully reprocessed {} events, {} failures",
         successful_count, failed_count
     );
+
+    check_and_execute_accumulated_positions(env, pool).await?;
 
     Ok(())
 }
@@ -574,6 +655,16 @@ async fn process_queued_event_atomic<P: Provider + Clone>(
         } else {
             trace!("Queued trade did not trigger Schwab execution");
         }
+
+        // After processing any trade, check for other accumulated positions that might be ready
+        // This handles the case where accumulated positions don't get executed because
+        // they weren't checked since the last trade for that symbol
+        if let Err(e) =
+            crate::onchain::accumulator::check_all_accumulated_positions(env, pool).await
+        {
+            warn!("Failed to check accumulated positions after processing trade: {e}");
+            // Don't fail the trade processing, just log and continue
+        }
     } else {
         trace!("Queued event did not convert to a valid onchain trade");
         // Even if no trade was created, mark the event as processed to avoid reprocessing
@@ -609,6 +700,57 @@ fn reconstruct_log_from_queued_event(
         log_index: Some(queued_event.log_index),
         removed: false,
     }
+}
+
+/// Checks for accumulated positions ready for execution and spawns tasks to execute them.
+async fn check_and_execute_accumulated_positions(
+    env: &Env,
+    pool: &SqlitePool,
+) -> anyhow::Result<()> {
+    let executions =
+        crate::onchain::accumulator::check_all_accumulated_positions(env, pool).await?;
+
+    if executions.is_empty() {
+        debug!("No accumulated positions ready for execution");
+        return Ok(());
+    }
+
+    info!(
+        "Found {} accumulated positions ready for execution",
+        executions.len()
+    );
+
+    for execution in executions {
+        let Some(execution_id) = execution.id else {
+            error!("Execution returned from check_all_accumulated_positions has None ID");
+            continue;
+        };
+
+        info!(
+            "Executing accumulated position for symbol={}, shares={}, direction={:?}, execution_id={}",
+            execution.symbol, execution.shares, execution.direction, execution_id
+        );
+
+        let env_clone = env.clone();
+        let pool_clone = pool.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                execute_pending_schwab_execution(&env_clone, &pool_clone, execution_id).await
+            {
+                error!(
+                    "Failed to execute accumulated position for execution_id {}: {e}",
+                    execution_id
+                );
+            } else {
+                info!(
+                    "Successfully executed accumulated position for execution_id {}",
+                    execution_id
+                );
+            }
+        });
+    }
+
+    Ok(())
 }
 
 /// Execute a pending Schwab execution by fetching it from the database and placing the order.

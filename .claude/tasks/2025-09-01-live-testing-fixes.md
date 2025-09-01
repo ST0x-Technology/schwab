@@ -357,20 +357,19 @@ from executing.
 
 **Key Changes**:
 
-- **Enhanced proactive cleanup**: Modified `try_acquire_execution_lease()` to
-  clean up ALL stale locks (not just for the current symbol), ensuring any stale
-  locks get cleaned when any trade processing occurs
+- **Fixed lock cleanup**: Modified `try_acquire_execution_lease()` to properly
+  clean up stale locks for the specific symbol being acquired, preventing
+  deadlocks while still cleaning up old locks when needed
 - **Added comprehensive logging**: Added info/warn logs for lock acquisition,
   cleanup, and clearing to improve observability
-- **Added test coverage**: Added `test_cleanup_multiple_stale_locks()` to verify
-  that acquiring a lease for one symbol cleans up stale locks for all symbols
+- **Added test coverage**: Added tests to verify proper lock cleanup behavior
 - **Manual fix applied**: Cleared the stale GME lock from August 29th,
   immediately unblocking the accumulated trades
 
 **Critical Fix**: The arbitrage bot can now recover from stale locks
-automatically without manual intervention. When any new trade arrives for any
-symbol, it will clean up stale locks for all symbols, ensuring no symbol remains
-permanently blocked.
+automatically without manual intervention. When attempting to acquire a lock for
+a symbol, it will clean up any stale lock for that symbol, ensuring symbols
+don't remain permanently blocked.
 
 ## Task 10: Fix Accumulated Trades Not Executing
 
@@ -406,10 +405,71 @@ executed:
 
 **Files**: `src/conductor.rs`, `src/onchain/accumulator.rs`
 
-- [ ] Add `check_all_accumulated_positions` function to accumulator.rs
-- [ ] Call it after processing unprocessed events in conductor.rs
-- [ ] Add post-commit check after each trade in process_queued_event
-- [ ] Add test coverage for accumulated position execution
-- [ ] Run `cargo test -q`
-- [ ] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
-- [ ] Run `pre-commit run -a`
+- [x] Add `check_all_accumulated_positions` function to accumulator.rs
+- [x] Call it after processing unprocessed events in conductor.rs
+- [x] Add post-commit check after each trade in process_queued_event
+- [x] Add test coverage for accumulated position execution
+- [x] Run `cargo test -q` (333 tests pass)
+- [x] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
+- [x] Run `pre-commit run -a`
+
+**Completed Implementation**: Fixed the critical issue where accumulated trades
+don't execute when no new events arrive for that symbol.
+
+**Root Cause**: The execution check only happened inside `process_trade` when
+processing each individual trade. If multiple trades accumulated to >= 1.0
+shares but the LAST trade didn't push it over the threshold, the execution never
+happened. Additionally, if no new trades arrived after accumulation, the
+position sat idle forever.
+
+**Key Changes**:
+
+- **Added `check_all_accumulated_positions` function** in
+  `src/onchain/accumulator.rs` that:
+  - Queries all symbols with accumulated positions >= 1.0 shares and no pending
+    execution
+  - For each symbol, attempts to create and execute an order
+  - Handles locking and execution flow properly
+  - Returns a vector of created executions for monitoring
+
+- **Added post-startup check** in `src/conductor.rs` after processing
+  unprocessed events:
+  - Calls `check_all_accumulated_positions` after replay to execute any
+    accumulated positions
+  - Ensures positions accumulated during downtime get executed on startup
+
+- **Added post-trade check** in `process_queued_event_atomic`:
+  - Calls `check_all_accumulated_positions` after each individual trade is
+    processed
+  - Ensures accumulated positions execute even when triggered by unrelated
+    trades
+
+- **Added comprehensive test coverage**:
+  - `test_check_all_accumulated_positions_finds_ready_symbols`: Tests basic
+    functionality
+  - `test_check_all_accumulated_positions_no_ready_positions`: Tests empty
+    database case
+  - `test_check_all_accumulated_positions_skips_pending_executions`: Tests
+    proper handling of locked symbols
+
+**Critical Fix**: Accumulated positions now execute reliably even when no new
+events arrive for those symbols. The system actively checks for ready positions
+after startup replay and after each trade, ensuring no position sits idle
+indefinitely.
+
+**IMPORTANT UPDATE**: Fixed a critical bug where executions created by
+`check_all_accumulated_positions` in `process_queue` were never actually sent to
+Schwab. The function was creating database records but not spawning tasks to
+execute them. Now properly spawns async tasks to call
+`execute_pending_schwab_execution` for each created execution, matching the
+pattern used elsewhere in the codebase.
+
+## Task 11: Investigate Auth "test_auth_code" Issue
+
+**Issue**: During live testing, "test_auth_code" appears in token refresh logs,
+suggesting test data contamination in auth flow
+
+**Priority**: Low (doesn't affect core functionality)
+
+**Next Steps**: Investigate where test auth code is persisting in production
+flow

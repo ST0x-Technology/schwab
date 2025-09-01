@@ -1,3 +1,4 @@
+use crate::Env;
 use crate::bindings::IOrderBookV4::{EvaluableV3, IO, OrderV3};
 use alloy::primitives::{LogData, U256, address, bytes, fixed_bytes};
 use alloy::rpc::types::Log;
@@ -68,6 +69,7 @@ pub(crate) fn get_test_log() -> Log {
     create_log(293)
 }
 
+use clap::Parser;
 use sqlx::SqlitePool;
 
 /// Centralized test database setup to eliminate duplication across test files.
@@ -76,6 +78,38 @@ pub(crate) async fn setup_test_db() -> SqlitePool {
     let pool = SqlitePool::connect(":memory:").await.unwrap();
     sqlx::migrate!().run(&pool).await.unwrap();
     pool
+}
+
+/// Creates a test `Env` instance for use in unit tests.
+/// Uses dummy values that are suitable for testing but not for real usage.
+pub(crate) fn setup_test_env() -> Env {
+    let args = vec![
+        "test_program",
+        "--db",
+        ":memory:",
+        "--log-level",
+        "info",
+        "--ws-rpc-url",
+        "ws://127.0.0.1:8545",
+        "--orderbook",
+        "0x1234567890123456789012345678901234567890",
+        "--order-hash",
+        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "--deployment-block",
+        "1",
+        "--app-key",
+        "test_app_key",
+        "--app-secret",
+        "test_app_secret",
+        "--redirect-uri",
+        "https://127.0.0.1",
+        "--base-url",
+        "https://api.schwabapi.com",
+        "--account-index",
+        "0",
+    ];
+
+    Env::try_parse_from(args).expect("Failed to parse test environment")
 }
 
 use crate::onchain::OnchainTrade;
