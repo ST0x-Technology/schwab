@@ -144,7 +144,7 @@ where
     let first_event_result = wait_for_first_event_with_timeout(
         clear_stream,
         take_stream,
-        std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs(5),
     )
     .await;
 
@@ -368,7 +368,7 @@ async fn process_queued_event_with_retry<P: Provider + Clone>(
         .with_max_delay(MAX_DELAY);
 
     let process_event = || async {
-        process_queued_event_atomic(
+        let result = process_queued_event_atomic(
             env,
             evm_env,
             pool,
@@ -376,7 +376,16 @@ async fn process_queued_event_with_retry<P: Provider + Clone>(
             provider.clone(),
             &queued_event,
         )
-        .await
+        .await;
+
+        if let Err(ref e) = result {
+            error!(
+                "Event processing failed for tx_hash={:?}, log_index={}: {}",
+                queued_event.tx_hash, queued_event.log_index, e
+            );
+        }
+
+        result
     };
 
     process_event.retry(&retry_strategy).await
@@ -668,7 +677,7 @@ mod tests {
                 "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             ))
             .with_log_index(293)
-            .with_symbol("AAPLs1")
+            .with_symbol("AAPL0x")
             .with_amount(5.0)
             .with_price(20000.0)
             .build();
@@ -699,7 +708,7 @@ mod tests {
                 "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             ),
             log_index: 293,
-            symbol: "AAPLs1".to_string(),
+            symbol: "AAPL0x".to_string(),
             amount: 5.0,
             direction: Direction::Sell,
             price_usdc: 20000.0,
@@ -1014,7 +1023,7 @@ mod tests {
                 "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             ))
             .with_log_index(1)
-            .with_symbol("AAPLs1")
+            .with_symbol("AAPL0x")
             .with_amount(9.0)
             .with_price(11.111)
             .build();
@@ -1036,7 +1045,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(saved_trade.symbol, "AAPLs1");
+        assert_eq!(saved_trade.symbol, "AAPL0x");
         assert!((saved_trade.amount - 9.0).abs() < f64::EPSILON);
     }
 

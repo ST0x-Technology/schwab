@@ -89,7 +89,7 @@ mod tests {
             &"USDC".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"AAPLs1".to_string(),
+            &"AAPL0x".to_string(),
         ));
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
@@ -104,7 +104,7 @@ mod tests {
         .unwrap();
 
         let trade = result.unwrap();
-        assert_eq!(trade.symbol, "AAPLs1");
+        assert_eq!(trade.symbol, "AAPL0x");
         assert!((trade.amount - 9.0).abs() < f64::EPSILON);
         assert_eq!(
             trade.tx_hash,
@@ -167,7 +167,7 @@ mod tests {
 
         let asserter = Asserter::new();
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"AAPLs1".to_string(),
+            &"AAPL0x".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
@@ -185,7 +185,7 @@ mod tests {
         .unwrap();
 
         let trade = result.unwrap();
-        assert_eq!(trade.symbol, "AAPLs1");
+        assert_eq!(trade.symbol, "AAPL0x");
         assert!((trade.amount - 5.0).abs() < f64::EPSILON);
     }
 
@@ -218,7 +218,7 @@ mod tests {
             &"USDC".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"AAPLs1".to_string(),
+            &"AAPL0x".to_string(),
         ));
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
@@ -233,7 +233,7 @@ mod tests {
         .unwrap();
 
         let trade = result.unwrap();
-        assert_eq!(trade.symbol, "AAPLs1");
+        assert_eq!(trade.symbol, "AAPL0x");
         assert!((trade.amount - 15.0).abs() < f64::EPSILON);
         // Price should be 200 USDC / 15 shares = 13.333... USDC per share
         assert!((trade.price_usdc - 13.333_333_333_333_334).abs() < 0.001);
@@ -268,7 +268,7 @@ mod tests {
             &"USDC".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"AAPLs1".to_string(),
+            &"AAPL0x".to_string(),
         ));
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 

@@ -103,7 +103,7 @@ impl OnchainTradeBuilder {
                     "0x1111111111111111111111111111111111111111111111111111111111111111"
                 ),
                 log_index: 1,
-                symbol: "AAPLs1".to_string(),
+                symbol: "AAPL0x".to_string(),
                 amount: 1.0,
                 direction: Direction::Buy,
                 price_usdc: 150.0,

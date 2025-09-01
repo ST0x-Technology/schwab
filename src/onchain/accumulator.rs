@@ -45,6 +45,9 @@ pub async fn add_trade(
         "Updated calculator"
     );
 
+    // Clean up stale executions before trying to acquire new lease
+    clean_up_stale_executions(&mut sql_tx, &base_symbol).await?;
+
     let execution = if try_acquire_execution_lease(&mut sql_tx, &base_symbol).await? {
         let result =
             try_create_execution_if_ready(&mut sql_tx, &base_symbol, trade_id, &mut calculator)
@@ -108,7 +111,7 @@ fn extract_base_symbol(symbol: &str) -> Result<String, OnChainError> {
     }
 
     Ok(symbol
-        .strip_suffix("s1")
+        .strip_suffix("0x")
         .map_or_else(|| symbol.to_string(), ToString::to_string))
 }
 
@@ -251,7 +254,7 @@ async fn create_trade_execution_linkages(
         ExecutionType::Short => "SELL",
     };
 
-    let tokenized_symbol = format!("{base_symbol}s1");
+    let tokenized_symbol = format!("{base_symbol}0x");
 
     // Get all trades for this symbol/direction, ordered by creation time
     let trade_rows = sqlx::query!(
@@ -360,7 +363,7 @@ mod tests {
                 "0x1111111111111111111111111111111111111111111111111111111111111111"
             ),
             log_index: 1,
-            symbol: "AAPLs1".to_string(),
+            symbol: "AAPL0x".to_string(),
             amount: 0.5,
             direction: Direction::Sell,
             price_usdc: 150.0,
@@ -386,7 +389,7 @@ mod tests {
                 "0x2222222222222222222222222222222222222222222222222222222222222222"
             ),
             log_index: 1,
-            symbol: "MSFTs1".to_string(),
+            symbol: "MSFT0x".to_string(),
             amount: 1.5,
             direction: Direction::Sell,
             price_usdc: 300.0,
@@ -414,7 +417,7 @@ mod tests {
                 "0x3333333333333333333333333333333333333333333333333333333333333333"
             ),
             log_index: 1,
-            symbol: "AAPLs1".to_string(),
+            symbol: "AAPL0x".to_string(),
             amount: 0.3,
             direction: Direction::Sell,
             price_usdc: 150.0,
@@ -430,7 +433,7 @@ mod tests {
                 "0x4444444444444444444444444444444444444444444444444444444444444444"
             ),
             log_index: 2,
-            symbol: "AAPLs1".to_string(),
+            symbol: "AAPL0x".to_string(),
             amount: 0.4,
             direction: Direction::Sell,
             price_usdc: 150.0,
@@ -446,7 +449,7 @@ mod tests {
                 "0x5555555555555555555555555555555555555555555555555555555555555555"
             ),
             log_index: 3,
-            symbol: "AAPLs1".to_string(),
+            symbol: "AAPL0x".to_string(),
             amount: 0.4,
             direction: Direction::Sell,
             price_usdc: 150.0,
@@ -515,7 +518,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_extract_base_symbol() {
-        assert_eq!(extract_base_symbol("AAPLs1").unwrap(), "AAPL");
+        assert_eq!(extract_base_symbol("AAPL0x").unwrap(), "AAPL");
         assert_eq!(extract_base_symbol("AAPL").unwrap(), "AAPL");
 
         let result = extract_base_symbol("");
@@ -532,7 +535,7 @@ mod tests {
                 "0x1111111111111111111111111111111111111111111111111111111111111111"
             ),
             log_index: 1,
-            symbol: "AAPLs1".to_string(),
+            symbol: "AAPL0x".to_string(),
             amount: 1.5,
             direction: Direction::Sell,
             price_usdc: 150.0,
@@ -556,7 +559,7 @@ mod tests {
                 "0x2222222222222222222222222222222222222222222222222222222222222222"
             ),
             log_index: 1,
-            symbol: "MSFTs1".to_string(),
+            symbol: "MSFT0x".to_string(),
             amount: 1.5,
             direction: Direction::Buy,
             price_usdc: 300.0,
@@ -596,7 +599,7 @@ mod tests {
                 "0x8888888888888888888888888888888888888888888888888888888888888888"
             ),
             log_index: 1,
-            symbol: "AAPLs1".to_string(),
+            symbol: "AAPL0x".to_string(),
             amount: 1.5,
             direction: Direction::Sell,
             price_usdc: 150.0,
@@ -642,7 +645,7 @@ mod tests {
                 "0x9999999999999999999999999999999999999999999999999999999999999999"
             ),
             log_index: 1,
-            symbol: "AAPLs1".to_string(),
+            symbol: "AAPL0x".to_string(),
             amount: 0.8,
             direction: Direction::Sell,
             price_usdc: 150.0,
@@ -655,7 +658,7 @@ mod tests {
                 "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             ),
             log_index: 1,
-            symbol: "AAPLs1".to_string(),
+            symbol: "AAPL0x".to_string(),
             amount: 0.3,
             direction: Direction::Sell,
             price_usdc: 150.0,
@@ -700,7 +703,7 @@ mod tests {
                 "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             ),
             log_index: 1,
-            symbol: "AAPLs1".to_string(),
+            symbol: "AAPL0x".to_string(),
             amount: 0.8,
             direction: Direction::Sell,
             price_usdc: 15000.0,
@@ -713,7 +716,7 @@ mod tests {
                 "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             ),
             log_index: 1,
-            symbol: "AAPLs1".to_string(), // Same symbol to test race condition
+            symbol: "AAPL0x".to_string(), // Same symbol to test race condition
             amount: 0.8,
             direction: Direction::Sell,
             price_usdc: 15000.0,
@@ -782,7 +785,7 @@ mod tests {
                 "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             ),
             log_index: 1,
-            symbol: "AAPLs1".to_string(),
+            symbol: "AAPL0x".to_string(),
             amount: 1.5,
             direction: Direction::Sell,
             price_usdc: 150.0,
@@ -819,7 +822,7 @@ mod tests {
                     "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 ),
                 log_index: 1,
-                symbol: "MSFTs1".to_string(),
+                symbol: "MSFT0x".to_string(),
                 amount: 0.3,
                 direction: Direction::Buy,
                 price_usdc: 300.0,
@@ -831,7 +834,7 @@ mod tests {
                     "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                 ),
                 log_index: 2,
-                symbol: "MSFTs1".to_string(),
+                symbol: "MSFT0x".to_string(),
                 amount: 0.4,
                 direction: Direction::Buy,
                 price_usdc: 305.0,
@@ -843,7 +846,7 @@ mod tests {
                     "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
                 ),
                 log_index: 3,
-                symbol: "MSFTs1".to_string(),
+                symbol: "MSFT0x".to_string(),
                 amount: 0.5,
                 direction: Direction::Buy,
                 price_usdc: 310.0,
@@ -898,7 +901,7 @@ mod tests {
                     "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
                 ),
                 log_index: 1,
-                symbol: "AAPLs1".to_string(),
+                symbol: "AAPL0x".to_string(),
                 amount: 0.4, // Below threshold
                 direction: Direction::Sell,
                 price_usdc: 150.0,
@@ -910,7 +913,7 @@ mod tests {
                     "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
                 ),
                 log_index: 2,
-                symbol: "AAPLs1".to_string(),
+                symbol: "AAPL0x".to_string(),
                 amount: 0.8, // Combined: 0.4 + 0.8 = 1.2, triggers execution of 1 share
                 direction: Direction::Sell,
                 price_usdc: 155.0,
@@ -927,7 +930,7 @@ mod tests {
         let execution = result2.unwrap();
 
         // Test audit trail completeness
-        let audit_trail = TradeExecutionLink::get_symbol_audit_trail(&pool, "AAPLs1")
+        let audit_trail = TradeExecutionLink::get_symbol_audit_trail(&pool, "AAPL0x")
             .await
             .unwrap();
 
@@ -966,7 +969,7 @@ mod tests {
                 "0x1010101010101010101010101010101010101010101010101010101010101010"
             ),
             log_index: 1,
-            symbol: "TSLAs1".to_string(),
+            symbol: "TSLA0x".to_string(),
             amount: 1.2,
             direction: Direction::Buy,
             price_usdc: 800.0,
@@ -1005,7 +1008,7 @@ mod tests {
                 "0x2020202020202020202020202020202020202020202020202020202020202020"
             ),
             log_index: 1,
-            symbol: "AAPLs1".to_string(),
+            symbol: "AAPL0x".to_string(),
             amount: 1.5,
             direction: Direction::Buy,
             price_usdc: 150.0,
@@ -1018,7 +1021,7 @@ mod tests {
                 "0x3030303030303030303030303030303030303030303030303030303030303030"
             ),
             log_index: 2,
-            symbol: "MSFTs1".to_string(), // Different symbol
+            symbol: "MSFT0x".to_string(), // Different symbol
             amount: 1.5,
             direction: Direction::Sell,
             price_usdc: 155.0,
