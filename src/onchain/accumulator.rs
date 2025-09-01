@@ -65,9 +65,12 @@ pub async fn process_onchain_trade(
 
     let mut calculator = get_or_create_within_transaction(&mut sql_tx, &base_symbol).await?;
 
+    // Map onchain direction to offsetting execution type
+    // Onchain SELL (gave away stock for USDC) needs Schwab BUY to offset
+    // Onchain BUY (gave away USDC for stock) needs Schwab SELL to offset
     let execution_type = match trade.direction {
-        Direction::Buy => ExecutionType::Long,
-        Direction::Sell => ExecutionType::Short,
+        Direction::Sell => ExecutionType::Long, // Onchain SELL -> Schwab BUY
+        Direction::Buy => ExecutionType::Short, // Onchain BUY -> Schwab SELL
     };
     calculator.add_trade(trade.amount, execution_type);
 
@@ -283,11 +286,12 @@ async fn create_trade_execution_linkages(
     execution_type: ExecutionType,
     execution_shares: u64,
 ) -> Result<(), OnChainError> {
-    // Find all trades for this symbol that match the execution direction
-    // and haven't been fully allocated to previous executions
+    // Find all trades for this symbol that would contribute to this execution type
+    // ExecutionType::Long comes from onchain SELL trades that need Schwab BUY to offset
+    // ExecutionType::Short comes from onchain BUY trades that need Schwab SELL to offset
     let direction_str = match execution_type {
-        ExecutionType::Long => "BUY",
-        ExecutionType::Short => "SELL",
+        ExecutionType::Long => "SELL", // Onchain SELL trades contribute to Long execution type
+        ExecutionType::Short => "BUY", // Onchain BUY trades contribute to Short execution type
     };
 
     let tokenized_symbol = format!("{base_symbol}0x");
@@ -480,9 +484,9 @@ mod tests {
         assert!(result.is_none());
 
         let (calculator, _) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
-        assert!((calculator.accumulated_short - 0.5).abs() < f64::EPSILON);
-        assert!((calculator.net_position - (-0.5)).abs() < f64::EPSILON);
-        assert!((calculator.accumulated_long - 0.0).abs() < f64::EPSILON);
+        assert!((calculator.accumulated_long - 0.5).abs() < f64::EPSILON);
+        assert!((calculator.net_position - 0.5).abs() < f64::EPSILON);
+        assert!((calculator.accumulated_short - 0.0).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
@@ -506,11 +510,11 @@ mod tests {
 
         assert_eq!(execution.symbol, "MSFT");
         assert_eq!(execution.shares, 1);
-        assert_eq!(execution.direction, Direction::Sell);
+        assert_eq!(execution.direction, Direction::Buy); // Schwab BUY to offset onchain SELL
 
         let (calculator, _) = find_by_symbol(&pool, "MSFT").await.unwrap().unwrap();
-        assert!((calculator.accumulated_short - 0.5).abs() < f64::EPSILON);
-        assert!((calculator.net_position - (-1.5)).abs() < f64::EPSILON);
+        assert!((calculator.accumulated_long - 0.5).abs() < f64::EPSILON);
+        assert!((calculator.net_position - 0.5).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
@@ -567,11 +571,11 @@ mod tests {
 
         assert_eq!(execution.symbol, "AAPL");
         assert_eq!(execution.shares, 1);
-        assert_eq!(execution.direction, Direction::Sell);
+        assert_eq!(execution.direction, Direction::Buy); // Schwab BUY to offset onchain SELL
 
         let (calculator, _) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
-        assert!((calculator.accumulated_short - 0.1).abs() < f64::EPSILON);
-        assert!((calculator.net_position - (-1.1)).abs() < f64::EPSILON);
+        assert!((calculator.accumulated_long - 0.1).abs() < f64::EPSILON);
+        assert!((calculator.net_position - 0.1).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
@@ -650,7 +654,7 @@ mod tests {
 
         let execution = process_onchain_trade(&pool, trade).await.unwrap().unwrap();
 
-        assert_eq!(execution.direction, Direction::Sell);
+        assert_eq!(execution.direction, Direction::Buy); // Schwab BUY to offset onchain SELL
         assert_eq!(execution.symbol, "AAPL");
         assert_eq!(execution.shares, 1);
     }
@@ -674,7 +678,7 @@ mod tests {
 
         let execution = process_onchain_trade(&pool, trade).await.unwrap().unwrap();
 
-        assert_eq!(execution.direction, Direction::Buy);
+        assert_eq!(execution.direction, Direction::Sell); // Schwab SELL to offset onchain BUY
         assert_eq!(execution.symbol, "MSFT");
         assert_eq!(execution.shares, 1);
     }
@@ -781,12 +785,12 @@ mod tests {
 
         // Verify execution created for exactly 1 share
         assert_eq!(execution.shares, 1);
-        assert_eq!(execution.direction, Direction::Sell);
+        assert_eq!(execution.direction, Direction::Buy); // Schwab BUY to offset onchain SELL
 
         // Verify accumulator shows correct remaining fractional amount
         let (calculator, _) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
-        assert!((calculator.accumulated_short - 0.1).abs() < f64::EPSILON);
-        assert!((calculator.net_position - (-1.1)).abs() < f64::EPSILON);
+        assert!((calculator.accumulated_long - 0.1).abs() < f64::EPSILON);
+        assert!((calculator.net_position - 0.1).abs() < f64::EPSILON);
 
         // Verify both trades were saved
         let trade_count = OnchainTrade::db_count(&pool).await.unwrap();
@@ -875,9 +879,9 @@ mod tests {
         let (calculator, _) = accumulator_result.unwrap();
         // Total 1.6 shares accumulated, 1.0 executed, should have 0.6 remaining
         assert!(
-            (calculator.accumulated_short - 0.6).abs() < f64::EPSILON,
-            "Expected 0.6 accumulated_short remaining, got {}",
-            calculator.accumulated_short
+            (calculator.accumulated_long - 0.6).abs() < f64::EPSILON,
+            "Expected 0.6 accumulated_long remaining, got {}",
+            calculator.accumulated_long
         );
     }
 
@@ -1110,7 +1114,7 @@ mod tests {
 
         // Verify the remaining 0.2 is still available for future executions
         let (calculator, _) = find_by_symbol(&pool, "TSLA").await.unwrap().unwrap();
-        assert!((calculator.accumulated_long - 0.2).abs() < f64::EPSILON);
+        assert!((calculator.accumulated_short - 0.2).abs() < f64::EPSILON);
     }
 
     #[tokio::test]

@@ -144,33 +144,31 @@ impl OnchainTrade {
         let onchain_output_amount = u256_to_f64(fill.output_amount, output.decimals)?;
         let onchain_output_symbol = cache.get_io_symbol(provider, output).await?;
 
-        let (schwab_ticker, schwab_direction) =
+        let (ticker, onchain_direction) =
             determine_schwab_trade_details(&onchain_input_symbol, &onchain_output_symbol)?;
 
-        if schwab_ticker.is_empty() {
+        if ticker.is_empty() {
             return Ok(None);
         }
 
-        // Use schwab_ticker + "0x" to create consistent tokenized symbol
-        let tokenized_symbol = format!("{schwab_ticker}0x");
+        // Use ticker + "0x" to create consistent tokenized symbol
+        let tokenized_symbol = format!("{ticker}0x");
 
-        // Calculate trade amount based on direction
-        let trade_amount = if schwab_direction == Direction::Buy {
-            onchain_output_amount
+        // Extract tokenized equity amount and USDC amount
+        let (equity_amount, usdc_amount) = if onchain_output_symbol.ends_with("0x") {
+            // Gave away tokenized stock for USDC (onchain sell)
+            (onchain_output_amount, onchain_input_amount)
         } else {
-            onchain_input_amount
+            // Gave away USDC for tokenized stock (onchain buy)
+            (onchain_input_amount, onchain_output_amount)
         };
 
-        if trade_amount == 0.0 {
+        if equity_amount == 0.0 {
             return Ok(None);
         }
 
-        // Calculate price per share in USDC
-        let price_per_share_usdc = if schwab_direction == Direction::Buy {
-            onchain_input_amount / onchain_output_amount
-        } else {
-            onchain_output_amount / onchain_input_amount
-        };
+        // Calculate price per share in USDC (always USDC amount / equity amount)
+        let price_per_share_usdc = usdc_amount / equity_amount;
 
         if price_per_share_usdc.is_nan() || price_per_share_usdc <= 0.0 {
             return Ok(None);
@@ -181,8 +179,8 @@ impl OnchainTrade {
             tx_hash,
             log_index,
             symbol: tokenized_symbol,
-            amount: trade_amount,
-            direction: schwab_direction,
+            amount: equity_amount,
+            direction: onchain_direction,
             price_usdc: price_per_share_usdc,
             created_at: None,
         };
@@ -237,34 +235,33 @@ impl OnchainTrade {
     }
 }
 
-/// Determines Schwab trade direction and ticker based on onchain symbol configuration.
+/// Determines onchain trade direction and ticker based on onchain symbol configuration.
 ///
 /// If the on-chain order has USDC as input and an 0x tokenized stock as
 /// output then it means the order received USDC and gave away an 0x
-/// tokenized stock, i.e. sold, which means that to take the opposite
-/// trade in schwab we need to buy and vice versa.
+/// tokenized stock, i.e. sold the tokenized stock onchain.
 fn determine_schwab_trade_details(
     onchain_input_symbol: &str,
     onchain_output_symbol: &str,
 ) -> Result<(String, Direction), OnChainError> {
-    // USDC input + 0x tokenized stock output = sold tokenized stock = buy on Schwab
+    // USDC input + 0x tokenized stock output = sold tokenized stock onchain
     if onchain_input_symbol == "USDC" && onchain_output_symbol.ends_with("0x") {
         let ticker = extract_ticker_from_0x_symbol(
             onchain_output_symbol,
             onchain_input_symbol,
             onchain_output_symbol,
         )?;
-        return Ok((ticker, Direction::Buy));
+        return Ok((ticker, Direction::Sell));
     }
 
-    // 0x tokenized stock input + USDC output = bought tokenized stock = sell on Schwab
+    // 0x tokenized stock input + USDC output = bought tokenized stock onchain
     if onchain_output_symbol == "USDC" && onchain_input_symbol.ends_with("0x") {
         let ticker = extract_ticker_from_0x_symbol(
             onchain_input_symbol,
             onchain_input_symbol,
             onchain_output_symbol,
         )?;
-        return Ok((ticker, Direction::Sell));
+        return Ok((ticker, Direction::Buy));
     }
 
     Err(TradeValidationError::InvalidSymbolConfiguration(
@@ -444,22 +441,22 @@ mod tests {
     fn test_determine_schwab_trade_details_usdc_to_0x() {
         let result = determine_schwab_trade_details("USDC", "AAPL0x").unwrap();
         assert_eq!(result.0, "AAPL");
-        assert_eq!(result.1, Direction::Buy);
+        assert_eq!(result.1, Direction::Sell); // Onchain sold AAPL0x for USDC
 
         let result = determine_schwab_trade_details("USDC", "TSLA0x").unwrap();
         assert_eq!(result.0, "TSLA");
-        assert_eq!(result.1, Direction::Buy);
+        assert_eq!(result.1, Direction::Sell); // Onchain sold TSLA0x for USDC
     }
 
     #[test]
     fn test_determine_schwab_trade_details_0x_to_usdc() {
         let result = determine_schwab_trade_details("AAPL0x", "USDC").unwrap();
         assert_eq!(result.0, "AAPL");
-        assert_eq!(result.1, Direction::Sell);
+        assert_eq!(result.1, Direction::Buy); // Onchain bought AAPL0x with USDC
 
         let result = determine_schwab_trade_details("TSLA0x", "USDC").unwrap();
         assert_eq!(result.0, "TSLA");
-        assert_eq!(result.1, Direction::Sell);
+        assert_eq!(result.1, Direction::Buy); // Onchain bought TSLA0x with USDC
     }
 
     #[test]
@@ -629,7 +626,7 @@ mod tests {
         // Test with minimal valid 0x symbol
         let result = determine_schwab_trade_details("USDC", "A0x").unwrap();
         assert_eq!(result.0, "A");
-        assert_eq!(result.1, Direction::Buy);
+        assert_eq!(result.1, Direction::Sell); // Onchain sold A0x for USDC
 
         // Test symbol case sensitivity
         let result = determine_schwab_trade_details("usdc", "AAPL0x");
