@@ -85,16 +85,33 @@ calculations and mask API response issues. Instead:
 ## Task 4: Duplicate Event Handling
 
 **Issue**: System fails on duplicate events instead of handling gracefully
+
+**Motivation**: Blockchain events can be redelivered due to WebSocket
+reconnections, chain reorganizations, or replay scenarios. When the same event
+(identified by `tx_hash` and `log_index`) is processed twice, the system crashes
+with a UNIQUE constraint violation instead of gracefully detecting and skipping
+the duplicate. This causes the arbitrage bot to stop processing new trades
+entirely.
+
+**Current Behavior**: Database INSERT fails with "UNIQUE constraint failed:
+onchain_trades.tx_hash, onchain_trades.log_index"
+
+**Impact**: Database constraint violations create error noise and prevent clean
+idempotent processing
+
+**Solution**: Check for duplicate trades before attempting INSERT, log the
+duplicate detection, and return early without processing
+
 **Verification**: UNIQUE constraints on `(tx_hash, log_index)` exist; graceful
 handling needed for event redelivery **Files**: `src/onchain/accumulator.rs`,
 `src/conductor.rs`, `src/cli.rs`
 
-- [ ] Apply changes from stash
-- [ ] Review implementation
-- [ ] Add test coverage for duplicate event scenarios
-- [ ] Run `cargo test -q`
-- [ ] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
-- [ ] Run `pre-commit run -a`
+- [x] Apply changes from stash
+- [x] Review implementation
+- [x] Add test coverage for duplicate event scenarios
+- [x] Run `cargo test -q` (324 tests pass)
+- [x] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
+- [x] Run `pre-commit run -a`
 
 ## Task 5: Stale Execution Cleanup
 

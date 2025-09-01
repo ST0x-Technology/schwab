@@ -351,7 +351,7 @@ async fn process_found_trade<W: Write>(
 
     writeln!(stdout, "🔄 Processing trade with TradeAccumulator...")?;
 
-    let execution = accumulator::add_trade(pool, onchain_trade).await?;
+    let execution = accumulator::process_onchain_trade(pool, onchain_trade).await?;
 
     if let Some(execution) = execution {
         let execution_id = execution
@@ -1712,30 +1712,25 @@ mod tests {
 
         let mut stdout2 = Vec::new();
 
-        // Process the same transaction again (should detect duplicate and error)
+        // Process the same transaction again (should handle duplicate gracefully)
         let result2 =
             process_tx_with_provider(tx_hash, &env, &pool, &mut stdout2, &provider2, &cache2).await;
         assert!(
-            result2.is_err(),
-            "Second process_tx should fail due to duplicate constraint violation"
+            result2.is_ok(),
+            "Second process_tx should succeed with graceful duplicate handling"
         );
-
-        // Verify the error is a UNIQUE constraint violation
-        let error_string = format!("{:?}", result2.unwrap_err());
-        assert!(error_string.contains("UNIQUE constraint failed"));
-        assert!(error_string.contains("onchain_trades.tx_hash"));
 
         // Verify only one trade exists in database
         let count = OnchainTrade::db_count(&pool).await.unwrap();
         assert_eq!(count, 1, "Only one trade should exist in database");
 
-        // Verify stdout shows processing started but didn't complete
+        // Verify stdout shows duplicate was handled gracefully
         let stdout_str2 = String::from_utf8(stdout2).unwrap();
         assert!(stdout_str2.contains("Processing trade with TradeAccumulator"));
-        // Should not contain completion messages since it errored
-        assert!(!stdout_str2.contains("Trade processing completed"));
+        assert!(stdout_str2.contains("Trade accumulated but did not trigger execution yet"));
 
-        // Verify Schwab API was only called once (for the first trade)
+        // Since the duplicate is handled gracefully and doesn't trigger a new execution,
+        // the Schwab API should still only be called once (for the first trade)
         account_mock.assert_hits(1);
         order_mock.assert_hits(1);
     }
