@@ -83,9 +83,15 @@ impl PositionCalculator {
         match execution_type {
             ExecutionType::Long => {
                 self.accumulated_long -= shares_amount;
+                // ExecutionType::Long means we executed a Schwab BUY to offset accumulated short positions
+                // This reduces our net long exposure
+                self.net_position -= shares_amount;
             }
             ExecutionType::Short => {
                 self.accumulated_short -= shares_amount;
+                // ExecutionType::Short means we executed a Schwab SELL to offset accumulated long positions
+                // This reduces our net short exposure (increases net_position)
+                self.net_position += shares_amount;
             }
         }
     }
@@ -190,9 +196,11 @@ mod tests {
         let mut calc = PositionCalculator::with_positions(0.0, 2.5, 3.0);
         calc.reduce_accumulation(ExecutionType::Long, 2);
         assert!((calc.accumulated_long - 0.5).abs() < f64::EPSILON);
+        assert!((calc.net_position - (-2.0)).abs() < f64::EPSILON); // 0.0 - 2.0
 
         calc.reduce_accumulation(ExecutionType::Short, 1);
         assert!((calc.accumulated_short - 2.0).abs() < f64::EPSILON);
+        assert!((calc.net_position - (-1.0)).abs() < f64::EPSILON); // -2.0 + 1.0
     }
 
     #[test]
