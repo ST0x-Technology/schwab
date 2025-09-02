@@ -422,9 +422,9 @@ mod tests {
     use crate::test_utils::setup_test_db;
     use crate::{onchain::EvmEnv, schwab::SchwabAuthEnv};
     use alloy::hex;
-    use alloy::primitives::{IntoLogData, U256, address, fixed_bytes, keccak256};
+    use alloy::primitives::{IntoLogData, U256, address, fixed_bytes};
     use alloy::providers::mock::Asserter;
-    use alloy::sol_types::{SolCall, SolEvent, SolValue};
+    use alloy::sol_types::{SolCall, SolEvent};
     use chrono::{Duration, Utc};
     use clap::CommandFactory;
     use httpmock::MockServer;
@@ -872,9 +872,7 @@ mod tests {
             evm_env: EvmEnv {
                 ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
                 orderbook: address!("0x1234567890123456789012345678901234567890"),
-                order_hash: fixed_bytes!(
-                    "0x0000000000000000000000000000000000000000000000000000000000000000"
-                ),
+                order_owner: address!("0x0000000000000000000000000000000000000000"),
                 deployment_block: 1,
             },
             order_polling_interval: 15,
@@ -893,7 +891,7 @@ mod tests {
     }
 
     struct MockBlockchainData {
-        order_hash: alloy::primitives::B256,
+        order_owner: alloy::primitives::Address,
         receipt_json: serde_json::Value,
         after_clear_log: alloy::rpc::types::Log,
     }
@@ -905,7 +903,7 @@ mod tests {
         bob_output_usdc: u64,      // e.g., 100_000_000 for 100 USDC
     ) -> MockBlockchainData {
         let order = get_test_order();
-        let order_hash = keccak256(order.abi_encode());
+        let order_owner = order.owner;
 
         let clear_event = ClearV2 {
             sender: address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
@@ -974,7 +972,7 @@ mod tests {
         };
 
         MockBlockchainData {
-            order_hash,
+            order_owner,
             receipt_json,
             after_clear_log,
         }
@@ -1554,9 +1552,9 @@ mod tests {
             100_000_000,           // 100 USDC (6 decimals)
         );
 
-        // Update env to have the correct order hash
+        // Update env to have the correct order owner
         let mut env = env;
-        env.evm_env.order_hash = mock_data.order_hash;
+        env.evm_env.order_owner = mock_data.order_owner;
 
         // Set up Schwab API mocks
         let (account_mock, order_mock) = setup_schwab_api_mocks(&server);
@@ -1636,9 +1634,9 @@ mod tests {
             50_000_000,            // 50 USDC (6 decimals)
         );
 
-        // Update env to have the correct order hash
+        // Update env to have the correct order owner
         let mut env = env;
-        env.evm_env.order_hash = mock_data.order_hash;
+        env.evm_env.order_owner = mock_data.order_owner;
 
         // Set up Schwab API mocks for first call
         let account_mock = server.mock(|when, then| {

@@ -1,7 +1,6 @@
-use alloy::primitives::keccak256;
 use alloy::providers::Provider;
 use alloy::rpc::types::{Filter, Log};
-use alloy::sol_types::{SolEvent, SolValue};
+use alloy::sol_types::SolEvent;
 
 use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
 use crate::error::{OnChainError, TradeValidationError};
@@ -35,10 +34,10 @@ impl OnchainTrade {
             ..
         } = clear_config;
 
-        let alice_hash_matches = keccak256(alice_order.abi_encode()) == env.order_hash;
-        let bob_hash_matches = keccak256(bob_order.abi_encode()) == env.order_hash;
+        let alice_owner_matches = alice_order.owner == env.order_owner;
+        let bob_owner_matches = bob_order.owner == env.order_owner;
 
-        if !(alice_hash_matches || bob_hash_matches) {
+        if !(alice_owner_matches || bob_owner_matches) {
             return Ok(None);
         }
 
@@ -73,7 +72,7 @@ impl OnchainTrade {
             bobInput,
         } = after_clear.data().clearStateChange;
 
-        if alice_hash_matches {
+        if alice_owner_matches {
             let input_index = usize::try_from(aliceInputIOIndex)?;
             let output_index = usize::try_from(aliceOutputIOIndex)?;
 
@@ -111,7 +110,7 @@ mod tests {
     use alloy::primitives::{IntoLogData, U256, address, fixed_bytes};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
     use alloy::rpc::types::Log;
-    use alloy::sol_types::{SolCall, SolValue};
+    use alloy::sol_types::SolCall;
     use serde_json::json;
     use std::str::FromStr;
 
@@ -119,7 +118,7 @@ mod tests {
         EvmEnv {
             ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
             orderbook: address!("0x1111111111111111111111111111111111111111"),
-            order_hash: keccak256(get_test_order().abi_encode()),
+            order_owner: get_test_order().owner,
             deployment_block: 1,
         }
     }
@@ -232,8 +231,7 @@ mod tests {
         let order = get_test_order();
         let different_order = {
             let mut order = get_test_order();
-            order.nonce =
-                fixed_bytes!("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+            order.owner = address!("0xffffffffffffffffffffffffffffffffffffffff");
             order
         };
 
@@ -300,14 +298,12 @@ mod tests {
 
         let different_order1 = {
             let mut order = get_test_order();
-            order.nonce =
-                fixed_bytes!("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+            order.owner = address!("0xffffffffffffffffffffffffffffffffffffffff");
             order
         };
         let different_order2 = {
             let mut order = get_test_order();
-            order.nonce =
-                fixed_bytes!("0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd");
+            order.owner = address!("0xdddddddddddddddddddddddddddddddddddddddd");
             order
         };
 

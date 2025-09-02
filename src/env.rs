@@ -88,9 +88,9 @@ pub mod tests {
     use super::*;
     use crate::onchain::EvmEnv;
     use crate::schwab::SchwabAuthEnv;
-    use alloy::primitives::{address, fixed_bytes};
+    use alloy::primitives::address;
 
-    pub fn create_test_env_with_order_hash(order_hash: alloy::primitives::B256) -> Env {
+    pub fn create_test_env_with_order_owner(order_owner: alloy::primitives::Address) -> Env {
         Env {
             database_url: ":memory:".to_string(),
             log_level: LogLevel::Debug,
@@ -105,7 +105,7 @@ pub mod tests {
             evm_env: EvmEnv {
                 ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
                 orderbook: address!("0x1111111111111111111111111111111111111111"),
-                order_hash,
+                order_owner,
                 deployment_block: 1,
             },
             order_polling_interval: 15,
@@ -114,9 +114,7 @@ pub mod tests {
     }
 
     pub fn create_test_env() -> Env {
-        create_test_env_with_order_hash(fixed_bytes!(
-            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        ))
+        create_test_env_with_order_owner(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
     }
 
     #[test]

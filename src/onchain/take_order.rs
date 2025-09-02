@@ -1,7 +1,5 @@
-use alloy::primitives::{B256, keccak256};
 use alloy::providers::Provider;
 use alloy::rpc::types::Log;
-use alloy::sol_types::SolValue;
 
 use crate::bindings::IOrderBookV4::{TakeOrderConfigV3, TakeOrderV2};
 use crate::error::OnChainError;
@@ -10,15 +8,14 @@ use crate::symbol::cache::SymbolCache;
 
 impl OnchainTrade {
     /// Creates OnchainTrade directly from TakeOrderV2 blockchain events
-    pub async fn try_from_take_order_if_target_order<P: Provider>(
+    pub async fn try_from_take_order_if_target_owner<P: Provider>(
         cache: &SymbolCache,
         provider: P,
         event: TakeOrderV2,
         log: Log,
-        target_order_hash: B256,
+        target_order_owner: alloy::primitives::Address,
     ) -> Result<Option<Self>, OnChainError> {
-        let event_order_hash = keccak256(event.config.order.abi_encode());
-        if event_order_hash != target_order_hash {
+        if event.config.order.owner != target_order_owner {
             return Ok(None);
         }
 
@@ -52,7 +49,7 @@ mod tests {
     use crate::test_utils::{get_test_log, get_test_order};
     use alloy::primitives::{U256, address, fixed_bytes};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
-    use alloy::sol_types::{SolCall, SolValue};
+    use alloy::sol_types::SolCall;
     use std::str::FromStr;
 
     fn create_take_order_event_with_order(
@@ -76,10 +73,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_try_from_take_order_if_target_order_match() {
+    async fn test_try_from_take_order_if_target_owner_match() {
         let cache = SymbolCache::default();
         let order = get_test_order();
-        let target_order_hash = keccak256(order.abi_encode());
+        let target_order_owner = order.owner;
 
         let take_event = create_take_order_event_with_order(order);
         let log = get_test_log();
@@ -93,12 +90,12 @@ mod tests {
         ));
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        let result = OnchainTrade::try_from_take_order_if_target_order(
+        let result = OnchainTrade::try_from_take_order_if_target_owner(
             &cache,
             provider,
             take_event,
             log,
-            target_order_hash,
+            target_order_owner,
         )
         .await
         .unwrap();
@@ -114,13 +111,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_try_from_take_order_if_target_order_no_match() {
+    async fn test_try_from_take_order_if_target_owner_no_match() {
         let cache = SymbolCache::default();
         let order = get_test_order();
 
-        // Create a different target hash that won't match
-        let different_target_hash =
-            fixed_bytes!("0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd");
+        // Create a different target owner that won't match
+        let different_target_owner = address!("0xdddddddddddddddddddddddddddddddddddddddd");
 
         let take_event = create_take_order_event_with_order(order);
         let log = get_test_log();
@@ -128,12 +124,12 @@ mod tests {
         let asserter = Asserter::new();
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        let result = OnchainTrade::try_from_take_order_if_target_order(
+        let result = OnchainTrade::try_from_take_order_if_target_owner(
             &cache,
             provider,
             take_event,
             log,
-            different_target_hash,
+            different_target_owner,
         )
         .await
         .unwrap();
@@ -142,10 +138,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_try_from_take_order_if_target_order_different_input_output_indices() {
+    async fn test_try_from_take_order_if_target_owner_different_input_output_indices() {
         let cache = SymbolCache::default();
         let order = get_test_order();
-        let target_order_hash = keccak256(order.abi_encode());
+        let target_order_owner = order.owner;
 
         let take_event = TakeOrderV2 {
             sender: address!("0x1111111111111111111111111111111111111111"),
@@ -174,12 +170,12 @@ mod tests {
         ));
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        let result = OnchainTrade::try_from_take_order_if_target_order(
+        let result = OnchainTrade::try_from_take_order_if_target_owner(
             &cache,
             provider,
             take_event,
             log,
-            target_order_hash,
+            target_order_owner,
         )
         .await
         .unwrap();
@@ -190,10 +186,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_try_from_take_order_if_target_order_with_different_amounts() {
+    async fn test_try_from_take_order_if_target_owner_with_different_amounts() {
         let cache = SymbolCache::default();
         let order = get_test_order();
-        let target_order_hash = keccak256(order.abi_encode());
+        let target_order_owner = order.owner;
 
         let take_event = TakeOrderV2 {
             sender: address!("0x2222222222222222222222222222222222222222"),
@@ -222,12 +218,12 @@ mod tests {
         ));
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        let result = OnchainTrade::try_from_take_order_if_target_order(
+        let result = OnchainTrade::try_from_take_order_if_target_owner(
             &cache,
             provider,
             take_event,
             log,
-            target_order_hash,
+            target_order_owner,
         )
         .await
         .unwrap();
@@ -240,10 +236,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_try_from_take_order_if_target_order_zero_amounts() {
+    async fn test_try_from_take_order_if_target_owner_zero_amounts() {
         let cache = SymbolCache::default();
         let order = get_test_order();
-        let target_order_hash = keccak256(order.abi_encode());
+        let target_order_owner = order.owner;
 
         let take_event = TakeOrderV2 {
             sender: address!("0x3333333333333333333333333333333333333333"),
@@ -272,12 +268,12 @@ mod tests {
         ));
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        let result = OnchainTrade::try_from_take_order_if_target_order(
+        let result = OnchainTrade::try_from_take_order_if_target_owner(
             &cache,
             provider,
             take_event,
             log,
-            target_order_hash,
+            target_order_owner,
         )
         .await;
 
@@ -286,10 +282,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_try_from_take_order_if_target_order_invalid_io_index() {
+    async fn test_try_from_take_order_if_target_owner_invalid_io_index() {
         let cache = SymbolCache::default();
         let order = get_test_order();
-        let target_order_hash = keccak256(order.abi_encode());
+        let target_order_owner = order.owner;
 
         let take_event = TakeOrderV2 {
             sender: address!("0x4444444444444444444444444444444444444444"),
@@ -312,12 +308,12 @@ mod tests {
         let asserter = Asserter::new();
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        let result = OnchainTrade::try_from_take_order_if_target_order(
+        let result = OnchainTrade::try_from_take_order_if_target_owner(
             &cache,
             provider,
             take_event,
             log,
-            target_order_hash,
+            target_order_owner,
         )
         .await;
 

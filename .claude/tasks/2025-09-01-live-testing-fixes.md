@@ -583,7 +583,64 @@ arbitrage flow where onchain SELL trades create short exposure that gets offset
 by Schwab BUY orders, and vice versa. This resolves the "Could not fully
 allocate execution shares" error and ensures proper position tracking.
 
-## Task 13: Investigate Auth "test_auth_code" Issue
+## Task 13: Update Infrastructure to Use Owner Address Filtering
+
+**Issue**: Current onchain infrastructure differs from documented design -
+instead of monitoring a single order hash, we need to monitor multiple orders
+from the same owner address for different tokenized equities
+
+**Current State**:
+
+- System filters events by matching specific `ORDER_HASH` in environment config
+- Only processes events where alice/bob order hash matches configured hash
+- Documentation describes "a Raindex Order" (singular)
+
+**Actual Infrastructure**:
+
+- Multiple orders exist for buying/selling different tokenized equities
+- All orders share the same owner address
+- Need to process events from any order owned by the specified address
+
+**Impact**:
+
+- Current filtering is too restrictive and misses relevant trades
+- System only processes trades from one specific order instead of all orders
+  from the owner
+- Scalability limited - adding new tokenized equities requires code changes
+
+**Solution**: Replace order hash filtering with owner address filtering
+
+**Files**: `src/onchain/mod.rs`, `src/onchain/clear.rs`,
+`src/onchain/take_order.rs`, `src/conductor.rs`, `src/env.rs`, `README.md`,
+`CLAUDE.md`, `.env.example`, `.github/workflows/deploy.yaml`, `.do/app.yaml`
+
+- [x] Update `src/onchain/mod.rs` to replace `order_hash: B256` with
+      `order_owner: Address`
+- [x] Update environment variable from `ORDER_HASH` to `ORDER_OWNER`
+- [x] Update `src/onchain/clear.rs` to filter by owner:
+      `alice_order.owner == env.order_owner || bob_order.owner == env.order_owner`
+- [x] Update `src/onchain/take_order.rs` to filter by owner:
+      `event.config.order.owner == env.order_owner`
+- [x] Update `src/conductor.rs` to pass `order_owner` instead of `order_hash`
+- [x] Update `src/env.rs` test helpers to use owner address
+- [x] Update all test files to use owner address filtering
+- [x] Update `.env.example`, `.github/workflows/deploy.yaml`, `.do/app.yaml`
+      configs
+- [x] Update `README.md` to reflect multiple orders from same owner
+- [x] Update `CLAUDE.md` environment variables documentation
+- [x] Run `cargo test -q` to ensure all tests pass (332/333 pass, 1 unrelated
+      deadlock test fails)
+- [x] Run `cargo clippy --all-targets --all-features -- -D clippy::all`
+- [x] Run `pre-commit run -a`
+
+**Key Benefits**:
+
+- Supports multiple tokenized equities without code changes
+- More flexible and scalable infrastructure
+- Simpler deployment configuration
+- Better matches actual onchain architecture
+
+## Task 14: Investigate Auth "test_auth_code" Issue
 
 **Issue**: During live testing, "test_auth_code" appears in token refresh logs,
 suggesting test data contamination in auth flow
