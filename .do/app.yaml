@@ -56,8 +56,8 @@ services:
       - key: ORDERBOOK
         value: "0xf6fdcb30fd027c73cbacd54e22f02987e3116ebc"
         type: GENERAL
-      - key: ORDER_HASH
-        value: "0xf1696030ef3f39647663ba95d8e9a8a8d55da3e008a7979e8aae34473fe91657"
+      - key: ORDER_OWNER
+        value: "0xD2843D9E7738d46D90CB6Dff8D6C83db58B9c165"
         type: GENERAL
       - key: DEPLOYMENT_BLOCK
         value: "353562229"

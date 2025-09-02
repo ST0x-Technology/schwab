@@ -338,12 +338,12 @@ async fn process_live_event<P: Provider + Clone>(
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to enqueue TakeOrderV2 event: {e}"))?;
 
-            if let Some(trade) = OnchainTrade::try_from_take_order_if_target_order(
+            if let Some(trade) = OnchainTrade::try_from_take_order_if_target_owner(
                 cache,
                 provider,
                 (**take_event).clone(),
                 log,
-                env.evm_env.order_hash,
+                env.evm_env.order_owner,
             )
             .await?
             {
@@ -573,12 +573,12 @@ async fn process_queued_event_atomic<P: Provider + Clone>(
             .await?
         }
         TradeEvent::TakeOrderV2(take_event) => {
-            OnchainTrade::try_from_take_order_if_target_order(
+            OnchainTrade::try_from_take_order_if_target_owner(
                 symbol_cache,
                 &provider,
                 (**take_event).clone(),
                 log,
-                evm_env.order_hash,
+                evm_env.order_owner,
             )
             .await?
         }

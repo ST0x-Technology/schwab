@@ -324,12 +324,12 @@ async fn try_convert_log_to_onchain_trade<P: Provider>(
     }
 
     if let Ok(take_order_event) = log.log_decode::<TakeOrderV2>() {
-        return OnchainTrade::try_from_take_order_if_target_order(
+        return OnchainTrade::try_from_take_order_if_target_owner(
             cache,
             &provider,
             take_order_event.data().clone(),
             log_with_metadata,
-            env.order_hash,
+            env.order_owner,
         )
         .await;
     }
@@ -658,7 +658,7 @@ mod tests {
         let env = EvmEnv {
             ws_rpc_url: "ws://localhost:8545".parse().unwrap(),
             orderbook: alloy::primitives::Address::ZERO,
-            order_hash: alloy::primitives::B256::ZERO,
+            order_owner: alloy::primitives::Address::ZERO,
             deployment_block: 0,
         };
 

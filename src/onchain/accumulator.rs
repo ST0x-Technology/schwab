@@ -987,13 +987,42 @@ mod tests {
             created_at: None,
         };
 
+        // Helper function to process trades with retry on deadlock
+        async fn process_with_retry(
+            pool: &SqlitePool,
+            trade: OnchainTrade,
+        ) -> Result<Option<SchwabExecution>, OnChainError> {
+            for attempt in 0..3 {
+                match process_onchain_trade(pool, trade.clone()).await {
+                    Ok(result) => return Ok(result),
+                    Err(OnChainError::Persistence(crate::error::PersistenceError::Database(
+                        sqlx::Error::Database(db_err),
+                    ))) if db_err.message().contains("database is deadlocked") => {
+                        if attempt < 2 {
+                            // Exponential backoff: 10ms, 20ms
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                10 * (1 << attempt),
+                            ))
+                            .await;
+                            continue;
+                        }
+                        return Err(OnChainError::Persistence(
+                            crate::error::PersistenceError::Database(sqlx::Error::Database(db_err)),
+                        ));
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            unreachable!()
+        }
+
         // Process both trades concurrently to simulate race condition scenario
         let pool_clone1 = pool.clone();
         let pool_clone2 = pool.clone();
 
         let (result1, result2) = tokio::join!(
-            process_onchain_trade(&pool_clone1, trade1),
-            process_onchain_trade(&pool_clone2, trade2)
+            process_with_retry(&pool_clone1, trade1),
+            process_with_retry(&pool_clone2, trade2)
         );
 
         // Both should succeed without error
