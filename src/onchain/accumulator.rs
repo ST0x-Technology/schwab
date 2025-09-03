@@ -77,7 +77,7 @@ pub async fn process_onchain_trade(
 
     info!(
         symbol = %base_symbol,
-        net_position = calculator.net_position,
+        net_position = calculator.net_position(),
         accumulated_long = calculator.accumulated_long,
         accumulated_short = calculator.accumulated_short,
         exposure_bucket = ?exposure_bucket,
@@ -131,11 +131,8 @@ pub async fn find_by_symbol(
         .await?;
 
     Ok(row.map(|row| {
-        let calculator = PositionCalculator::with_positions(
-            row.net_position,
-            row.accumulated_long,
-            row.accumulated_short,
-        );
+        let calculator =
+            PositionCalculator::with_positions(row.accumulated_long, row.accumulated_short);
         (calculator, row.pending_execution_id)
     }))
 }
@@ -187,7 +184,6 @@ async fn get_or_create_within_transaction(
 
     if let Some(row) = row {
         Ok(PositionCalculator::with_positions(
-            row.net_position,
             row.accumulated_long,
             row.accumulated_short,
         ))
@@ -208,22 +204,19 @@ pub async fn save_within_transaction(
         r#"
         INSERT INTO trade_accumulators (
             symbol,
-            net_position,
             accumulated_long,
             accumulated_short,
             pending_execution_id,
             last_updated
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)
+        VALUES (?1, ?2, ?3, ?4, CURRENT_TIMESTAMP)
         ON CONFLICT(symbol) DO UPDATE SET
-            net_position = excluded.net_position,
             accumulated_long = excluded.accumulated_long,
             accumulated_short = excluded.accumulated_short,
             pending_execution_id = COALESCE(excluded.pending_execution_id, pending_execution_id),
             last_updated = CURRENT_TIMESTAMP
         "#,
         symbol,
-        calculator.net_position,
         calculator.accumulated_long,
         calculator.accumulated_short,
         pending_execution_id
@@ -254,7 +247,7 @@ async fn execute_position(
     calculator: &mut PositionCalculator,
     execution_type: AccumulationBucket,
 ) -> Result<Option<SchwabExecution>, OnChainError> {
-    let shares = calculator.calculate_executable_shares(execution_type);
+    let shares = calculator.calculate_executable_shares();
 
     if shares == 0 {
         return Ok(None);
@@ -492,7 +485,7 @@ pub async fn check_all_accumulated_positions(
 ) -> Result<Vec<SchwabExecution>, OnChainError> {
     info!("Checking all accumulated positions for ready executions");
 
-    // Query all symbols with accumulated positions >= 1.0 shares (either long or short)
+    // Query all symbols with net position >= 1.0 shares absolute value
     // and no pending execution
     let ready_symbols = sqlx::query!(
         r#"
@@ -502,9 +495,9 @@ pub async fn check_all_accumulated_positions(
             accumulated_long,
             accumulated_short,
             pending_execution_id
-        FROM trade_accumulators 
+        FROM trade_accumulators_with_net 
         WHERE pending_execution_id IS NULL
-          AND (accumulated_long >= 1.0 OR accumulated_short >= 1.0)
+          AND ABS(net_position) >= 1.0
         ORDER BY last_updated ASC
         "#
     )
@@ -638,7 +631,7 @@ mod tests {
 
         let (calculator, _) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
         assert!((calculator.accumulated_short - 0.5).abs() < f64::EPSILON); // SELL creates short exposure
-        assert!((calculator.net_position - (-0.5)).abs() < f64::EPSILON); // Short position = negative net
+        assert!((calculator.net_position() - (-0.5)).abs() < f64::EPSILON); // Short position = negative net
         assert!((calculator.accumulated_long - 0.0).abs() < f64::EPSILON); // No long exposure
     }
 
@@ -667,7 +660,7 @@ mod tests {
 
         let (calculator, _) = find_by_symbol(&pool, "MSFT").await.unwrap().unwrap();
         assert!((calculator.accumulated_short - 0.5).abs() < f64::EPSILON); // SELL creates short exposure
-        assert!((calculator.net_position - (-0.5)).abs() < f64::EPSILON); // Short position = negative net
+        assert!((calculator.net_position() - (-0.5)).abs() < f64::EPSILON); // Short position = negative net
     }
 
     #[tokio::test]
@@ -728,7 +721,7 @@ mod tests {
 
         let (calculator, _) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
         assert!((calculator.accumulated_short - 0.1).abs() < f64::EPSILON); // Remaining short exposure
-        assert!((calculator.net_position - (-0.1)).abs() < f64::EPSILON); // Net short position
+        assert!((calculator.net_position() - (-0.1)).abs() < f64::EPSILON); // Net short position
     }
 
     #[tokio::test]
@@ -943,7 +936,7 @@ mod tests {
         // Verify accumulator shows correct remaining fractional amount
         let (calculator, _) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
         assert!((calculator.accumulated_short - 0.1).abs() < f64::EPSILON); // SELL creates short exposure
-        assert!((calculator.net_position - (-0.1)).abs() < f64::EPSILON); // Short position = negative net
+        assert!((calculator.net_position() - (-0.1)).abs() < f64::EPSILON); // Short position = negative net
 
         // Verify both trades were saved
         let trade_count = OnchainTrade::db_count(&pool).await.unwrap();
@@ -1664,7 +1657,7 @@ mod tests {
             .unwrap();
 
         // AAPL: Has enough accumulated but already has pending execution (should skip)
-        let aapl_calculator = PositionCalculator::with_positions(1.5, 1.5, 0.0);
+        let aapl_calculator = PositionCalculator::with_positions(1.5, 0.0);
         save_within_transaction(&mut sql_tx, "AAPL", &aapl_calculator, Some(execution_id))
             .await
             .unwrap();

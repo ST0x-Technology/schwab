@@ -42,53 +42,148 @@ maintains backward compatibility.
 
 ## Task 2: Fix Accumulator Triggering Logic (HIGH PRIORITY)
 
-### Problem Summary
+### ✅ COMPLETED
 
-**CRITICAL ISSUE**: The accumulator is triggering offsetting trades incorrectly.
-According to the live testing notes:
+**Problem Summary**
+
+**CRITICAL ISSUE**: The accumulator was triggering offsetting trades
+incorrectly. According to the live testing notes:
 
 > "The offsetting sell was triggered when accumulated long was above 1 instead
 > of net being abs >= 1"
 
-This is a financial logic bug that will cause incorrect trade executions.
+This was a financial logic bug that could cause incorrect trade executions.
 
-### Root Cause Analysis Needed
+### Root Cause Analysis
 
-- [ ] Review accumulator logic in `src/onchain/accumulator.rs`
-- [ ] Find where the triggering condition is implemented
-- [ ] Identify if it's checking `accumulated_long > 1` instead of
+- [x] Review accumulator logic in `src/onchain/accumulator.rs`
+- [x] Find where the triggering condition is implemented
+- [x] Identify if it's checking `accumulated_long > 1` instead of
       `abs(net_position) >= 1`
-- [ ] Understand why this logic is wrong
+- [x] Understand why this logic was wrong
+
+**Root Cause Found**: The `determine_execution_type()` method in
+`src/onchain/position_calculator.rs` was incorrectly checking individual
+accumulated buckets (`accumulated_long >= 1` OR `accumulated_short >= 1`)
+instead of the net position absolute value.
 
 ### Implementation Checklist
 
-- [ ] Locate the incorrect triggering condition in accumulator code
-- [ ] Fix the condition to use `abs(net_position) >= 1`
-- [ ] Add test coverage for the correct behavior
-- [ ] Verify the fix with unit tests
-- [ ] Document the change
+- [x] Locate the incorrect triggering condition in accumulator code
+- [x] Fix the condition to use `abs(net_position) >= 1`
+- [x] Add comprehensive test coverage for the correct behavior
+- [x] Verify the fix with unit tests (all 337 tests pass)
+- [x] Document the change
 
-### Why This Is Critical
+### Implementation Summary
 
-This bug affects what offsetting trades get placed, which directly impacts
-financial accuracy. Must be fixed before re-running the bot in production.
+**Key Changes Made**:
 
-## Task 3: Complete Testing & Deployment
+1. **Updated `determine_execution_type()` method** in
+   `src/onchain/position_calculator.rs`:
+   - Replaced bucket-based logic with net position logic
+   - Now triggers only when `abs(net_position) >= 1.0`
+   - Returns correct execution type based on net position sign
+
+2. **Updated `calculate_executable_shares()` method**:
+   - Removed unused `execution_type` parameter
+   - Now calculates executable shares based on `abs(net_position)`
+
+3. **Updated SQL query in `check_all_accumulated_positions()`**:
+   - Changed from `(accumulated_long >= 1.0 OR accumulated_short >= 1.0)`
+   - To `ABS(net_position) >= 1.0`
+
+4. **Added comprehensive test coverage**:
+   - Test net position below threshold (no trigger)
+   - Test negative net position (triggers BUY)
+   - Test positive net position (triggers SELL)
+   - Test multiple shares execution
+   - Test exact threshold boundaries
+   - Test zero net position (balanced, no trigger)
+
+5. **Removed obsolete methods**:
+   - `should_execute_long()` and `should_execute_short()` (no longer needed)
+   - `get_accumulated_amount()` (no longer needed with net position logic)
+
+### Why This Fix Is Critical
+
+This fix ensures trades only trigger when there's a meaningful net position
+imbalance (>= 1 share), preventing unnecessary offsetting trades when positions
+are nearly balanced. For example:
+
+- **Before**: If `accumulated_long = 1.5` and `accumulated_short = 0.8`, would
+  trigger a SELL execution even though net position is only 0.7
+- **After**: Same scenario would NOT trigger because `abs(0.7) < 1.0`
+
+The system now correctly waits until the net imbalance reaches at least 1 full
+share before executing offsetting trades, which is the correct financial logic
+for this arbitrage bot.
+
+## Task 3: Complete live testing
 
 ### Problem Summary
 
 The unified event processing system has been implemented but needs final
 validation in a live environment.
 
+### Current State (Before Re-run)
+
+**Database State:**
+
+- 18 trades in `onchain_trades` table (9 SELLs, 9 BUYs)
+- 4 Schwab executions in `schwab_executions` table (2 BUYs, 2 SELLs)
+- All executions have status 'FILLED'
+
+**Accumulator State (GME):**
+
+- accumulated_long: 2.92326375878456
+- accumulated_short: 2.6750843237391
+- net_position: 0.248179435045452 (long - short)
+- pending_execution_id: NULL (no pending execution)
+
+### Missing Trades to Backfill
+
+5 BUY trades missing from database (trades 19-23), total amount: 2.252347404
+GME0x:
+
+1. **Trade 19**: `0x851...265c9` BUY 0.446657099090545675 GME0x
+2. **Trade 20**: `0xf48...6cd29` BUY 0.452396994426829503 GME0x
+3. **Trade 21**: `0x483...8261d` BUY 0.450241443680909519 GME0x
+4. **Trade 22**: `0x966...c4d6c` BUY 0.447145937960352371 GME0x
+5. **Trade 23**: `0x01a...c9182` BUY 0.455905963200924442 GME0x
+
+### Expected Schwab Executions
+
+After processing the 5 missing BUY trades:
+
+- **New accumulated_long**: 5.175610978885044 (current + 2.252347404)
+- **New net_position**: 2.500526654530304 (5.1756 - 2.6751)
+- **Triggering condition**: `abs(net_position) >= 1.0` → `2.5005 >= 1.0` ✓
+- **Expected execution**: 2-share SELL order on Schwab
+- **Post-execution net**: 0.500526654530304 (2.5005 - 2.0)
+
+### Final Expected State
+
+**Database State:**
+
+- 23 trades in `onchain_trades` table
+- 5 Schwab executions in `schwab_executions` table (2 BUYs, 3 SELLs)
+
+**Final Accumulator State (GME):**
+
+- accumulated_long: 3.175610978885044 (after 2-share reduction)
+- accumulated_short: 2.6750843237391 (unchanged)
+- net_position: 0.500526654530304
+- pending_execution_id: NULL
+
 ### Implementation Checklist
 
-- [ ] Run backfill to reprocess trades 19-22 that were cleaned up in the
-      database
+- [ ] Run backfill to reprocess the 5 missing BUY trades
 - [ ] Monitor live system logs for:
   - [ ] No UNIQUE constraint violations
   - [ ] Trades 1-18 detected as duplicates and skipped gracefully
-  - [ ] Trades 19-22 processed successfully when rebackfilled
-  - [ ] Appropriate Schwab executions triggered for trades 19-22
+  - [ ] Trades 19-23 processed successfully when rebackfilled
+  - [ ] Exactly 1 new Schwab SELL execution for 2 shares
 - [ ] Verify final database state matches expectations
 - [ ] Document results
 
@@ -96,30 +191,11 @@ validation in a live environment.
 
 - All historical events process before live events
 - No duplicate insert errors in logs
-- Trades 19-22 trigger 1-2 Schwab executions as expected
-- Accumulator shows balanced state
+- Exactly 1 new SELL execution for 2 shares triggered
+- Final net position: ~0.50 (below 1.0 threshold)
 - System continues processing live events normally
 
-## Task 4: Investigate Backfill Regression
-
-### Problem Summary
-
-From live testing notes:
-
-> "There were 10 backfilled trades for some reason (strange regression as it
-> used to work previously)"
-
-This suggests the backfill logic may have been affected by recent changes.
-
-### Investigation Checklist
-
-- [ ] Review recent changes to backfill logic
-- [ ] Check if event processing changes affected backfill behavior
-- [ ] Verify backfill cutoff logic is working correctly
-- [ ] Ensure backfill doesn't re-process already processed events
-- [ ] Document findings and fix if needed
-
-## Task 5: Fix Auth "test_auth_code" Issue (LOW PRIORITY)
+## Task 4: Fix Auth "test_auth_code" Issue (LOW PRIORITY)
 
 ### Problem Summary
 
@@ -144,16 +220,16 @@ functionality, but should be addressed for production cleanliness.
 
 ## Implementation Order
 
-1. **Task 1**: Complete BackgroundTasksBuilder refactoring (foundation work)
-2. **Task 2**: Fix accumulator triggering logic (CRITICAL - must be done before
-   running bot)
-3. **Task 3**: Complete testing and deployment (validate the fixes)
-4. **Task 4**: Investigate backfill regression (system reliability)
-5. **Task 5**: Fix auth issue (cleanup, low priority)
+1. **Task 1**: Complete BackgroundTasksBuilder refactoring ✅ COMPLETED
+2. **Task 2**: Fix accumulator triggering logic ✅ COMPLETED
+3. **Task 3**: Complete live testing (validate the fixes)
+4. **Task 4**: Fix auth issue (cleanup, low priority)
 
 ## Notes
 
-- Task 2 is blocking for production deployment
-- All other tasks can be done after Task 2 is complete
-- The unified event processing work from 2025-09-02 appears to be largely
-  complete and working (331 tests passing)
+- Tasks 1 and 2 are complete and blocking issues resolved
+- Task 3 is ready for execution with detailed expectations documented
+- Task 4 (backfill regression) was removed after analysis showed no regression -
+  all trades in database match expected onchain trades perfectly
+- The unified event processing work from 2025-09-02 is complete and working (331
+  tests passing)
