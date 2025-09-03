@@ -192,7 +192,6 @@ pub(crate) async fn enqueue_buffer(
 }
 
 /// Gets count of unprocessed events in the queue - test utility function
-#[cfg(test)]
 pub(crate) async fn count_unprocessed(pool: &SqlitePool) -> Result<i64, EventQueueError> {
     let row = sqlx::query!("SELECT COUNT(*) as count FROM event_queue WHERE processed = 0")
         .fetch_one(pool)
