@@ -75,90 +75,52 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
 }
 
 async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
-    let run_bot = || async {
-        debug!("Validating Schwab tokens...");
-        match schwab::tokens::SchwabTokens::refresh_if_needed(&pool, &env.schwab_auth).await {
-            Err(SchwabError::RefreshTokenExpired) => {
-                warn!("Refresh token expired, waiting for manual authentication via API");
-                return Err(anyhow::anyhow!("RefreshTokenExpired"));
-            }
-            Err(e) => return Err(anyhow::anyhow!("Token validation failed: {}", e)),
-            Ok(_) => {
-                info!("Token validation successful");
-            }
-        }
-
-        let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
-        let provider = ProviderBuilder::new().connect_ws(ws).await?;
-        let cache = SymbolCache::default();
-        let orderbook = IOrderBookV4Instance::new(env.evm_env.orderbook, &provider);
-
-        schwab::tokens::SchwabTokens::spawn_automatic_token_refresh(
-            pool.clone(),
-            env.schwab_auth.clone(),
-        );
-
-        let mut clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
-        let mut take_stream = orderbook.TakeOrderV2_filter().watch().await?.into_stream();
-
-        let cutoff_block =
-            get_cutoff_block(&mut clear_stream, &mut take_stream, &provider, &pool).await?;
-
-        onchain::backfill::backfill_events(&pool, &provider, &env.evm_env, cutoff_block - 1)
-            .await?;
-
-        conductor::process_queue(&env, &pool, &cache, &provider).await?;
-
-        // Spawn the queue processor service
-        let queue_processor_handle = {
-            let env_clone = env.clone();
-            let pool_clone = pool.clone();
-            let cache_clone = cache.clone();
-            let provider_clone = provider.clone();
-
-            tokio::spawn(async move {
-                if let Err(e) = conductor::run_queue_processor(
-                    &env_clone,
-                    &pool_clone,
-                    &cache_clone,
-                    provider_clone,
-                )
-                .await
+    let run_bot = {
+        let env = env.clone();
+        let pool = pool.clone();
+        move || {
+            let env = env.clone();
+            let pool = pool.clone();
+            async move {
+                debug!("Validating Schwab tokens...");
+                match schwab::tokens::SchwabTokens::refresh_if_needed(&pool, &env.schwab_auth).await
                 {
-                    error!("Queue processor service failed: {e}");
-                }
-            })
-        };
-
-        // Spawn the live event listeners
-        let live_handle = tokio::spawn({
-            let env_clone = env.clone();
-            let pool_clone = pool.clone();
-
-            async move { conductor::run_live(env_clone, pool_clone, clear_stream, take_stream).await }
-        });
-
-        // Wait for services - if any terminates, we restart the whole bot
-        tokio::select! {
-            _ = queue_processor_handle => {
-                error!("Queue processor service terminated unexpectedly");
-                Err(anyhow::anyhow!("Queue processor terminated"))
-            }
-            result = live_handle => {
-                match result {
-                    Ok(Ok(())) => {
-                        error!("Live event listener terminated unexpectedly");
-                        Err(anyhow::anyhow!("Live event listener terminated"))
+                    Err(SchwabError::RefreshTokenExpired) => {
+                        warn!("Refresh token expired, waiting for manual authentication via API");
+                        return Err(anyhow::anyhow!("RefreshTokenExpired"));
                     }
-                    Ok(Err(e)) => {
-                        error!("Live event listener failed: {e}");
-                        Err(e)
-                    }
-                    Err(e) => {
-                        error!("Live event listener task panicked: {e}");
-                        Err(anyhow::anyhow!("Live event listener panicked: {e}"))
+                    Err(e) => return Err(anyhow::anyhow!("Token validation failed: {}", e)),
+                    Ok(_) => {
+                        info!("Token validation successful");
                     }
                 }
+
+                let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
+                let provider = ProviderBuilder::new().connect_ws(ws).await?;
+                let cache = SymbolCache::default();
+                let orderbook = IOrderBookV4Instance::new(env.evm_env.orderbook, &provider);
+
+                schwab::tokens::SchwabTokens::spawn_automatic_token_refresh(
+                    pool.clone(),
+                    env.schwab_auth.clone(),
+                );
+
+                let mut clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
+                let mut take_stream = orderbook.TakeOrderV2_filter().watch().await?.into_stream();
+
+                let cutoff_block =
+                    get_cutoff_block(&mut clear_stream, &mut take_stream, &provider, &pool).await?;
+
+                onchain::backfill::backfill_events(
+                    &pool,
+                    &provider,
+                    &env.evm_env,
+                    cutoff_block - 1,
+                )
+                .await?;
+
+                // Start all services through unified background tasks management
+                conductor::run_live(env, pool, cache, provider, clear_stream, take_stream).await
             }
         }
     };

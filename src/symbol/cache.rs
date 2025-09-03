@@ -12,7 +12,10 @@ pub struct SymbolCache {
 
 impl Clone for SymbolCache {
     fn clone(&self) -> Self {
-        let map = self.map.read().expect("Symbol cache lock poisoned").clone();
+        let map = match self.map.read() {
+            Ok(guard) => guard.clone(),
+            Err(poison) => poison.into_inner().clone(),
+        };
         Self {
             map: RwLock::new(map),
         }

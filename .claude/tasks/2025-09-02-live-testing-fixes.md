@@ -7,15 +7,20 @@
 During live testing, we identified critical architectural and data issues:
 
 **Logic Issues:**
+
 - Multiple code paths for processing trades (live vs queued vs backfilled)
-- `process_queued_event_atomic` tries to save trades directly, causing UNIQUE constraint violations
+- `process_queued_event_atomic` tries to save trades directly, causing UNIQUE
+  constraint violations
 - Inconsistent duplicate handling between conductor and accumulator
 - System "knows" where trades came from instead of treating them uniformly
 
 **Data Issues Caused:**
+
 - 18 unprocessed events in queue that are duplicates of already-processed trades
-- Trades 19-22 (at 15:29:50) exist in `onchain_trades` but didn't trigger Schwab executions
-- Trade 23 (at 15:31:04) processed live and incorrectly consumed positions from trades 16-19
+- Trades 19-22 (at 15:29:50) exist in `onchain_trades` but didn't trigger Schwab
+  executions
+- Trade 23 (at 15:31:04) processed live and incorrectly consumed positions from
+  trades 16-19
 - Error spam from duplicate constraint violations during backfill
 
 ### Implementation Checklist
@@ -25,7 +30,7 @@ During live testing, we identified critical architectural and data issues:
 - [x] Simplify live event handler to only enqueue
 - [x] Create dedicated queue processor service
 - [x] Update main lib.rs to spawn queue processor
-- [x] Delete problematic functions - COMPLETED 
+- [x] Delete problematic functions - COMPLETED
 - [x] Add comprehensive test coverage - COMPLETED (tests updated and passing)
 - [x] Execute database cleanup - COMPLETED
 - [x] Test the complete flow - COMPLETED (all integration tests passing)
@@ -35,15 +40,18 @@ During live testing, we identified critical architectural and data issues:
 ### Design Principle
 
 All trades flow through a single processing pipeline:
+
 ```
 Events (Live/Backfill) → Event Queue → Single Processor → Accumulator → Schwab
 ```
 
-The system processes trades like a fold/scan operation over an ordered event stream.
+The system processes trades like a fold/scan operation over an ordered event
+stream.
 
 ### Implementation
 
-- [x] Create `process_next_queued_event` function in `src/conductor.rs` - COMPLETED
+- [x] Create `process_next_queued_event` function in `src/conductor.rs` -
+      COMPLETED
 
 ```rust
 pub(crate) async fn process_next_queued_event<P: Provider + Clone>(
@@ -140,7 +148,8 @@ async fn mark_event_processed(pool: &SqlitePool, event_id: i64) -> Result<(), Er
 
 ### Replace process_queue Function
 
-- [x] Update `process_queue` in `src/conductor.rs` to use unified processor - COMPLETED
+- [x] Update `process_queue` in `src/conductor.rs` to use unified processor -
+      COMPLETED
 
 ```rust
 pub(crate) async fn process_queue<P: Provider + Clone>(
@@ -332,12 +341,16 @@ tokio::select! {
 ### Functions to Delete
 
 - [x] Delete `process_queued_event_atomic` from `src/conductor.rs` - COMPLETED
-- [x] Delete `process_queued_event_with_retry` from `src/conductor.rs` - COMPLETED  
-- [x] Delete `reprocess_unprocessed_events` from `src/conductor.rs` - COMPLETED (function didn't exist)
-- [x] Delete obsolete test `test_process_queued_event_atomic_missing_id` - COMPLETED
+- [x] Delete `process_queued_event_with_retry` from `src/conductor.rs` -
+      COMPLETED
+- [x] Delete `reprocess_unprocessed_events` from `src/conductor.rs` - COMPLETED
+      (function didn't exist)
+- [x] Delete obsolete test `test_process_queued_event_atomic_missing_id` -
+      COMPLETED
 - [x] Remove unused imports and parameters - COMPLETED
 
-These functions caused duplicate insert attempts and have been replaced by the unified processor.
+These functions caused duplicate insert attempts and have been replaced by the
+unified processor.
 
 ## Task 7: Add Test Coverage
 
@@ -471,8 +484,10 @@ WHERE symbol = 'GME';
 ```
 
 **Cleanup Results:**
+
 - Removed trades 19-23 (so they can be reprocessed correctly on next backfill)
-- Removed execution 5 and its links (incorrect execution that consumed wrong positions)  
+- Removed execution 5 and its links (incorrect execution that consumed wrong
+  positions)
 - Cleared 18 duplicate events from queue
 - Reset accumulator to correct state after trades 1-18
 
@@ -508,7 +523,7 @@ SELECT * FROM trade_accumulators;
 - [x] Run integration tests - COMPLETED (all tests passing)
 - [ ] Monitor live system logs for:
   - [ ] No UNIQUE constraint violations
-  - [ ] Trades 1-18 detected as duplicates and skipped gracefully  
+  - [ ] Trades 1-18 detected as duplicates and skipped gracefully
   - [ ] Trades 19-22 processed successfully when rebackfilled
   - [ ] Appropriate Schwab executions triggered for trades 19-22
 - [ ] Verify final database state matches expectations
@@ -523,13 +538,20 @@ SELECT * FROM trade_accumulators;
 
 ## Key Architectural Improvements
 
-1. **True Microservices Architecture**: Separate services for event ingestion vs processing
-2. **Single Processing Path**: All events (live and backfilled) flow through identical pipeline
-3. **Complete Separation of Concerns**: Event ingestion only enqueues, queue processor only processes
-4. **Natural Backpressure**: If processing is slow, events queue up without blocking ingestion
-5. **Service Independence**: Queue processor can be restarted without affecting event ingestion
-6. **Clean Event Flow**: Events (Live/Backfill) → Queue → Processor Service → Accumulator → Schwab
-7. **Maintained Ordering**: Historical events complete before live events start processing
+1. **True Microservices Architecture**: Separate services for event ingestion vs
+   processing
+2. **Single Processing Path**: All events (live and backfilled) flow through
+   identical pipeline
+3. **Complete Separation of Concerns**: Event ingestion only enqueues, queue
+   processor only processes
+4. **Natural Backpressure**: If processing is slow, events queue up without
+   blocking ingestion
+5. **Service Independence**: Queue processor can be restarted without affecting
+   event ingestion
+6. **Clean Event Flow**: Events (Live/Backfill) → Queue → Processor Service →
+   Accumulator → Schwab
+7. **Maintained Ordering**: Historical events complete before live events start
+   processing
 8. **Proper Duplicate Handling**: Only accumulator checks/handles duplicates
 9. **Resilient Architecture**: Each service can fail/restart independently
 10. **Comprehensive Testing**: Unit and integration tests for all scenarios
@@ -539,27 +561,36 @@ SELECT * FROM trade_accumulators;
 ### ✅ COMPLETED TASKS
 
 **Architectural Fixes:**
+
 - ✅ Implemented unified event processor (`process_next_queued_event`)
-- ✅ Created dedicated queue processor service (`run_queue_processor`) 
+- ✅ Created dedicated queue processor service (`run_queue_processor`)
 - ✅ Simplified live event handler to only enqueue events
 - ✅ Updated main loop to spawn separate queue processor service
 - ✅ Removed problematic functions that caused UNIQUE constraint violations
 
 **Code Quality:**
+
 - ✅ Deleted `process_queued_event_atomic` and `process_queued_event_with_retry`
 - ✅ Removed unused imports and parameters
 - ✅ Updated all tests and confirmed they pass (331 tests total)
+- ✅ **CRITICAL FIX**: Fixed silent failure handling in event processing
+- ✅ **CRITICAL FIX**: Events only marked processed after successful handling
+- ✅ **CRITICAL FIX**: Added proper error logging (ERROR level for failures)
+- ✅ **CRITICAL FIX**: Distinguished filtered vs failed TakeOrderV2 events
 
 **Database Cleanup:**
+
 - ✅ Removed trades 19-23 (will be reprocessed correctly on next backfill)
 - ✅ Removed incorrect execution #5 and its links
-- ✅ Cleared 18 duplicate events from queue  
+- ✅ Cleared 18 duplicate events from queue
 - ✅ Reset accumulator to correct state after trades 1-18
 
 ### 🔄 READY FOR TESTING
 
 The system is now ready to:
-1. **Reprocess trades 19-22**: Next backfill will find and properly process these trades
+
+1. **Reprocess trades 19-22**: Next backfill will find and properly process
+   these trades
 2. **Handle duplicates gracefully**: No more UNIQUE constraint violations
 3. **Process events in order**: Historical events complete before live events
 4. **Trigger proper executions**: Trades 19-22 will get their Schwab executions
@@ -571,10 +602,161 @@ The system is now ready to:
 3. Verify Schwab executions are triggered correctly
 4. Confirm no duplicate constraint violations in logs
 
+## Task 10: Unify Queue Processing and Consolidate Background Services
+
+### Problems Identified
+
+1. **Dual Queue Processing Flow**: We have `process_queue` (startup) and
+   `run_queue_processor` (continuous), defeating the purpose of unified
+   processing
+
+2. **Scattered Background Services**: Services are spawned in different places
+   making it hard to track:
+   - `BackgroundTasks` in conductor.rs manages 4 services
+   - Queue processor spawned separately in lib.rs
+   - No unified way to manage all background services
+
+### Solution: Complete Service Consolidation
+
+Create a truly unified architecture where:
+
+- ALL background services are managed through `BackgroundTasks`
+- ONE queue processor handles all events (no separate startup processing)
+- Clean separation between initialization and service management
+
+### Implementation Plan
+
+#### Step 1: Expand BackgroundTasks to Include Queue Processor ✅ COMPLETED
+
+- [x] Add queue processor as a field in `BackgroundTasks` struct
+- [x] Update `BackgroundTasks::spawn` signature to accept `SymbolCache` and
+      `Provider`
+- [x] Move queue processor spawning into `BackgroundTasks`
+- [x] Update `wait_for_completion` to include queue processor
+
+#### Step 2: Remove Dual Queue Processing ✅ COMPLETED
+
+- [x] Delete `process_queue` function entirely from `src/conductor.rs`
+- [x] Delete helper function `process_all_queued_events` (was already removed)
+- [x] Keep only `run_queue_processor` as the single processing service
+- [x] Add startup logging to `run_queue_processor` about unprocessed event count
+
+#### Step 3: Refactor lib.rs Service Management ✅ COMPLETED
+
+- [x] Remove separate queue processor spawning
+- [x] Remove `process_queue` call after backfilling
+- [x] Pass all required dependencies to `BackgroundTasks::spawn`
+- [x] Use `run_live` to manage all background tasks through conductor
+
+#### Step 4: Improve run_live Function ✅ COMPLETED
+
+- [x] Updated `run_live` to accept cache and provider parameters
+- [x] Have it spawn ALL background services via `BackgroundTasks`
+- [x] Simplified the service management architecture
+- [x] Better error handling with proper typed errors (removed anyhow)
+
+### New Architecture
+
+```rust
+// In conductor.rs
+pub(crate) struct BackgroundTasks {
+    pub(crate) token_refresher: JoinHandle<()>,
+    pub(crate) order_poller: JoinHandle<()>, 
+    pub(crate) event_receiver: JoinHandle<()>,
+    pub(crate) position_checker: JoinHandle<()>,
+    pub(crate) queue_processor: JoinHandle<()>,  // NEW: unified with other services
+}
+
+impl BackgroundTasks {
+    pub(crate) fn spawn<P: Provider + Clone>(
+        env: &Env,
+        pool: &SqlitePool,
+        cache: &SymbolCache,
+        provider: P,
+        event_sender: UnboundedSender<(TradeEvent, Log)>,
+        shutdown_rx: &watch::Receiver<bool>,
+        clear_stream: impl Stream<...>,
+        take_stream: impl Stream<...>,
+    ) -> Self {
+        // Spawn ALL services in one place
+    }
+}
+
+// In lib.rs - much simpler
+async fn run(env: Env, pool: SqlitePool) -> Result<()> {
+    // ... setup ...
+    
+    // Backfill historical events
+    backfill_events(...).await?;
+    
+    // Start ALL services (including queue processor)
+    conductor::run_services(env, pool, clear_stream, take_stream).await
+}
+```
+
+### Benefits
+
+1. **Single source of truth**: All background services in `BackgroundTasks`
+2. **Unified processing**: One queue processor for all events
+3. **Better lifecycle management**: All services start/stop together
+4. **Clearer architecture**: Easy to see what services are running
+5. **Simpler startup**: No special handling for "historical" vs "live" events
+
+### Implementation Checklist ✅ ALL COMPLETED
+
+- [x] Expand `BackgroundTasks` struct with queue_processor field
+- [x] Update `BackgroundTasks::spawn` to include queue processor
+- [x] Delete `process_queue` and `process_all_queued_events` functions
+- [x] Update `run_queue_processor` with startup logging
+- [x] Simplify lib.rs to use unified service management
+- [x] Update tests to reflect new architecture
+- [x] Improve error handling (replaced anyhow with proper typed errors)
+- [x] Update this planning document after implementation
+
+## ✅ TASK 10 IMPLEMENTATION SUMMARY
+
+Successfully unified the queue processing and consolidated all background
+services into a clean, single-responsibility architecture:
+
+**Key Changes Made:**
+
+1. **Unified BackgroundTasks**: Added queue processor to `BackgroundTasks`
+   struct, making it the single place where all services are managed
+2. **Eliminated Dual Processing**: Removed `process_queue` function entirely -
+   now only `run_queue_processor` handles all events uniformly
+3. **Simplified Service Management**: Updated `run_live` to pass all
+   dependencies to `BackgroundTasks::spawn`, eliminating scattered service
+   spawning
+4. **Proper Error Handling**: Replaced `anyhow` with typed
+   `EventProcessingError` throughout conductor.rs for better error propagation
+5. **Enhanced Startup Logging**: Added unprocessed event count logging to queue
+   processor for better observability
+
+**Architecture Improvements:**
+
+- **Single Source of Truth**: All background services now managed through one
+  interface
+- **TRUE Unified Processing**: Every event (historical and live) processed
+  identically
+- **Cleaner Lifecycle Management**: Services start/stop together, easier
+  debugging
+- **Better Type Safety**: Proper error types instead of generic anyhow errors
+- **Maintainable Code**: No more duplicate queue processing functions to keep in
+  sync
+
+**Test Results**: All 331 tests passing ✅
+
+The system now has a clean, unified architecture where the queue processor is
+properly integrated with other background services, eliminating the
+architectural inconsistencies that were causing bugs.
+
 ## Notes
 
-- The accumulator already has proper duplicate checking via `Trade::exists_in_db()`
+- The accumulator already has proper duplicate checking via
+  `Trade::exists_in_db()`
 - The event queue uses INSERT OR IGNORE to prevent duplicate entries
 - Symbol locks ensure sequential processing per symbol
-- This architecture treats all trades uniformly regardless of origin (live/backfill/manual)
-- Historical-before-live ordering is maintained by the existing flow in `src/lib.rs`
+- This architecture treats all trades uniformly regardless of origin
+  (live/backfill/manual)
+- Historical-before-live ordering is maintained by the existing flow in
+  `src/lib.rs`

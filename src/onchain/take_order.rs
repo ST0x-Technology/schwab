@@ -116,7 +116,7 @@ mod tests {
         let order = get_test_order();
 
         // Create a different target owner that won't match
-        let different_target_owner = address!("0xdddddddddddddddddddddddddddddddddddddddd");
+        let different_target_owner = address!("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
 
         let take_event = create_take_order_event_with_order(order);
         let log = get_test_log();

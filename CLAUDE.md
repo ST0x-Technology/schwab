@@ -896,6 +896,57 @@ fn process_data(data: Option<&str>) -> Result<String, Error> {
 }
 ```
 
+**Use let-else pattern for guard clauses:**
+
+The let-else pattern (available since Rust 1.65) is excellent for reducing
+nesting when you need to extract a value or return early:
+
+Instead of
+
+```rust
+fn process_event(event: &QueuedEvent) -> Result<Trade, Error> {
+    if let Some(trade_data) = convert_event_to_trade(event) {
+        if trade_data.is_valid() {
+            if let Some(symbol) = trade_data.extract_symbol() {
+                Ok(Trade::new(symbol, trade_data))
+            } else {
+                Err(Error::NoSymbol)
+            }
+        } else {
+            Err(Error::InvalidTrade)
+        }
+    } else {
+        Err(Error::ConversionFailed)
+    }
+}
+```
+
+Write
+
+```rust
+fn process_event(event: &QueuedEvent) -> Result<Trade, Error> {
+    let Some(trade_data) = convert_event_to_trade(event) else {
+        return Err(Error::ConversionFailed);
+    };
+    
+    if !trade_data.is_valid() {
+        return Err(Error::InvalidTrade);
+    }
+    
+    let Some(symbol) = trade_data.extract_symbol() else {
+        return Err(Error::NoSymbol);
+    };
+    
+    Ok(Trade::new(symbol, trade_data))
+}
+```
+
+This pattern is particularly useful for:
+
+- Extracting required values from Options
+- Handling pattern matching that should cause early returns
+- Reducing rightward drift in functions with multiple validation steps
+
 **Extract functions for complex logic:**
 
 Instead of

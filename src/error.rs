@@ -78,10 +78,16 @@ pub(crate) enum EventQueueError {
 /// Event processing errors for live event handling.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum EventProcessingError {
-    #[error("Failed to enqueue ClearV2 event: {0}")]
-    EnqueueClearV2(#[from] EventQueueError),
+    #[error("Event queue error: {0}")]
+    Queue(#[from] EventQueueError),
     #[error("Failed to enqueue TakeOrderV2 event: {0}")]
     EnqueueTakeOrderV2(#[source] EventQueueError),
+    #[error("Failed to process trade through accumulator: {0}")]
+    AccumulatorProcessing(String),
+    #[error("Onchain trade processing error: {0}")]
+    OnChain(#[from] OnChainError),
+    #[error("Schwab execution error: {0}")]
+    Schwab(#[from] crate::schwab::SchwabError),
 }
 
 /// Unified error type for onchain trade processing with clear domain boundaries.

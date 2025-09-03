@@ -303,7 +303,7 @@ mod tests {
         };
         let different_order2 = {
             let mut order = get_test_order();
-            order.owner = address!("0xdddddddddddddddddddddddddddddddddddddddd");
+            order.owner = address!("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
             order
         };
 
