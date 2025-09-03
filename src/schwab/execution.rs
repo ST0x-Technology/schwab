@@ -1,10 +1,7 @@
-use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 
-use super::{price_cents_from_db_i64, shares_from_db_i64};
+use super::{Direction, HasTradeStatus, TradeState, shares_from_db_i64};
 use crate::error::{OnChainError, PersistenceError};
-use crate::schwab::SchwabInstruction;
-use crate::schwab::TradeStatus;
 
 /// Converts database row data to a SchwabExecution instance.
 /// Centralizes the conversion logic and casting operations.
@@ -19,113 +16,69 @@ fn row_to_execution(
     status: &str,
     executed_at: Option<chrono::NaiveDateTime>,
 ) -> Result<SchwabExecution, OnChainError> {
-    let parsed_direction = direction.parse().map_err(|e: String| {
-        OnChainError::Persistence(PersistenceError::InvalidSchwabInstruction(e))
+    let parsed_direction = direction.parse().map_err(|err: String| {
+        OnChainError::Persistence(PersistenceError::InvalidSchwabInstruction(err))
     })?;
-
-    let parsed_status = match status {
-        "PENDING" => TradeStatus::Pending,
-        "COMPLETED" => {
-            let order_id = order_id.ok_or_else(|| {
-                OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "COMPLETED status requires order_id".to_string(),
-                ))
-            })?;
-            let price_cents = price_cents.ok_or_else(|| {
-                OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "COMPLETED status requires price_cents".to_string(),
-                ))
-            })?;
-            let executed_at = executed_at.ok_or_else(|| {
-                OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "COMPLETED status requires executed_at".to_string(),
-                ))
-            })?;
-            TradeStatus::Completed {
-                executed_at: DateTime::<Utc>::from_naive_utc_and_offset(executed_at, Utc),
-                order_id,
-                price_cents: price_cents_from_db_i64(price_cents)?,
-            }
-        }
-        "FAILED" => {
-            let failed_at = executed_at.ok_or_else(|| {
-                OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "FAILED status requires executed_at timestamp".to_string(),
-                ))
-            })?;
-            TradeStatus::Failed {
-                failed_at: DateTime::<Utc>::from_naive_utc_and_offset(failed_at, Utc),
-                error_reason: None, // We don't store error_reason in database yet
-            }
-        }
-        _ => {
-            return Err(OnChainError::Persistence(
-                PersistenceError::InvalidTradeStatus(format!("Invalid trade status: {status}")),
-            ));
-        }
-    };
+    let status_enum = status.parse().map_err(|err: String| {
+        OnChainError::Persistence(PersistenceError::InvalidTradeStatus(err))
+    })?;
+    let parsed_state = TradeState::from_db_row(status_enum, order_id, price_cents, executed_at)?;
 
     Ok(SchwabExecution {
         id: Some(id),
         symbol,
         shares: shares_from_db_i64(shares)?,
         direction: parsed_direction,
-        status: parsed_status,
+        state: parsed_state,
     })
 }
 
-/// Converts u64 share quantity to i64 for database storage.
-/// Share quantities are always within i64 range for realistic trading scenarios.
-const fn shares_to_db_i64(shares: u64) -> i64 {
+/// Converts u64 share quantity to i64 for database storage with exact conversion.
+/// NEVER silently changes amounts - returns error if conversion would lose data.
+/// This is critical for financial applications where data integrity is paramount.
+const fn shares_to_db_i64(shares: u64) -> Result<i64, OnChainError> {
     if shares > i64::MAX as u64 {
-        i64::MAX // Defensive cap at maximum database value
+        Err(OnChainError::Persistence(
+            PersistenceError::InvalidShareQuantity({
+                #[allow(clippy::cast_possible_wrap)]
+                (shares as i64) // This will be negative, which is what we want to signal invalid
+            }),
+        ))
     } else {
         #[allow(clippy::cast_possible_wrap)]
-        {
-            shares as i64 // Safe: within i64 range, wrap is prevented by check
-        }
+        Ok(shares as i64) // Safe: verified within i64 range
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SchwabExecution {
-    pub id: Option<i64>,
-    pub symbol: String,
-    pub shares: u64,
-    pub direction: SchwabInstruction,
-    pub status: TradeStatus,
+pub(crate) struct SchwabExecution {
+    pub(crate) id: Option<i64>,
+    pub(crate) symbol: String,
+    pub(crate) shares: u64,
+    pub(crate) direction: Direction,
+    pub(crate) state: TradeState,
 }
 
-pub async fn update_execution_status_within_transaction(
+pub(crate) async fn update_execution_status_within_transaction(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     execution_id: i64,
-    new_status: TradeStatus,
+    new_state: TradeState,
 ) -> Result<(), sqlx::Error> {
-    let status_str = new_status.as_str();
-
-    let (order_id, price_cents_i64, executed_at) = match &new_status {
-        TradeStatus::Pending => (None, None, None),
-        TradeStatus::Completed {
-            executed_at,
-            order_id,
-            price_cents,
-        } => (
-            Some(order_id.clone()),
-            Some(shares_to_db_i64(*price_cents)),
-            Some(executed_at.naive_utc()),
-        ),
-        TradeStatus::Failed {
-            failed_at,
-            error_reason: _,
-        } => (None, None, Some(failed_at.naive_utc())),
-    };
+    let status_str = new_state.status_str();
+    let db_fields = new_state
+        .to_db_fields()
+        .map_err(|_| sqlx::Error::Protocol("Invalid state data for database conversion".into()))?;
 
     sqlx::query!(
-        "UPDATE schwab_executions SET status = ?1, order_id = ?2, price_cents = ?3, executed_at = ?4 WHERE id = ?5",
+        "
+        UPDATE schwab_executions
+        SET status = ?1, order_id = ?2, price_cents = ?3, executed_at = ?4
+        WHERE id = ?5
+        ",
         status_str,
-        order_id,
-        price_cents_i64,
-        executed_at,
+        db_fields.order_id,
+        db_fields.price_cents,
+        db_fields.executed_at,
         execution_id
     )
     .execute(&mut **sql_tx)
@@ -134,35 +87,13 @@ pub async fn update_execution_status_within_transaction(
     Ok(())
 }
 
-/// Find executions with PENDING status
-pub async fn find_pending_executions_by_symbol(
+pub(crate) async fn find_executions_by_symbol_and_status<S: HasTradeStatus>(
     pool: &SqlitePool,
     symbol: &str,
+    status: S,
 ) -> Result<Vec<SchwabExecution>, OnChainError> {
-    find_executions_by_symbol_and_status(pool, symbol, "PENDING").await
-}
+    let status_str = status.status_str();
 
-/// Find executions with COMPLETED status
-pub async fn find_completed_executions_by_symbol(
-    pool: &SqlitePool,
-    symbol: &str,
-) -> Result<Vec<SchwabExecution>, OnChainError> {
-    find_executions_by_symbol_and_status(pool, symbol, "COMPLETED").await
-}
-
-/// Find executions with FAILED status
-pub async fn find_failed_executions_by_symbol(
-    pool: &SqlitePool,
-    symbol: &str,
-) -> Result<Vec<SchwabExecution>, OnChainError> {
-    find_executions_by_symbol_and_status(pool, symbol, "FAILED").await
-}
-
-pub async fn find_executions_by_symbol_and_status(
-    pool: &SqlitePool,
-    symbol: &str,
-    status_str: &str,
-) -> Result<Vec<SchwabExecution>, OnChainError> {
     if symbol.is_empty() {
         let rows = sqlx::query!(
             "SELECT * FROM schwab_executions WHERE status = ?1 ORDER BY id ASC",
@@ -211,7 +142,7 @@ pub async fn find_executions_by_symbol_and_status(
     }
 }
 
-pub async fn find_execution_by_id(
+pub(crate) async fn find_execution_by_id(
     pool: &SqlitePool,
     execution_id: i64,
 ) -> Result<Option<SchwabExecution>, OnChainError> {
@@ -239,68 +170,18 @@ pub async fn find_execution_by_id(
     }
 }
 
-/// Updates execution status and clears pending execution lease atomically
-pub async fn update_execution_status_and_clear_lease(
-    pool: &SqlitePool,
-    execution_id: i64,
-    new_status: TradeStatus,
-) -> Result<(), OnChainError> {
-    // Get the symbol for this execution first
-    let execution = find_execution_by_id(pool, execution_id).await?;
-
-    if let Some(execution) = execution {
-        // Update the execution status and clear lease in a single transaction
-        let mut sql_tx = pool.begin().await?;
-
-        update_execution_status_within_transaction(&mut sql_tx, execution_id, new_status.clone())
-            .await?;
-
-        // Clear the pending execution lease if status is completed or failed
-        match new_status {
-            TradeStatus::Completed { .. } | TradeStatus::Failed { .. } => {
-                crate::lock::clear_pending_execution_within_transaction(
-                    &mut sql_tx,
-                    &execution.symbol,
-                    execution_id,
-                )
-                .await?;
-            }
-            TradeStatus::Pending => {
-                // No need to clear lease for pending status
-            }
-        }
-
-        sql_tx.commit().await?;
-    }
-
-    Ok(())
-}
-
 impl SchwabExecution {
-    pub async fn save_within_transaction(
+    pub(crate) async fn save_within_transaction(
         &self,
         sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     ) -> Result<i64, sqlx::Error> {
-        let shares_i64 = shares_to_db_i64(self.shares);
+        let shares_i64 = shares_to_db_i64(self.shares)
+            .map_err(|_| sqlx::Error::Protocol("Share quantity conversion failed".into()))?;
         let direction_str = self.direction.as_str();
-        let status_str = self.status.as_str();
-
-        let (order_id, price_cents_i64, executed_at) = match &self.status {
-            TradeStatus::Pending => (None, None, None),
-            TradeStatus::Completed {
-                executed_at,
-                order_id,
-                price_cents,
-            } => (
-                Some(order_id.clone()),
-                Some(shares_to_db_i64(*price_cents)),
-                Some(executed_at.naive_utc()),
-            ),
-            TradeStatus::Failed {
-                failed_at,
-                error_reason: _,
-            } => (None, None, Some(failed_at.naive_utc())),
-        };
+        let status_str = self.state.status().as_str();
+        let db_fields = self.state.to_db_fields().map_err(|_| {
+            sqlx::Error::Protocol("Invalid state data for database conversion".into())
+        })?;
 
         let result = sqlx::query!(
             r#"
@@ -310,10 +191,10 @@ impl SchwabExecution {
             self.symbol,
             shares_i64,
             direction_str,
-            order_id,
-            price_cents_i64,
+            db_fields.order_id,
+            db_fields.price_cents,
             status_str,
-            executed_at
+            db_fields.executed_at
         )
         .execute(&mut **sql_tx)
         .await?;
@@ -322,17 +203,12 @@ impl SchwabExecution {
     }
 }
 
-pub async fn schwab_execution_db_count(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
-    let row = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
-        .fetch_one(pool)
-        .await?;
-    Ok(row.count)
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::TradeStatus;
     use super::*;
     use crate::test_utils::{SchwabExecutionBuilder, setup_test_db};
+    use chrono::Utc;
 
     #[tokio::test]
     async fn test_schwab_execution_save_and_find() {
@@ -349,7 +225,11 @@ mod tests {
         assert!(id > 0);
 
         // Verify execution was saved by checking the count
-        let count = schwab_execution_db_count(&pool).await.unwrap();
+        let count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .count;
         assert_eq!(count, 1);
     }
 
@@ -361,18 +241,18 @@ mod tests {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 50,
-            direction: SchwabInstruction::Buy,
-            status: TradeStatus::Pending,
+            direction: Direction::Buy,
+            state: TradeState::Pending,
         };
 
         let execution2 = SchwabExecution {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 25,
-            direction: SchwabInstruction::Sell,
-            status: TradeStatus::Completed {
+            direction: Direction::Sell,
+            state: TradeState::Filled {
                 executed_at: Utc::now(),
-                order_id: "ORDER123".to_string(),
+                order_id: "1004055538123".to_string(),
                 price_cents: 15025,
             },
         };
@@ -381,8 +261,8 @@ mod tests {
             id: None,
             symbol: "MSFT".to_string(),
             shares: 10,
-            direction: SchwabInstruction::Buy,
-            status: TradeStatus::Pending,
+            direction: Direction::Buy,
+            state: TradeState::Pending,
         };
 
         let mut sql_tx1 = pool.begin().await.unwrap();
@@ -406,25 +286,27 @@ mod tests {
             .unwrap();
         sql_tx3.commit().await.unwrap();
 
-        let pending_aapl = find_pending_executions_by_symbol(&pool, "AAPL")
-            .await
-            .unwrap();
+        let pending_aapl =
+            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
+                .await
+                .unwrap();
 
         assert_eq!(pending_aapl.len(), 1);
         assert_eq!(pending_aapl[0].shares, 50);
-        assert_eq!(pending_aapl[0].direction, SchwabInstruction::Buy);
+        assert_eq!(pending_aapl[0].direction, Direction::Buy);
 
-        let completed_aapl = find_completed_executions_by_symbol(&pool, "AAPL")
-            .await
-            .unwrap();
+        let completed_aapl =
+            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Filled)
+                .await
+                .unwrap();
 
         assert_eq!(completed_aapl.len(), 1);
         assert_eq!(completed_aapl[0].shares, 25);
-        assert_eq!(completed_aapl[0].direction, SchwabInstruction::Sell);
+        assert_eq!(completed_aapl[0].direction, Direction::Sell);
         assert!(matches!(
-            &completed_aapl[0].status,
-            TradeStatus::Completed { order_id, price_cents, .. }
-            if order_id == "ORDER123" && *price_cents == 15025
+            &completed_aapl[0].state,
+            TradeState::Filled { order_id, price_cents, .. }
+            if order_id == "1004055538123" && *price_cents == 15025
         ));
     }
 
@@ -432,12 +314,12 @@ mod tests {
     async fn test_find_by_symbol_and_status_empty_database() {
         let pool = setup_test_db().await;
 
-        let result = find_pending_executions_by_symbol(&pool, "AAPL")
+        let result = find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
             .await
             .unwrap();
         assert_eq!(result.len(), 0);
 
-        let result = find_executions_by_symbol_and_status(&pool, "", "PENDING")
+        let result = find_executions_by_symbol_and_status(&pool, "", TradeStatus::Pending)
             .await
             .unwrap();
         assert_eq!(result.len(), 0);
@@ -456,12 +338,13 @@ mod tests {
             .unwrap();
         sql_tx.commit().await.unwrap();
 
-        let result = find_pending_executions_by_symbol(&pool, "NONEXISTENT")
-            .await
-            .unwrap();
+        let result =
+            find_executions_by_symbol_and_status(&pool, "NONEXISTENT", TradeStatus::Pending)
+                .await
+                .unwrap();
         assert_eq!(result.len(), 0);
 
-        let result = find_completed_executions_by_symbol(&pool, "AAPL")
+        let result = find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Filled)
             .await
             .unwrap();
         assert_eq!(result.len(), 0);
@@ -477,24 +360,24 @@ mod tests {
                 id: None,
                 symbol: "AAPL".to_string(),
                 shares: 100,
-                direction: SchwabInstruction::Buy,
-                status: TradeStatus::Pending,
+                direction: Direction::Buy,
+                state: TradeState::Pending,
             },
             SchwabExecution {
                 id: None,
                 symbol: "MSFT".to_string(),
                 shares: 50,
-                direction: SchwabInstruction::Sell,
-                status: TradeStatus::Pending,
+                direction: Direction::Sell,
+                state: TradeState::Pending,
             },
             SchwabExecution {
                 id: None,
                 symbol: "AAPL".to_string(),
                 shares: 200,
-                direction: SchwabInstruction::Buy,
-                status: TradeStatus::Completed {
+                direction: Direction::Buy,
+                state: TradeState::Filled {
                     executed_at: Utc::now(),
-                    order_id: "ORDER123".to_string(),
+                    order_id: "1004055538123".to_string(),
                     price_cents: 15000,
                 },
             },
@@ -510,17 +393,17 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Empty symbol should find all executions with the specified status
-        let pending_all = find_executions_by_symbol_and_status(&pool, "", "PENDING")
+        let pending_all = find_executions_by_symbol_and_status(&pool, "", TradeStatus::Pending)
             .await
             .unwrap();
         assert_eq!(pending_all.len(), 2); // AAPL and MSFT pending
 
-        let completed_all = find_executions_by_symbol_and_status(&pool, "", "COMPLETED")
+        let filled_all = find_executions_by_symbol_and_status(&pool, "", TradeStatus::Filled)
             .await
             .unwrap();
-        assert_eq!(completed_all.len(), 1); // Only AAPL completed
+        assert_eq!(filled_all.len(), 1); // Only AAPL filled
 
-        let failed_all = find_executions_by_symbol_and_status(&pool, "", "FAILED")
+        let failed_all = find_executions_by_symbol_and_status(&pool, "", TradeStatus::Failed)
             .await
             .unwrap();
         assert_eq!(failed_all.len(), 0); // None failed
@@ -537,22 +420,22 @@ mod tests {
                 id: None,
                 symbol: "AAPL".to_string(),
                 shares: 100,
-                direction: SchwabInstruction::Buy,
-                status: TradeStatus::Pending,
+                direction: Direction::Buy,
+                state: TradeState::Pending,
             },
             SchwabExecution {
                 id: None,
                 symbol: "TSLA".to_string(),
                 shares: 200,
-                direction: SchwabInstruction::Sell,
-                status: TradeStatus::Pending,
+                direction: Direction::Sell,
+                state: TradeState::Pending,
             },
             SchwabExecution {
                 id: None,
                 symbol: "MSFT".to_string(),
                 shares: 300,
-                direction: SchwabInstruction::Buy,
-                status: TradeStatus::Pending,
+                direction: Direction::Buy,
+                state: TradeState::Pending,
             },
         ];
 
@@ -566,19 +449,19 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Test ordering for each symbol individually
-        let aapl_result = find_pending_executions_by_symbol(&pool, "AAPL")
+        let aapl_result = find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
             .await
             .unwrap();
         assert_eq!(aapl_result.len(), 1);
         assert_eq!(aapl_result[0].shares, 100);
 
-        let tsla_result = find_pending_executions_by_symbol(&pool, "TSLA")
+        let tsla_result = find_executions_by_symbol_and_status(&pool, "TSLA", TradeStatus::Pending)
             .await
             .unwrap();
         assert_eq!(tsla_result.len(), 1);
         assert_eq!(tsla_result[0].shares, 200);
 
-        let msft_result = find_pending_executions_by_symbol(&pool, "MSFT")
+        let msft_result = find_executions_by_symbol_and_status(&pool, "MSFT", TradeStatus::Pending)
             .await
             .unwrap();
         assert_eq!(msft_result.len(), 1);
@@ -593,8 +476,8 @@ mod tests {
             id: None,
             symbol: "AAPL".to_string(), // Uppercase
             shares: 100,
-            direction: SchwabInstruction::Buy,
-            status: TradeStatus::Pending,
+            direction: Direction::Buy,
+            state: TradeState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -604,17 +487,17 @@ mod tests {
             .unwrap();
         sql_tx.commit().await.unwrap();
 
-        let result = find_pending_executions_by_symbol(&pool, "AAPL")
+        let result = find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
             .await
             .unwrap();
         assert_eq!(result.len(), 1);
 
-        let result = find_pending_executions_by_symbol(&pool, "aapl")
+        let result = find_executions_by_symbol_and_status(&pool, "aapl", TradeStatus::Pending)
             .await
             .unwrap();
         assert_eq!(result.len(), 0);
 
-        let result = find_pending_executions_by_symbol(&pool, "Aapl")
+        let result = find_executions_by_symbol_and_status(&pool, "Aapl", TradeStatus::Pending)
             .await
             .unwrap();
         assert_eq!(result.len(), 0);
@@ -633,8 +516,8 @@ mod tests {
                 id: None,
                 symbol: symbol.to_string(),
                 shares: 100,
-                direction: SchwabInstruction::Buy,
-                status: TradeStatus::Pending,
+                direction: Direction::Buy,
+                state: TradeState::Pending,
             };
 
             execution
@@ -646,7 +529,7 @@ mod tests {
 
         // Test each symbol can be found
         for symbol in ["BRK.B", "BF-B", "TEST123", "A-B_C.D"] {
-            let result = find_pending_executions_by_symbol(&pool, symbol)
+            let result = find_executions_by_symbol_and_status(&pool, symbol, TradeStatus::Pending)
                 .await
                 .unwrap();
             assert_eq!(result.len(), 1, "Failed to find symbol: {symbol}");
@@ -662,10 +545,10 @@ mod tests {
             id: None,
             symbol: "TEST".to_string(),
             shares: 12345,
-            direction: SchwabInstruction::Sell,
-            status: TradeStatus::Completed {
+            direction: Direction::Sell,
+            state: TradeState::Filled {
                 executed_at: Utc::now(),
-                order_id: "ORDER789".to_string(),
+                order_id: "1004055538789".to_string(),
                 price_cents: 98765,
             },
         };
@@ -677,7 +560,7 @@ mod tests {
             .unwrap();
         sql_tx.commit().await.unwrap();
 
-        let result = find_completed_executions_by_symbol(&pool, "TEST")
+        let result = find_executions_by_symbol_and_status(&pool, "TEST", TradeStatus::Filled)
             .await
             .unwrap();
 
@@ -687,11 +570,11 @@ mod tests {
         // Verify all fields are correctly preserved and converted
         assert_eq!(found.symbol, "TEST");
         assert_eq!(found.shares, 12345);
-        assert_eq!(found.direction, SchwabInstruction::Sell);
+        assert_eq!(found.direction, Direction::Sell);
         assert!(matches!(
-            &found.status,
-            TradeStatus::Completed { order_id, price_cents, .. }
-            if order_id == "ORDER789" && *price_cents == 98765
+            &found.state,
+            TradeState::Filled { order_id, price_cents, .. }
+            if order_id == "1004055538789" && *price_cents == 98765
         ));
         assert!(found.id.is_some());
     }
@@ -740,7 +623,11 @@ mod tests {
         assert!(result.is_err());
 
         // Verify our database maintains data integrity
-        let count = schwab_execution_db_count(&pool).await.unwrap();
+        let count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .count;
         assert_eq!(count, 0); // No invalid data should have been inserted
     }
 
@@ -752,8 +639,8 @@ mod tests {
             id: None,
             symbol: "TSLA".to_string(),
             shares: 15,
-            direction: SchwabInstruction::Sell,
-            status: TradeStatus::Pending,
+            direction: Direction::Sell,
+            state: TradeState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -768,9 +655,9 @@ mod tests {
         update_execution_status_within_transaction(
             &mut sql_tx,
             id,
-            TradeStatus::Completed {
+            TradeState::Filled {
                 executed_at: Utc::now(),
-                order_id: "ORDER456".to_string(),
+                order_id: "1004055538456".to_string(),
                 price_cents: 20050,
             },
         )
@@ -779,15 +666,16 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Verify the update persisted by finding executions with the new status
-        let completed_executions = find_completed_executions_by_symbol(&pool, "TSLA")
-            .await
-            .unwrap();
+        let completed_executions =
+            find_executions_by_symbol_and_status(&pool, "TSLA", TradeStatus::Filled)
+                .await
+                .unwrap();
 
         assert_eq!(completed_executions.len(), 1);
         assert!(matches!(
-            &completed_executions[0].status,
-            TradeStatus::Completed { order_id, price_cents, .. }
-            if order_id == "ORDER456" && *price_cents == 20050
+            &completed_executions[0].state,
+            TradeState::Filled { order_id, price_cents, .. }
+            if order_id == "1004055538456" && *price_cents == 20050
         ));
     }
 
@@ -795,15 +683,19 @@ mod tests {
     async fn test_db_count() {
         let pool = setup_test_db().await;
 
-        let count = schwab_execution_db_count(&pool).await.unwrap();
+        let count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .count;
         assert_eq!(count, 0);
 
         let execution = SchwabExecution {
             id: None,
             symbol: "NVDA".to_string(),
             shares: 5,
-            direction: SchwabInstruction::Buy,
-            status: TradeStatus::Pending,
+            direction: Direction::Buy,
+            state: TradeState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -813,7 +705,11 @@ mod tests {
             .unwrap();
         sql_tx.commit().await.unwrap();
 
-        let count = schwab_execution_db_count(&pool).await.unwrap();
+        let count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .count;
         assert_eq!(count, 1);
     }
 
@@ -826,8 +722,8 @@ mod tests {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 100,
-            direction: SchwabInstruction::Buy,
-            status: TradeStatus::Pending,
+            direction: Direction::Buy,
+            state: TradeState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -842,8 +738,8 @@ mod tests {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 200,
-            direction: SchwabInstruction::Sell,
-            status: TradeStatus::Pending,
+            direction: Direction::Sell,
+            state: TradeState::Pending,
         };
 
         let mut sql_tx2 = pool.begin().await.unwrap();
@@ -871,8 +767,8 @@ mod tests {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 100,
-            direction: SchwabInstruction::Buy,
-            status: TradeStatus::Pending,
+            direction: Direction::Buy,
+            state: TradeState::Pending,
         };
         let mut sql_tx1 = pool.begin().await.unwrap();
         execution1
@@ -886,10 +782,10 @@ mod tests {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 200,
-            direction: SchwabInstruction::Sell,
-            status: TradeStatus::Completed {
+            direction: Direction::Sell,
+            state: TradeState::Filled {
                 executed_at: Utc::now(),
-                order_id: "ORDER123".to_string(),
+                order_id: "1004055538123".to_string(),
                 price_cents: 15000,
             },
         };
@@ -901,12 +797,14 @@ mod tests {
         sql_tx2.commit().await.unwrap();
 
         // Should have both executions for AAPL now
-        let pending_aapl = find_pending_executions_by_symbol(&pool, "AAPL")
-            .await
-            .unwrap();
-        let completed_aapl = find_completed_executions_by_symbol(&pool, "AAPL")
-            .await
-            .unwrap();
+        let pending_aapl =
+            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
+                .await
+                .unwrap();
+        let completed_aapl =
+            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Filled)
+                .await
+                .unwrap();
         assert_eq!(pending_aapl.len(), 1);
         assert_eq!(completed_aapl.len(), 1);
     }
@@ -956,7 +854,7 @@ mod tests {
             "AAPL".to_string(),
             100,
             "BUY",
-            Some("ORDER123".to_string()),
+            Some("1004055538123".to_string()),
             None, // Missing price_cents for COMPLETED status
             "COMPLETED",
             Some(chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc()),
@@ -975,7 +873,7 @@ mod tests {
             "AAPL".to_string(),
             100,
             "BUY",
-            Some("ORDER123".to_string()),
+            Some("1004055538123".to_string()),
             Some(15000),
             "COMPLETED",
             None, // Missing executed_at for COMPLETED status
@@ -1035,8 +933,8 @@ mod tests {
             id: None,
             symbol: "MSFT".to_string(),
             shares: 50,
-            direction: SchwabInstruction::Sell,
-            status: TradeStatus::Failed {
+            direction: Direction::Sell,
+            state: TradeState::Failed {
                 failed_at: Utc::now(),
                 error_reason: Some("Authentication failed".to_string()),
             },
@@ -1051,7 +949,7 @@ mod tests {
 
         // Update to pending (simulating retry after auth recovery)
         let mut sql_tx = pool.begin().await.unwrap();
-        update_execution_status_within_transaction(&mut sql_tx, execution_id, TradeStatus::Pending)
+        update_execution_status_within_transaction(&mut sql_tx, execution_id, TradeState::Pending)
             .await
             .unwrap();
         sql_tx.commit().await.unwrap();
@@ -1061,14 +959,17 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(matches!(found.status, TradeStatus::Pending));
+        assert!(matches!(found.state, TradeState::Pending));
     }
 
     #[tokio::test]
     async fn test_database_connection_failure_handling() {
         let pool = setup_test_db().await;
         pool.close().await;
-        schwab_execution_db_count(&pool).await.unwrap_err();
+        sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+            .fetch_one(&pool)
+            .await
+            .unwrap_err();
     }
 
     #[tokio::test]
@@ -1087,8 +988,8 @@ mod tests {
             id: None,
             symbol: "TSLA".to_string(),
             shares: 100,
-            direction: SchwabInstruction::Buy,
-            status: TradeStatus::Pending,
+            direction: Direction::Buy,
+            state: TradeState::Pending,
         };
 
         let mut sql_tx1 = pool.begin().await.unwrap();
@@ -1103,8 +1004,8 @@ mod tests {
             id: None,
             symbol: "TSLA".to_string(),
             shares: 200,
-            direction: SchwabInstruction::Sell,
-            status: TradeStatus::Pending,
+            direction: Direction::Sell,
+            state: TradeState::Pending,
         };
 
         let mut sql_tx2 = pool.begin().await.unwrap();
@@ -1121,6 +1022,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_filled_status_requires_price_cents() {
+        let pool = setup_test_db().await;
+        let order_id_1 = Some("1004055538123");
+        let order_id_2 = Some("1004055538456");
+        let timestamp = Some(chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc());
+
+        // Test that database constraint prevents FILLED status with NULL price_cents
+        let result = sqlx::query!(
+            "INSERT INTO schwab_executions (symbol, shares, direction, order_id, price_cents, status, executed_at) 
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "TEST",
+            100i64,
+            "BUY",
+            order_id_1,
+            None::<i64>, // NULL price_cents with FILLED status should be rejected
+            "FILLED",
+            timestamp
+        )
+        .execute(&pool)
+        .await;
+
+        // Should fail due to CHECK constraint requiring price_cents for FILLED status
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("CHECK constraint failed"));
+
+        // Verify valid FILLED execution with price_cents succeeds
+        let result = sqlx::query!(
+            "INSERT INTO schwab_executions (symbol, shares, direction, order_id, price_cents, status, executed_at) 
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "TEST2",
+            100i64,
+            "BUY", 
+            order_id_2,
+            Some(15025i64), // Valid price_cents for FILLED status
+            "FILLED",
+            timestamp
+        )
+        .execute(&pool)
+        .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
     async fn test_update_execution_status_transaction_rollback() {
         let pool = setup_test_db().await;
 
@@ -1128,8 +1074,8 @@ mod tests {
             id: None,
             symbol: "GOOG".to_string(),
             shares: 25,
-            direction: SchwabInstruction::Buy,
-            status: TradeStatus::Pending,
+            direction: Direction::Buy,
+            state: TradeState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -1144,9 +1090,9 @@ mod tests {
         update_execution_status_within_transaction(
             &mut sql_tx,
             execution_id,
-            TradeStatus::Completed {
+            TradeState::Filled {
                 executed_at: Utc::now(),
-                order_id: "ORDER999".to_string(),
+                order_id: "1004055538888".to_string(),
                 price_cents: 300_000,
             },
         )
@@ -1161,7 +1107,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(matches!(found.status, TradeStatus::Pending));
+        assert!(matches!(found.state, TradeState::Pending));
     }
 
     #[test]

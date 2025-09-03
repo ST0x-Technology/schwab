@@ -1,7 +1,6 @@
-use alloy::primitives::keccak256;
 use alloy::providers::Provider;
 use alloy::rpc::types::{Filter, Log};
-use alloy::sol_types::{SolEvent, SolValue};
+use alloy::sol_types::SolEvent;
 
 use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
 use crate::error::{OnChainError, TradeValidationError};
@@ -35,10 +34,10 @@ impl OnchainTrade {
             ..
         } = clear_config;
 
-        let alice_hash_matches = keccak256(alice_order.abi_encode()) == env.order_hash;
-        let bob_hash_matches = keccak256(bob_order.abi_encode()) == env.order_hash;
+        let alice_owner_matches = alice_order.owner == env.order_owner;
+        let bob_owner_matches = bob_order.owner == env.order_owner;
 
-        if !(alice_hash_matches || bob_hash_matches) {
+        if !(alice_owner_matches || bob_owner_matches) {
             return Ok(None);
         }
 
@@ -73,7 +72,7 @@ impl OnchainTrade {
             bobInput,
         } = after_clear.data().clearStateChange;
 
-        if alice_hash_matches {
+        if alice_owner_matches {
             let input_index = usize::try_from(aliceInputIOIndex)?;
             let output_index = usize::try_from(aliceOutputIOIndex)?;
 
@@ -111,7 +110,7 @@ mod tests {
     use alloy::primitives::{IntoLogData, U256, address, fixed_bytes};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
     use alloy::rpc::types::Log;
-    use alloy::sol_types::{SolCall, SolValue};
+    use alloy::sol_types::SolCall;
     use serde_json::json;
     use std::str::FromStr;
 
@@ -119,7 +118,7 @@ mod tests {
         EvmEnv {
             ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
             orderbook: address!("0x1111111111111111111111111111111111111111"),
-            order_hash: keccak256(get_test_order().abi_encode()),
+            order_owner: get_test_order().owner,
             deployment_block: 1,
         }
     }
@@ -208,7 +207,7 @@ mod tests {
             &"USDC".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"AAPLs1".to_string(),
+            &"AAPL0x".to_string(),
         ));
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
@@ -218,7 +217,7 @@ mod tests {
                 .unwrap();
 
         let trade = result.unwrap();
-        assert_eq!(trade.symbol, "AAPLs1");
+        assert_eq!(trade.symbol, "AAPL0x");
         assert!((trade.amount - 9.0).abs() < f64::EPSILON);
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 1);
@@ -232,8 +231,7 @@ mod tests {
         let order = get_test_order();
         let different_order = {
             let mut order = get_test_order();
-            order.nonce =
-                fixed_bytes!("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+            order.owner = address!("0xffffffffffffffffffffffffffffffffffffffff");
             order
         };
 
@@ -274,7 +272,7 @@ mod tests {
         let asserter = Asserter::new();
         asserter.push_success(&json!([after_clear_log]));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"AAPLs1".to_string(),
+            &"AAPL0x".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
@@ -287,7 +285,7 @@ mod tests {
                 .unwrap();
 
         let trade = result.unwrap();
-        assert_eq!(trade.symbol, "AAPLs1");
+        assert_eq!(trade.symbol, "AAPL0x");
         assert!((trade.amount - 9.0).abs() < f64::EPSILON);
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 1);
@@ -300,14 +298,12 @@ mod tests {
 
         let different_order1 = {
             let mut order = get_test_order();
-            order.nonce =
-                fixed_bytes!("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+            order.owner = address!("0xffffffffffffffffffffffffffffffffffffffff");
             order
         };
         let different_order2 = {
             let mut order = get_test_order();
-            order.nonce =
-                fixed_bytes!("0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd");
+            order.owner = address!("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
             order
         };
 
@@ -567,7 +563,7 @@ mod tests {
             &"USDC".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"AAPLs1".to_string(),
+            &"AAPL0x".to_string(),
         ));
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
@@ -578,7 +574,7 @@ mod tests {
 
         // Should process Alice first (alice_hash_matches is checked first)
         let trade = result.unwrap();
-        assert_eq!(trade.symbol, "AAPLs1");
+        assert_eq!(trade.symbol, "AAPL0x");
         assert!((trade.amount - 9.0).abs() < f64::EPSILON);
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 1);

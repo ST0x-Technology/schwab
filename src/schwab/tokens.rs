@@ -131,12 +131,15 @@ impl SchwabTokens {
         Ok(count)
     }
 
-    pub fn spawn_automatic_token_refresh(pool: SqlitePool, env: SchwabAuthEnv) {
+    pub(crate) fn spawn_automatic_token_refresh(
+        pool: SqlitePool,
+        env: SchwabAuthEnv,
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             if let Err(e) = Self::start_automatic_token_refresh_loop(pool, env).await {
                 error!("Token refresh task failed: {e:?}");
             }
-        });
+        })
     }
 
     async fn start_automatic_token_refresh_loop(

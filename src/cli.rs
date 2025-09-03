@@ -60,6 +60,8 @@ pub enum Commands {
         #[arg(long = "tx-hash")]
         tx_hash: B256,
     },
+    /// Perform Charles Schwab OAuth authentication flow
+    Auth,
 }
 
 #[derive(Debug, Parser)]
@@ -89,6 +91,8 @@ impl CliEnv {
             log_level: cli_env.log_level,
             schwab_auth: cli_env.schwab_auth,
             evm_env: cli_env.evm_env,
+            order_polling_interval: 15,
+            order_polling_max_jitter: 5,
         };
 
         Ok((env, cli_env.command))
@@ -167,6 +171,37 @@ async fn run_command_with_writers<W: Write>(
             let provider = ProviderBuilder::new().connect_ws(ws).await?;
             let cache = SymbolCache::default();
             process_tx_with_provider(tx_hash, &env, pool, stdout, &provider, &cache).await?;
+        }
+        Commands::Auth => {
+            info!("Starting OAuth authentication flow");
+            writeln!(
+                stdout,
+                "🔄 Starting Charles Schwab OAuth authentication process..."
+            )?;
+            writeln!(
+                stdout,
+                "   You will be guided through the authentication process."
+            )?;
+
+            match run_oauth_flow(pool, &env.schwab_auth).await {
+                Ok(()) => {
+                    info!("OAuth authentication completed successfully");
+                    writeln!(stdout, "✅ Authentication successful!")?;
+                    writeln!(
+                        stdout,
+                        "   Your tokens have been saved and are ready to use."
+                    )?;
+                }
+                Err(oauth_error) => {
+                    error!("OAuth authentication failed: {oauth_error:?}");
+                    writeln!(stdout, "❌ Authentication failed: {oauth_error}")?;
+                    writeln!(
+                        stdout,
+                        "   Please ensure you have a valid Charles Schwab account and try again."
+                    )?;
+                    return Err(oauth_error.into());
+                }
+            }
         }
     }
 
@@ -313,7 +348,7 @@ async fn process_found_trade<W: Write>(
 
     writeln!(stdout, "🔄 Processing trade with TradeAccumulator...")?;
 
-    let execution = accumulator::add_trade(pool, onchain_trade).await?;
+    let execution = accumulator::process_onchain_trade(pool, onchain_trade).await?;
 
     if let Some(execution) = execution {
         let execution_id = execution
@@ -349,7 +384,7 @@ fn display_trade_details<W: Write>(
 ) -> anyhow::Result<()> {
     let schwab_ticker = onchain_trade
         .symbol
-        .strip_suffix("s1")
+        .strip_suffix("0x")
         .unwrap_or(&onchain_trade.symbol);
 
     writeln!(stdout, "✅ Found opposite-side trade opportunity:")?;
@@ -377,15 +412,16 @@ mod tests {
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
     use crate::env::LogLevel;
     use crate::onchain::trade::OnchainTrade;
-    use crate::schwab::execution::find_completed_executions_by_symbol;
+    use crate::schwab::TradeStatus;
+    use crate::schwab::execution::find_executions_by_symbol_and_status;
     use crate::schwab::{Direction, SchwabInstruction};
     use crate::test_utils::get_test_order;
     use crate::test_utils::setup_test_db;
     use crate::{onchain::EvmEnv, schwab::SchwabAuthEnv};
     use alloy::hex;
-    use alloy::primitives::{IntoLogData, U256, address, fixed_bytes, keccak256};
+    use alloy::primitives::{IntoLogData, U256, address, fixed_bytes};
     use alloy::providers::mock::Asserter;
-    use alloy::sol_types::{SolCall, SolEvent, SolValue};
+    use alloy::sol_types::{SolCall, SolEvent};
     use chrono::{Duration, Utc};
     use clap::CommandFactory;
     use httpmock::MockServer;
@@ -832,11 +868,11 @@ mod tests {
             evm_env: EvmEnv {
                 ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
                 orderbook: address!("0x1234567890123456789012345678901234567890"),
-                order_hash: fixed_bytes!(
-                    "0x0000000000000000000000000000000000000000000000000000000000000000"
-                ),
+                order_owner: address!("0x0000000000000000000000000000000000000000"),
                 deployment_block: 1,
             },
+            order_polling_interval: 15,
+            order_polling_max_jitter: 5,
         }
     }
 
@@ -851,7 +887,7 @@ mod tests {
     }
 
     struct MockBlockchainData {
-        order_hash: alloy::primitives::B256,
+        order_owner: alloy::primitives::Address,
         receipt_json: serde_json::Value,
         after_clear_log: alloy::rpc::types::Log,
     }
@@ -863,7 +899,7 @@ mod tests {
         bob_output_usdc: u64,      // e.g., 100_000_000 for 100 USDC
     ) -> MockBlockchainData {
         let order = get_test_order();
-        let order_hash = keccak256(order.abi_encode());
+        let order_owner = order.owner;
 
         let clear_event = ClearV2 {
             sender: address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
@@ -932,7 +968,7 @@ mod tests {
         };
 
         MockBlockchainData {
-            order_hash,
+            order_owner,
             receipt_json,
             after_clear_log,
         }
@@ -1512,15 +1548,15 @@ mod tests {
             100_000_000,           // 100 USDC (6 decimals)
         );
 
-        // Update env to have the correct order hash
+        // Update env to have the correct order owner
         let mut env = env;
-        env.evm_env.order_hash = mock_data.order_hash;
+        env.evm_env.order_owner = mock_data.order_owner;
 
         // Set up Schwab API mocks
         let (account_mock, order_mock) = setup_schwab_api_mocks(&server);
 
         // Set up the mock provider
-        let provider = setup_mock_provider_for_process_tx(&mock_data, "USDC", "AAPLs1");
+        let provider = setup_mock_provider_for_process_tx(&mock_data, "USDC", "AAPL0x");
         let cache = SymbolCache::default();
 
         let mut stdout = Vec::new();
@@ -1538,16 +1574,32 @@ mod tests {
         let trade = OnchainTrade::find_by_tx_hash_and_log_index(&pool, tx_hash, 0)
             .await
             .unwrap();
-        assert_eq!(trade.symbol, "AAPLs1"); // Tokenized symbol
+        assert_eq!(trade.symbol, "AAPL0x"); // Tokenized symbol
         assert!((trade.amount - 9.0).abs() < f64::EPSILON); // Amount from the test data
 
         // Verify SchwabExecution was created (due to TradeAccumulator)
-        let executions = find_completed_executions_by_symbol(&pool, "AAPL")
-            .await
-            .unwrap();
+        // Executions are now in SUBMITTED status with order_id stored for order status polling
+        let executions =
+            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Submitted)
+                .await
+                .unwrap();
         assert_eq!(executions.len(), 1);
         assert_eq!(executions[0].shares, 9);
         assert_eq!(executions[0].direction, SchwabInstruction::Buy);
+
+        // Verify order_id was stored in database
+        let execution_id = executions[0].id.unwrap();
+        let row = sqlx::query!(
+            "SELECT order_id FROM schwab_executions WHERE id = ?1",
+            execution_id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            row.order_id.is_some(),
+            "Order ID should be stored for polling"
+        );
 
         // Verify Schwab API was called
         account_mock.assert();
@@ -1578,9 +1630,9 @@ mod tests {
             50_000_000,            // 50 USDC (6 decimals)
         );
 
-        // Update env to have the correct order hash
+        // Update env to have the correct order owner
         let mut env = env;
-        env.evm_env.order_hash = mock_data.order_hash;
+        env.evm_env.order_owner = mock_data.order_owner;
 
         // Set up Schwab API mocks for first call
         let account_mock = server.mock(|when, then| {
@@ -1612,7 +1664,7 @@ mod tests {
             &"USDC".to_string(),
         ));
         asserter1.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"TSLAs1".to_string(),
+            &"TSLA0x".to_string(),
         ));
 
         let provider1 = ProviderBuilder::new().connect_mocked_client(asserter1);
@@ -1629,7 +1681,7 @@ mod tests {
         let trade = OnchainTrade::find_by_tx_hash_and_log_index(&pool, tx_hash, 0)
             .await
             .unwrap();
-        assert_eq!(trade.symbol, "TSLAs1"); // Tokenized symbol
+        assert_eq!(trade.symbol, "TSLA0x"); // Tokenized symbol
         assert!((trade.amount - 5.0).abs() < f64::EPSILON); // Amount from the test data
 
         // Verify stdout output for first call
@@ -1646,7 +1698,7 @@ mod tests {
             &"USDC".to_string(),
         ));
         asserter2.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"TSLAs1".to_string(),
+            &"TSLA0x".to_string(),
         ));
 
         let provider2 = ProviderBuilder::new().connect_mocked_client(asserter2);
@@ -1654,32 +1706,38 @@ mod tests {
 
         let mut stdout2 = Vec::new();
 
-        // Process the same transaction again (should detect duplicate and error)
+        // Process the same transaction again (should handle duplicate gracefully)
         let result2 =
             process_tx_with_provider(tx_hash, &env, &pool, &mut stdout2, &provider2, &cache2).await;
         assert!(
-            result2.is_err(),
-            "Second process_tx should fail due to duplicate constraint violation"
+            result2.is_ok(),
+            "Second process_tx should succeed with graceful duplicate handling"
         );
-
-        // Verify the error is a UNIQUE constraint violation
-        let error_string = format!("{:?}", result2.unwrap_err());
-        assert!(error_string.contains("UNIQUE constraint failed"));
-        assert!(error_string.contains("onchain_trades.tx_hash"));
 
         // Verify only one trade exists in database
         let count = OnchainTrade::db_count(&pool).await.unwrap();
         assert_eq!(count, 1, "Only one trade should exist in database");
 
-        // Verify stdout shows processing started but didn't complete
+        // Verify stdout shows duplicate was handled gracefully
         let stdout_str2 = String::from_utf8(stdout2).unwrap();
         assert!(stdout_str2.contains("Processing trade with TradeAccumulator"));
-        // Should not contain completion messages since it errored
-        assert!(!stdout_str2.contains("Trade processing completed"));
+        assert!(stdout_str2.contains("Trade accumulated but did not trigger execution yet"));
 
-        // Verify Schwab API was only called once (for the first trade)
+        // Since the duplicate is handled gracefully and doesn't trigger a new execution,
+        // the Schwab API should still only be called once (for the first trade)
         account_mock.assert_hits(1);
         order_mock.assert_hits(1);
+    }
+
+    #[test]
+    fn test_auth_command_cli_help_text() {
+        let mut cmd = Cli::command();
+
+        // Verify that the auth command is properly defined in the CLI
+        let help_output = cmd.render_help().to_string();
+        assert!(help_output.contains("auth"));
+        assert!(help_output.contains("OAuth"));
+        assert!(help_output.contains("authentication"));
     }
 
     #[tokio::test]
@@ -1693,7 +1751,7 @@ mod tests {
             id: None,
             tx_hash,
             log_index: 42,
-            symbol: "GOOGs1".to_string(),
+            symbol: "GOOG0x".to_string(),
             amount: 2.5,
             direction: Direction::Buy,
             price_usdc: 20000.0,
@@ -1723,7 +1781,7 @@ mod tests {
 
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 42);
-        assert_eq!(trade.symbol, "GOOGs1");
+        assert_eq!(trade.symbol, "GOOG0x");
         assert!((trade.amount - 2.5).abs() < f64::EPSILON);
         assert!((trade.price_usdc - 20000.0).abs() < f64::EPSILON);
     }

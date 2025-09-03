@@ -1,0 +1,110 @@
+name: Build and deploy
+
+on:
+  push:
+    branches: [master, "feat/cd"]  # TODO: remove once done testing
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.ref }}-deploy
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+permissions:
+  contents: read
+
+env:
+  DIGITALOCEAN_ACCESS_TOKEN: dop_v1_46754e36d8c16d31933eb54c99e034bd5050e91b0ea08744aa4d287fd8a78ac5
+  ORDERBOOK: "0xf6fdcb30fd027c73cbacd54e22f02987e3116ebc"
+  ORDER_OWNER: "0xD2843D9E7738d46D90CB6Dff8D6C83db58B9c165"
+  DEPLOYMENT_BLOCK: 353562229
+  REGISTRY_NAME: stox
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ env.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Log in to DO Container Registry
+        run: doctl registry login --expiry-seconds 1200
+
+      - name: Build Docker image
+        run: |
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          echo "SHORT_SHA=$SHORT_SHA" >> $GITHUB_ENV
+
+          docker build \
+            -t registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:$SHORT_SHA \
+            -t registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:latest .
+
+      - name: Push image to DO Registry
+        run: |
+          docker push registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:${{ env.SHORT_SHA }}
+          docker push registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:latest
+
+      - name: Deploy to Droplet
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: root
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_HASH,DEPLOYMENT_BLOCK,APP_KEY,APP_SECRET
+        env:
+          WS_RPC_URL: ${{ secrets.WS_RPC_URL }}
+          APP_KEY: ${{ secrets.APP_KEY }}
+          APP_SECRET: ${{ secrets.APP_SECRET }}
+          script: |
+            set -euo pipefail
+
+            echo "${DIGITALOCEAN_ACCESS_TOKEN}" | \
+              docker login registry.digitalocean.com -u unused --password-stdin
+
+            docker pull "registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}"
+
+            docker stop schwarbot || true
+            docker rm schwarbot || true
+
+            # Ensure database directory exists and has proper permissions
+            mkdir -p /mnt/volume_nyc3_01
+            chmod 755 /mnt/volume_nyc3_01
+
+            docker run -d \
+              --name schwarbot \
+              --restart unless-stopped \
+              -v /mnt/volume_nyc3_01:/data \
+              -e DATABASE_URL=sqlite:///data/schwab.db \
+              -e WS_RPC_URL="${WS_RPC_URL}" \
+              -e ORDERBOOK="${ORDERBOOK}" \
+              -e ORDER_HASH="${ORDER_HASH}" \
+              -e DEPLOYMENT_BLOCK="${DEPLOYMENT_BLOCK}" \
+              -e APP_KEY="${APP_KEY}" \
+              -e APP_SECRET="${APP_SECRET}" \
+              "registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}"
+
+            sleep 10
+
+            if ! docker ps | grep -q schwarbot; then
+              echo "Container failed to start" >&2
+              docker logs schwarbot
+              exit 1
+            fi
+
+            if docker logs schwarbot 2>&1 | grep -q "error\|panic\|failed"; then
+              echo "Application errors detected in logs" >&2
+              docker logs --tail 20 schwarbot
+              exit 1
+            fi
+
+            docker image prune -f
+            docker images "registry.digitalocean.com/${REGISTRY_NAME}/schwarbot" \
+              --format "table {{.Repository}}\t{{.Tag}}\t{{.CreatedAt}}" | \
+              tail -n +2 | head -n -3 | awk '{print $1":"$2}' | \
+              xargs -r docker rmi || true
