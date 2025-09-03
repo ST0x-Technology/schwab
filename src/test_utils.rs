@@ -8,7 +8,7 @@ use alloy::rpc::types::Log;
 /// structure is valid and deterministic.
 pub(crate) fn get_test_order() -> OrderV3 {
     OrderV3 {
-        owner: address!("0x1111111111111111111111111111111111111111"),
+        owner: address!("0xdddddddddddddddddddddddddddddddddddddddd"),
         evaluable: EvaluableV3 {
             interpreter: address!("0x2222222222222222222222222222222222222222"),
             store: address!("0x3333333333333333333333333333333333333333"),
@@ -94,7 +94,7 @@ pub(crate) fn setup_test_env() -> Env {
         "--orderbook",
         "0x1234567890123456789012345678901234567890",
         "--order-owner",
-        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "0xdddddddddddddddddddddddddddddddddddddddd",
         "--deployment-block",
         "1",
         "--app-key",

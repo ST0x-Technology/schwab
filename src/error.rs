@@ -75,6 +75,15 @@ pub(crate) enum EventQueueError {
     Processing(String),
 }
 
+/// Event processing errors for live event handling.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum EventProcessingError {
+    #[error("Failed to enqueue ClearV2 event: {0}")]
+    EnqueueClearV2(#[from] EventQueueError),
+    #[error("Failed to enqueue TakeOrderV2 event: {0}")]
+    EnqueueTakeOrderV2(#[source] EventQueueError),
+}
+
 /// Unified error type for onchain trade processing with clear domain boundaries.
 /// Provides error mapping between layers while maintaining separation of concerns.
 #[derive(Debug, thiserror::Error)]

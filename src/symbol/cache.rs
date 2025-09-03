@@ -10,6 +10,15 @@ pub struct SymbolCache {
     map: RwLock<BTreeMap<Address, String>>,
 }
 
+impl Clone for SymbolCache {
+    fn clone(&self) -> Self {
+        let map = self.map.read().expect("Symbol cache lock poisoned").clone();
+        Self {
+            map: RwLock::new(map),
+        }
+    }
+}
+
 impl SymbolCache {
     pub async fn get_io_symbol<P: Provider>(
         &self,
@@ -58,7 +67,7 @@ mod tests {
         cache
             .map
             .write()
-            .unwrap()
+            .expect("Test cache lock poisoned")
             .insert(address, "TEST".to_string());
 
         let io = IO {
