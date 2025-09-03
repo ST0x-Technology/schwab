@@ -107,17 +107,60 @@ async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
         onchain::backfill::backfill_events(&pool, &provider, &env.evm_env, cutoff_block - 1)
             .await?;
 
-        conductor::process_queue(&env, &env.evm_env, &pool, &cache, &provider).await?;
+        conductor::process_queue(&env, &pool, &cache, &provider).await?;
 
-        conductor::run_live(
-            env.clone(),
-            pool.clone(),
-            cache,
-            provider,
-            clear_stream,
-            take_stream,
-        )
-        .await
+        // Spawn the queue processor service
+        let queue_processor_handle = {
+            let env_clone = env.clone();
+            let pool_clone = pool.clone();
+            let cache_clone = cache.clone();
+            let provider_clone = provider.clone();
+
+            tokio::spawn(async move {
+                if let Err(e) = conductor::run_queue_processor(
+                    &env_clone,
+                    &pool_clone,
+                    &cache_clone,
+                    provider_clone,
+                )
+                .await
+                {
+                    error!("Queue processor service failed: {e}");
+                }
+            })
+        };
+
+        // Spawn the live event listeners
+        let live_handle = tokio::spawn({
+            let env_clone = env.clone();
+            let pool_clone = pool.clone();
+
+            async move { conductor::run_live(env_clone, pool_clone, clear_stream, take_stream).await }
+        });
+
+        // Wait for services - if any terminates, we restart the whole bot
+        tokio::select! {
+            _ = queue_processor_handle => {
+                error!("Queue processor service terminated unexpectedly");
+                Err(anyhow::anyhow!("Queue processor terminated"))
+            }
+            result = live_handle => {
+                match result {
+                    Ok(Ok(())) => {
+                        error!("Live event listener terminated unexpectedly");
+                        Err(anyhow::anyhow!("Live event listener terminated"))
+                    }
+                    Ok(Err(e)) => {
+                        error!("Live event listener failed: {e}");
+                        Err(e)
+                    }
+                    Err(e) => {
+                        error!("Live event listener task panicked: {e}");
+                        Err(anyhow::anyhow!("Live event listener panicked: {e}"))
+                    }
+                }
+            }
+        }
     };
 
     const RERUN_DELAY_SECS: u64 = 10;

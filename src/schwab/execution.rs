@@ -204,14 +204,6 @@ impl SchwabExecution {
 }
 
 #[cfg(test)]
-pub(crate) async fn schwab_execution_db_count(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
-    let row = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
-        .fetch_one(pool)
-        .await?;
-    Ok(row.count)
-}
-
-#[cfg(test)]
 mod tests {
     use super::super::TradeState;
     use super::*;
@@ -233,7 +225,11 @@ mod tests {
         assert!(id > 0);
 
         // Verify execution was saved by checking the count
-        let count = schwab_execution_db_count(&pool).await.unwrap();
+        let count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .count;
         assert_eq!(count, 1);
     }
 
@@ -624,7 +620,11 @@ mod tests {
         assert!(result.is_err());
 
         // Verify our database maintains data integrity
-        let count = schwab_execution_db_count(&pool).await.unwrap();
+        let count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .count;
         assert_eq!(count, 0); // No invalid data should have been inserted
     }
 
@@ -679,7 +679,11 @@ mod tests {
     async fn test_db_count() {
         let pool = setup_test_db().await;
 
-        let count = schwab_execution_db_count(&pool).await.unwrap();
+        let count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .count;
         assert_eq!(count, 0);
 
         let execution = SchwabExecution {
@@ -697,7 +701,11 @@ mod tests {
             .unwrap();
         sql_tx.commit().await.unwrap();
 
-        let count = schwab_execution_db_count(&pool).await.unwrap();
+        let count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .count;
         assert_eq!(count, 1);
     }
 
@@ -952,7 +960,10 @@ mod tests {
     async fn test_database_connection_failure_handling() {
         let pool = setup_test_db().await;
         pool.close().await;
-        schwab_execution_db_count(&pool).await.unwrap_err();
+        sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+            .fetch_one(&pool)
+            .await
+            .unwrap_err();
     }
 
     #[tokio::test]
