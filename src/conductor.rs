@@ -476,12 +476,29 @@ async fn process_next_queued_event<P: Provider + Clone>(
     // If the event was filtered, mark as processed and return None
     let Some(trade) = onchain_trade else {
         info!(
-            "Event filtered out (no matching owner), tx_hash={:?}, log_index={}",
-            queued_event.tx_hash, queued_event.log_index
+            "Event filtered out (no matching owner): event_type={:?}, tx_hash={:?}, log_index={}",
+            match &queued_event.event {
+                TradeEvent::ClearV2(_) => "ClearV2",
+                TradeEvent::TakeOrderV2(_) => "TakeOrderV2",
+            },
+            queued_event.tx_hash,
+            queued_event.log_index
         );
         mark_event_processed(pool, event_id).await?;
         return Ok(None);
     };
+
+    info!(
+        "Event successfully converted to trade: event_type={:?}, tx_hash={:?}, log_index={}, symbol={}, amount={}",
+        match &queued_event.event {
+            TradeEvent::ClearV2(_) => "ClearV2",
+            TradeEvent::TakeOrderV2(_) => "TakeOrderV2",
+        },
+        trade.tx_hash,
+        trade.log_index,
+        trade.symbol,
+        trade.amount
+    );
 
     let symbol_lock = get_symbol_lock(&trade.symbol).await;
     let _guard = symbol_lock.lock().await;

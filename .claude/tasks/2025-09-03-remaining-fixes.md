@@ -195,7 +195,104 @@ After processing the 5 missing BUY trades:
 - Final net position: ~0.50 (below 1.0 threshold)
 - System continues processing live events normally
 
-## Task 4: Fix Auth "test_auth_code" Issue (LOW PRIORITY)
+## Task 4: Debug Missing Trades #19-22 (HIGH PRIORITY)
+
+### Problem Summary
+
+After running the bot with backfill on 2025-09-04, the expected counter-trades
+did not occur. Investigation revealed that trades #19-22 are in the event_queue
+and marked as processed, but never made it to the onchain_trades table. Only
+trade #24 (corresponding to expected trade #23) was successfully processed.
+
+### Current State
+
+**Database State:**
+
+- 19 trades in onchain_trades (missing trades #19-23)
+- Trade #24 is present (corresponds to expected trade #23)
+- Net position: 0.704085 (below 1.0 threshold, no execution triggered)
+- 4 historical executions from Sept 2nd (2 BUY, 2 SELL, net 0)
+
+**Event Queue State:**
+
+- Trades #19-22 ARE in event_queue with `processed=1`
+- Transaction hashes confirmed:
+  - Trade 19:
+    `0x85104b7b46082a22e319526bee52b0faeaaedf6c0f63c74f3897d3254c3265c9`
+  - Trade 20:
+    `0xf484f57ee88675ba84edae1f9a47d205630118cfaee8c4d47fde7572a896cd29`
+  - Trade 21:
+    `0x4834480a7871beed22be382401c84bcc7bde834871b2103af5f86d7c7de8261d`
+  - Trade 22:
+    `0x966b3076daa6ae0a0beee92adb7a8eb8d13ac69628fdb0ef29e01a3ab41c4d6c`
+
+### Investigation Findings
+
+1. **Events exist and were processed**: All 4 missing trades are in event_queue
+2. **Owner addresses match**: Alice owner in events matches configured
+   ORDER_OWNER
+   - Event: `0x17a0b3a25eefd6b02b2c58bf5f025da5ba172f49` (lowercase)
+   - Config: `0x17a0B3A25eefD6b02b2c58bf5F025da5bA172F49` (EIP-55 checksum)
+3. **Using typed Address comparison**: Both sides are
+   `alloy::primitives::Address` which should make case irrelevant (20-byte array
+   comparison)
+4. **Filtering is occurring**: Events were processed but didn't create trades
+
+### Implementation Checklist
+
+- [ ] Add diagnostic logging to `src/onchain/clear.rs`:
+  - [ ] Log addresses being compared (alice.owner, bob.owner, env.order_owner)
+  - [ ] Log owner match results (true/false for each)
+  - [ ] Log when trade is filtered due to no owner match
+- [ ] Enhance logging in `src/conductor.rs`:
+  - [ ] Include full tx_hash in filtering log
+  - [ ] Add success logging when trade IS created
+- [ ] Reset database state:
+  - [ ] Reset event_queue entries for trades #19-24 to `processed=0`
+  - [ ] Delete trade #24 from onchain_trades
+  - [ ] Adjust accumulator state
+- [ ] Re-run bot with diagnostic logging
+- [ ] Analyze logs to identify exact failure point
+- [ ] Implement fix based on findings
+- [ ] Verify all 5 trades process correctly
+- [ ] Confirm 2-share SELL execution triggers
+
+### Diagnostic SQL Commands
+
+```sql
+-- Reset event queue for trades 19-24
+UPDATE event_queue 
+SET processed = 0, processed_at = NULL 
+WHERE tx_hash IN (
+  '0x85104b7b46082a22e319526bee52b0faeaaedf6c0f63c74f3897d3254c3265c9',
+  '0xf484f57ee88675ba84edae1f9a47d205630118cfaee8c4d47fde7572a896cd29',
+  '0x4834480a7871beed22be382401c84bcc7bde834871b2103af5f86d7c7de8261d',
+  '0x966b3076daa6ae0a0beee92adb7a8eb8d13ac69628fdb0ef29e01a3ab41c4d6c',
+  '0x01ad7e96ce23e411b1761f12b544da8eada5b89a1a0636ced52b15675e0c9182'
+);
+
+-- Delete trade #24
+DELETE FROM onchain_trades WHERE id = 24;
+
+-- Reset accumulator
+UPDATE trade_accumulators 
+SET accumulated_long = accumulated_long - 0.455906
+WHERE symbol = 'GME';
+```
+
+### Expected Resolution
+
+Once diagnostic logging reveals the exact failure point, we expect to find
+either:
+
+1. An unexpected issue with Address comparison
+2. A different validation check failing
+3. An error in the trade creation logic
+
+The fix will allow trades #19-22 to process, increasing net position to ~2.5 and
+triggering the expected 2-share SELL execution.
+
+## Task 5: Fix Auth "test_auth_code" Issue (LOW PRIORITY)
 
 ### Problem Summary
 
@@ -223,7 +320,8 @@ functionality, but should be addressed for production cleanliness.
 1. **Task 1**: Complete BackgroundTasksBuilder refactoring ✅ COMPLETED
 2. **Task 2**: Fix accumulator triggering logic ✅ COMPLETED
 3. **Task 3**: Complete live testing (validate the fixes)
-4. **Task 4**: Fix auth issue (cleanup, low priority)
+4. **Task 4**: Debug missing trades #19-22 (diagnostic logging needed)
+5. **Task 5**: Fix auth issue (cleanup, low priority)
 
 ## Notes
 

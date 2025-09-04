@@ -1,5 +1,4 @@
 use alloy::providers::{ProviderBuilder, WsConnect};
-use backon::{ConstantBuilder, Retryable};
 use rocket::Config;
 use sqlx::SqlitePool;
 use tracing::{debug, error, info, warn};
@@ -23,7 +22,9 @@ pub mod test_utils;
 use crate::conductor::get_cutoff_block;
 use crate::env::Env;
 use crate::schwab::SchwabError;
+use crate::schwab::market_hours_cache::MarketHoursCache;
 use crate::symbol::cache::SymbolCache;
+use crate::trading_hours_controller::TradingHoursController;
 use bindings::IOrderBookV4::IOrderBookV4Instance;
 
 pub async fn launch(env: Env) -> anyhow::Result<()> {
@@ -128,27 +129,66 @@ async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
 
     const RERUN_DELAY_SECS: u64 = 10;
 
-    run_bot
-        .retry(
-            ConstantBuilder::default()
-                .with_delay(std::time::Duration::from_secs(RERUN_DELAY_SECS))
-                .with_max_times(usize::MAX), // Retry indefinitely
-        )
-        .when(|e| {
-            if let Some(msg) = e.downcast_ref::<String>() {
-                if msg == "RefreshTokenExpired" {
-                    info!("Retrying in {RERUN_DELAY_SECS} seconds due to expired refresh token - waiting for manual authentication");
-                    return true;
+    // Initialize market hours controller
+    let market_hours_cache = std::sync::Arc::new(MarketHoursCache::new());
+    let controller = TradingHoursController::new(
+        market_hours_cache,
+        env.schwab_auth.clone(),
+        std::sync::Arc::new(pool.clone()),
+    );
+
+    // Main market hours control loop
+    loop {
+        // Wait until market opens
+        if !controller.should_bot_run().await? {
+            info!("Market closed, waiting until market opens...");
+            controller.wait_until_market_open().await?;
+        }
+
+        // Run bot until market closes or completes
+        let run_result =
+            if let Some(time_until_close) = controller.time_until_market_close().await? {
+                let timeout_duration = time_until_close
+                    .to_std()
+                    .unwrap_or(std::time::Duration::from_secs(60 * 60)); // 1 hour fallback
+
+                info!(
+                    "Market is open, starting bot (will timeout in {} minutes)",
+                    timeout_duration.as_secs() / 60
+                );
+
+                tokio::select! {
+                    result = run_bot() => result,
+                    () = tokio::time::sleep(timeout_duration) => {
+                        info!("Market closing, shutting down bot gracefully");
+                        continue; // Go back to wait for next market open
+                    }
                 }
-            }
-            if e.to_string().contains("RefreshTokenExpired") {
-                info!("Retrying in 30 seconds due to expired refresh token - waiting for manual authentication");
-                true
             } else {
-                false
+                // Market already closed, continue to wait
+                warn!("Market already closed, waiting for next open");
+                continue;
+            };
+
+        // Handle bot result - simple retry for token expired, otherwise fail
+        match run_result {
+            Ok(()) => {
+                info!("Bot completed successfully, continuing to next market session");
             }
-        })
-        .await
+            Err(e) if e.to_string().contains("RefreshTokenExpired") => {
+                warn!(
+                    "Refresh token expired, retrying in {} seconds",
+                    RERUN_DELAY_SECS
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(RERUN_DELAY_SECS)).await;
+                continue;
+            }
+            Err(e) => {
+                error!("Bot failed: {e}");
+                return Err(e);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
