@@ -300,7 +300,7 @@ pub(crate) struct MarketHoursCache {
 - ✅ All clippy lints pass
 - ✅ Ready for integration in Task 4 (Trading Hours Controller)
 
-## Task 4: Create Trading Hours Controller
+## Task 4: Create Trading Hours Controller ✅ COMPLETED
 
 ### Problem Summary
 
@@ -308,29 +308,133 @@ Need a controller that determines when the bot should run based on market hours.
 
 ### Implementation Checklist
 
-- [ ] Create `src/trading_hours_controller.rs` module at root level
-- [ ] Hardcode configuration as constants:
+- [x] Create `src/trading_hours_controller.rs` module at root level
+- [x] Hardcode configuration as constants:
   ```rust
   const MARKET_OPEN_BUFFER_MINUTES: i64 = 5;
   const MARKET_CLOSE_BUFFER_MINUTES: i64 = 5;
   const MARKET_ID: &str = "equity";
   ```
-- [ ] Implement `TradingHoursController` struct:
-  - [ ] `should_bot_run()` - determines if bot should be running now
-  - [ ] `wait_until_market_open()` - async wait until market opens
-  - [ ] `time_until_market_close()` - duration until market closes
-  - [ ] Hold `Arc<MarketHoursCache>` for shared access
-- [ ] Use proper state modeling - no string status fields
-- [ ] Add comprehensive logging with tracing crate
-- [ ] Keep all methods private except those needed by lib.rs
+- [x] Implement `TradingHoursController` struct:
+  - [x] `should_bot_run()` - determines if bot should be running now
+  - [x] `wait_until_market_open()` - async wait until market opens
+  - [x] `time_until_market_close()` - duration until market closes
+  - [x] Hold `Arc<MarketHoursCache>` for shared access
+- [x] Use proper state modeling - no string status fields
+- [x] Add comprehensive logging with tracing crate
+- [x] Keep all methods private except those needed by lib.rs
+
+### Implementation Details
+
+**Module Structure:**
+
+- Created `src/trading_hours_controller.rs` at root level as specified
+- Updated `src/lib.rs` to include the new module
+- Used `pub(crate)` visibility for controlled access from lib.rs
+
+**Configuration Constants:**
+
+```rust
+const MARKET_OPEN_BUFFER_MINUTES: i64 = 5;
+const MARKET_CLOSE_BUFFER_MINUTES: i64 = 5;
+const MARKET_ID: &str = "equity";
+```
+
+**TradingHoursController Implementation:**
+
+```rust
+pub(crate) struct TradingHoursController {
+    cache: Arc<MarketHoursCache>,
+    env: SchwabAuthEnv,
+    pool: Arc<SqlitePool>,
+}
+```
+
+**Key Methods Implemented:**
+
+- `new()` - Constructor that takes shared cache, environment, and database pool
+- `should_bot_run()` - Determines if bot should be running now with buffer
+  logic:
+  - Returns `true` if market is currently open
+  - Returns `true` if market is closed but within 5-minute buffer before open
+  - Returns `false` otherwise
+- `wait_until_market_open()` - Async method that waits until market opens (with
+  buffer):
+  - Continuously checks market status
+  - Calculates sleep duration until market open minus buffer
+  - Provides informative logging for long waits and debug logging for short
+    waits
+  - Has fallback 1-minute sleep if unable to determine next open time
+- `time_until_market_close()` - Returns duration until market closes (with
+  buffer):
+  - Returns `None` if market is already closed
+  - Returns `Some(Duration)` with time until market close plus 5-minute buffer
+  - Used for `tokio::select!` timeout in main bot loop
+
+**Buffer Logic:**
+
+- Bot starts 5 minutes before market opens (including the buffer in "should run"
+  determination)
+- Bot stops 5 minutes after market closes (buffer included in close time
+  calculation)
+- All buffer times are hardcoded as constants per requirements
+
+**Error Handling:**
+
+- All API failures are propagated without fallback values (financial integrity
+  rules)
+- Uses existing `SchwabError` types for consistency
+- No `unwrap` or `unwrap_or` patterns - explicit error handling throughout
+
+**Logging Integration:**
+
+- Uses `tracing` crate for structured logging
+- `info!` level for important state transitions (market open/close events)
+- `debug!` level for routine status checks and short waits
+- `warn!` level for unexpected conditions (unable to determine next open time)
+
+**Thread Safety:**
+
+- Uses `Arc<MarketHoursCache>` for shared, thread-safe cache access
+- Uses `Arc<SqlitePool>` for shared database access
+- All methods are async-safe and can be called concurrently
+
+**Test Coverage:**
+
+Comprehensive tests covering:
+
+- `test_should_bot_run_market_open()` - Behavior when market is currently open
+- `test_should_bot_run_market_closed_outside_buffer()` - Behavior when market is
+  closed and outside buffer
+- `test_should_bot_run_within_buffer_time()` - Behavior when market is closed
+  but within 5-minute buffer
+- `test_time_until_market_close_open_market()` - Duration calculation when
+  market is open
+- `test_time_until_market_close_closed_market()` - Behavior when market is
+  closed
+- `test_buffer_time_constants()` - Verification of hardcoded constants
+- `test_api_error_propagation()` - Error handling when API calls fail
+
+**Code Quality:**
+
+- All tests pass (7 passing tests)
+- Follows CLAUDE.md guidelines:
+  - Minimal public API surface (`pub(crate)` only)
+  - No unwrap patterns - explicit error handling
+  - Proper state modeling with enums (leverages existing `MarketStatus`)
+  - Functional programming patterns where appropriate
+  - Clear separation of concerns
 
 ### Success Criteria
 
-- Controller correctly determines when bot should run
-- Respects hardcoded buffer times
-- Clear state transitions with logging
-- Thread-safe shared cache access
-- Minimal public API surface
+- ✅ Controller correctly determines when bot should run
+- ✅ Respects hardcoded buffer times (5 minutes before open, 5 minutes after
+  close)
+- ✅ Clear state transitions with appropriate logging levels
+- ✅ Thread-safe shared cache access via `Arc<MarketHoursCache>`
+- ✅ Minimal public API surface (all methods `pub(crate)`)
+- ✅ Comprehensive test coverage with business logic validation
+- ✅ Ready for integration in Task 5
 
 ## Task 5: Integrate Trading Hours Controller into Main Bot
 

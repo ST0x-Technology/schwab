@@ -15,6 +15,7 @@ mod onchain;
 mod queue;
 pub mod schwab;
 mod symbol;
+mod trading_hours_controller;
 
 #[cfg(test)]
 pub mod test_utils;
