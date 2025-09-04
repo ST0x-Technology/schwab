@@ -21,7 +21,7 @@ completely stopping during closed hours.
   - [x] `MarketSession` enum (PreMarket, Regular, AfterHours) - no string types
   - [x] `MarketStatus` enum (Open, Closed) - make invalid states unrepresentable
 - [x] Implement Schwab Market Data API client:
-  - [x] `fetch_market_hours()` - calls `/marketdata/v1/markets/{marketId}/hours`
+  - [x] `fetch_market_hours()` - calls `/marketdata/v1/markets/{marketId}`
         endpoint
   - [x] Handle authentication for Market Data API (reuse existing token
         management)
@@ -69,7 +69,7 @@ pub(crate) struct MarketHours {
 - Follows existing patterns from `auth.rs` and `order.rs`
 - Uses `SchwabTokens::get_valid_access_token()` for authentication
 - Implements retry logic with `backon::ExponentialBuilder`
-- Calls `/marketdata/v1/markets/equity/hours` endpoint
+- Calls `/marketdata/v1/markets/equity` endpoint
 - Proper error propagation with `SchwabError::RequestFailed`
 - No `unwrap_or` patterns - all errors fail fast explicitly
 
@@ -97,11 +97,26 @@ pub(crate) struct MarketHours {
 - Follows CLAUDE.md financial error handling rules (no unwrap patterns)
 - Proper visibility restrictions (`pub(crate)` only)
 
+**Bug Fix (2025-09-04):**
+
+- ✅ **FIXED**: Corrected API endpoint from
+  `/marketdata/v1/markets/equity/hours` to `/marketdata/v1/markets/equity`
+- The original endpoint was returning 404 Not Found
+- Research confirmed correct Schwab Market Data API endpoints:
+  - Single market: `GET /marketdata/v1/markets/{marketId}`
+  - Multiple markets: `GET /marketdata/v1/markets?markets={list}`
+- **Verification**: CLI command now works successfully:
+  ```
+  $ cargo run --bin cli market-status
+  Market Status: CLOSED
+  Wednesday, September 03, 2025: Regular Hours: 09:30 AM ET - 04:00 PM ET
+  ```
+
 ### API Integration Details
 
 Based on research, the Schwab Market Data API provides:
 
-- **Endpoint**: `GET /marketdata/v1/markets/{marketId}/hours`
+- **Endpoint**: `GET /marketdata/v1/markets/{marketId}`
 - **Parameters**:
   - `marketId`: "equity" for US equities
   - `date`: Optional YYYY-MM-DD format (defaults to current day)
@@ -116,7 +131,7 @@ Based on research, the Schwab Market Data API provides:
 - Explicit error propagation with no silent failures
 - Test coverage verifies business logic, not language features
 
-## Task 2: Add CLI Command for Market Status
+## Task 2: Add CLI Command for Market Status ✅ COMPLETED
 
 ### Problem Summary
 
@@ -125,15 +140,15 @@ market hours logic independently before integrating into the main bot flow.
 
 ### Implementation Checklist
 
-- [ ] Add new CLI command `market-status` to `src/cli.rs` using clap
-- [ ] Command implementation:
-  - [ ] Fetch current market hours using the same logic as main bot will use
-  - [ ] Display current market status (OPEN/CLOSED)
-  - [ ] Show today's market hours if available
-  - [ ] Display time until next state change
-  - [ ] Support optional `--date` parameter for checking specific dates
-- [ ] Reuse `schwab::market_hours` module from Task 1
-- [ ] Use proper error types - no string errors, use thiserror enums
+- [x] Add new CLI command `market-status` to `src/cli.rs` using clap
+- [x] Command implementation:
+  - [x] Fetch current market hours using the same logic as main bot will use
+  - [x] Display current market status (OPEN/CLOSED)
+  - [x] Show today's market hours if available
+  - [x] Display time until next state change
+  - [x] Support optional `--date` parameter for checking specific dates
+- [x] Reuse `schwab::market_hours` module from Task 1
+- [x] Use proper error types - no string errors, use thiserror enums
 
 ### Example Output
 
@@ -148,12 +163,48 @@ Market Status for September 6, 2025:
 Regular Hours: 9:30 AM - 4:00 PM ET
 ```
 
+### Implementation Details
+
+**CLI Integration:**
+
+- Added `MarketStatus` variant to `Commands` enum with optional `--date`
+  parameter
+- Integrated into existing CLI command structure in `src/cli.rs`
+- Follows existing patterns for error handling and stdout formatting
+
+**Display Logic:**
+
+- Created `display_market_status` function that formats market hours information
+- Shows current market status (OPEN/CLOSED)
+- Displays market hours in Eastern timezone with formatted dates
+- Calculates and shows time until market opens/closes
+- Handles closed market days (weekends/holidays) gracefully
+
+**Testing:**
+
+- Added comprehensive integration tests covering:
+  - Open market scenarios with time calculations
+  - Closed market scenarios (weekends/holidays)
+  - Authentication failures
+  - API error handling
+  - CLI help text integration
+- All tests pass with proper mock server responses
+
+**Code Quality:**
+
+- Passes all clippy lints
+- Uses typed errors with proper propagation
+- Follows CLAUDE.md guidelines for error handling
+- No unwrap patterns - explicit error handling throughout
+
 ### Success Criteria
 
-- Command provides clear, accurate market status information
-- Proper error handling with typed errors
-- Shows meaningful information for weekends/holidays
-- Can verify market hours logic before full integration
+- ✅ Command provides clear, accurate market status information
+- ✅ Proper error handling with typed errors
+- ✅ Shows meaningful information for weekends/holidays
+- ✅ Can verify market hours logic before full integration
+- ✅ Comprehensive test coverage
+- ✅ CLI help integration verified
 
 ## Task 3: Create Market Hours Cache Module
 
