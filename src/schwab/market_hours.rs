@@ -17,6 +17,7 @@ pub(crate) enum MarketSession {
 }
 
 impl MarketSession {
+    #[cfg(test)]
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::PreMarket => "PRE_MARKET",
@@ -92,11 +93,13 @@ impl MarketHours {
     }
 
     /// Convert start time to system timezone.
+    #[cfg(test)]
     pub(crate) fn start_in_local(&self) -> Option<DateTime<Utc>> {
         self.start.map(|dt| dt.with_timezone(&Utc))
     }
 
     /// Convert end time to system timezone.
+    #[cfg(test)]
     pub(crate) fn end_in_local(&self) -> Option<DateTime<Utc>> {
         self.end.map(|dt| dt.with_timezone(&Utc))
     }
@@ -154,7 +157,7 @@ struct TimeRange {
 
 /// Fetch market hours for a specific date from the Schwab Market Data API.
 ///
-/// Uses the `/marketdata/v1/markets/{marketId}/hours` endpoint with "equity" as the market ID.
+/// Uses the `/marketdata/v1/markets/{marketId}` endpoint with "equity" as the market ID.
 /// Returns market hours in Eastern timezone per the API specification.
 pub(crate) async fn fetch_market_hours(
     env: &SchwabAuthEnv,
@@ -173,7 +176,7 @@ pub(crate) async fn fetch_market_hours(
     .into_iter()
     .collect::<HeaderMap>();
 
-    let mut url = format!("{}/marketdata/v1/markets/equity/hours", env.base_url);
+    let mut url = format!("{}/marketdata/v1/markets/equity", env.base_url);
 
     if let Some(date_param) = date {
         use std::fmt::Write;
@@ -380,7 +383,7 @@ mod tests {
 
         let mock = server.mock(|when, then| {
             when.method(GET)
-                .path("/marketdata/v1/markets/equity/hours")
+                .path("/marketdata/v1/markets/equity")
                 .header("authorization", "Bearer test_access_token")
                 .header("accept", "application/json");
             then.status(200)
@@ -425,7 +428,7 @@ mod tests {
 
         let mock = server.mock(|when, then| {
             when.method(GET)
-                .path("/marketdata/v1/markets/equity/hours")
+                .path("/marketdata/v1/markets/equity")
                 .query_param("date", "2025-01-04")
                 .header("authorization", "Bearer test_access_token")
                 .header("accept", "application/json");
@@ -457,7 +460,7 @@ mod tests {
         setup_test_tokens(&pool).await;
 
         let mock = server.mock(|when, then| {
-            when.method(GET).path("/marketdata/v1/markets/equity/hours");
+            when.method(GET).path("/marketdata/v1/markets/equity");
             then.status(500)
                 .header("content-type", "application/json")
                 .json_body(json!({"error": "Internal server error"}));
@@ -481,7 +484,7 @@ mod tests {
         setup_test_tokens(&pool).await;
 
         let mock = server.mock(|when, then| {
-            when.method(GET).path("/marketdata/v1/markets/equity/hours");
+            when.method(GET).path("/marketdata/v1/markets/equity");
             then.status(200)
                 .header("content-type", "application/json")
                 .body("invalid json");
