@@ -7,6 +7,7 @@ use thiserror::Error;
 pub(crate) mod auth;
 pub(crate) mod execution;
 pub(crate) mod market_hours;
+pub(crate) mod market_hours_cache;
 pub(crate) mod order;
 pub(crate) mod order_poller;
 pub(crate) mod order_status;
@@ -14,6 +15,7 @@ pub(crate) mod tokens;
 pub(crate) mod trade_state;
 
 pub(crate) use auth::SchwabAuthEnv;
+pub(crate) use market_hours_cache::MarketHoursCache;
 pub(crate) use order_poller::{OrderPollerConfig, OrderStatusPoller};
 pub(crate) use tokens::SchwabTokens;
 pub(crate) use trade_state::{HasTradeStatus, TradeState};

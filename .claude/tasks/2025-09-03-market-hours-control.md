@@ -206,7 +206,7 @@ Regular Hours: 9:30 AM - 4:00 PM ET
 - ✅ Comprehensive test coverage
 - ✅ CLI help integration verified
 
-## Task 3: Create Market Hours Cache Module
+## Task 3: Create Market Hours Cache Module ✅ COMPLETED
 
 ### Problem Summary
 
@@ -215,28 +215,90 @@ the existing `SymbolCache`.
 
 ### Implementation Checklist
 
-- [ ] Create `src/schwab/market_hours_cache.rs` module following SymbolCache
+- [x] Create `src/schwab/market_hours_cache.rs` module following SymbolCache
       pattern
-- [ ] Implement `MarketHoursCache` struct:
-  - [ ] Use `tokio::sync::RwLock` for thread-safe access
-  - [ ] Store `HashMap<(String, NaiveDate), MarketHours>`
-  - [ ] Cache only today's and tomorrow's hours (minimal memory)
-- [ ] Implement methods following functional programming patterns:
-  - [ ] `get_or_fetch()` - check cache first, fetch if missing
-  - [ ] `get_current_status()` - return current market status
-  - [ ] `get_next_transition()` - return next open/close time
-- [ ] Cache refresh logic:
-  - [ ] Refresh at day boundary (midnight)
-  - [ ] Clear stale entries (older than yesterday)
-- [ ] No fallback mechanisms - propagate API failures per financial integrity
+- [x] Implement `MarketHoursCache` struct:
+  - [x] Use `tokio::sync::RwLock` for thread-safe access
+  - [x] Store `HashMap<(String, NaiveDate), MarketHours>`
+  - [x] Cache only today's and tomorrow's hours (minimal memory)
+- [x] Implement methods following functional programming patterns:
+  - [x] `get_or_fetch()` - check cache first, fetch if missing
+  - [x] `get_current_status()` - return current market status
+  - [x] `get_next_transition()` - return next open/close time
+- [x] Cache refresh logic:
+  - [x] Refresh at day boundary (midnight)
+  - [x] Clear stale entries (older than yesterday)
+- [x] No fallback mechanisms - propagate API failures per financial integrity
       rules
+
+### Implementation Details
+
+**Module Structure:**
+
+- Created `src/schwab/market_hours_cache.rs` with proper visibility
+  (`pub(crate)`)
+- Updated `src/schwab/mod.rs` to export the new `MarketHoursCache` type
+- Uses `tokio::sync::RwLock` for async thread-safe access (different from
+  SymbolCache which uses std::sync::RwLock)
+
+**Cache Design:**
+
+```rust
+pub(crate) struct MarketHoursCache {
+    cache: RwLock<HashMap<(String, NaiveDate), MarketHours>>,
+}
+```
+
+**Key Methods Implemented:**
+
+- `get_or_fetch()` - Check cache first, fetch from API if missing/expired
+- `get_current_status()` - Return current market status quickly
+- `get_next_transition()` - Return next market transition time (open/close)
+- `refresh_cache()` - Clear stale entries and pre-fetch today/tomorrow
+- `clear_stale_entries()` - Remove entries older than yesterday
+
+**Thread Safety & Performance:**
+
+- Uses `tokio::sync::RwLock` for async operations
+- Cache key format: `(market_id: String, date: NaiveDate)`
+- Minimal memory footprint - only caches today and tomorrow's hours
+- Proper lock scope management with explicit `drop()` calls to minimize
+  contention
+
+**Error Handling:**
+
+- All API failures propagate without fallback values (per financial integrity
+  rules)
+- Uses existing `SchwabError` types for consistent error handling
+- No silent failures or default values that could corrupt financial data
+
+**Test Coverage:**
+
+- 7 comprehensive tests covering:
+  - Cache hit/miss scenarios
+  - Thread-safe concurrent access patterns
+  - API error propagation
+  - Stale entry cleanup logic
+  - Current status determination
+  - Mock server integration
+- All tests passing with proper business logic validation
+
+**Code Quality:**
+
+- Follows CLAUDE.md guidelines for functional programming patterns
+- Uses minimal public API surface (`pub(crate)` visibility)
+- Proper resource management with explicit lock dropping
+- No unwrap patterns - all errors propagate explicitly
 
 ### Success Criteria
 
-- Thread-safe caching with minimal memory footprint
-- API failures propagate with proper error types
-- No silent failures or default values
-- Cache refresh is automatic and efficient
+- ✅ Thread-safe caching with minimal memory footprint
+- ✅ API failures propagate with proper error types
+- ✅ No silent failures or default values
+- ✅ Cache refresh is automatic and efficient
+- ✅ Comprehensive test coverage
+- ✅ All clippy lints pass
+- ✅ Ready for integration in Task 4 (Trading Hours Controller)
 
 ## Task 4: Create Trading Hours Controller
 
