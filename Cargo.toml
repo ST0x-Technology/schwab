@@ -31,6 +31,7 @@ flate2 = "1.0"
 itertools = "0.14.0"
 rand = "0.8"
 rocket = { version = "0.5.1", features = ["json"] }
+chrono-tz = "0.10.4"
 
 [dev-dependencies]
 httpmock = "0.7.0"

@@ -4,7 +4,7 @@ This file documents the plan for implementing market hours tracking and control
 for the arbitrage bot, ensuring it starts/stops the entire bot flow based on
 Schwab market hours.
 
-## Task 1: Create Market Hours API Client Module
+## Task 1: Create Market Hours API Client Module ✅ COMPLETED
 
 ### Problem Summary
 
@@ -14,22 +14,88 @@ completely stopping during closed hours.
 
 ### Implementation Checklist
 
-- [ ] Create `src/schwab/market_hours.rs` module
-- [ ] Define data structures using ADTs and enums per CLAUDE.md guidelines:
-  - [ ] `MarketHours` struct with fields for date, session type, start/end
+- [x] Create `src/schwab/market_hours.rs` module
+- [x] Define data structures using ADTs and enums per CLAUDE.md guidelines:
+  - [x] `MarketHours` struct with fields for date, session type, start/end
         times, is_open
-  - [ ] `MarketSession` enum (Normal, PreMarket, AfterHours) - no string types
-  - [ ] `MarketStatus` enum (Open, Closed) - make invalid states unrepresentable
-- [ ] Implement Schwab Market Data API client:
-  - [ ] `fetch_market_hours()` - calls `/marketdata/v1/markets/{marketId}/hours`
+  - [x] `MarketSession` enum (PreMarket, Regular, AfterHours) - no string types
+  - [x] `MarketStatus` enum (Open, Closed) - make invalid states unrepresentable
+- [x] Implement Schwab Market Data API client:
+  - [x] `fetch_market_hours()` - calls `/marketdata/v1/markets/{marketId}/hours`
         endpoint
-  - [ ] Handle authentication for Market Data API (reuse existing token
+  - [x] Handle authentication for Market Data API (reuse existing token
         management)
-  - [ ] Parse API responses with explicit error handling (no unwrap_or patterns)
-  - [ ] Return `Result<MarketHours, SchwabError>` - fail fast on API errors
-- [ ] Implement timezone handling using chrono-tz (ET to system timezone)
-- [ ] Add comprehensive test coverage with meaningful tests (not just field
+  - [x] Parse API responses with explicit error handling (no unwrap_or patterns)
+  - [x] Return `Result<MarketHours, SchwabError>` - fail fast on API errors
+- [x] Implement timezone handling using chrono-tz (ET to system timezone)
+- [x] Add comprehensive test coverage with meaningful tests (not just field
       assignment)
+
+### Implementation Details
+
+**Module Structure:**
+
+- Added `chrono-tz` dependency via `cargo add chrono-tz`
+- Created `src/schwab/market_hours.rs` with proper visibility (`pub(crate)`)
+- Updated `src/schwab/mod.rs` to export the new module
+
+**Data Structures (ADT/Enum Design):**
+
+```rust
+// Strong typing prevents invalid states
+pub(crate) enum MarketSession {
+    PreMarket,
+    Regular,
+    AfterHours,
+}
+
+pub(crate) enum MarketStatus {
+    Open,
+    Closed,
+}
+
+// Complete market hours information with timezone support
+pub(crate) struct MarketHours {
+    pub date: NaiveDate,
+    pub session_type: MarketSession,
+    pub start: Option<DateTime<Tz>>,  // None for closed days
+    pub end: Option<DateTime<Tz>>,    // None for closed days
+    pub is_open: bool,
+}
+```
+
+**API Integration:**
+
+- Follows existing patterns from `auth.rs` and `order.rs`
+- Uses `SchwabTokens::get_valid_access_token()` for authentication
+- Implements retry logic with `backon::ExponentialBuilder`
+- Calls `/marketdata/v1/markets/equity/hours` endpoint
+- Proper error propagation with `SchwabError::RequestFailed`
+- No `unwrap_or` patterns - all errors fail fast explicitly
+
+**Timezone Handling:**
+
+- Uses `chrono_tz::US::Eastern` for market timezone
+- Provides conversion methods: `start_in_local()`, `end_in_local()`
+- Handles DST transitions correctly via chrono-tz
+- `current_status()` method determines real-time market state
+
+**Test Coverage:**
+
+- 13 comprehensive tests covering:
+  - API response parsing (open/closed market scenarios)
+  - Error handling (API failures, invalid responses)
+  - Timezone conversions and edge cases
+  - Business logic validation (not just struct assignment)
+  - Enum serialization/deserialization
+
+**Code Quality:**
+
+- All tests passing (350 total tests)
+- Clippy linting passes with no errors
+- Pre-commit hooks all passing
+- Follows CLAUDE.md financial error handling rules (no unwrap patterns)
+- Proper visibility restrictions (`pub(crate)` only)
 
 ### API Integration Details
 
