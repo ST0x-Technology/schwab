@@ -140,10 +140,7 @@ async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
     // Main market hours control loop
     loop {
         // Wait until market opens
-        if !controller.should_bot_run().await? {
-            info!("Market closed, waiting until market opens...");
-            controller.wait_until_market_open().await?;
-        }
+        controller.wait_until_market_open().await?;
 
         // Run bot until market closes or completes
         let run_result =

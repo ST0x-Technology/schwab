@@ -19,12 +19,12 @@ use crate::schwab::{Direction, execution::SchwabExecution};
 ///
 /// Returns `Some(SchwabExecution)` if a Schwab order was created, `None` if the trade
 /// was accumulated but didn't trigger an execution (or was a duplicate).
+///
+/// The transaction must be committed by the caller.
 pub async fn process_onchain_trade(
-    pool: &SqlitePool,
+    sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     trade: OnchainTrade,
 ) -> Result<Option<SchwabExecution>, OnChainError> {
-    let mut sql_tx = pool.begin().await?;
-
     // Check if trade already exists to handle duplicates gracefully
     let tx_hash_str = trade.tx_hash.to_string();
     #[allow(clippy::cast_possible_wrap)]
@@ -39,7 +39,7 @@ pub async fn process_onchain_trade(
         tx_hash_str,
         log_index_i64
     )
-    .fetch_optional(&mut *sql_tx)
+    .fetch_optional(&mut **sql_tx)
     .await?;
 
     if existing_trade.is_some() {
@@ -47,11 +47,10 @@ pub async fn process_onchain_trade(
             "Trade already exists (tx_hash={:?}, log_index={}), skipping duplicate processing",
             trade.tx_hash, trade.log_index
         );
-        sql_tx.rollback().await?;
         return Ok(None);
     }
 
-    let trade_id = trade.save_within_transaction(&mut sql_tx).await?;
+    let trade_id = trade.save_within_transaction(sql_tx).await?;
     info!(
         trade_id = trade_id,
         symbol = %trade.symbol,
@@ -64,7 +63,7 @@ pub async fn process_onchain_trade(
 
     let base_symbol = extract_base_symbol(&trade.symbol)?;
 
-    let mut calculator = get_or_create_within_transaction(&mut sql_tx, &base_symbol).await?;
+    let mut calculator = get_or_create_within_transaction(sql_tx, &base_symbol).await?;
 
     // Map onchain direction to exposure state
     // Onchain SELL (gave away stock for USDC) -> we're now short the stock
@@ -86,22 +85,21 @@ pub async fn process_onchain_trade(
     );
 
     // Clean up any stale executions for this symbol before attempting new execution
-    clean_up_stale_executions(&mut sql_tx, &base_symbol).await?;
+    clean_up_stale_executions(sql_tx, &base_symbol).await?;
 
-    let execution = if try_acquire_execution_lease(&mut sql_tx, &base_symbol).await? {
+    let execution = if try_acquire_execution_lease(sql_tx, &base_symbol).await? {
         let result =
-            try_create_execution_if_ready(&mut sql_tx, &base_symbol, trade_id, &mut calculator)
-                .await?;
+            try_create_execution_if_ready(sql_tx, &base_symbol, trade_id, &mut calculator).await?;
 
         match &result {
             Some(execution) => {
                 let execution_id = execution
                     .id
                     .ok_or(crate::error::PersistenceError::MissingExecutionId)?;
-                set_pending_execution_id(&mut sql_tx, &base_symbol, execution_id).await?;
+                set_pending_execution_id(sql_tx, &base_symbol, execution_id).await?;
             }
             None => {
-                clear_execution_lease(&mut sql_tx, &base_symbol).await?;
+                clear_execution_lease(sql_tx, &base_symbol).await?;
             }
         }
 
@@ -115,9 +113,14 @@ pub async fn process_onchain_trade(
     };
 
     let pending_execution_id = execution.as_ref().and_then(|e| e.id);
-    save_within_transaction(&mut sql_tx, &base_symbol, &calculator, pending_execution_id).await?;
+    save_within_transaction(
+        &mut *sql_tx,
+        &base_symbol,
+        &calculator,
+        pending_execution_id,
+    )
+    .await?;
 
-    sql_tx.commit().await?;
     Ok(execution)
 }
 
@@ -237,7 +240,14 @@ async fn try_create_execution_if_ready(
         return Ok(None);
     };
 
-    execute_position(sql_tx, base_symbol, trade_id, calculator, execution_type).await
+    execute_position(
+        &mut *sql_tx,
+        base_symbol,
+        trade_id,
+        calculator,
+        execution_type,
+    )
+    .await
 }
 
 async fn execute_position(
@@ -609,6 +619,17 @@ mod tests {
     use crate::test_utils::setup_test_db;
     use alloy::primitives::fixed_bytes;
 
+    // Helper function for tests to handle transaction management
+    async fn process_trade_with_tx(
+        pool: &SqlitePool,
+        trade: OnchainTrade,
+    ) -> Result<Option<SchwabExecution>, OnChainError> {
+        let mut sql_tx = pool.begin().await?;
+        let result = process_onchain_trade(&mut sql_tx, trade).await?;
+        sql_tx.commit().await?;
+        Ok(result)
+    }
+
     #[tokio::test]
     async fn test_add_trade_below_threshold() {
         let pool = setup_test_db().await;
@@ -626,7 +647,7 @@ mod tests {
             created_at: None,
         };
 
-        let result = process_onchain_trade(&pool, trade).await.unwrap();
+        let result = process_trade_with_tx(&pool, trade).await.unwrap();
         assert!(result.is_none());
 
         let (calculator, _) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
@@ -652,7 +673,7 @@ mod tests {
             created_at: None,
         };
 
-        let execution = process_onchain_trade(&pool, trade).await.unwrap().unwrap();
+        let execution = process_trade_with_tx(&pool, trade).await.unwrap().unwrap();
 
         assert_eq!(execution.symbol, "MSFT");
         assert_eq!(execution.shares, 1);
@@ -680,7 +701,7 @@ mod tests {
             created_at: None,
         };
 
-        let result1 = process_onchain_trade(&pool, trade1).await.unwrap();
+        let result1 = process_trade_with_tx(&pool, trade1).await.unwrap();
         assert!(result1.is_none());
 
         let trade2 = OnchainTrade {
@@ -696,7 +717,7 @@ mod tests {
             created_at: None,
         };
 
-        let result2 = process_onchain_trade(&pool, trade2).await.unwrap();
+        let result2 = process_trade_with_tx(&pool, trade2).await.unwrap();
         assert!(result2.is_none());
 
         let trade3 = OnchainTrade {
@@ -712,7 +733,7 @@ mod tests {
             created_at: None,
         };
 
-        let result3 = process_onchain_trade(&pool, trade3).await.unwrap();
+        let result3 = process_trade_with_tx(&pool, trade3).await.unwrap();
         let execution = result3.unwrap();
 
         assert_eq!(execution.symbol, "AAPL");
@@ -741,7 +762,7 @@ mod tests {
             created_at: None,
         };
 
-        let result = process_onchain_trade(&pool, trade).await;
+        let result = process_trade_with_tx(&pool, trade).await;
         assert!(matches!(
             result.unwrap_err(),
             OnChainError::Validation(TradeValidationError::InvalidSymbolConfiguration(_, _))
@@ -765,7 +786,7 @@ mod tests {
             created_at: None,
         };
 
-        let result = process_onchain_trade(&pool, trade).await;
+        let result = process_trade_with_tx(&pool, trade).await;
         assert!(matches!(
             result.unwrap_err(),
             OnChainError::Validation(TradeValidationError::InvalidSymbolConfiguration(_, _))
@@ -798,7 +819,7 @@ mod tests {
             created_at: None,
         };
 
-        let execution = process_onchain_trade(&pool, trade).await.unwrap().unwrap();
+        let execution = process_trade_with_tx(&pool, trade).await.unwrap().unwrap();
 
         assert_eq!(execution.direction, Direction::Buy); // Schwab BUY to offset onchain SELL (short exposure)
         assert_eq!(execution.symbol, "AAPL");
@@ -822,7 +843,7 @@ mod tests {
             created_at: None,
         };
 
-        let execution = process_onchain_trade(&pool, trade).await.unwrap().unwrap();
+        let execution = process_trade_with_tx(&pool, trade).await.unwrap().unwrap();
 
         assert_eq!(execution.direction, Direction::Sell); // Schwab SELL to offset onchain BUY (long exposure)
         assert_eq!(execution.symbol, "MSFT");
@@ -863,7 +884,7 @@ mod tests {
         };
 
         // Attempt to add trade - should fail when trying to save execution due to unique constraint
-        let result = process_onchain_trade(&pool, trade).await;
+        let result = process_trade_with_tx(&pool, trade).await;
 
         // Verify the operation failed due to execution save failure (unique constraint violation)
         assert!(result.is_err());
@@ -922,11 +943,11 @@ mod tests {
         };
 
         // Add first trade (should not trigger execution)
-        let result1 = process_onchain_trade(&pool, trade1).await.unwrap();
+        let result1 = process_trade_with_tx(&pool, trade1).await.unwrap();
         assert!(result1.is_none());
 
         // Add second trade (should trigger execution)
-        let result2 = process_onchain_trade(&pool, trade2).await.unwrap();
+        let result2 = process_trade_with_tx(&pool, trade2).await.unwrap();
         let execution = result2.unwrap();
 
         // Verify execution created for exactly 1 share
@@ -989,7 +1010,7 @@ mod tests {
             trade: OnchainTrade,
         ) -> Result<Option<SchwabExecution>, OnChainError> {
             for attempt in 0..3 {
-                match process_onchain_trade(pool, trade.clone()).await {
+                match process_trade_with_tx(pool, trade.clone()).await {
                     Ok(result) => return Ok(result),
                     Err(OnChainError::Persistence(crate::error::PersistenceError::Database(
                         sqlx::Error::Database(db_err),
@@ -1085,7 +1106,7 @@ mod tests {
             created_at: None,
         };
 
-        let execution = process_onchain_trade(&pool, trade).await.unwrap().unwrap();
+        let execution = process_trade_with_tx(&pool, trade).await.unwrap().unwrap();
         let execution_id = execution.id.unwrap();
 
         // Verify trade-execution link was created
@@ -1148,18 +1169,18 @@ mod tests {
         ];
 
         // Add first two trades - should not trigger execution
-        let result1 = process_onchain_trade(&pool, trades[0].clone())
+        let result1 = process_trade_with_tx(&pool, trades[0].clone())
             .await
             .unwrap();
         assert!(result1.is_none());
 
-        let result2 = process_onchain_trade(&pool, trades[1].clone())
+        let result2 = process_trade_with_tx(&pool, trades[1].clone())
             .await
             .unwrap();
         assert!(result2.is_none());
 
         // Third trade should trigger execution
-        let result3 = process_onchain_trade(&pool, trades[2].clone())
+        let result3 = process_trade_with_tx(&pool, trades[2].clone())
             .await
             .unwrap();
         let execution = result3.unwrap();
@@ -1221,13 +1242,13 @@ mod tests {
         ];
 
         // Add first trade - no execution
-        let result1 = process_onchain_trade(&pool, trades[0].clone())
+        let result1 = process_trade_with_tx(&pool, trades[0].clone())
             .await
             .unwrap();
         assert!(result1.is_none());
 
         // Add second trade - triggers execution
-        let result2 = process_onchain_trade(&pool, trades[1].clone())
+        let result2 = process_trade_with_tx(&pool, trades[1].clone())
             .await
             .unwrap();
         let execution = result2.unwrap();
@@ -1280,7 +1301,7 @@ mod tests {
         };
 
         // Add trade and trigger execution
-        let execution = process_onchain_trade(&pool, trade).await.unwrap().unwrap();
+        let execution = process_trade_with_tx(&pool, trade).await.unwrap().unwrap();
 
         // Verify only 1 share executed, not 1.2
         assert_eq!(execution.shares, 1);
@@ -1332,8 +1353,8 @@ mod tests {
         };
 
         // Execute both trades
-        let buy_result = process_onchain_trade(&pool, buy_trade).await.unwrap();
-        let sell_result = process_onchain_trade(&pool, sell_trade).await.unwrap();
+        let buy_result = process_trade_with_tx(&pool, buy_trade).await.unwrap();
+        let sell_result = process_trade_with_tx(&pool, sell_trade).await.unwrap();
 
         let buy_execution = buy_result.unwrap();
         let sell_execution = sell_result.unwrap();
@@ -1412,7 +1433,7 @@ mod tests {
             created_at: None,
         };
 
-        let result = process_onchain_trade(&pool, trade).await.unwrap();
+        let result = process_trade_with_tx(&pool, trade).await.unwrap();
 
         // Should succeed and create new execution (because stale one was cleaned up)
         assert!(result.is_some());
@@ -1606,7 +1627,7 @@ mod tests {
             created_at: None,
         };
 
-        let result = process_onchain_trade(&pool, aapl_trade).await.unwrap();
+        let result = process_trade_with_tx(&pool, aapl_trade).await.unwrap();
         assert!(result.is_none()); // Should not execute yet (below 1.0)
 
         // Verify AAPL has accumulated position but no pending execution

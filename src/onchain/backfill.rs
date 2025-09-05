@@ -19,7 +19,7 @@ enum EventData {
     TakeOrderV2(Box<TakeOrderV2>),
 }
 
-const BACKFILL_BATCH_SIZE: usize = 1000;
+const BACKFILL_BATCH_SIZE: usize = 10000;
 const BACKFILL_MAX_RETRIES: usize = 3;
 const BACKFILL_INITIAL_DELAY: Duration = Duration::from_millis(1000);
 const BACKFILL_MAX_DELAY: Duration = Duration::from_secs(30);
@@ -45,14 +45,7 @@ pub async fn backfill_events<P: Provider + Clone>(
 
     let batch_tasks = batch_ranges
         .into_iter()
-        .enumerate()
-        .map(|(batch_index, (batch_start, batch_end))| {
-            let processed_blocks = batch_index * BACKFILL_BATCH_SIZE;
-
-            debug!(
-                "Processing blocks {batch_start}-{batch_end} ({processed_blocks}/{total_blocks} blocks processed)"
-            );
-
+        .map(|(batch_start, batch_end)| {
             enqueue_batch_events(pool, provider, evm_env, batch_start, batch_end)
         })
         .collect::<Vec<_>>();
@@ -245,8 +238,8 @@ mod tests {
 
     #[test]
     fn test_generate_batch_ranges_multiple_batches() {
-        let ranges = generate_batch_ranges(100, 2500);
-        assert_eq!(ranges, vec![(100, 1099), (1100, 2099), (2100, 2500)]);
+        let ranges = generate_batch_ranges(100, 25000);
+        assert_eq!(ranges, vec![(100, 10099), (10100, 20099), (20100, 25000)]);
     }
 
     #[test]
@@ -592,9 +585,11 @@ mod tests {
         assert_eq!(first_event.block_number, 50);
 
         // Mark as processed and get the second event
-        mark_event_processed(&pool, first_event.id.unwrap())
+        let mut sql_tx = pool.begin().await.unwrap();
+        mark_event_processed(&mut sql_tx, first_event.id.unwrap())
             .await
             .unwrap();
+        sql_tx.commit().await.unwrap();
 
         let second_event = get_next_unprocessed_event(&pool).await.unwrap().unwrap();
         assert_eq!(second_event.tx_hash, tx_hash2);
@@ -933,9 +928,11 @@ mod tests {
         assert_eq!(first_event.block_number, 50);
 
         // Mark as processed and get the second event
-        mark_event_processed(&pool, first_event.id.unwrap())
+        let mut sql_tx = pool.begin().await.unwrap();
+        mark_event_processed(&mut sql_tx, first_event.id.unwrap())
             .await
             .unwrap();
+        sql_tx.commit().await.unwrap();
 
         let second_event = get_next_unprocessed_event(&pool).await.unwrap().unwrap();
         assert_eq!(second_event.tx_hash, tx_hash2);
@@ -1003,7 +1000,7 @@ mod tests {
         };
 
         let asserter = Asserter::new();
-        asserter.push_success(&serde_json::Value::from(2500u64));
+        asserter.push_success(&serde_json::Value::from(25000u64));
 
         // First batch succeeds
         asserter.push_success(&serde_json::json!([]));
@@ -1016,7 +1013,7 @@ mod tests {
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        let result = backfill_events(&pool, &provider, &evm_env, 2500).await;
+        let result = backfill_events(&pool, &provider, &evm_env, 25000).await;
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), OnChainError::Alloy(_)));
@@ -1211,7 +1208,7 @@ mod tests {
         );
 
         let asserter = Asserter::new();
-        asserter.push_success(&serde_json::Value::from(3000u64));
+        asserter.push_success(&serde_json::Value::from(25000u64));
 
         // Multiple batches with events in different batches
         for batch_idx in 0..3 {
@@ -1228,7 +1225,7 @@ mod tests {
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        backfill_events(&pool, &provider, &evm_env, 3000)
+        backfill_events(&pool, &provider, &evm_env, 25000)
             .await
             .unwrap();
 
