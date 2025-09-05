@@ -1,2 +1,2 @@
-pub mod cache;
-pub mod lock;
+pub(crate) mod cache;
+pub(crate) mod lock;

@@ -1,3 +1,4 @@
+use crate::Env;
 use crate::bindings::IOrderBookV4::{EvaluableV3, IO, OrderV3};
 use alloy::primitives::{LogData, U256, address, bytes, fixed_bytes};
 use alloy::rpc::types::Log;
@@ -5,9 +6,9 @@ use alloy::rpc::types::Log;
 /// Returns a test `OrderV3` instance that is shared across multiple
 /// unit-tests. The exact values are not important – only that the
 /// structure is valid and deterministic.
-pub fn get_test_order() -> OrderV3 {
+pub(crate) fn get_test_order() -> OrderV3 {
     OrderV3 {
-        owner: address!("0x1111111111111111111111111111111111111111"),
+        owner: address!("0xdddddddddddddddddddddddddddddddddddddddd"),
         evaluable: EvaluableV3 {
             interpreter: address!("0x2222222222222222222222222222222222222222"),
             store: address!("0x3333333333333333333333333333333333333333"),
@@ -44,7 +45,7 @@ pub fn get_test_order() -> OrderV3 {
 /// Creates a generic `Log` stub with the supplied log index. This helper is
 /// useful when the concrete value of most fields is irrelevant for the
 /// assertion being performed.
-pub fn create_log(log_index: u64) -> Log {
+pub(crate) fn create_log(log_index: u64) -> Log {
     Log {
         inner: alloy::primitives::Log {
             address: address!("0xfefefefefefefefefefefefefefefefefefefefe"),
@@ -64,27 +65,59 @@ pub fn create_log(log_index: u64) -> Log {
 
 /// Convenience wrapper that returns the log routinely used by the
 /// higher-level tests in `trade::mod` (with log index set to `293`).
-pub fn get_test_log() -> Log {
+pub(crate) fn get_test_log() -> Log {
     create_log(293)
 }
 
+use clap::Parser;
 use sqlx::SqlitePool;
 
 /// Centralized test database setup to eliminate duplication across test files.
 /// Creates an in-memory SQLite database with all migrations applied.
-pub async fn setup_test_db() -> SqlitePool {
+pub(crate) async fn setup_test_db() -> SqlitePool {
     let pool = SqlitePool::connect(":memory:").await.unwrap();
     sqlx::migrate!().run(&pool).await.unwrap();
     pool
 }
 
+/// Creates a test `Env` instance for use in unit tests.
+/// Uses dummy values that are suitable for testing but not for real usage.
+pub(crate) fn setup_test_env() -> Env {
+    let args = vec![
+        "test_program",
+        "--db",
+        ":memory:",
+        "--log-level",
+        "info",
+        "--ws-rpc-url",
+        "ws://127.0.0.1:8545",
+        "--orderbook",
+        "0x1234567890123456789012345678901234567890",
+        "--order-owner",
+        "0xdddddddddddddddddddddddddddddddddddddddd",
+        "--deployment-block",
+        "1",
+        "--app-key",
+        "test_app_key",
+        "--app-secret",
+        "test_app_secret",
+        "--redirect-uri",
+        "https://127.0.0.1",
+        "--base-url",
+        "https://api.schwabapi.com",
+        "--account-index",
+        "0",
+    ];
+
+    Env::try_parse_from(args).expect("Failed to parse test environment")
+}
+
 use crate::onchain::OnchainTrade;
-use crate::schwab::TradeStatus;
-use crate::schwab::{Direction, execution::SchwabExecution};
+use crate::schwab::{Direction, TradeState, execution::SchwabExecution};
 
 /// Builder for creating OnchainTrade test instances with sensible defaults.
 /// Reduces duplication in test data setup.
-pub struct OnchainTradeBuilder {
+pub(crate) struct OnchainTradeBuilder {
     trade: OnchainTrade,
 }
 
@@ -95,7 +128,7 @@ impl Default for OnchainTradeBuilder {
 }
 
 impl OnchainTradeBuilder {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             trade: OnchainTrade {
                 id: None,
@@ -103,7 +136,7 @@ impl OnchainTradeBuilder {
                     "0x1111111111111111111111111111111111111111111111111111111111111111"
                 ),
                 log_index: 1,
-                symbol: "AAPLs1".to_string(),
+                symbol: "AAPL0x".to_string(),
                 amount: 1.0,
                 direction: Direction::Buy,
                 price_usdc: 150.0,
@@ -113,43 +146,43 @@ impl OnchainTradeBuilder {
     }
 
     #[must_use]
-    pub fn with_symbol(mut self, symbol: impl Into<String>) -> Self {
+    pub(crate) fn with_symbol(mut self, symbol: impl Into<String>) -> Self {
         self.trade.symbol = symbol.into();
         self
     }
 
     #[must_use]
-    pub fn with_amount(mut self, amount: f64) -> Self {
+    pub(crate) fn with_amount(mut self, amount: f64) -> Self {
         self.trade.amount = amount;
         self
     }
 
     #[must_use]
-    pub fn with_price(mut self, price: f64) -> Self {
+    pub(crate) fn with_price(mut self, price: f64) -> Self {
         self.trade.price_usdc = price;
         self
     }
 
     #[must_use]
-    pub fn with_tx_hash(mut self, hash: alloy::primitives::B256) -> Self {
+    pub(crate) fn with_tx_hash(mut self, hash: alloy::primitives::B256) -> Self {
         self.trade.tx_hash = hash;
         self
     }
 
     #[must_use]
-    pub fn with_log_index(mut self, index: u64) -> Self {
+    pub(crate) fn with_log_index(mut self, index: u64) -> Self {
         self.trade.log_index = index;
         self
     }
 
-    pub fn build(self) -> OnchainTrade {
+    pub(crate) fn build(self) -> OnchainTrade {
         self.trade
     }
 }
 
 /// Builder for creating SchwabExecution test instances with sensible defaults.
 /// Reduces duplication in test data setup.
-pub struct SchwabExecutionBuilder {
+pub(crate) struct SchwabExecutionBuilder {
     execution: SchwabExecution,
 }
 
@@ -160,43 +193,19 @@ impl Default for SchwabExecutionBuilder {
 }
 
 impl SchwabExecutionBuilder {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             execution: SchwabExecution {
                 id: None,
                 symbol: "AAPL".to_string(),
                 shares: 100,
                 direction: Direction::Buy,
-                status: TradeStatus::Pending,
+                state: TradeState::Pending,
             },
         }
     }
 
-    #[must_use]
-    pub fn with_symbol(mut self, symbol: impl Into<String>) -> Self {
-        self.execution.symbol = symbol.into();
-        self
-    }
-
-    #[must_use]
-    pub fn with_shares(mut self, shares: u64) -> Self {
-        self.execution.shares = shares;
-        self
-    }
-
-    #[must_use]
-    pub fn with_direction(mut self, direction: Direction) -> Self {
-        self.execution.direction = direction;
-        self
-    }
-
-    #[must_use]
-    pub fn with_status(mut self, status: TradeStatus) -> Self {
-        self.execution.status = status;
-        self
-    }
-
-    pub fn build(self) -> SchwabExecution {
+    pub(crate) fn build(self) -> SchwabExecution {
         self.execution
     }
 }

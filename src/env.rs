@@ -48,11 +48,24 @@ pub struct Env {
     pub schwab_auth: SchwabAuthEnv,
     #[clap(flatten)]
     pub evm_env: EvmEnv,
+    /// Interval in seconds between order status polling checks
+    #[clap(long, env, default_value = "15")]
+    pub order_polling_interval: u64,
+    /// Maximum jitter in seconds for order polling to prevent thundering herd
+    #[clap(long, env, default_value = "5")]
+    pub order_polling_max_jitter: u64,
 }
 
 impl Env {
     pub async fn get_sqlite_pool(&self) -> Result<SqlitePool, sqlx::Error> {
         SqlitePool::connect(&self.database_url).await
+    }
+
+    pub const fn get_order_poller_config(&self) -> crate::schwab::OrderPollerConfig {
+        crate::schwab::OrderPollerConfig {
+            polling_interval: std::time::Duration::from_secs(self.order_polling_interval),
+            max_jitter: std::time::Duration::from_secs(self.order_polling_max_jitter),
+        }
     }
 }
 
@@ -73,9 +86,9 @@ pub mod tests {
     use super::*;
     use crate::onchain::EvmEnv;
     use crate::schwab::SchwabAuthEnv;
-    use alloy::primitives::{address, fixed_bytes};
+    use alloy::primitives::address;
 
-    pub fn create_test_env_with_order_hash(order_hash: alloy::primitives::B256) -> Env {
+    pub fn create_test_env_with_order_owner(order_owner: alloy::primitives::Address) -> Env {
         Env {
             database_url: ":memory:".to_string(),
             log_level: LogLevel::Debug,
@@ -89,16 +102,16 @@ pub mod tests {
             evm_env: EvmEnv {
                 ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
                 orderbook: address!("0x1111111111111111111111111111111111111111"),
-                order_hash,
+                order_owner,
                 deployment_block: 1,
             },
+            order_polling_interval: 15,
+            order_polling_max_jitter: 5,
         }
     }
 
     pub fn create_test_env() -> Env {
-        create_test_env_with_order_hash(fixed_bytes!(
-            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        ))
+        create_test_env_with_order_owner(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
     }
 
     #[test]
