@@ -434,7 +434,9 @@ async fn process_found_trade<W: Write>(
 
     writeln!(stdout, "🔄 Processing trade with TradeAccumulator...")?;
 
-    let execution = accumulator::process_onchain_trade(pool, onchain_trade).await?;
+    let mut sql_tx = pool.begin().await?;
+    let execution = accumulator::process_onchain_trade(&mut sql_tx, onchain_trade).await?;
+    sql_tx.commit().await?;
 
     if let Some(execution) = execution {
         let execution_id = execution

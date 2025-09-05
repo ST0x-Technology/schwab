@@ -15,9 +15,11 @@ use crate::env::Env;
 use crate::error::EventProcessingError;
 use crate::onchain::trade::TradeEvent;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
-use crate::queue::{enqueue, get_next_unprocessed_event, mark_event_processed};
+use crate::queue::{QueuedEvent, enqueue, get_next_unprocessed_event, mark_event_processed};
 use crate::schwab::{
-    OrderStatusPoller, execution::find_execution_by_id, order::execute_schwab_order,
+    OrderStatusPoller,
+    execution::{SchwabExecution, find_execution_by_id},
+    order::execute_schwab_order,
     tokens::SchwabTokens,
 };
 use crate::symbol::cache::SymbolCache;
@@ -431,24 +433,51 @@ async fn process_next_queued_event<P: Provider + Clone>(
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: &P,
-) -> Result<Option<crate::schwab::execution::SchwabExecution>, EventProcessingError> {
-    let queued_event = match get_next_unprocessed_event(pool).await {
-        Ok(Some(event)) => event,
-        Ok(None) => return Ok(None),
-        Err(e) => {
-            error!("Failed to get next unprocessed event: {e}");
-            return Err(EventProcessingError::Queue(e));
-        }
+) -> Result<Option<SchwabExecution>, EventProcessingError> {
+    let queued_event = get_next_queued_event(pool).await?;
+    let Some(queued_event) = queued_event else {
+        return Ok(None);
     };
 
-    let event_id = queued_event.id.ok_or_else(|| {
+    let event_id = extract_event_id(&queued_event)?;
+
+    let onchain_trade = convert_event_to_trade(env, cache, provider, &queued_event).await?;
+
+    // If the event was filtered, mark as processed and return None
+    let Some(trade) = onchain_trade else {
+        return handle_filtered_event(pool, &queued_event, event_id).await;
+    };
+
+    process_valid_trade(pool, &queued_event, event_id, trade).await
+}
+
+async fn get_next_queued_event(
+    pool: &SqlitePool,
+) -> Result<Option<QueuedEvent>, EventProcessingError> {
+    match get_next_unprocessed_event(pool).await {
+        Ok(event) => Ok(event),
+        Err(e) => {
+            error!("Failed to get next unprocessed event: {e}");
+            Err(EventProcessingError::Queue(e))
+        }
+    }
+}
+
+fn extract_event_id(queued_event: &QueuedEvent) -> Result<i64, EventProcessingError> {
+    queued_event.id.ok_or_else(|| {
         EventProcessingError::Queue(crate::error::EventQueueError::Processing(
             "Queued event missing ID".to_string(),
         ))
-    })?;
+    })
+}
 
-    // Try to convert event to trade
-    let reconstructed_log = reconstruct_log_from_queued_event(&env.evm_env, &queued_event);
+async fn convert_event_to_trade<P: Provider + Clone>(
+    env: &Env,
+    cache: &SymbolCache,
+    provider: &P,
+    queued_event: &QueuedEvent,
+) -> Result<Option<OnchainTrade>, EventProcessingError> {
+    let reconstructed_log = reconstruct_log_from_queued_event(&env.evm_env, queued_event);
 
     let onchain_trade = match &queued_event.event {
         TradeEvent::ClearV2(clear_event) => {
@@ -456,7 +485,7 @@ async fn process_next_queued_event<P: Provider + Clone>(
                 &env.evm_env,
                 cache,
                 provider,
-                (**clear_event).clone(),
+                *clear_event.clone(),
                 reconstructed_log,
             )
             .await?
@@ -465,7 +494,7 @@ async fn process_next_queued_event<P: Provider + Clone>(
             OnchainTrade::try_from_take_order_if_target_owner(
                 cache,
                 provider,
-                (**take_event).clone(),
+                *take_event.clone(),
                 reconstructed_log,
                 env.evm_env.order_owner,
             )
@@ -473,21 +502,49 @@ async fn process_next_queued_event<P: Provider + Clone>(
         }
     };
 
-    // If the event was filtered, mark as processed and return None
-    let Some(trade) = onchain_trade else {
-        info!(
-            "Event filtered out (no matching owner): event_type={:?}, tx_hash={:?}, log_index={}",
-            match &queued_event.event {
-                TradeEvent::ClearV2(_) => "ClearV2",
-                TradeEvent::TakeOrderV2(_) => "TakeOrderV2",
-            },
-            queued_event.tx_hash,
-            queued_event.log_index
-        );
-        mark_event_processed(pool, event_id).await?;
-        return Ok(None);
-    };
+    Ok(onchain_trade)
+}
 
+async fn handle_filtered_event(
+    pool: &SqlitePool,
+    queued_event: &QueuedEvent,
+    event_id: i64,
+) -> Result<Option<SchwabExecution>, EventProcessingError> {
+    info!(
+        "Event filtered out (no matching owner): event_type={:?}, tx_hash={:?}, log_index={}",
+        match &queued_event.event {
+            TradeEvent::ClearV2(_) => "ClearV2",
+            TradeEvent::TakeOrderV2(_) => "TakeOrderV2",
+        },
+        queued_event.tx_hash,
+        queued_event.log_index
+    );
+
+    let mut sql_tx = pool.begin().await.map_err(|e| {
+        error!("Failed to begin transaction for filtered event: {e}");
+        EventProcessingError::Queue(crate::error::EventQueueError::Processing(format!(
+            "Failed to begin transaction: {e}"
+        )))
+    })?;
+
+    mark_event_processed(&mut sql_tx, event_id).await?;
+
+    sql_tx.commit().await.map_err(|e| {
+        error!("Failed to commit transaction for filtered event: {e}");
+        EventProcessingError::Queue(crate::error::EventQueueError::Processing(format!(
+            "Failed to commit transaction: {e}"
+        )))
+    })?;
+
+    Ok(None)
+}
+
+async fn process_valid_trade(
+    pool: &SqlitePool,
+    queued_event: &QueuedEvent,
+    event_id: i64,
+    trade: OnchainTrade,
+) -> Result<Option<SchwabExecution>, EventProcessingError> {
     info!(
         "Event successfully converted to trade: event_type={:?}, tx_hash={:?}, log_index={}, symbol={}, amount={}",
         match &queued_event.event {
@@ -508,8 +565,26 @@ async fn process_next_queued_event<P: Provider + Clone>(
         trade.symbol, trade.amount, trade.direction, trade.tx_hash, trade.log_index
     );
 
-    // Process through accumulator
-    let execution = accumulator::process_onchain_trade(pool, trade)
+    process_trade_within_transaction(pool, queued_event, event_id, trade).await
+}
+
+async fn process_trade_within_transaction(
+    pool: &SqlitePool,
+    queued_event: &QueuedEvent,
+    event_id: i64,
+    trade: OnchainTrade,
+) -> Result<Option<SchwabExecution>, EventProcessingError> {
+    let mut sql_tx = pool.begin().await.map_err(|e| {
+        error!("Failed to begin transaction for event processing: {e}");
+        EventProcessingError::AccumulatorProcessing(format!("Failed to begin transaction: {e}"))
+    })?;
+
+    info!(
+        "Started transaction for atomic event processing: event_id={}, tx_hash={:?}, log_index={}",
+        event_id, queued_event.tx_hash, queued_event.log_index
+    );
+
+    let execution = accumulator::process_onchain_trade(&mut sql_tx, trade)
         .await
         .map_err(|e| {
             error!(
@@ -521,11 +596,25 @@ async fn process_next_queued_event<P: Provider + Clone>(
             ))
         })?;
 
-    // Only mark as processed after successful handling
-    mark_event_processed(pool, event_id).await.map_err(|e| {
-        error!("Failed to mark event {event_id} as processed: {e}");
-        EventProcessingError::Queue(e)
+    mark_event_processed(&mut sql_tx, event_id)
+        .await
+        .map_err(|e| {
+            error!("Failed to mark event {event_id} as processed: {e}");
+            EventProcessingError::Queue(e)
+        })?;
+
+    sql_tx.commit().await.map_err(|e| {
+        error!(
+            "Failed to commit transaction for event processing: {e}, event_id={}, tx_hash={:?}",
+            event_id, queued_event.tx_hash
+        );
+        EventProcessingError::AccumulatorProcessing(format!("Failed to commit transaction: {e}"))
     })?;
+
+    info!(
+        "Successfully committed atomic event processing: event_id={}, tx_hash={:?}, log_index={}",
+        event_id, queued_event.tx_hash, queued_event.log_index
+    );
 
     Ok(execution)
 }
@@ -883,9 +972,11 @@ mod tests {
             .await
             {
                 // Step 5: Process the trade through accumulation
-                accumulator::process_onchain_trade(&pool, trade)
+                let mut sql_tx = pool.begin().await.unwrap();
+                accumulator::process_onchain_trade(&mut sql_tx, trade)
                     .await
                     .unwrap();
+                sql_tx.commit().await.unwrap();
             } else {
                 // Event doesn't result in a trade or expected test environment error
                 // The important thing is we tested the flow structure
@@ -893,9 +984,11 @@ mod tests {
         }
 
         // Step 6: Mark event as processed
-        crate::queue::mark_event_processed(&pool, queued_event.id.unwrap())
+        let mut sql_tx = pool.begin().await.unwrap();
+        crate::queue::mark_event_processed(&mut sql_tx, queued_event.id.unwrap())
             .await
             .unwrap();
+        sql_tx.commit().await.unwrap();
 
         // Step 7: Verify event was marked processed
         let remaining_count = crate::queue::count_unprocessed(&pool).await.unwrap();
@@ -936,9 +1029,11 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        crate::queue::mark_event_processed(&pool, queued_event.id.unwrap())
+        let mut sql_tx = pool.begin().await.unwrap();
+        crate::queue::mark_event_processed(&mut sql_tx, queued_event.id.unwrap())
             .await
             .unwrap();
+        sql_tx.commit().await.unwrap();
         assert_eq!(crate::queue::count_unprocessed(&pool).await.unwrap(), 0);
 
         // Scenario 2: Process same event again - should be deduplicated
@@ -957,9 +1052,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(next_event.log_index, 2); // Should get log_index 2
-        crate::queue::mark_event_processed(&pool, next_event.id.unwrap())
+        let mut sql_tx = pool.begin().await.unwrap();
+        crate::queue::mark_event_processed(&mut sql_tx, next_event.id.unwrap())
             .await
             .unwrap();
+        sql_tx.commit().await.unwrap();
     }
 
     #[tokio::test]
@@ -1020,9 +1117,11 @@ mod tests {
                 .unwrap();
             assert_eq!(event.block_number, expected_block);
             assert_eq!(event.log_index, expected_log_idx);
-            crate::queue::mark_event_processed(&pool, event.id.unwrap())
+            let mut sql_tx = pool.begin().await.unwrap();
+            crate::queue::mark_event_processed(&mut sql_tx, event.id.unwrap())
                 .await
                 .unwrap();
+            sql_tx.commit().await.unwrap();
         }
 
         // Verify no more events
@@ -1076,9 +1175,11 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            crate::queue::mark_event_processed(&pool, event.id.unwrap())
+            let mut sql_tx = pool.begin().await.unwrap();
+            crate::queue::mark_event_processed(&mut sql_tx, event.id.unwrap())
                 .await
                 .unwrap();
+            sql_tx.commit().await.unwrap();
         }
 
         // Verify 3 events remain unprocessed
@@ -1090,9 +1191,11 @@ mod tests {
             .await
             .unwrap()
         {
-            crate::queue::mark_event_processed(&pool, event.id.unwrap())
+            let mut sql_tx = pool.begin().await.unwrap();
+            crate::queue::mark_event_processed(&mut sql_tx, event.id.unwrap())
                 .await
                 .unwrap();
+            sql_tx.commit().await.unwrap();
             processed_count += 1;
         }
 
@@ -1165,9 +1268,11 @@ mod tests {
         assert_eq!(reconstructed_log.inner.data, original_log_data);
 
         // Clean up
-        crate::queue::mark_event_processed(&pool, queued_event.id.unwrap())
+        let mut sql_tx = pool.begin().await.unwrap();
+        crate::queue::mark_event_processed(&mut sql_tx, queued_event.id.unwrap())
             .await
             .unwrap();
+        sql_tx.commit().await.unwrap();
         assert_eq!(crate::queue::count_unprocessed(&pool).await.unwrap(), 0);
     }
 

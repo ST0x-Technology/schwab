@@ -3,7 +3,7 @@ use chrono_tz::US::Eastern;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
-use tracing::debug;
+use tracing::trace;
 
 use super::market_hours::{MarketHours, MarketStatus, fetch_market_hours};
 use super::{SchwabAuthEnv, SchwabError};
@@ -48,13 +48,13 @@ impl MarketHoursCache {
         {
             let cache_guard = self.cache.read().await;
             if let Some(market_hours) = cache_guard.get(&cache_key) {
-                debug!("Cache hit for market {} on {}", market_id, date);
+                trace!("Cache hit for market {} on {}", market_id, date);
                 return Ok(market_hours.clone());
             }
         }
 
         // Cache miss - fetch from API
-        debug!(
+        trace!(
             "Cache miss for market {} on {}, fetching from API",
             market_id, date
         );

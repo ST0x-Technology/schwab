@@ -55,10 +55,7 @@ impl TradingHoursController {
                 debug!("Market is currently open, bot should run");
                 Ok(true)
             }
-            MarketStatus::Closed => {
-                debug!("Market is closed, bot should not run");
-                Ok(false)
-            }
+            MarketStatus::Closed => Ok(false),
         }
     }
 
@@ -133,28 +130,31 @@ impl TradingHoursController {
             return Ok(None);
         }
 
-        if let Some(next_transition) = self
+        (self
             .cache
             .get_next_transition(MARKET_ID, &self.env, &self.pool)
-            .await?
-        {
-            let now = Utc::now();
+            .await?)
+            .map_or_else(
+                || {
+                    warn!("Unable to determine market close time");
+                    Ok(None)
+                },
+                |next_transition| {
+                    let now = Utc::now();
 
-            if next_transition > now {
-                let duration_until_close = next_transition - now;
-                debug!(
-                    "Market closes in {} minutes",
-                    duration_until_close.num_minutes()
-                );
-                Ok(Some(duration_until_close))
-            } else {
-                debug!("Market close time has already passed");
-                Ok(None)
-            }
-        } else {
-            warn!("Unable to determine market close time");
-            Ok(None)
-        }
+                    if next_transition > now {
+                        let duration_until_close = next_transition - now;
+                        debug!(
+                            "Market closes in {} minutes",
+                            duration_until_close.num_minutes()
+                        );
+                        Ok(Some(duration_until_close))
+                    } else {
+                        debug!("Market close time has already passed");
+                        Ok(None)
+                    }
+                },
+            )
     }
 }
 
