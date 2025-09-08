@@ -2,14 +2,18 @@
 
 ## Problem Summary
 
-The bot is using USDC amounts as share amounts, causing 175x overexecution. For example:
+The bot is using USDC amounts as share amounts, causing 175x overexecution. For
+example:
+
 - Onchain trade: 0.374 NVDAs1 sold for 64.17 USDC
 - Bot interpreted: 64.17 shares (using USDC amount instead of NVDAs1 amount)
 
 ## Root Cause Analysis
 
 ### Primary Bug
+
 In `src/onchain/trade.rs` lines 158-164:
+
 ```rust
 // Current buggy code - only checks for "0x" suffix, missing "s1"
 let (equity_amount, usdc_amount) = if onchain_output_symbol.ends_with("0x") {
@@ -21,17 +25,23 @@ let (equity_amount, usdc_amount) = if onchain_output_symbol.ends_with("0x") {
 ```
 
 ### Architectural Issues
-1. **Duplicated suffix logic** - Different parts of code check suffixes differently
+
+1. **Duplicated suffix logic** - Different parts of code check suffixes
+   differently
 2. **No validation** - Silently processes invalid symbol pairs
-3. **Separated validation and extraction** - Direction is determined in one place, amounts in another
+3. **Separated validation and extraction** - Direction is determined in one
+   place, amounts in another
 4. **No type safety** - Can mix up USDC and share amounts
 
 ## Design Decisions
 
 ### Use Type System to Prevent Bugs
-Instead of runtime validation that can be forgotten, use types that make invalid states unrepresentable.
+
+Instead of runtime validation that can be forgotten, use types that make invalid
+states unrepresentable.
 
 ### Symbol Type Classification
+
 ```rust
 pub enum Symbol {
     Usdc,
@@ -60,6 +70,7 @@ impl Symbol {
 ```
 
 ### Newtype Wrappers for Type Safety
+
 ```rust
 #[derive(Debug, Clone, Copy)]
 pub struct Shares(f64);  // Private inner value!
@@ -102,22 +113,27 @@ impl Usdc {
 
 ## Implementation Plan
 
-## Task 1. Create Symbol enum and classification logic
+## Task 1. Create centralized symbol pair processing function
 
-- [x] Define Symbol enum with Usdc and TokenizedEquity variants
-- [x] Implement Symbol::classify method
-- [x] Add tests for USDC classification
-- [x] Add tests for "0x" suffix classification
-- [x] Add tests for "s1" suffix classification
-- [x] Add tests for unrecognized symbol errors
-- [x] Add new TradeValidationError variants for unrecognized symbols
+- [x] Create centralized function that processes symbol pairs and amounts
+- [x] Support both "0x" and "s1" suffixes (fixing the missing "s1" support that
+      caused the bug)
+- [x] Reuse existing `determine_schwab_trade_details()` for validation and
+      direction
+- [x] Extract correct equity vs USDC amounts based on symbol pair analysis
+- [x] Add comprehensive tests including the key bug fix test case
+- [x] Keep solution simple without over-engineering
 
 ### Completed Changes
-- Added private `Symbol` enum in `src/onchain/trade.rs` with `Usdc` and `TokenizedEquity` variants
-- Implemented `Symbol::classify()` method that properly handles both "0x" and "s1" suffixes (fixing the missing "s1" support that caused the bug)
-- Added `TradeValidationError::UnrecognizedSymbol` variant in `src/error.rs`
-- Added comprehensive tests covering all symbol patterns, edge cases, and error conditions
-- Used minimal visibility levels (`enum` and `fn` instead of `pub`) following project guidelines
+
+- Added `process_symbol_pair_and_amounts()` function in `src/onchain/trade.rs`
+- Centralized logic that was previously scattered and buggy, now fixed
+- Handles both "0x" and "s1" suffixes correctly (the missing piece causing the
+  175x bug)
+- Returns `(ticker, equity_amount, usdc_amount, direction)` tuple
+- Leverages existing validation via `determine_schwab_trade_details()`
+- Added focused tests including the critical test case showing 0.374 NVDAs1 vs
+  64.17 USDC amounts
 
 ## Task 2. Create newtype wrappers for Shares and Usdc
 
@@ -152,8 +168,10 @@ impl Usdc {
 
 ## Task 5. Add comprehensive tests
 
-- [ ] Create test for TX 0x844...a42d4 (should extract 0.374 NVDAs1, not 64.169234)
-- [ ] Create test for TX 0x700...bfb85 (should extract 0.2 NVDAs1, not 34.645024)
+- [ ] Create test for TX 0x844...a42d4 (should extract 0.374 NVDAs1, not
+      64.169234)
+- [ ] Create test for TX 0x700...bfb85 (should extract 0.2 NVDAs1, not
+      34.645024)
 - [ ] Create test for GME trades with 0x suffix
 - [ ] Test both USDC error case
 - [ ] Test both tokenized error case
@@ -176,6 +194,7 @@ impl Usdc {
 ## Testing Strategy
 
 ### Unit Tests
+
 1. Symbol classification for all valid patterns
 2. Symbol classification errors for invalid inputs
 3. Trade extraction with NVDAs1 (s1 suffix)
@@ -184,13 +203,17 @@ impl Usdc {
 6. Newtype validation (negative amounts, unrealistic amounts)
 
 ### Integration Tests
+
 Use real transaction data to verify:
+
 - Correct amount extraction
 - Correct direction determination
 - Original suffix preservation
 
 ### Test Data
+
 From actual failed transactions:
+
 - NVDA trades: 0.374, 0.2, 0.2, 0.2, 0.238 shares (not 64, 35, 35, 35, 42)
 - GME trades: 0.2 shares each (not 5.2, 5.1, etc.)
 

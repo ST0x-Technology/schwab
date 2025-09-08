@@ -16,6 +16,54 @@ use crate::symbol::cache::SymbolCache;
 #[cfg(test)]
 use sqlx::SqlitePool;
 
+/// Trade details extracted from symbol pair processing
+#[derive(Debug, Clone, PartialEq)]
+struct TradeDetails {
+    ticker: String,
+    equity_amount: f64,
+    usdc_amount: f64,
+    direction: Direction,
+}
+
+impl TradeDetails {
+    /// Extracts trade details from input/output symbol and amount pairs
+    fn try_from_io(
+        input_symbol: &str,
+        input_amount: f64,
+        output_symbol: &str,
+        output_amount: f64,
+    ) -> Result<Self, OnChainError> {
+        // Determine direction and ticker using existing logic
+        let (ticker, direction) = determine_schwab_trade_details(input_symbol, output_symbol)?;
+
+        // Extract equity and USDC amounts based on which symbol is the tokenized equity
+        let is_tokenized_equity = |symbol: &str| symbol.ends_with("0x") || symbol.ends_with("s1");
+
+        let (equity_amount, usdc_amount) =
+            if input_symbol == "USDC" && is_tokenized_equity(output_symbol) {
+                // USDC → tokenized equity: output is equity, input is USDC
+                (output_amount, input_amount)
+            } else if output_symbol == "USDC" && is_tokenized_equity(input_symbol) {
+                // tokenized equity → USDC: input is equity, output is USDC
+                (input_amount, output_amount)
+            } else {
+                // This should not happen if determine_schwab_trade_details passed, but be defensive
+                return Err(TradeValidationError::InvalidSymbolConfiguration(
+                    input_symbol.to_string(),
+                    output_symbol.to_string(),
+                )
+                .into());
+            };
+
+        Ok(Self {
+            ticker,
+            equity_amount,
+            usdc_amount,
+            direction,
+        })
+    }
+}
+
 /// Union of all trade events
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TradeEvent {
@@ -744,5 +792,61 @@ mod tests {
 
         let count = OnchainTrade::db_count(&pool).await.unwrap();
         assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn test_trade_details_try_from_io_usdc_to_0x_equity() {
+        let details = TradeDetails::try_from_io("USDC", 100.0, "AAPL0x", 0.5).unwrap();
+
+        assert_eq!(details.ticker, "AAPL");
+        assert_eq!(details.equity_amount, 0.5);
+        assert_eq!(details.usdc_amount, 100.0);
+        assert_eq!(details.direction, Direction::Sell);
+    }
+
+    #[test]
+    fn test_trade_details_try_from_io_usdc_to_s1_equity_fixes_bug() {
+        // This is the key test - s1 suffix should work correctly now
+        let details = TradeDetails::try_from_io("USDC", 64.17, "NVDAs1", 0.374).unwrap();
+
+        assert_eq!(details.ticker, "NVDA");
+        assert_eq!(details.equity_amount, 0.374); // Should be 0.374, not 64.17!
+        assert_eq!(details.usdc_amount, 64.17);
+        assert_eq!(details.direction, Direction::Sell);
+    }
+
+    #[test]
+    fn test_trade_details_try_from_io_0x_equity_to_usdc() {
+        let details = TradeDetails::try_from_io("AAPL0x", 0.5, "USDC", 100.0).unwrap();
+
+        assert_eq!(details.ticker, "AAPL");
+        assert_eq!(details.equity_amount, 0.5);
+        assert_eq!(details.usdc_amount, 100.0);
+        assert_eq!(details.direction, Direction::Buy);
+    }
+
+    #[test]
+    fn test_trade_details_try_from_io_s1_equity_to_usdc() {
+        let details = TradeDetails::try_from_io("NVDAs1", 0.374, "USDC", 64.17).unwrap();
+
+        assert_eq!(details.ticker, "NVDA");
+        assert_eq!(details.equity_amount, 0.374);
+        assert_eq!(details.usdc_amount, 64.17);
+        assert_eq!(details.direction, Direction::Buy);
+    }
+
+    #[test]
+    fn test_trade_details_try_from_io_invalid_configurations() {
+        let result = TradeDetails::try_from_io("USDC", 100.0, "USDC", 100.0);
+        assert!(matches!(
+            result.unwrap_err(),
+            OnChainError::Validation(TradeValidationError::InvalidSymbolConfiguration(_, _))
+        ));
+
+        let result = TradeDetails::try_from_io("BTC", 1.0, "ETH", 3000.0);
+        assert!(matches!(
+            result.unwrap_err(),
+            OnChainError::Validation(TradeValidationError::InvalidSymbolConfiguration(_, _))
+        ));
     }
 }
