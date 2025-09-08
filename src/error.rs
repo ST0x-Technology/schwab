@@ -20,7 +20,9 @@ pub(crate) enum TradeValidationError {
     NoInputAtIndex(usize),
     #[error("No output found at index: {0}")]
     NoOutputAtIndex(usize),
-    #[error("Expected IO to contain USDC and one 0x-suffixed symbol but got {0} and {1}")]
+    #[error(
+        "Expected IO to contain USDC and one tokenized equity (0x or s1 suffix) but got {0} and {1}"
+    )]
     InvalidSymbolConfiguration(String, String),
     #[error(
         "Could not fully allocate execution shares for symbol {symbol}. Remaining: {remaining_shares}"

@@ -237,15 +237,17 @@ impl OnchainTrade {
 
 /// Determines onchain trade direction and ticker based on onchain symbol configuration.
 ///
-/// If the on-chain order has USDC as input and an 0x tokenized stock as
-/// output then it means the order received USDC and gave away an 0x
-/// tokenized stock, i.e. sold the tokenized stock onchain.
+/// If the on-chain order has USDC as input and a tokenized stock (0x or s1 suffix) as
+/// output then it means the order received USDC and gave away a tokenized stock,
+/// i.e. sold the tokenized stock onchain.
 fn determine_schwab_trade_details(
     onchain_input_symbol: &str,
     onchain_output_symbol: &str,
 ) -> Result<(String, Direction), OnChainError> {
-    // USDC input + 0x tokenized stock output = sold tokenized stock onchain
-    if onchain_input_symbol == "USDC" && onchain_output_symbol.ends_with("0x") {
+    let is_tokenized_equity = |symbol: &str| symbol.ends_with("0x") || symbol.ends_with("s1");
+
+    // USDC input + tokenized stock output = sold tokenized stock onchain
+    if onchain_input_symbol == "USDC" && is_tokenized_equity(onchain_output_symbol) {
         let ticker = extract_ticker_from_0x_symbol(
             onchain_output_symbol,
             onchain_input_symbol,
@@ -254,8 +256,8 @@ fn determine_schwab_trade_details(
         return Ok((ticker, Direction::Sell));
     }
 
-    // 0x tokenized stock input + USDC output = bought tokenized stock onchain
-    if onchain_output_symbol == "USDC" && onchain_input_symbol.ends_with("0x") {
+    // tokenized stock input + USDC output = bought tokenized stock onchain
+    if onchain_output_symbol == "USDC" && is_tokenized_equity(onchain_input_symbol) {
         let ticker = extract_ticker_from_0x_symbol(
             onchain_input_symbol,
             onchain_input_symbol,
@@ -276,15 +278,18 @@ fn extract_ticker_from_0x_symbol(
     input_symbol: &str,
     output_symbol: &str,
 ) -> Result<String, TradeValidationError> {
-    tokenized_symbol
-        .strip_suffix("0x")
-        .map(ToString::to_string)
-        .ok_or_else(|| {
-            TradeValidationError::InvalidSymbolConfiguration(
-                input_symbol.to_string(),
-                output_symbol.to_string(),
-            )
-        })
+    if let Some(ticker) = tokenized_symbol.strip_suffix("0x") {
+        return Ok(ticker.to_string());
+    }
+
+    if let Some(ticker) = tokenized_symbol.strip_suffix("s1") {
+        return Ok(ticker.to_string());
+    }
+
+    Err(TradeValidationError::InvalidSymbolConfiguration(
+        input_symbol.to_string(),
+        output_symbol.to_string(),
+    ))
 }
 
 #[derive(Debug)]
