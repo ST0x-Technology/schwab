@@ -6,72 +6,82 @@ use crate::error::{OnChainError, PersistenceError};
 use crate::schwab::SchwabInstruction;
 use crate::schwab::TradeStatus;
 
-/// Converts database row data to a SchwabExecution instance.
-/// Centralizes the conversion logic and casting operations.
-#[allow(clippy::too_many_arguments)]
-fn row_to_execution(
+/// Database row representation for schwab_executions table.
+/// Separates persistence layer from domain objects.
+struct SchwabExecutionRow {
     id: i64,
     symbol: String,
     shares: i64,
-    direction: &str,
+    direction: String,
     order_id: Option<String>,
     price_cents: Option<i64>,
-    status: &str,
+    status: String,
     executed_at: Option<chrono::NaiveDateTime>,
-) -> Result<SchwabExecution, OnChainError> {
-    let parsed_direction = direction.parse().map_err(|e: String| {
-        OnChainError::Persistence(PersistenceError::InvalidSchwabInstruction(e))
-    })?;
+}
 
-    let parsed_status = match status {
-        "PENDING" => TradeStatus::Pending,
-        "COMPLETED" => {
-            let order_id = order_id.ok_or_else(|| {
-                OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "COMPLETED status requires order_id".to_string(),
-                ))
-            })?;
-            let price_cents = price_cents.ok_or_else(|| {
-                OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "COMPLETED status requires price_cents".to_string(),
-                ))
-            })?;
-            let executed_at = executed_at.ok_or_else(|| {
-                OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "COMPLETED status requires executed_at".to_string(),
-                ))
-            })?;
-            TradeStatus::Completed {
-                executed_at: DateTime::<Utc>::from_naive_utc_and_offset(executed_at, Utc),
-                order_id,
-                price_cents: price_cents_from_db_i64(price_cents)?,
-            }
-        }
-        "FAILED" => {
-            let failed_at = executed_at.ok_or_else(|| {
-                OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "FAILED status requires executed_at timestamp".to_string(),
-                ))
-            })?;
-            TradeStatus::Failed {
-                failed_at: DateTime::<Utc>::from_naive_utc_and_offset(failed_at, Utc),
-                error_reason: None, // We don't store error_reason in database yet
-            }
-        }
-        _ => {
-            return Err(OnChainError::Persistence(
-                PersistenceError::InvalidTradeStatus(format!("Invalid trade status: {status}")),
-            ));
-        }
-    };
+impl SchwabExecutionRow {
+    /// Converts database row data to a SchwabExecution domain object.
+    ///
+    /// Database CHECK constraints prevent contradictory status/field combinations,
+    /// but we maintain defensive validation for robustness.
+    fn into_domain_object(self) -> Result<SchwabExecution, OnChainError> {
+        let parsed_direction = self.direction.parse().map_err(|e: String| {
+            OnChainError::Persistence(PersistenceError::InvalidSchwabInstruction(e))
+        })?;
 
-    Ok(SchwabExecution {
-        id: Some(id),
-        symbol,
-        shares: shares_from_db_i64(shares)?,
-        direction: parsed_direction,
-        status: parsed_status,
-    })
+        let parsed_status = match self.status.as_str() {
+            "PENDING" => TradeStatus::Pending,
+            "COMPLETED" => {
+                let order_id = self.order_id.ok_or_else(|| {
+                    OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
+                        "COMPLETED status requires order_id".to_string(),
+                    ))
+                })?;
+                let price_cents = self.price_cents.ok_or_else(|| {
+                    OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
+                        "COMPLETED status requires price_cents".to_string(),
+                    ))
+                })?;
+                let executed_at = self.executed_at.ok_or_else(|| {
+                    OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
+                        "COMPLETED status requires executed_at".to_string(),
+                    ))
+                })?;
+                TradeStatus::Completed {
+                    executed_at: DateTime::<Utc>::from_naive_utc_and_offset(executed_at, Utc),
+                    order_id,
+                    price_cents: price_cents_from_db_i64(price_cents)?,
+                }
+            }
+            "FAILED" => {
+                let failed_at = self.executed_at.ok_or_else(|| {
+                    OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
+                        "FAILED status requires executed_at timestamp".to_string(),
+                    ))
+                })?;
+                TradeStatus::Failed {
+                    failed_at: DateTime::<Utc>::from_naive_utc_and_offset(failed_at, Utc),
+                    error_reason: None, // We don't store error_reason in database yet
+                }
+            }
+            _ => {
+                return Err(OnChainError::Persistence(
+                    PersistenceError::InvalidTradeStatus(format!(
+                        "Invalid trade status: {}",
+                        self.status
+                    )),
+                ));
+            }
+        };
+
+        Ok(SchwabExecution {
+            id: Some(self.id),
+            symbol: self.symbol,
+            shares: shares_from_db_i64(self.shares)?,
+            direction: parsed_direction,
+            status: parsed_status,
+        })
+    }
 }
 
 /// Converts u64 share quantity to i64 for database storage.
@@ -172,16 +182,17 @@ pub(crate) async fn find_executions_by_symbol_and_status(
 
         rows.into_iter()
             .map(|row| {
-                row_to_execution(
-                    row.id,
-                    row.symbol,
-                    row.shares,
-                    &row.direction,
-                    row.order_id,
-                    row.price_cents,
-                    &row.status,
-                    row.executed_at,
-                )
+                SchwabExecutionRow {
+                    id: row.id,
+                    symbol: row.symbol,
+                    shares: row.shares,
+                    direction: row.direction,
+                    order_id: row.order_id,
+                    price_cents: row.price_cents,
+                    status: row.status,
+                    executed_at: row.executed_at,
+                }
+                .into_domain_object()
             })
             .collect()
     } else {
@@ -195,16 +206,17 @@ pub(crate) async fn find_executions_by_symbol_and_status(
 
         rows.into_iter()
             .map(|row| {
-                row_to_execution(
-                    row.id,
-                    row.symbol,
-                    row.shares,
-                    &row.direction,
-                    row.order_id,
-                    row.price_cents,
-                    &row.status,
-                    row.executed_at,
-                )
+                SchwabExecutionRow {
+                    id: row.id,
+                    symbol: row.symbol,
+                    shares: row.shares,
+                    direction: row.direction,
+                    order_id: row.order_id,
+                    price_cents: row.price_cents,
+                    status: row.status,
+                    executed_at: row.executed_at,
+                }
+                .into_domain_object()
             })
             .collect()
     }
@@ -222,16 +234,17 @@ pub(crate) async fn find_execution_by_id(
     .await?;
 
     if let Some(row) = row {
-        row_to_execution(
-            row.id,
-            row.symbol,
-            row.shares,
-            &row.direction,
-            row.order_id,
-            row.price_cents,
-            &row.status,
-            row.executed_at,
-        )
+        SchwabExecutionRow {
+            id: row.id,
+            symbol: row.symbol,
+            shares: row.shares,
+            direction: row.direction,
+            order_id: row.order_id,
+            price_cents: row.price_cents,
+            status: row.status,
+            executed_at: row.executed_at,
+        }
+        .into_domain_object()
         .map(Some)
     } else {
         Ok(None)
@@ -708,6 +721,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_enhanced_database_constraints() {
+        let pool = setup_test_db().await;
+
+        // Test that COMPLETED status requires all fields
+        let now = Some(chrono::Utc::now().naive_utc());
+        let result = sqlx::query!(
+            "INSERT INTO schwab_executions (symbol, shares, direction, order_id, price_cents, status, executed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "TEST",
+            100i64,
+            "BUY",
+            Some("ORDER123"),
+            None::<i64>, // Missing price_cents for COMPLETED - should fail
+            "COMPLETED",
+            now
+        )
+        .execute(&pool)
+        .await;
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("CHECK constraint failed"));
+
+        // Test that FAILED status cannot have order_id
+        let now2 = Some(chrono::Utc::now().naive_utc());
+        let result = sqlx::query!(
+            "INSERT INTO schwab_executions (symbol, shares, direction, order_id, price_cents, status, executed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "TEST",
+            100i64,
+            "BUY",
+            Some("ORDER123"), // order_id not allowed for FAILED - should fail
+            None::<i64>,
+            "FAILED",
+            now2
+        )
+        .execute(&pool)
+        .await;
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("CHECK constraint failed"));
+
+        // Test that FAILED status cannot have price_cents
+        let now3 = Some(chrono::Utc::now().naive_utc());
+        let result = sqlx::query!(
+            "INSERT INTO schwab_executions (symbol, shares, direction, order_id, price_cents, status, executed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "TEST",
+            100i64,
+            "BUY",
+            None::<String>,
+            Some(15000i64), // price_cents not allowed for FAILED - should fail
+            "FAILED",
+            now3
+        )
+        .execute(&pool)
+        .await;
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("CHECK constraint failed"));
+
+        // Verify that valid data still works
+        let now4 = Some(chrono::Utc::now().naive_utc());
+        let result = sqlx::query!(
+            "INSERT INTO schwab_executions (symbol, shares, direction, order_id, price_cents, status, executed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "TEST",
+            100i64,
+            "BUY",
+            Some("ORDER123"),
+            Some(15000i64),
+            "COMPLETED",
+            now4
+        )
+        .execute(&pool)
+        .await;
+
+        assert!(result.is_ok());
+
+        // Verify database integrity is maintained
+        let count = schwab_execution_db_count(&pool).await.unwrap();
+        assert_eq!(count, 1); // Only the valid row should be inserted
+    }
+
+    #[tokio::test]
     async fn test_update_status_within_transaction() {
         let pool = setup_test_db().await;
 
@@ -876,16 +972,17 @@ mod tests {
 
     #[test]
     fn test_row_to_execution_invalid_direction() {
-        let result = row_to_execution(
-            1,
-            "AAPL".to_string(),
-            100,
-            "INVALID_DIRECTION",
-            None,
-            None,
-            "PENDING",
-            None,
-        );
+        let result = SchwabExecutionRow {
+            id: 1,
+            symbol: "AAPL".to_string(),
+            shares: 100,
+            direction: "INVALID_DIRECTION".to_string(),
+            order_id: None,
+            price_cents: None,
+            status: "PENDING".to_string(),
+            executed_at: None,
+        }
+        .into_domain_object();
 
         assert!(matches!(
             result.unwrap_err(),
@@ -895,16 +992,17 @@ mod tests {
 
     #[test]
     fn test_row_to_execution_completed_missing_order_id() {
-        let result = row_to_execution(
-            1,
-            "AAPL".to_string(),
-            100,
-            "BUY",
-            None, // Missing order_id for COMPLETED status
-            Some(15000),
-            "COMPLETED",
-            Some(chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc()),
-        );
+        let result = SchwabExecutionRow {
+            id: 1,
+            symbol: "AAPL".to_string(),
+            shares: 100,
+            direction: "BUY".to_string(),
+            order_id: None, // Missing order_id for COMPLETED status
+            price_cents: Some(15000),
+            status: "COMPLETED".to_string(),
+            executed_at: Some(chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc()),
+        }
+        .into_domain_object();
 
         assert!(matches!(
             result.unwrap_err(),
@@ -914,16 +1012,17 @@ mod tests {
 
     #[test]
     fn test_row_to_execution_completed_missing_price_cents() {
-        let result = row_to_execution(
-            1,
-            "AAPL".to_string(),
-            100,
-            "BUY",
-            Some("ORDER123".to_string()),
-            None, // Missing price_cents for COMPLETED status
-            "COMPLETED",
-            Some(chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc()),
-        );
+        let result = SchwabExecutionRow {
+            id: 1,
+            symbol: "AAPL".to_string(),
+            shares: 100,
+            direction: "BUY".to_string(),
+            order_id: Some("ORDER123".to_string()),
+            price_cents: None, // Missing price_cents for COMPLETED status
+            status: "COMPLETED".to_string(),
+            executed_at: Some(chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc()),
+        }
+        .into_domain_object();
 
         assert!(matches!(
             result.unwrap_err(),
@@ -933,16 +1032,17 @@ mod tests {
 
     #[test]
     fn test_row_to_execution_completed_missing_executed_at() {
-        let result = row_to_execution(
-            1,
-            "AAPL".to_string(),
-            100,
-            "BUY",
-            Some("ORDER123".to_string()),
-            Some(15000),
-            "COMPLETED",
-            None, // Missing executed_at for COMPLETED status
-        );
+        let result = SchwabExecutionRow {
+            id: 1,
+            symbol: "AAPL".to_string(),
+            shares: 100,
+            direction: "BUY".to_string(),
+            order_id: Some("ORDER123".to_string()),
+            price_cents: Some(15000),
+            status: "COMPLETED".to_string(),
+            executed_at: None, // Missing executed_at for COMPLETED status
+        }
+        .into_domain_object();
 
         assert!(matches!(
             result.unwrap_err(),
@@ -952,16 +1052,17 @@ mod tests {
 
     #[test]
     fn test_row_to_execution_invalid_status() {
-        let result = row_to_execution(
-            1,
-            "AAPL".to_string(),
-            100,
-            "BUY",
-            None,
-            None,
-            "INVALID_STATUS",
-            None,
-        );
+        let result = SchwabExecutionRow {
+            id: 1,
+            symbol: "AAPL".to_string(),
+            shares: 100,
+            direction: "BUY".to_string(),
+            order_id: None,
+            price_cents: None,
+            status: "INVALID_STATUS".to_string(),
+            executed_at: None,
+        }
+        .into_domain_object();
 
         assert!(matches!(
             result.unwrap_err(),
@@ -972,16 +1073,17 @@ mod tests {
     #[test]
     fn test_row_to_execution_negative_shares() {
         // Test with negative shares value
-        let result = row_to_execution(
-            1,
-            "AAPL".to_string(),
-            -100, // Negative shares
-            "BUY",
-            None,
-            None,
-            "PENDING",
-            None,
-        );
+        let result = SchwabExecutionRow {
+            id: 1,
+            symbol: "AAPL".to_string(),
+            shares: -100, // Negative shares
+            direction: "BUY".to_string(),
+            order_id: None,
+            price_cents: None,
+            status: "PENDING".to_string(),
+            executed_at: None,
+        }
+        .into_domain_object();
 
         assert!(matches!(
             result.unwrap_err(),
@@ -1129,16 +1231,17 @@ mod tests {
 
     #[test]
     fn test_row_to_execution_failed_missing_executed_at() {
-        let result = row_to_execution(
-            1,
-            "AAPL".to_string(),
-            100,
-            "BUY",
-            None,
-            None,
-            "FAILED",
-            None, // Missing executed_at for FAILED status
-        );
+        let result = SchwabExecutionRow {
+            id: 1,
+            symbol: "AAPL".to_string(),
+            shares: 100,
+            direction: "BUY".to_string(),
+            order_id: None,
+            price_cents: None,
+            status: "FAILED".to_string(),
+            executed_at: None, // Missing executed_at for FAILED status
+        }
+        .into_domain_object();
 
         assert!(matches!(
             result.unwrap_err(),

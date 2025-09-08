@@ -21,9 +21,9 @@ CREATE TABLE schwab_executions (
   status TEXT CHECK (status IN ('PENDING', 'COMPLETED', 'FAILED')) NOT NULL DEFAULT 'PENDING',
   executed_at TIMESTAMP,
   CHECK (
-    (status = 'PENDING' AND order_id IS NULL AND executed_at IS NULL) OR
-    (status = 'COMPLETED' AND order_id IS NOT NULL AND executed_at IS NOT NULL) OR
-    (status = 'FAILED' AND executed_at IS NOT NULL)
+    (status = 'PENDING' AND order_id IS NULL AND price_cents IS NULL AND executed_at IS NULL) OR
+    (status = 'COMPLETED' AND order_id IS NOT NULL AND price_cents IS NOT NULL AND executed_at IS NOT NULL) OR
+    (status = 'FAILED' AND order_id IS NULL AND price_cents IS NULL AND executed_at IS NOT NULL)
   )
 );
 
