@@ -32,7 +32,7 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
     sqlx::migrate!().run(&pool).await?;
 
     let config = Config::figment()
-        .merge(("port", 8080))
+        .merge(("port", env.server_port))
         .merge(("address", "0.0.0.0"));
 
     let rocket = rocket::custom(config)
