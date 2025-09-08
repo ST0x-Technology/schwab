@@ -137,15 +137,29 @@ impl Usdc {
 
 ## Task 2. Create newtype wrappers for Shares and Usdc
 
-- [ ] Create Shares struct with private f64 field
-- [ ] Implement Shares::new with validation (non-negative, reasonable bounds)
-- [ ] Implement Shares::value() getter method
-- [ ] Create Usdc struct with private f64 field
-- [ ] Implement Usdc::new with validation (non-negative, reasonable bounds)
-- [ ] Implement Usdc::value() getter method
-- [ ] Add validation error types for invalid amounts
-- [ ] Add unit tests for valid construction
-- [ ] Add unit tests for validation failures
+- [x] Create Shares struct with private f64 field
+- [x] Implement Shares::new with validation (non-negative)
+- [x] Implement Shares::value() getter method
+- [x] Create Usdc struct with private f64 field
+- [x] Implement Usdc::new with validation (non-negative)
+- [x] Implement Usdc::value() getter method
+- [x] Add validation error types for invalid amounts
+- [x] Add unit tests for valid construction
+- [x] Add unit tests for validation failures
+
+### Completed Changes
+
+- Added `Shares` newtype with private f64 field and validated construction
+- Added `Usdc` newtype with private f64 field and validated construction
+- Both types validate only legitimate business rules:
+  - Non-negative amounts only (no arbitrary upper bounds)
+- Added error variants to `TradeValidationError`: `NegativeShares`,
+  `NegativeUsdc`
+- Added comprehensive tests covering:
+  - Valid construction and value retrieval
+  - Negative amount validation failures
+  - Equality comparison testing
+- Both types are `pub(crate)` to maintain minimal visibility
 
 ## Task 3. Fix amount extraction in try_from_order_and_fill_details
 
