@@ -16,6 +16,40 @@ use crate::symbol::cache::SymbolCache;
 #[cfg(test)]
 use sqlx::SqlitePool;
 
+/// Represents a validated number of shares (non-negative)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Shares(f64);
+
+impl Shares {
+    pub(crate) fn new(value: f64) -> Result<Self, TradeValidationError> {
+        if value < 0.0 {
+            return Err(TradeValidationError::NegativeShares(value));
+        }
+        Ok(Shares(value))
+    }
+
+    pub(crate) fn value(&self) -> f64 {
+        self.0
+    }
+}
+
+/// Represents a validated USDC amount (non-negative)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Usdc(f64);
+
+impl Usdc {
+    pub(crate) fn new(value: f64) -> Result<Self, TradeValidationError> {
+        if value < 0.0 {
+            return Err(TradeValidationError::NegativeUsdc(value));
+        }
+        Ok(Usdc(value))
+    }
+
+    pub(crate) fn value(&self) -> f64 {
+        self.0
+    }
+}
+
 /// Trade details extracted from symbol pair processing
 #[derive(Debug, Clone, PartialEq)]
 struct TradeDetails {
@@ -672,6 +706,59 @@ mod tests {
         let amount = U256::from(12345);
         let result = u256_to_f64(amount, 0).unwrap();
         assert!((result - 12_345.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_shares_validation() {
+        // Test valid shares
+        let shares = Shares::new(100.5).unwrap();
+        assert_eq!(shares.value(), 100.5);
+
+        // Test zero shares (valid)
+        let shares = Shares::new(0.0).unwrap();
+        assert_eq!(shares.value(), 0.0);
+
+        // Test negative shares (invalid)
+        let result = Shares::new(-1.0);
+        assert!(matches!(
+            result.unwrap_err(),
+            TradeValidationError::NegativeShares(-1.0)
+        ));
+    }
+
+    #[test]
+    fn test_usdc_validation() {
+        // Test valid USDC amount
+        let usdc = Usdc::new(1000.50).unwrap();
+        assert_eq!(usdc.value(), 1000.50);
+
+        // Test zero USDC (valid)
+        let usdc = Usdc::new(0.0).unwrap();
+        assert_eq!(usdc.value(), 0.0);
+
+        // Test negative USDC (invalid)
+        let result = Usdc::new(-100.0);
+        assert!(matches!(
+            result.unwrap_err(),
+            TradeValidationError::NegativeUsdc(-100.0)
+        ));
+    }
+
+    #[test]
+    fn test_shares_usdc_equality() {
+        let shares1 = Shares::new(100.0).unwrap();
+        let shares2 = Shares::new(100.0).unwrap();
+        let shares3 = Shares::new(200.0).unwrap();
+
+        assert_eq!(shares1, shares2);
+        assert_ne!(shares1, shares3);
+
+        let usdc1 = Usdc::new(1000.0).unwrap();
+        let usdc2 = Usdc::new(1000.0).unwrap();
+        let usdc3 = Usdc::new(2000.0).unwrap();
+
+        assert_eq!(usdc1, usdc2);
+        assert_ne!(usdc1, usdc3);
     }
 
     #[test]

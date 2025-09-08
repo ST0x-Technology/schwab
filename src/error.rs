@@ -37,6 +37,10 @@ pub(crate) enum TradeValidationError {
     TransactionNotFound(B256),
     #[error("No AfterClear log found for ClearV2 log")]
     NoAfterClearLog,
+    #[error("Negative shares amount: {0}")]
+    NegativeShares(f64),
+    #[error("Negative USDC amount: {0}")]
+    NegativeUsdc(f64),
 }
 
 /// Database persistence and data corruption errors.
