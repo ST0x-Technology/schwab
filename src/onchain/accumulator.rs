@@ -162,6 +162,7 @@ fn extract_base_symbol(symbol: &str) -> Result<String, OnChainError> {
 
     let base_symbol = symbol
         .strip_suffix("0x")
+        .or_else(|| symbol.strip_suffix("s1"))
         .map_or_else(|| symbol.to_string(), ToString::to_string);
 
     // Reject clearly invalid symbols that don't represent equity tickers
