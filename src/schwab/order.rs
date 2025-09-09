@@ -25,6 +25,7 @@ pub struct OrderPlacementResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_field_names)]
 pub struct Order {
     pub order_type: OrderType,
     pub session: Session,

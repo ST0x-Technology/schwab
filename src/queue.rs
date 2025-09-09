@@ -129,7 +129,10 @@ pub async fn get_next_unprocessed_event(
 }
 
 /// Marks an event as processed in the queue
-pub async fn mark_event_processed(pool: &SqlitePool, event_id: i64) -> Result<(), EventQueueError> {
+pub(crate) async fn mark_event_processed(
+    pool: &SqlitePool,
+    event_id: i64,
+) -> Result<(), EventQueueError> {
     sqlx::query!(
         r#"
         UPDATE event_queue 
@@ -154,7 +157,7 @@ pub async fn count_unprocessed(pool: &SqlitePool) -> Result<i64, EventQueueError
     Ok(row.count)
 }
 
-pub async fn get_all_unprocessed_events(
+pub(crate) async fn get_all_unprocessed_events(
     pool: &SqlitePool,
 ) -> Result<Vec<QueuedEvent>, EventQueueError> {
     let rows = sqlx::query!(
@@ -198,7 +201,7 @@ pub async fn get_all_unprocessed_events(
 
 /// Generic function to enqueue any event that implements Enqueueable
 #[allow(clippy::future_not_send)]
-pub async fn enqueue<E: Enqueueable>(
+pub(crate) async fn enqueue<E: Enqueueable>(
     pool: &SqlitePool,
     event: &E,
     log: &Log,
@@ -208,7 +211,7 @@ pub async fn enqueue<E: Enqueueable>(
 }
 
 /// Enqueues buffered events that were collected during coordination phase
-pub async fn enqueue_buffer(
+pub(crate) async fn enqueue_buffer(
     pool: &sqlx::SqlitePool,
     event_buffer: Vec<(TradeEvent, alloy::rpc::types::Log)>,
 ) {

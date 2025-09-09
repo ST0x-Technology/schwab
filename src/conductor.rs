@@ -15,7 +15,7 @@ use crate::schwab::{execution::find_execution_by_id, order::execute_schwab_order
 use crate::symbol::cache::SymbolCache;
 use crate::symbol::lock::get_symbol_lock;
 
-pub async fn get_cutoff_block<S1, S2, P>(
+pub(crate) async fn get_cutoff_block<S1, S2, P>(
     clear_stream: &mut S1,
     take_stream: &mut S2,
     provider: &P,
@@ -50,7 +50,7 @@ where
     Ok(block_number)
 }
 
-pub async fn run_live<S1, S2, P>(
+pub(crate) async fn run_live<S1, S2, P>(
     env: Env,
     pool: SqlitePool,
     cache: SymbolCache,
@@ -198,7 +198,7 @@ async fn process_trade(
 
 /// Processes any unprocessed events from the queue at startup by deserializing them
 /// and running them through the full trade processing pipeline for true idempotency.
-pub async fn process_queue<P: Provider + Clone>(
+pub(crate) async fn process_queue<P: Provider + Clone>(
     env: &Env,
     evm_env: &EvmEnv,
     pool: &SqlitePool,
