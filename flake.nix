@@ -64,6 +64,7 @@
             [
               sqlx-cli
               cargo-tarpaulin
+              cargo-chef
               packages.prepSolArtifacts
               packages.checkTestCoverage
             ] ++ rainix.devShells.${system}.default.buildInputs;
