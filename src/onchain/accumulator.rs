@@ -555,10 +555,10 @@ pub async fn check_all_accumulated_positions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::onchain::io::symbol;
-    use crate::onchain::io::tokenized_symbol;
     use crate::schwab::TradeStatus;
+    use crate::symbol;
     use crate::test_utils::setup_test_db;
+    use crate::tokenized_symbol;
     use crate::trade_execution_link::TradeExecutionLink;
     use alloy::primitives::fixed_bytes;
 
@@ -593,7 +593,10 @@ mod tests {
         let result = process_trade_with_tx(&pool, trade).await.unwrap();
         assert!(result.is_none());
 
-        let (calculator, _) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
+        let (calculator, _) = find_by_symbol(&pool, symbol!("AAPL").as_str())
+            .await
+            .unwrap()
+            .unwrap();
         assert!((calculator.accumulated_short - 0.5).abs() < f64::EPSILON); // SELL creates short exposure
         assert!((calculator.net_position() - (-0.5)).abs() < f64::EPSILON); // Short position = negative net
         assert!((calculator.accumulated_long - 0.0).abs() < f64::EPSILON); // No long exposure
@@ -622,7 +625,10 @@ mod tests {
         assert_eq!(execution.shares, 1);
         assert_eq!(execution.direction, Direction::Buy); // Schwab BUY to offset onchain SELL (short exposure)
 
-        let (calculator, _) = find_by_symbol(&pool, "MSFT").await.unwrap().unwrap();
+        let (calculator, _) = find_by_symbol(&pool, symbol!("MSFT").as_str())
+            .await
+            .unwrap()
+            .unwrap();
         assert!((calculator.accumulated_short - 0.5).abs() < f64::EPSILON); // SELL creates short exposure
         assert!((calculator.net_position() - (-0.5)).abs() < f64::EPSILON); // Short position = negative net
     }
@@ -683,7 +689,10 @@ mod tests {
         assert_eq!(execution.shares, 1);
         assert_eq!(execution.direction, Direction::Buy); // Schwab BUY to offset onchain SELL (short exposure)
 
-        let (calculator, _) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
+        let (calculator, _) = find_by_symbol(&pool, symbol!("AAPL").as_str())
+            .await
+            .unwrap()
+            .unwrap();
         assert!((calculator.accumulated_short - 0.1).abs() < f64::EPSILON); // Remaining short exposure
         assert!((calculator.net_position() - (-0.1)).abs() < f64::EPSILON); // Net short position
     }
@@ -804,7 +813,9 @@ mod tests {
         assert_eq!(trade_count, 0);
 
         // Verify accumulator was not created for this failed transaction
-        let accumulator_result = find_by_symbol(&pool, "AAPL").await.unwrap();
+        let accumulator_result = find_by_symbol(&pool, symbol!("AAPL").as_str())
+            .await
+            .unwrap();
         assert!(accumulator_result.is_none());
 
         // Verify only the original execution remains
@@ -863,7 +874,10 @@ mod tests {
         assert_eq!(execution.direction, Direction::Buy); // Schwab BUY to offset onchain SELL
 
         // Verify accumulator shows correct remaining fractional amount
-        let (calculator, _) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
+        let (calculator, _) = find_by_symbol(&pool, symbol!("AAPL").as_str())
+            .await
+            .unwrap()
+            .unwrap();
         assert!((calculator.accumulated_short - 0.1).abs() < f64::EPSILON); // SELL creates short exposure
         assert!((calculator.net_position() - (-0.1)).abs() < f64::EPSILON); // Short position = negative net
 
@@ -982,7 +996,9 @@ mod tests {
         );
 
         // Verify the accumulator state shows the remaining fractional amount
-        let accumulator_result = find_by_symbol(&pool, "AAPL").await.unwrap();
+        let accumulator_result = find_by_symbol(&pool, symbol!("AAPL").as_str())
+            .await
+            .unwrap();
         assert!(
             accumulator_result.is_some(),
             "Accumulator should exist for AAPL"
@@ -1226,7 +1242,10 @@ mod tests {
         assert!((trades_for_execution[0].contributed_shares - 1.0).abs() < f64::EPSILON);
 
         // Verify the remaining 0.2 is still available for future executions
-        let (calculator, _) = find_by_symbol(&pool, "TSLA").await.unwrap().unwrap();
+        let (calculator, _) = find_by_symbol(&pool, symbol!("TSLA").as_str())
+            .await
+            .unwrap()
+            .unwrap();
         assert!((calculator.accumulated_long - 0.2).abs() < f64::EPSILON); // BUY creates long exposure
     }
 
@@ -1464,11 +1483,17 @@ mod tests {
         assert_eq!(tsla_failed[0].id.unwrap(), stale_id);
 
         // Verify TSLA accumulator pending_execution_id was cleared
-        let (_, pending_id) = find_by_symbol(&pool, "TSLA").await.unwrap().unwrap();
+        let (_, pending_id) = find_by_symbol(&pool, symbol!("TSLA").as_str())
+            .await
+            .unwrap()
+            .unwrap();
         assert!(pending_id.is_none());
 
         // Verify MSFT accumulator pending_execution_id is still set
-        let (_, msft_pending_id) = find_by_symbol(&pool, "MSFT").await.unwrap().unwrap();
+        let (_, msft_pending_id) = find_by_symbol(&pool, symbol!("MSFT").as_str())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(msft_pending_id, Some(recent_id));
     }
 
@@ -1523,7 +1548,10 @@ mod tests {
         assert_eq!(submitted_executions[0].id.unwrap(), execution_id);
 
         // Verify accumulator pending_execution_id is still set
-        let (_, pending_id) = find_by_symbol(&pool, "NVDA").await.unwrap().unwrap();
+        let (_, pending_id) = find_by_symbol(&pool, symbol!("NVDA").as_str())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(pending_id, Some(execution_id));
     }
 
@@ -1549,7 +1577,10 @@ mod tests {
         assert!(result.is_none()); // Should not execute yet (below 1.0)
 
         // Verify AAPL has accumulated position but no pending execution
-        let (aapl_calc, aapl_pending) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
+        let (aapl_calc, aapl_pending) = find_by_symbol(&pool, symbol!("AAPL").as_str())
+            .await
+            .unwrap()
+            .unwrap();
         assert!((aapl_calc.accumulated_short - 0.8).abs() < f64::EPSILON); // SELL creates short exposure
         assert!(aapl_pending.is_none());
 
@@ -1558,7 +1589,10 @@ mod tests {
         assert_eq!(executions.len(), 0);
 
         // Verify AAPL state unchanged
-        let (aapl_calc, aapl_pending) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
+        let (aapl_calc, aapl_pending) = find_by_symbol(&pool, symbol!("AAPL").as_str())
+            .await
+            .unwrap()
+            .unwrap();
         assert!((aapl_calc.accumulated_short - 0.8).abs() < f64::EPSILON); // SELL creates short exposure
         assert!(aapl_pending.is_none());
     }
@@ -1613,7 +1647,10 @@ mod tests {
         assert_eq!(executions.len(), 0);
 
         // Verify AAPL was unchanged (still has pending execution)
-        let (aapl_calc, aapl_pending) = find_by_symbol(&pool, "AAPL").await.unwrap().unwrap();
+        let (aapl_calc, aapl_pending) = find_by_symbol(&pool, symbol!("AAPL").as_str())
+            .await
+            .unwrap()
+            .unwrap();
         assert!((aapl_calc.accumulated_long - 1.5).abs() < f64::EPSILON); // Unchanged
         assert_eq!(aapl_pending, Some(execution_id)); // Still has same pending execution
     }
@@ -1654,7 +1691,10 @@ mod tests {
         assert!(result1.is_none());
 
         // Verify accumulation for GME base symbol
-        let (calculator, pending) = find_by_symbol(&pool, "GME").await.unwrap().unwrap();
+        let (calculator, pending) = find_by_symbol(&pool, symbol!("GME").as_str())
+            .await
+            .unwrap()
+            .unwrap();
         assert!((calculator.accumulated_short - 0.6).abs() < f64::EPSILON);
         assert!((calculator.accumulated_long - 0.0).abs() < f64::EPSILON);
         assert_eq!(pending, None);
@@ -1679,7 +1719,10 @@ mod tests {
         assert!((total_contributed - 1.0).abs() < f64::EPSILON);
 
         // Verify remaining accumulation
-        let (final_calc, final_pending) = find_by_symbol(&pool, "GME").await.unwrap().unwrap();
+        let (final_calc, final_pending) = find_by_symbol(&pool, symbol!("GME").as_str())
+            .await
+            .unwrap()
+            .unwrap();
         assert!((final_calc.accumulated_short - 0.1).abs() < f64::EPSILON); // 0.6 + 0.5 - 1.0 = 0.1 remaining
         assert!((final_calc.accumulated_long - 0.0).abs() < f64::EPSILON);
         assert_eq!(final_pending, execution.id); // Has pending execution

@@ -549,7 +549,8 @@ mod tests {
                 id: None,
                 tx_hash: alloy::primitives::B256::from(tx_hash_bytes),
                 log_index: u64::from(i),
-                symbol: format!("TEST{i}0x").parse().unwrap(),
+                symbol: crate::onchain::io::TokenizedEquitySymbol::parse(&format!("TEST{i}0x"))
+                    .unwrap(),
                 amount: 10.0,
                 direction: Direction::Buy,
                 price_usdc: 150.0,

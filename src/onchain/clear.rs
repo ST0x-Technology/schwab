@@ -140,6 +140,7 @@ mod tests {
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange};
     use crate::symbol::cache::SymbolCache;
     use crate::test_utils::{get_test_log, get_test_order};
+    use crate::tokenized_symbol;
     use alloy::primitives::{IntoLogData, U256, address, fixed_bytes};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
     use alloy::rpc::types::Log;
@@ -250,7 +251,7 @@ mod tests {
                 .unwrap();
 
         let trade = result.unwrap();
-        assert_eq!(trade.symbol.to_string(), "AAPL0x");
+        assert_eq!(trade.symbol, tokenized_symbol!("AAPL0x"));
         assert!((trade.amount - 9.0).abs() < f64::EPSILON);
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 1);
@@ -318,7 +319,7 @@ mod tests {
                 .unwrap();
 
         let trade = result.unwrap();
-        assert_eq!(trade.symbol.to_string(), "AAPL0x");
+        assert_eq!(trade.symbol, tokenized_symbol!("AAPL0x"));
         assert!((trade.amount - 9.0).abs() < f64::EPSILON);
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 1);
@@ -607,7 +608,7 @@ mod tests {
 
         // Should process Alice first (alice_hash_matches is checked first)
         let trade = result.unwrap();
-        assert_eq!(trade.symbol.to_string(), "AAPL0x");
+        assert_eq!(trade.symbol, tokenized_symbol!("AAPL0x"));
         assert!((trade.amount - 9.0).abs() < f64::EPSILON);
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 1);

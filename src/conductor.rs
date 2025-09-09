@@ -812,10 +812,10 @@ mod tests {
     use super::*;
     use crate::bindings::IOrderBookV4::{ClearConfig, ClearV2};
     use crate::env::tests::create_test_env;
-    use crate::onchain::io::tokenized_symbol;
     use crate::onchain::trade::OnchainTrade;
     use crate::schwab::Direction;
     use crate::test_utils::{OnchainTradeBuilder, setup_test_db};
+    use crate::tokenized_symbol;
     use alloy::primitives::{IntoLogData, address, fixed_bytes};
     use alloy::providers::ProviderBuilder;
     use alloy::providers::mock::Asserter;
