@@ -56,7 +56,7 @@ jobs:
           host: ${{ secrets.DROPLET_HOST }}
           username: root
           key: ${{ secrets.DROPLET_SSH_KEY }}
-          envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_HASH,DEPLOYMENT_BLOCK,APP_KEY,APP_SECRET
+          envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_OWNER,DEPLOYMENT_BLOCK,APP_KEY,APP_SECRET
         env:
           WS_RPC_URL: ${{ secrets.WS_RPC_URL }}
           APP_KEY: ${{ secrets.APP_KEY }}
@@ -64,18 +64,41 @@ jobs:
           script: |
             set -euo pipefail
 
+            # Create log directory and setup logging
+            mkdir -p /var/log/schwarbot
+            TIMESTAMP=$(date +%Y-%m-%d-%H%M%S)
+            DEPLOY_LOG="/var/log/schwarbot/deploy-${TIMESTAMP}.log"
+            DOCKER_LOG="/var/log/schwarbot/docker-${TIMESTAMP}.log"
+
+            # Function to log and execute commands
+            log_exec() {
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - $*" | tee -a "${DEPLOY_LOG}"
+              "$@" 2>&1 | tee -a "${DEPLOY_LOG}"
+              return ${PIPESTATUS[0]}
+            }
+
+            # Start deployment logging
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting deployment of schwarbot:${SHORT_SHA}" | tee "${DEPLOY_LOG}"
+            echo "Deployment logs: ${DEPLOY_LOG}" | tee -a "${DEPLOY_LOG}"
+            echo "Container logs will be saved to: ${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}"
+
+            # Docker login
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Logging into Docker registry" | tee -a "${DEPLOY_LOG}"
             echo "${DIGITALOCEAN_ACCESS_TOKEN}" | \
-              docker login registry.digitalocean.com -u unused --password-stdin
+              docker login registry.digitalocean.com -u unused --password-stdin 2>&1 | tee -a "${DEPLOY_LOG}"
 
-            docker pull "registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}"
+            # Pull image
+            log_exec docker pull "registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}"
 
-            docker stop schwarbot || true
-            docker rm schwarbot || true
+            # Stop and remove existing container
+            log_exec docker stop schwarbot || true
+            log_exec docker rm schwarbot || true
 
             # Ensure database directory exists and has proper permissions
-            # mkdir -p /mnt/volume_nyc3_01 # should be set up when creating a droplet
-            chmod 755 /mnt/volume_nyc3_01
+            log_exec chmod 755 /mnt/volume_nyc3_01
 
+            # Start new container
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting new container" | tee -a "${DEPLOY_LOG}"
             docker run -d \
               --name schwarbot \
               --restart unless-stopped \
@@ -87,24 +110,46 @@ jobs:
               -e DEPLOYMENT_BLOCK="${DEPLOYMENT_BLOCK}" \
               -e APP_KEY="${APP_KEY}" \
               -e APP_SECRET="${APP_SECRET}" \
-              "registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}"
+              "registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}" 2>&1 | tee -a "${DEPLOY_LOG}"
 
+            # Wait for container to start
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Waiting for container to start..." | tee -a "${DEPLOY_LOG}"
             sleep 10
 
+            # Check if container is running and capture logs
             if ! docker ps | grep -q schwarbot; then
-              echo "Container failed to start" >&2
-              docker logs schwarbot
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - Container failed to start" | tee -a "${DEPLOY_LOG}" >&2
+              docker logs schwarbot 2>&1 | tee "${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}"
+              echo "Full container logs saved to: ${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}" >&2
               exit 1
             fi
 
+            # Capture initial container logs
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Container started successfully, capturing logs..." | tee -a "${DEPLOY_LOG}"
+            docker logs schwarbot 2>&1 | tee "${DOCKER_LOG}"
+
+            # Check for errors in logs
             if docker logs schwarbot 2>&1 | grep -q "error\|panic\|failed"; then
-              echo "Application errors detected in logs" >&2
-              docker logs --tail 20 schwarbot
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - Application errors detected in logs" | tee -a "${DEPLOY_LOG}" >&2
+              docker logs --tail 20 schwarbot 2>&1 | tee -a "${DEPLOY_LOG}"
+              echo "Full container logs saved to: ${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}" >&2
               exit 1
             fi
 
-            docker image prune -f
+            # Cleanup old images
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Cleaning up old images..." | tee -a "${DEPLOY_LOG}"
+            log_exec docker image prune -f
             docker images "registry.digitalocean.com/${REGISTRY_NAME}/schwarbot" \
               --format "table {{.Repository}}\t{{.Tag}}\t{{.CreatedAt}}" | \
               tail -n +2 | head -n -3 | awk '{print $1":"$2}' | \
-              xargs -r docker rmi || true
+              xargs -r docker rmi 2>&1 | tee -a "${DEPLOY_LOG}" || true
+
+            # Cleanup old logs (keep last 10 deployments)
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Cleaning up old deployment logs..." | tee -a "${DEPLOY_LOG}"
+            cd /var/log/schwarbot
+            ls -t deploy-*.log 2>/dev/null | tail -n +11 | xargs -r rm -f || true
+            ls -t docker-*.log 2>/dev/null | tail -n +11 | xargs -r rm -f || true
+
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Deployment completed successfully!" | tee -a "${DEPLOY_LOG}"
+            echo "Deployment logs: ${DEPLOY_LOG}"
+            echo "Container logs: ${DOCKER_LOG}"
