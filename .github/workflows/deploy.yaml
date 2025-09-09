@@ -70,7 +70,6 @@ jobs:
           host: ${{ secrets.DROPLET_HOST }}
           username: root
           key: ${{ secrets.DROPLET_SSH_KEY }}
-          envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_OWNER,DEPLOYMENT_BLOCK,APP_KEY,APP_SECRET,ENV_TEMPLATE,DOCKER_COMPOSE_TEMPLATE,GRAFANA_DOCKERFILE,GRAFANA_DATASOURCE_YAML,GRAFANA_ADMIN_PASSWORD
           script: |
             set -euo pipefail
 
@@ -191,8 +190,3 @@ jobs:
           WS_RPC_URL: ${{ secrets.WS_RPC_URL }}
           APP_KEY: ${{ secrets.APP_KEY }}
           APP_SECRET: ${{ secrets.APP_SECRET }}
-          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
-          ENV_TEMPLATE: ${{ env.ENV_TEMPLATE }}
-          DOCKER_COMPOSE_TEMPLATE: ${{ env.DOCKER_COMPOSE_TEMPLATE }}
-          GRAFANA_DOCKERFILE: ${{ env.GRAFANA_DOCKERFILE }}
-          GRAFANA_DATASOURCE_YAML: ${{ env.GRAFANA_DATASOURCE_YAML }}
