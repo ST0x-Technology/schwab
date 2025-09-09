@@ -91,8 +91,7 @@ exploiting price discrepancies.
 - Uses `tokio::select!` to handle events from either stream without blocking
 - Converts blockchain events to structured `Trade` objects for processing
 
-**Trade Conversion Logic (\[`Trade` struct and methods in
-`src/trade/mod.rs`\])**
+**Trade Conversion Logic ([`Trade` struct and methods in `src/trade/mod.rs`])**
 
 - Parses onchain events into actionable trade data with strict validation
 - Expects symbol pairs of USDC + tokenized equity with "s1" suffix (e.g.,
