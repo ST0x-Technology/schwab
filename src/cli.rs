@@ -8,12 +8,15 @@ use crate::env::{Env, LogLevel};
 use crate::error::OnChainError;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
 use crate::schwab::SchwabAuthEnv;
-use crate::schwab::order::{Instruction, Order, execute_schwab_order};
+use crate::schwab::market_hours::{MarketStatus as MarketStatusEnum, fetch_market_hours};
+use crate::schwab::order::{Instruction, Order};
 use crate::schwab::run_oauth_flow;
 use crate::schwab::tokens::SchwabTokens;
 use crate::symbol::cache::SymbolCache;
 use alloy::primitives::B256;
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
+use chrono::Utc;
+use chrono_tz::US::Eastern;
 
 #[derive(Debug, Error)]
 pub enum CliError {
@@ -62,6 +65,12 @@ pub enum Commands {
     },
     /// Perform Charles Schwab OAuth authentication flow
     Auth,
+    /// Check current market status and hours
+    MarketStatus {
+        /// Date to check market hours for (format: YYYY-MM-DD, defaults to current day)
+        #[arg(long = "date")]
+        date: Option<String>,
+    },
 }
 
 #[derive(Debug, Parser)]
@@ -91,6 +100,9 @@ impl CliEnv {
             log_level: cli_env.log_level,
             schwab_auth: cli_env.schwab_auth,
             evm_env: cli_env.evm_env,
+            order_polling_interval: 15,
+            order_polling_max_jitter: 5,
+            dry_run: false,
         };
 
         Ok((env, cli_env.command))
@@ -201,9 +213,86 @@ async fn run_command_with_writers<W: Write>(
                 }
             }
         }
+        Commands::MarketStatus { date } => {
+            info!(
+                "Checking market status for date: {:?}",
+                date.as_deref().unwrap_or("today")
+            );
+            ensure_authentication(pool, &env.schwab_auth, stdout).await?;
+            display_market_status(&env, pool, date.as_deref(), stdout).await?;
+        }
     }
 
     info!("CLI operation completed successfully");
+    Ok(())
+}
+
+async fn display_market_status<W: Write>(
+    env: &Env,
+    pool: &SqlitePool,
+    date: Option<&str>,
+    stdout: &mut W,
+) -> anyhow::Result<()> {
+    match fetch_market_hours(&env.schwab_auth, pool, date).await {
+        Ok(market_hours) => {
+            let status = market_hours.current_status();
+            let date_display = market_hours.date.format("%A, %B %d, %Y");
+
+            writeln!(stdout, "Market Status: {}", status.as_str())?;
+
+            if market_hours.is_open {
+                if let (Some(start), Some(end)) = (market_hours.start, market_hours.end) {
+                    let start_et = start.format("%I:%M %p ET");
+                    let end_et = end.format("%I:%M %p ET");
+
+                    writeln!(
+                        stdout,
+                        "{date_display}: Regular Hours: {start_et} - {end_et}"
+                    )?;
+
+                    let now = Utc::now().with_timezone(&Eastern);
+                    if status == MarketStatusEnum::Open {
+                        if now < end {
+                            let time_until_close = end.signed_duration_since(now);
+                            let hours = time_until_close.num_hours();
+                            let minutes = time_until_close.num_minutes() % 60;
+
+                            if hours > 0 {
+                                writeln!(stdout, "Market closes in {hours}h {minutes}m")?;
+                            } else {
+                                writeln!(stdout, "Market closes in {minutes}m")?;
+                            }
+                        }
+                    } else if now < start {
+                        let time_until_open = start.signed_duration_since(now);
+                        let days = time_until_open.num_days();
+                        let hours = time_until_open.num_hours() % 24;
+                        let minutes = time_until_open.num_minutes() % 60;
+
+                        if days > 0 {
+                            writeln!(stdout, "Market opens in {days}d {hours}h {minutes}m")?;
+                        } else if hours > 0 {
+                            writeln!(stdout, "Market opens in {hours}h {minutes}m")?;
+                        } else {
+                            writeln!(stdout, "Market opens in {minutes}m")?;
+                        }
+                    }
+                }
+            } else {
+                writeln!(stdout, "{date_display}: Market Closed")?;
+
+                if date.is_none() {
+                    writeln!(stdout, "Next trading day: Check weekday market hours")?;
+                }
+            }
+        }
+        Err(e) => {
+            error!("Failed to fetch market hours: {e:?}");
+            writeln!(stdout, "❌ Failed to fetch market hours: {e}")?;
+            return Err(e.into());
+        }
+    }
+
     Ok(())
 }
 
@@ -346,7 +435,9 @@ async fn process_found_trade<W: Write>(
 
     writeln!(stdout, "🔄 Processing trade with TradeAccumulator...")?;
 
-    let execution = accumulator::add_trade(pool, onchain_trade).await?;
+    let mut sql_tx = pool.begin().await?;
+    let execution = accumulator::process_onchain_trade(&mut sql_tx, onchain_trade).await?;
+    sql_tx.commit().await?;
 
     if let Some(execution) = execution {
         let execution_id = execution
@@ -358,7 +449,9 @@ async fn process_found_trade<W: Write>(
         )?;
         ensure_authentication(pool, &env.schwab_auth, stdout).await?;
         writeln!(stdout, "🔄 Executing Schwab order...")?;
-        execute_schwab_order(env, pool, execution)
+        let broker = env.get_broker();
+        broker
+            .execute_order(env, pool, execution)
             .await
             .map_err(anyhow::Error::from)?;
         writeln!(stdout, "🎯 Trade processing completed!")?;
@@ -380,10 +473,7 @@ fn display_trade_details<W: Write>(
     onchain_trade: &OnchainTrade,
     stdout: &mut W,
 ) -> anyhow::Result<()> {
-    let schwab_ticker = onchain_trade
-        .symbol
-        .strip_suffix("s1")
-        .unwrap_or(&onchain_trade.symbol);
+    let schwab_ticker = onchain_trade.symbol.extract_base();
 
     writeln!(stdout, "✅ Found opposite-side trade opportunity:")?;
     writeln!(stdout, "   Transaction: {}", onchain_trade.tx_hash)?;
@@ -410,15 +500,17 @@ mod tests {
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
     use crate::env::LogLevel;
     use crate::onchain::trade::OnchainTrade;
-    use crate::schwab::execution::find_completed_executions_by_symbol;
+    use crate::schwab::TradeStatus;
+    use crate::schwab::execution::find_executions_by_symbol_and_status;
     use crate::schwab::{Direction, SchwabInstruction};
     use crate::test_utils::get_test_order;
     use crate::test_utils::setup_test_db;
+    use crate::tokenized_symbol;
     use crate::{onchain::EvmEnv, schwab::SchwabAuthEnv};
     use alloy::hex;
-    use alloy::primitives::{IntoLogData, U256, address, fixed_bytes, keccak256};
+    use alloy::primitives::{IntoLogData, U256, address, fixed_bytes};
     use alloy::providers::mock::Asserter;
-    use alloy::sol_types::{SolCall, SolEvent, SolValue};
+    use alloy::sol_types::{SolCall, SolEvent};
     use chrono::{Duration, Utc};
     use clap::CommandFactory;
     use httpmock::MockServer;
@@ -865,11 +957,12 @@ mod tests {
             evm_env: EvmEnv {
                 ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
                 orderbook: address!("0x1234567890123456789012345678901234567890"),
-                order_hash: fixed_bytes!(
-                    "0x0000000000000000000000000000000000000000000000000000000000000000"
-                ),
+                order_owner: address!("0x0000000000000000000000000000000000000000"),
                 deployment_block: 1,
             },
+            order_polling_interval: 15,
+            order_polling_max_jitter: 5,
+            dry_run: false,
         }
     }
 
@@ -884,7 +977,7 @@ mod tests {
     }
 
     struct MockBlockchainData {
-        order_hash: alloy::primitives::B256,
+        order_owner: alloy::primitives::Address,
         receipt_json: serde_json::Value,
         after_clear_log: alloy::rpc::types::Log,
     }
@@ -896,7 +989,7 @@ mod tests {
         bob_output_usdc: u64,      // e.g., 100_000_000 for 100 USDC
     ) -> MockBlockchainData {
         let order = get_test_order();
-        let order_hash = keccak256(order.abi_encode());
+        let order_owner = order.owner;
 
         let clear_event = ClearV2 {
             sender: address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
@@ -965,7 +1058,7 @@ mod tests {
         };
 
         MockBlockchainData {
-            order_hash,
+            order_owner,
             receipt_json,
             after_clear_log,
         }
@@ -1545,15 +1638,15 @@ mod tests {
             100_000_000,           // 100 USDC (6 decimals)
         );
 
-        // Update env to have the correct order hash
+        // Update env to have the correct order owner
         let mut env = env;
-        env.evm_env.order_hash = mock_data.order_hash;
+        env.evm_env.order_owner = mock_data.order_owner;
 
         // Set up Schwab API mocks
         let (account_mock, order_mock) = setup_schwab_api_mocks(&server);
 
         // Set up the mock provider
-        let provider = setup_mock_provider_for_process_tx(&mock_data, "USDC", "AAPLs1");
+        let provider = setup_mock_provider_for_process_tx(&mock_data, "USDC", "AAPL0x");
         let cache = SymbolCache::default();
 
         let mut stdout = Vec::new();
@@ -1571,16 +1664,32 @@ mod tests {
         let trade = OnchainTrade::find_by_tx_hash_and_log_index(&pool, tx_hash, 0)
             .await
             .unwrap();
-        assert_eq!(trade.symbol, "AAPLs1"); // Tokenized symbol
+        assert_eq!(trade.symbol.to_string(), "AAPL0x"); // Tokenized symbol
         assert!((trade.amount - 9.0).abs() < f64::EPSILON); // Amount from the test data
 
         // Verify SchwabExecution was created (due to TradeAccumulator)
-        let executions = find_completed_executions_by_symbol(&pool, "AAPL")
-            .await
-            .unwrap();
+        // Executions are now in SUBMITTED status with order_id stored for order status polling
+        let executions =
+            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Submitted)
+                .await
+                .unwrap();
         assert_eq!(executions.len(), 1);
         assert_eq!(executions[0].shares, 9);
         assert_eq!(executions[0].direction, SchwabInstruction::Buy);
+
+        // Verify order_id was stored in database
+        let execution_id = executions[0].id.unwrap();
+        let row = sqlx::query!(
+            "SELECT order_id FROM schwab_executions WHERE id = ?1",
+            execution_id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            row.order_id.is_some(),
+            "Order ID should be stored for polling"
+        );
 
         // Verify Schwab API was called
         account_mock.assert();
@@ -1611,9 +1720,9 @@ mod tests {
             50_000_000,            // 50 USDC (6 decimals)
         );
 
-        // Update env to have the correct order hash
+        // Update env to have the correct order owner
         let mut env = env;
-        env.evm_env.order_hash = mock_data.order_hash;
+        env.evm_env.order_owner = mock_data.order_owner;
 
         // Set up Schwab API mocks for first call
         let account_mock = server.mock(|when, then| {
@@ -1645,7 +1754,7 @@ mod tests {
             &"USDC".to_string(),
         ));
         asserter1.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"TSLAs1".to_string(),
+            &"TSLA0x".to_string(),
         ));
 
         let provider1 = ProviderBuilder::new().connect_mocked_client(asserter1);
@@ -1662,7 +1771,7 @@ mod tests {
         let trade = OnchainTrade::find_by_tx_hash_and_log_index(&pool, tx_hash, 0)
             .await
             .unwrap();
-        assert_eq!(trade.symbol, "TSLAs1"); // Tokenized symbol
+        assert_eq!(trade.symbol.to_string(), "TSLA0x"); // Tokenized symbol
         assert!((trade.amount - 5.0).abs() < f64::EPSILON); // Amount from the test data
 
         // Verify stdout output for first call
@@ -1679,7 +1788,7 @@ mod tests {
             &"USDC".to_string(),
         ));
         asserter2.push_success(&<symbolCall as SolCall>::abi_encode_returns(
-            &"TSLAs1".to_string(),
+            &"TSLA0x".to_string(),
         ));
 
         let provider2 = ProviderBuilder::new().connect_mocked_client(asserter2);
@@ -1687,30 +1796,25 @@ mod tests {
 
         let mut stdout2 = Vec::new();
 
-        // Process the same transaction again (should detect duplicate and error)
+        // Process the same transaction again (should handle duplicate gracefully)
         let result2 =
             process_tx_with_provider(tx_hash, &env, &pool, &mut stdout2, &provider2, &cache2).await;
         assert!(
-            result2.is_err(),
-            "Second process_tx should fail due to duplicate constraint violation"
+            result2.is_ok(),
+            "Second process_tx should succeed with graceful duplicate handling"
         );
-
-        // Verify the error is a UNIQUE constraint violation
-        let error_string = format!("{:?}", result2.unwrap_err());
-        assert!(error_string.contains("UNIQUE constraint failed"));
-        assert!(error_string.contains("onchain_trades.tx_hash"));
 
         // Verify only one trade exists in database
         let count = OnchainTrade::db_count(&pool).await.unwrap();
         assert_eq!(count, 1, "Only one trade should exist in database");
 
-        // Verify stdout shows processing started but didn't complete
+        // Verify stdout shows duplicate was handled gracefully
         let stdout_str2 = String::from_utf8(stdout2).unwrap();
         assert!(stdout_str2.contains("Processing trade with TradeAccumulator"));
-        // Should not contain completion messages since it errored
-        assert!(!stdout_str2.contains("Trade processing completed"));
+        assert!(stdout_str2.contains("Trade accumulated but did not trigger execution yet"));
 
-        // Verify Schwab API was only called once (for the first trade)
+        // Since the duplicate is handled gracefully and doesn't trigger a new execution,
+        // the Schwab API should still only be called once (for the first trade)
         account_mock.assert_hits(1);
         order_mock.assert_hits(1);
     }
@@ -1726,6 +1830,185 @@ mod tests {
         assert!(help_output.contains("authentication"));
     }
 
+    #[test]
+    fn test_market_status_command_cli_help_text() {
+        let mut cmd = Cli::command();
+
+        // Verify that the market-status command is properly defined in the CLI
+        let help_output = cmd.render_help().to_string();
+        assert!(help_output.contains("market-status"));
+        assert!(help_output.contains("Check current market status and hours"));
+
+        // Test specific subcommand help
+        let subcommand_help = cmd
+            .find_subcommand_mut("market-status")
+            .unwrap()
+            .render_help()
+            .to_string();
+        assert!(subcommand_help.contains("Date to check market hours for"));
+        assert!(subcommand_help.contains("YYYY-MM-DD"));
+        assert!(subcommand_help.contains("defaults to current day"));
+    }
+
+    #[tokio::test]
+    async fn test_market_status_command_open_market() {
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let mock_response = json!({
+            "equity": {
+                "EQ": {
+                    "date": "2025-01-03",
+                    "marketType": "EQUITY",
+                    "exchange": "NYSE",
+                    "category": "EQUITY",
+                    "product": "EQ",
+                    "productName": "Equity",
+                    "isOpen": true,
+                    "sessionHours": {
+                        "regularMarket": [{
+                            "start": "2025-01-03T09:30:00-05:00",
+                            "end": "2025-01-03T16:00:00-05:00"
+                        }]
+                    }
+                }
+            }
+        });
+
+        let mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/marketdata/v1/markets/equity")
+                .header("authorization", "Bearer test_access_token")
+                .header("accept", "application/json");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(mock_response);
+        });
+
+        let mut stdout = Vec::new();
+        let market_status_command = Commands::MarketStatus { date: None };
+
+        let result = run_command_with_writers(env, market_status_command, &pool, &mut stdout).await;
+
+        assert!(
+            result.is_ok(),
+            "Market status command should succeed: {result:?}"
+        );
+        mock.assert();
+
+        let stdout_str = String::from_utf8(stdout).unwrap();
+        assert!(stdout_str.contains("Market Status:"));
+        assert!(stdout_str.contains("Friday, January 03, 2025: Regular Hours:"));
+        assert!(stdout_str.contains("09:30 AM ET - 04:00 PM ET"));
+    }
+
+    #[tokio::test]
+    async fn test_market_status_command_closed_market() {
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let mock_response = json!({
+            "equity": {
+                "EQ": {
+                    "date": "2025-01-04",
+                    "marketType": "EQUITY",
+                    "exchange": "NYSE",
+                    "category": "EQUITY",
+                    "product": "EQ",
+                    "productName": "Equity",
+                    "isOpen": false
+                }
+            }
+        });
+
+        let mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/marketdata/v1/markets/equity")
+                .query_param("date", "2025-01-04")
+                .header("authorization", "Bearer test_access_token")
+                .header("accept", "application/json");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(mock_response);
+        });
+
+        let mut stdout = Vec::new();
+        let market_status_command = Commands::MarketStatus {
+            date: Some("2025-01-04".to_string()),
+        };
+
+        let result = run_command_with_writers(env, market_status_command, &pool, &mut stdout).await;
+
+        assert!(
+            result.is_ok(),
+            "Market status command should succeed: {result:?}"
+        );
+        mock.assert();
+
+        let stdout_str = String::from_utf8(stdout).unwrap();
+        assert!(stdout_str.contains("Market Status: CLOSED"));
+        assert!(stdout_str.contains("Saturday, January 04, 2025: Market Closed"));
+    }
+
+    #[tokio::test]
+    async fn test_market_status_command_authentication_failure() {
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+        // Don't set up tokens - should fail authentication
+
+        let mut stdout = Vec::new();
+        let market_status_command = Commands::MarketStatus { date: None };
+
+        let result = run_command_with_writers(env, market_status_command, &pool, &mut stdout).await;
+
+        assert!(
+            result.is_err(),
+            "Market status command should fail without authentication"
+        );
+
+        let stdout_str = String::from_utf8(stdout).unwrap();
+        assert!(
+            stdout_str.contains("no rows returned")
+                || stdout_str.contains("Authentication failed")
+                || stdout_str.contains("refresh token")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_market_status_command_api_error() {
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/marketdata/v1/markets/equity");
+            then.status(500)
+                .header("content-type", "application/json")
+                .json_body(json!({"error": "Internal server error"}));
+        });
+
+        let mut stdout = Vec::new();
+        let market_status_command = Commands::MarketStatus { date: None };
+
+        let result = run_command_with_writers(env, market_status_command, &pool, &mut stdout).await;
+
+        assert!(
+            result.is_err(),
+            "Market status command should fail on API error"
+        );
+        mock.assert();
+
+        let stdout_str = String::from_utf8(stdout).unwrap();
+        assert!(stdout_str.contains("❌ Failed to fetch market hours"));
+    }
+
     #[tokio::test]
     async fn test_onchain_trade_database_duplicate_detection() {
         let pool = setup_test_db().await;
@@ -1737,7 +2020,7 @@ mod tests {
             id: None,
             tx_hash,
             log_index: 42,
-            symbol: "GOOGs1".to_string(),
+            symbol: tokenized_symbol!("GOOG0x"),
             amount: 2.5,
             direction: Direction::Buy,
             price_usdc: 20000.0,
@@ -1767,7 +2050,7 @@ mod tests {
 
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 42);
-        assert_eq!(trade.symbol, "GOOGs1");
+        assert_eq!(trade.symbol.to_string(), "GOOG0x");
         assert!((trade.amount - 2.5).abs() < f64::EPSILON);
         assert!((trade.price_usdc - 20000.0).abs() < f64::EPSILON);
     }

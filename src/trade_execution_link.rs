@@ -1,6 +1,8 @@
 #[cfg(test)]
 use crate::error::OnChainError;
 #[cfg(test)]
+use crate::onchain::io::TokenizedEquitySymbol;
+#[cfg(test)]
 use crate::schwab::shares_from_db_i64;
 use crate::schwab::{Direction, TradeStatus};
 use chrono::{DateTime, Utc};
@@ -89,12 +91,9 @@ impl TradeExecutionLink {
                     )
                 })?;
 
-                let execution_status = parse_trade_status_from_db(
-                    &row.status,
-                    row.order_id.as_deref(),
-                    row.price_cents,
-                    row.executed_at,
-                )?;
+                let execution_status = row.status.parse::<TradeStatus>().map_err(|e| {
+                    OnChainError::Persistence(crate::error::PersistenceError::InvalidTradeStatus(e))
+                })?;
 
                 Ok(ExecutionContribution {
                     link_id: row.id,
@@ -158,13 +157,15 @@ impl TradeExecutionLink {
             .collect()
     }
 
-    /// Get complete audit trail for a symbol showing all trades and their executions
+    /// Get complete audit trail for a tokenized equity symbol showing all trades and their executions
     #[cfg(test)]
     pub async fn get_symbol_audit_trail(
         pool: &SqlitePool,
-        symbol: &str,
+        tokenized_symbol: &TokenizedEquitySymbol,
     ) -> Result<Vec<AuditTrailEntry>, OnChainError> {
-        let base_symbol = symbol.strip_suffix("s1").unwrap_or(symbol).to_string();
+        let symbol = tokenized_symbol.to_string();
+        let base_symbol = tokenized_symbol.base().as_str();
+
         let rows = sqlx::query!(
             r#"
             SELECT 
@@ -291,70 +292,12 @@ pub struct AuditTrailEntry {
 }
 
 #[cfg(test)]
-fn parse_trade_status_from_db(
-    status: &str,
-    order_id: Option<&str>,
-    price_cents: Option<i64>,
-    executed_at: Option<chrono::NaiveDateTime>,
-) -> Result<TradeStatus, OnChainError> {
-    match status {
-        "PENDING" => Ok(TradeStatus::Pending),
-        "COMPLETED" => {
-            let order_id = order_id.ok_or(OnChainError::Persistence(
-                crate::error::PersistenceError::InvalidTradeStatus(
-                    "COMPLETED status missing order_id".to_string(),
-                ),
-            ))?;
-            let price_cents = price_cents.ok_or(OnChainError::Persistence(
-                crate::error::PersistenceError::InvalidTradeStatus(
-                    "COMPLETED status missing price_cents".to_string(),
-                ),
-            ))?;
-            let executed_at = executed_at.ok_or(OnChainError::Persistence(
-                crate::error::PersistenceError::InvalidTradeStatus(
-                    "COMPLETED status missing executed_at".to_string(),
-                ),
-            ))?;
-
-            if price_cents < 0 {
-                return Err(OnChainError::Persistence(
-                    crate::error::PersistenceError::InvalidTradeStatus(format!(
-                        "COMPLETED status has negative price_cents: {price_cents}"
-                    )),
-                ));
-            }
-
-            #[allow(clippy::cast_sign_loss)]
-            Ok(TradeStatus::Completed {
-                executed_at: DateTime::from_naive_utc_and_offset(executed_at, Utc),
-                order_id: order_id.to_string(),
-                price_cents: price_cents as u64,
-            })
-        }
-        "FAILED" => {
-            let executed_at = executed_at.ok_or(OnChainError::Persistence(
-                crate::error::PersistenceError::InvalidTradeStatus(
-                    "FAILED status missing executed_at".to_string(),
-                ),
-            ))?;
-
-            Ok(TradeStatus::Failed {
-                failed_at: DateTime::from_naive_utc_and_offset(executed_at, Utc),
-                error_reason: None, // Database doesn't store error reason currently
-            })
-        }
-        _ => Err(OnChainError::Persistence(
-            crate::error::PersistenceError::InvalidTradeStatus(format!("Invalid status: {status}")),
-        )),
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::onchain::OnchainTrade;
-    use crate::schwab::execution::SchwabExecution;
+    use crate::schwab::{TradeState, execution::SchwabExecution};
     use crate::test_utils::setup_test_db;
+    use crate::tokenized_symbol;
     use alloy::primitives::fixed_bytes;
     use chrono::Utc;
 
@@ -369,7 +312,7 @@ mod tests {
                 "0x1111111111111111111111111111111111111111111111111111111111111111"
             ),
             log_index: 1,
-            symbol: "AAPLs1".to_string(),
+            symbol: tokenized_symbol!("AAPL0x"),
             amount: 1.5,
             direction: Direction::Sell,
             price_usdc: 150.0,
@@ -381,7 +324,7 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 1,
             direction: Direction::Sell,
-            status: TradeStatus::Pending,
+            state: TradeState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -427,7 +370,7 @@ mod tests {
                     "0x2222222222222222222222222222222222222222222222222222222222222222"
                 ),
                 log_index: 1,
-                symbol: "MSFTs1".to_string(),
+                symbol: tokenized_symbol!("MSFT0x"),
                 amount: 0.5,
                 direction: Direction::Buy,
                 price_usdc: 300.0,
@@ -439,7 +382,7 @@ mod tests {
                     "0x3333333333333333333333333333333333333333333333333333333333333333"
                 ),
                 log_index: 2,
-                symbol: "MSFTs1".to_string(),
+                symbol: tokenized_symbol!("MSFT0x"),
                 amount: 0.8,
                 direction: Direction::Buy,
                 price_usdc: 305.0,
@@ -452,9 +395,9 @@ mod tests {
             symbol: "MSFT".to_string(),
             shares: 1,
             direction: Direction::Buy,
-            status: TradeStatus::Completed {
+            state: TradeState::Filled {
                 executed_at: Utc::now(),
-                order_id: "ORDER123".to_string(),
+                order_id: "1004055538123".to_string(),
                 price_cents: 30250,
             },
         };
@@ -479,7 +422,8 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Test audit trail
-        let audit_trail = TradeExecutionLink::get_symbol_audit_trail(&pool, "MSFTs1")
+        let tokenized_symbol = tokenized_symbol!("MSFT0x");
+        let audit_trail = TradeExecutionLink::get_symbol_audit_trail(&pool, &tokenized_symbol)
             .await
             .unwrap();
         assert_eq!(audit_trail.len(), 2);
@@ -501,7 +445,7 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 1,
             direction: Direction::Sell,
-            status: TradeStatus::Pending,
+            state: TradeState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -514,7 +458,7 @@ mod tests {
                     "0x4444444444444444444444444444444444444444444444444444444444444444"
                 ),
                 log_index,
-                symbol: "AAPLs1".to_string(),
+                symbol: tokenized_symbol!("AAPL0x"),
                 amount,
                 direction: Direction::Sell,
                 price_usdc: 150.0,
@@ -566,7 +510,7 @@ mod tests {
                 "0x5555555555555555555555555555555555555555555555555555555555555555"
             ),
             log_index: 1,
-            symbol: "AAPLs1".to_string(),
+            symbol: tokenized_symbol!("AAPL0x"),
             amount: 1.0,
             direction: Direction::Buy,
             price_usdc: 150.0,
@@ -578,7 +522,7 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 1,
             direction: Direction::Buy,
-            status: TradeStatus::Pending,
+            state: TradeState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();

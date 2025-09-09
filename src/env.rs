@@ -1,9 +1,12 @@
 use clap::Parser;
 use sqlx::SqlitePool;
+use std::sync::Arc;
 use tracing::Level;
 
 use crate::onchain::EvmEnv;
+use crate::schwab::OrderPollerConfig;
 use crate::schwab::SchwabAuthEnv;
+use crate::schwab::broker::{DynBroker, LogBroker, Schwab};
 
 #[derive(clap::ValueEnum, Debug, Clone)]
 pub enum LogLevel {
@@ -48,11 +51,34 @@ pub struct Env {
     pub schwab_auth: SchwabAuthEnv,
     #[clap(flatten)]
     pub evm_env: EvmEnv,
+    /// Interval in seconds between order status polling checks
+    #[clap(long, env, default_value = "15")]
+    pub order_polling_interval: u64,
+    /// Maximum jitter in seconds for order polling to prevent thundering herd
+    #[clap(long, env, default_value = "5")]
+    pub order_polling_max_jitter: u64,
+    #[clap(long, env, default_value = "false")]
+    pub dry_run: bool,
 }
 
 impl Env {
     pub async fn get_sqlite_pool(&self) -> Result<SqlitePool, sqlx::Error> {
         SqlitePool::connect(&self.database_url).await
+    }
+
+    pub const fn get_order_poller_config(&self) -> OrderPollerConfig {
+        OrderPollerConfig {
+            polling_interval: std::time::Duration::from_secs(self.order_polling_interval),
+            max_jitter: std::time::Duration::from_secs(self.order_polling_max_jitter),
+        }
+    }
+
+    pub(crate) fn get_broker(&self) -> DynBroker {
+        if self.dry_run {
+            Arc::new(LogBroker::new())
+        } else {
+            Arc::new(Schwab)
+        }
     }
 }
 
@@ -73,9 +99,9 @@ pub mod tests {
     use super::*;
     use crate::onchain::EvmEnv;
     use crate::schwab::SchwabAuthEnv;
-    use alloy::primitives::{address, fixed_bytes};
+    use alloy::primitives::address;
 
-    pub fn create_test_env_with_order_hash(order_hash: alloy::primitives::B256) -> Env {
+    pub fn create_test_env_with_order_owner(order_owner: alloy::primitives::Address) -> Env {
         Env {
             database_url: ":memory:".to_string(),
             log_level: LogLevel::Debug,
@@ -89,16 +115,17 @@ pub mod tests {
             evm_env: EvmEnv {
                 ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
                 orderbook: address!("0x1111111111111111111111111111111111111111"),
-                order_hash,
+                order_owner,
                 deployment_block: 1,
             },
+            order_polling_interval: 15,
+            order_polling_max_jitter: 5,
+            dry_run: false,
         }
     }
 
     pub fn create_test_env() -> Env {
-        create_test_env_with_order_hash(fixed_bytes!(
-            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        ))
+        create_test_env_with_order_owner(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
     }
 
     #[test]
@@ -129,6 +156,20 @@ pub mod tests {
         let env = create_test_env();
         let pool_result = env.get_sqlite_pool().await;
         assert!(pool_result.is_ok());
+    }
+
+    #[test]
+    fn test_get_broker_dry_run_modes() {
+        // Test dry_run = false (should return Schwab broker)
+        let mut env = create_test_env();
+        env.dry_run = false;
+        let broker = env.get_broker();
+        assert_eq!(format!("{broker:?}"), "Schwab");
+
+        // Test dry_run = true (should return LogBroker)
+        env.dry_run = true;
+        let broker = env.get_broker();
+        assert!(format!("{broker:?}").contains("LogBroker"));
     }
 
     #[test]

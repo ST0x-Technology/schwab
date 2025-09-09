@@ -85,8 +85,7 @@ async fn enqueue_event(
 }
 
 /// Gets the next unprocessed event from the queue, ordered by block number then log index
-#[cfg(test)]
-pub async fn get_next_unprocessed_event(
+pub(crate) async fn get_next_unprocessed_event(
     pool: &SqlitePool,
 ) -> Result<Option<QueuedEvent>, EventQueueError> {
     let row = sqlx::query!(
@@ -128,8 +127,11 @@ pub async fn get_next_unprocessed_event(
     }))
 }
 
-/// Marks an event as processed in the queue
-pub async fn mark_event_processed(pool: &SqlitePool, event_id: i64) -> Result<(), EventQueueError> {
+/// Marks an event as processed in the queue within a transaction
+pub(crate) async fn mark_event_processed(
+    sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    event_id: i64,
+) -> Result<(), EventQueueError> {
     sqlx::query!(
         r#"
         UPDATE event_queue 
@@ -138,67 +140,15 @@ pub async fn mark_event_processed(pool: &SqlitePool, event_id: i64) -> Result<()
         "#,
         event_id
     )
-    .execute(pool)
+    .execute(&mut **sql_tx)
     .await?;
 
     Ok(())
 }
 
-/// Gets count of unprocessed events in the queue
-#[cfg(test)]
-pub async fn count_unprocessed(pool: &SqlitePool) -> Result<i64, EventQueueError> {
-    let row = sqlx::query!("SELECT COUNT(*) as count FROM event_queue WHERE processed = 0")
-        .fetch_one(pool)
-        .await?;
-
-    Ok(row.count)
-}
-
-pub async fn get_all_unprocessed_events(
-    pool: &SqlitePool,
-) -> Result<Vec<QueuedEvent>, EventQueueError> {
-    let rows = sqlx::query!(
-        r#"
-        SELECT id, tx_hash, log_index, block_number, event_data, processed, created_at, processed_at
-        FROM event_queue
-        WHERE processed = 0
-        ORDER BY block_number ASC, log_index ASC
-        "#
-    )
-    .fetch_all(pool)
-    .await?;
-
-    let mut events = Vec::new();
-    for row in rows {
-        let tx_hash = B256::from_str(&row.tx_hash)
-            .map_err(|e| EventQueueError::Processing(format!("Invalid tx_hash format: {e}")))?;
-
-        let event: TradeEvent = serde_json::from_str(&row.event_data).map_err(|e| {
-            EventQueueError::Processing(format!("Failed to deserialize event: {e}"))
-        })?;
-
-        events.push(QueuedEvent {
-            id: Some(row.id),
-            tx_hash,
-            log_index: row.log_index.try_into().map_err(|_| {
-                EventQueueError::Processing("Log index conversion failed".to_string())
-            })?,
-            block_number: row.block_number.try_into().map_err(|_| {
-                EventQueueError::Processing("Block number conversion failed".to_string())
-            })?,
-            event,
-            processed: row.processed,
-            created_at: Some(row.created_at.and_utc()),
-            processed_at: row.processed_at.map(|dt| dt.and_utc()),
-        });
-    }
-
-    Ok(events)
-}
-
 /// Generic function to enqueue any event that implements Enqueueable
 #[allow(clippy::future_not_send)]
-pub async fn enqueue<E: Enqueueable>(
+pub(crate) async fn enqueue<E: Enqueueable>(
     pool: &SqlitePool,
     event: &E,
     log: &Log,
@@ -208,7 +158,7 @@ pub async fn enqueue<E: Enqueueable>(
 }
 
 /// Enqueues buffered events that were collected during coordination phase
-pub async fn enqueue_buffer(
+pub(crate) async fn enqueue_buffer(
     pool: &sqlx::SqlitePool,
     event_buffer: Vec<(TradeEvent, alloy::rpc::types::Log)>,
 ) {
@@ -239,6 +189,15 @@ pub async fn enqueue_buffer(
         .buffer_unordered(CONCURRENT_ENQUEUE_LIMIT)
         .collect::<Vec<_>>()
         .await;
+}
+
+/// Gets count of unprocessed events in the queue - test utility function
+pub(crate) async fn count_unprocessed(pool: &SqlitePool) -> Result<i64, EventQueueError> {
+    let row = sqlx::query!("SELECT COUNT(*) as count FROM event_queue WHERE processed = 0")
+        .fetch_one(pool)
+        .await?;
+
+    Ok(row.count)
 }
 
 #[cfg(test)]
@@ -298,9 +257,11 @@ mod tests {
         assert!(!queued_event.processed);
 
         // Mark as processed
-        mark_event_processed(&pool, queued_event.id.unwrap())
+        let mut sql_tx = pool.begin().await.unwrap();
+        mark_event_processed(&mut sql_tx, queued_event.id.unwrap())
             .await
             .unwrap();
+        sql_tx.commit().await.unwrap();
 
         // Check unprocessed count is now 0
         let count = count_unprocessed(&pool).await.unwrap();
@@ -389,9 +350,11 @@ mod tests {
         for i in 0..3 {
             let event = get_next_unprocessed_event(&pool).await.unwrap().unwrap();
             assert_eq!(event.log_index, i);
-            mark_event_processed(&pool, event.id.unwrap())
+            let mut sql_tx = pool.begin().await.unwrap();
+            mark_event_processed(&mut sql_tx, event.id.unwrap())
                 .await
                 .unwrap();
+            sql_tx.commit().await.unwrap();
         }
 
         let count = count_unprocessed(&pool).await.unwrap();
@@ -459,10 +422,17 @@ mod tests {
         let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 2);
 
-        let events = get_all_unprocessed_events(&pool).await.unwrap();
-        assert_eq!(events.len(), 2);
-        assert!(matches!(events[0].event, TradeEvent::ClearV2(_)));
-        assert!(matches!(events[1].event, TradeEvent::TakeOrderV2(_)));
+        let first_event = get_next_unprocessed_event(&pool).await.unwrap().unwrap();
+        assert!(matches!(first_event.event, TradeEvent::ClearV2(_)));
+
+        let mut sql_tx = pool.begin().await.unwrap();
+        mark_event_processed(&mut sql_tx, first_event.id.unwrap())
+            .await
+            .unwrap();
+        sql_tx.commit().await.unwrap();
+
+        let second_event = get_next_unprocessed_event(&pool).await.unwrap().unwrap();
+        assert!(matches!(second_event.event, TradeEvent::TakeOrderV2(_)));
     }
 
     #[tokio::test]

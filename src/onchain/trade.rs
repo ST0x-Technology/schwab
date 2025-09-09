@@ -11,6 +11,7 @@ use crate::bindings::IOrderBookV4::{ClearV2, OrderV3, TakeOrderV2};
 use crate::error::PersistenceError;
 use crate::error::{OnChainError, TradeValidationError};
 use crate::onchain::EvmEnv;
+use crate::onchain::io::{TokenizedEquitySymbol, TradeDetails};
 use crate::schwab::Direction;
 use crate::symbol::cache::SymbolCache;
 #[cfg(test)]
@@ -28,7 +29,7 @@ pub struct OnchainTrade {
     pub id: Option<i64>,
     pub tx_hash: B256,
     pub log_index: u64,
-    pub symbol: String,
+    pub symbol: TokenizedEquitySymbol,
     pub amount: f64,
     pub direction: Direction,
     pub price_usdc: f64,
@@ -45,6 +46,7 @@ impl OnchainTrade {
         let log_index_i64 = self.log_index as i64;
 
         let direction_str = self.direction.as_str();
+        let symbol_str = self.symbol.to_string();
         let result = sqlx::query!(
             r#"
             INSERT INTO onchain_trades (tx_hash, log_index, symbol, amount, direction, price_usdc)
@@ -52,7 +54,7 @@ impl OnchainTrade {
             "#,
             tx_hash_str,
             log_index_i64,
-            self.symbol,
+            symbol_str,
             self.amount,
             direction_str,
             self.price_usdc
@@ -99,7 +101,7 @@ impl OnchainTrade {
             tx_hash,
             #[allow(clippy::cast_sign_loss)]
             log_index: row.log_index as u64,
-            symbol: row.symbol,
+            symbol: row.symbol.parse::<TokenizedEquitySymbol>().unwrap(),
             amount: row.amount,
             direction,
             price_usdc: row.price_usdc,
@@ -144,45 +146,41 @@ impl OnchainTrade {
         let onchain_output_amount = u256_to_f64(fill.output_amount, output.decimals)?;
         let onchain_output_symbol = cache.get_io_symbol(provider, output).await?;
 
-        let (schwab_ticker, schwab_direction) =
-            determine_schwab_trade_details(&onchain_input_symbol, &onchain_output_symbol)?;
+        // Use centralized TradeDetails::try_from_io to extract all trade data consistently
+        let trade_details = TradeDetails::try_from_io(
+            &onchain_input_symbol,
+            onchain_input_amount,
+            &onchain_output_symbol,
+            onchain_output_amount,
+        )?;
 
-        if schwab_ticker.is_empty() {
+        if trade_details.equity_amount().value() == 0.0 {
             return Ok(None);
         }
 
-        // Use schwab_ticker + "s1" to create consistent tokenized symbol
-        let tokenized_symbol = format!("{schwab_ticker}s1");
-
-        // Calculate trade amount based on direction
-        let trade_amount = if schwab_direction == Direction::Buy {
-            onchain_output_amount
-        } else {
-            onchain_input_amount
-        };
-
-        if trade_amount == 0.0 {
-            return Ok(None);
-        }
-
-        // Calculate price per share in USDC
-        let price_per_share_usdc = if schwab_direction == Direction::Buy {
-            onchain_input_amount / onchain_output_amount
-        } else {
-            onchain_output_amount / onchain_input_amount
-        };
+        // Calculate price per share in USDC (always USDC amount / equity amount)
+        let price_per_share_usdc =
+            trade_details.usdc_amount().value() / trade_details.equity_amount().value();
 
         if price_per_share_usdc.is_nan() || price_per_share_usdc <= 0.0 {
             return Ok(None);
         }
+
+        // Parse the tokenized equity symbol to ensure it's valid
+        let tokenized_symbol_str = if onchain_input_symbol == "USDC" {
+            onchain_output_symbol
+        } else {
+            onchain_input_symbol
+        };
+        let tokenized_symbol = TokenizedEquitySymbol::parse(&tokenized_symbol_str)?;
 
         let trade = Self {
             id: None,
             tx_hash,
             log_index,
             symbol: tokenized_symbol,
-            amount: trade_amount,
-            direction: schwab_direction,
+            amount: trade_details.equity_amount().value(),
+            direction: trade_details.direction(),
             price_usdc: price_per_share_usdc,
             created_at: None,
         };
@@ -237,59 +235,6 @@ impl OnchainTrade {
     }
 }
 
-/// Determines Schwab trade direction and ticker based on onchain symbol configuration.
-///
-/// If the on-chain order has USDC as input and an s1 tokenized stock as
-/// output then it means the order received USDC and gave away an s1
-/// tokenized stock, i.e. sold, which means that to take the opposite
-/// trade in schwab we need to buy and vice versa.
-fn determine_schwab_trade_details(
-    onchain_input_symbol: &str,
-    onchain_output_symbol: &str,
-) -> Result<(String, Direction), OnChainError> {
-    // USDC input + s1 tokenized stock output = sold tokenized stock = buy on Schwab
-    if onchain_input_symbol == "USDC" && onchain_output_symbol.ends_with("s1") {
-        let ticker = extract_ticker_from_s1_symbol(
-            onchain_output_symbol,
-            onchain_input_symbol,
-            onchain_output_symbol,
-        )?;
-        return Ok((ticker, Direction::Buy));
-    }
-
-    // s1 tokenized stock input + USDC output = bought tokenized stock = sell on Schwab
-    if onchain_output_symbol == "USDC" && onchain_input_symbol.ends_with("s1") {
-        let ticker = extract_ticker_from_s1_symbol(
-            onchain_input_symbol,
-            onchain_input_symbol,
-            onchain_output_symbol,
-        )?;
-        return Ok((ticker, Direction::Sell));
-    }
-
-    Err(TradeValidationError::InvalidSymbolConfiguration(
-        onchain_input_symbol.to_string(),
-        onchain_output_symbol.to_string(),
-    )
-    .into())
-}
-
-fn extract_ticker_from_s1_symbol(
-    s1_symbol: &str,
-    input_symbol: &str,
-    output_symbol: &str,
-) -> Result<String, TradeValidationError> {
-    s1_symbol
-        .strip_suffix("s1")
-        .map(ToString::to_string)
-        .ok_or_else(|| {
-            TradeValidationError::InvalidSymbolConfiguration(
-                input_symbol.to_string(),
-                output_symbol.to_string(),
-            )
-        })
-}
-
 #[derive(Debug)]
 pub struct OrderFill {
     pub input_index: usize,
@@ -327,12 +272,12 @@ async fn try_convert_log_to_onchain_trade<P: Provider>(
     }
 
     if let Ok(take_order_event) = log.log_decode::<TakeOrderV2>() {
-        return OnchainTrade::try_from_take_order_if_target_order(
+        return OnchainTrade::try_from_take_order_if_target_owner(
             cache,
             &provider,
             take_order_event.data().clone(),
             log_with_metadata,
-            env.order_hash,
+            env.order_owner,
         )
         .await;
     }
@@ -377,7 +322,7 @@ mod tests {
                 "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             ),
             log_index: 42,
-            symbol: "AAPLs1".to_string(),
+            symbol: "AAPL0x".parse::<TokenizedEquitySymbol>().unwrap(),
             amount: 10.0,
             direction: Direction::Sell,
             price_usdc: 150.25,
@@ -402,91 +347,6 @@ mod tests {
         assert!((found.price_usdc - trade.price_usdc).abs() < f64::EPSILON);
         assert!(found.id.is_some());
         assert!(found.created_at.is_some());
-    }
-
-    #[test]
-    fn test_extract_ticker_from_s1_symbol_valid() {
-        assert_eq!(
-            extract_ticker_from_s1_symbol("AAPLs1", "USDC", "AAPLs1").unwrap(),
-            "AAPL"
-        );
-        assert_eq!(
-            extract_ticker_from_s1_symbol("TSLAs1", "USDC", "TSLAs1").unwrap(),
-            "TSLA"
-        );
-        assert_eq!(
-            extract_ticker_from_s1_symbol("GOOGs1", "USDC", "GOOGs1").unwrap(),
-            "GOOG"
-        );
-    }
-
-    #[test]
-    fn test_extract_ticker_from_s1_symbol_invalid() {
-        let result = extract_ticker_from_s1_symbol("AAPL", "USDC", "AAPL");
-        assert!(matches!(
-            result.unwrap_err(),
-            TradeValidationError::InvalidSymbolConfiguration(_, _)
-        ));
-
-        let result = extract_ticker_from_s1_symbol("", "USDC", "");
-        assert!(matches!(
-            result.unwrap_err(),
-            TradeValidationError::InvalidSymbolConfiguration(_, _)
-        ));
-
-        assert_eq!(
-            extract_ticker_from_s1_symbol("s1", "USDC", "s1").unwrap(),
-            ""
-        );
-    }
-
-    #[test]
-    fn test_determine_schwab_trade_details_usdc_to_s1() {
-        let result = determine_schwab_trade_details("USDC", "AAPLs1").unwrap();
-        assert_eq!(result.0, "AAPL");
-        assert_eq!(result.1, Direction::Buy);
-
-        let result = determine_schwab_trade_details("USDC", "TSLAs1").unwrap();
-        assert_eq!(result.0, "TSLA");
-        assert_eq!(result.1, Direction::Buy);
-    }
-
-    #[test]
-    fn test_determine_schwab_trade_details_s1_to_usdc() {
-        let result = determine_schwab_trade_details("AAPLs1", "USDC").unwrap();
-        assert_eq!(result.0, "AAPL");
-        assert_eq!(result.1, Direction::Sell);
-
-        let result = determine_schwab_trade_details("TSLAs1", "USDC").unwrap();
-        assert_eq!(result.0, "TSLA");
-        assert_eq!(result.1, Direction::Sell);
-    }
-
-    #[test]
-    fn test_determine_schwab_trade_details_invalid_configurations() {
-        let result = determine_schwab_trade_details("BTC", "ETH");
-        assert!(matches!(
-            result.unwrap_err(),
-            OnChainError::Validation(TradeValidationError::InvalidSymbolConfiguration(_, _))
-        ));
-
-        let result = determine_schwab_trade_details("USDC", "USDC");
-        assert!(matches!(
-            result.unwrap_err(),
-            OnChainError::Validation(TradeValidationError::InvalidSymbolConfiguration(_, _))
-        ));
-
-        let result = determine_schwab_trade_details("AAPLs1", "TSLAs1");
-        assert!(matches!(
-            result.unwrap_err(),
-            OnChainError::Validation(TradeValidationError::InvalidSymbolConfiguration(_, _))
-        ));
-
-        let result = determine_schwab_trade_details("", "");
-        assert!(matches!(
-            result.unwrap_err(),
-            OnChainError::Validation(TradeValidationError::InvalidSymbolConfiguration(_, _))
-        ));
     }
 
     #[test]
@@ -544,7 +404,7 @@ mod tests {
                 "0x1111111111111111111111111111111111111111111111111111111111111111"
             ),
             log_index: 100,
-            symbol: "AAPLs1".to_string(),
+            symbol: "AAPL0x".parse::<TokenizedEquitySymbol>().unwrap(),
             amount: 10.0,
             direction: Direction::Buy,
             price_usdc: 150.0,
@@ -578,7 +438,7 @@ mod tests {
                 "0x2222222222222222222222222222222222222222222222222222222222222222"
             ),
             log_index: u64::MAX, // Will become -1 when cast to i64
-            symbol: "AAPLs1".to_string(),
+            symbol: "AAPL0x".parse::<TokenizedEquitySymbol>().unwrap(),
             amount: 10.0,
             direction: Direction::Buy,
             price_usdc: 150.0,
@@ -624,29 +484,6 @@ mod tests {
         assert!((result - 12_345.0).abs() < f64::EPSILON);
     }
 
-    #[test]
-    fn test_determine_schwab_trade_details_edge_cases() {
-        // Test with minimal valid s1 symbol
-        let result = determine_schwab_trade_details("USDC", "As1").unwrap();
-        assert_eq!(result.0, "A");
-        assert_eq!(result.1, Direction::Buy);
-
-        // Test symbol case sensitivity
-        let result = determine_schwab_trade_details("usdc", "AAPLs1");
-        assert!(
-            result.is_err(),
-            "Expected case-sensitive USDC matching to fail"
-        );
-
-        // Test symbol with s1 but not as suffix
-        // Expected s1 prefix to be rejected
-        determine_schwab_trade_details("USDC", "s1AAPL").unwrap_err();
-
-        // Test symbol with multiple s1 occurrences - should extract from suffix only
-        let (ticker, _) = determine_schwab_trade_details("USDC", "s1AAPLs1").unwrap();
-        assert_eq!(ticker, "s1AAPL");
-    }
-
     #[tokio::test]
     async fn test_try_from_tx_hash_transaction_not_found() {
         use crate::onchain::EvmEnv;
@@ -661,7 +498,7 @@ mod tests {
         let env = EvmEnv {
             ws_rpc_url: "ws://localhost:8545".parse().unwrap(),
             orderbook: alloy::primitives::Address::ZERO,
-            order_hash: alloy::primitives::B256::ZERO,
+            order_owner: alloy::primitives::Address::ZERO,
             deployment_block: 0,
         };
 
@@ -675,22 +512,6 @@ mod tests {
             result.unwrap_err(),
             OnChainError::Validation(TradeValidationError::TransactionNotFound(_))
         ));
-    }
-
-    #[test]
-    fn test_extract_ticker_from_s1_symbol_empty_ticker() {
-        // Test with just "s1" - should return empty string
-        let result = extract_ticker_from_s1_symbol("s1", "USDC", "s1").unwrap();
-        assert_eq!(result, "");
-
-        // Test with complex ticker extraction
-        let result = extract_ticker_from_s1_symbol(
-            "VERY.LONG.TICKER.NAMEs1",
-            "USDC",
-            "VERY.LONG.TICKER.NAMEs1",
-        )
-        .unwrap();
-        assert_eq!(result, "VERY.LONG.TICKER.NAME");
     }
 
     #[tokio::test]
@@ -728,7 +549,8 @@ mod tests {
                 id: None,
                 tx_hash: alloy::primitives::B256::from(tx_hash_bytes),
                 log_index: u64::from(i),
-                symbol: format!("TEST{i}s1"),
+                symbol: crate::onchain::io::TokenizedEquitySymbol::parse(&format!("TEST{i}0x"))
+                    .unwrap(),
                 amount: 10.0,
                 direction: Direction::Buy,
                 price_usdc: 150.0,

@@ -7,7 +7,7 @@ use std::num::ParseFloatError;
 
 /// Business logic validation errors for trade processing rules.
 #[derive(Debug, thiserror::Error)]
-pub enum TradeValidationError {
+pub(crate) enum TradeValidationError {
     #[error("No transaction hash found in log")]
     NoTxHash,
     #[error("No log index found in log")]
@@ -20,19 +20,34 @@ pub enum TradeValidationError {
     NoInputAtIndex(usize),
     #[error("No output found at index: {0}")]
     NoOutputAtIndex(usize),
-    #[error("Expected IO to contain USDC and one s1-suffixed symbol but got {0} and {1}")]
+    #[error(
+        "Expected IO to contain USDC and one tokenized equity (0x or s1 suffix) but got {0} and {1}"
+    )]
     InvalidSymbolConfiguration(String, String),
+    #[error(
+        "Could not fully allocate execution shares for symbol {symbol}. Remaining: {remaining_shares}"
+    )]
+    InsufficientTradeAllocation {
+        symbol: String,
+        remaining_shares: f64,
+    },
     #[error("Failed to convert U256 to f64: {0}")]
     U256ToF64(#[from] ParseFloatError),
     #[error("Transaction not found: {0}")]
     TransactionNotFound(B256),
     #[error("No AfterClear log found for ClearV2 log")]
     NoAfterClearLog,
+    #[error("Negative shares amount: {0}")]
+    NegativeShares(f64),
+    #[error("Negative USDC amount: {0}")]
+    NegativeUsdc(f64),
+    #[error("Symbol '{0}' is not a tokenized equity (must end with '0x' or 's1')")]
+    NotTokenizedEquity(String),
 }
 
 /// Database persistence and data corruption errors.
 #[derive(Debug, thiserror::Error)]
-pub enum PersistenceError {
+pub(crate) enum PersistenceError {
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
     #[error("Invalid Schwab instruction in database: {0}")]
@@ -45,18 +60,12 @@ pub enum PersistenceError {
     InvalidPriceCents(i64),
     #[error("Failed to acquire symbol map lock")]
     SymbolMapLock,
-    #[error("Execution ID mismatch for symbol {symbol}: expected {expected}, current {current:?}")]
-    ExecutionIdMismatch {
-        symbol: String,
-        expected: i64,
-        current: Option<i64>,
-    },
     #[error("Execution missing ID after database save")]
     MissingExecutionId,
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum AlloyError {
+pub(crate) enum AlloyError {
     #[error("Failed to get symbol: {0}")]
     GetSymbol(#[from] alloy::contract::Error),
     #[error("Sol type error: {0}")]
@@ -67,17 +76,32 @@ pub enum AlloyError {
 
 /// Event queue persistence and processing errors.
 #[derive(Debug, thiserror::Error)]
-pub enum EventQueueError {
+pub(crate) enum EventQueueError {
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
     #[error("Event queue error: {0}")]
     Processing(String),
 }
 
+/// Event processing errors for live event handling.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum EventProcessingError {
+    #[error("Event queue error: {0}")]
+    Queue(#[from] EventQueueError),
+    #[error("Failed to enqueue TakeOrderV2 event: {0}")]
+    EnqueueTakeOrderV2(#[source] EventQueueError),
+    #[error("Failed to process trade through accumulator: {0}")]
+    AccumulatorProcessing(String),
+    #[error("Onchain trade processing error: {0}")]
+    OnChain(#[from] OnChainError),
+    #[error("Schwab execution error: {0}")]
+    Schwab(#[from] crate::schwab::SchwabError),
+}
+
 /// Unified error type for onchain trade processing with clear domain boundaries.
 /// Provides error mapping between layers while maintaining separation of concerns.
 #[derive(Debug, thiserror::Error)]
-pub enum OnChainError {
+pub(crate) enum OnChainError {
     #[error("Trade validation error: {0}")]
     Validation(#[from] TradeValidationError),
     #[error("Database persistence error: {0}")]

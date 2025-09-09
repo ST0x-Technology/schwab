@@ -83,7 +83,7 @@ jobs:
               -e DATABASE_URL=sqlite:///data/schwab.db \
               -e WS_RPC_URL="${WS_RPC_URL}" \
               -e ORDERBOOK="${ORDERBOOK}" \
-              -e ORDER_HASH="${ORDER_HASH}" \
+              -e ORDER_OWNER="${ORDER_OWNER}" \
               -e DEPLOYMENT_BLOCK="${DEPLOYMENT_BLOCK}" \
               -e APP_KEY="${APP_KEY}" \
               -e APP_SECRET="${APP_SECRET}" \
