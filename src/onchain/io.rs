@@ -7,106 +7,24 @@ use std::str::FromStr;
 use crate::error::{OnChainError, TradeValidationError};
 use crate::schwab::Direction;
 
-/// Macro to create a TokenizedEquitySymbol at compile time, similar to alloy's address! macro.
-/// This macro validates the symbol format at compile time.
+/// Macro to create a TokenizedEquitySymbol.
+/// This macro provides a convenient way to create tokenized equity symbols.
 #[macro_export]
 macro_rules! tokenized_symbol {
-    ($symbol:literal) => {{
-        // Validate at compile time by attempting to parse
-        const _: () = {
-            #[allow(clippy::string_lit_as_bytes)]
-            let bytes = $symbol.as_bytes();
-            let len = bytes.len();
-
-            // Check minimum length (at least 3 chars: 1 for ticker + 2 for suffix)
-            if len < 3 {
-                panic!(concat!(
-                    "Invalid tokenized equity symbol: '",
-                    $symbol,
-                    "' (too short)"
-                ));
-            }
-
-            // Check for valid suffixes
-            let has_0x = len >= 2 && bytes[len - 2] == b'0' && bytes[len - 1] == b'x';
-            let has_s1 = len >= 2 && bytes[len - 2] == b's' && bytes[len - 1] == b'1';
-
-            if !has_0x && !has_s1 {
-                panic!(concat!(
-                    "Invalid tokenized equity symbol: '",
-                    $symbol,
-                    "' (must end with '0x' or 's1')"
-                ));
-            }
-
-            // Check that the base symbol isn't empty
-            if len == 2 {
-                panic!(concat!(
-                    "Invalid tokenized equity symbol: '",
-                    $symbol,
-                    "' (missing base symbol)"
-                ));
-            }
-        };
-
-        // At runtime, we can safely unwrap since we validated at compile time
-        crate::onchain::io::TokenizedEquitySymbol::parse($symbol).unwrap()
-    }};
+    ($symbol:expr) => {
+        $crate::onchain::io::TokenizedEquitySymbol::parse($symbol).unwrap()
+    };
 }
 
 // The macro is available via the crate::tokenized_symbol path
 
-/// Macro to create an EquitySymbol at compile time.
-/// This macro validates the symbol format at compile time.
+/// Macro to create an EquitySymbol.
+/// This macro provides a convenient way to create equity symbols.
 #[macro_export]
 macro_rules! symbol {
-    ($symbol:literal) => {{
-        // Validate at compile time by attempting to parse
-        const _: () = {
-            #[allow(clippy::string_lit_as_bytes)]
-            let bytes = $symbol.as_bytes();
-            let len = bytes.len();
-
-            // Check minimum length
-            if len == 0 {
-                panic!(concat!(
-                    "Invalid equity symbol: '",
-                    $symbol,
-                    "' (cannot be empty)"
-                ));
-            }
-
-            // Check maximum length
-            if len > 32 {
-                panic!(concat!(
-                    "Invalid equity symbol: '",
-                    $symbol,
-                    "' (too long, max 32 characters)"
-                ));
-            }
-
-            // Check for whitespace
-            if $symbol.chars().any(|c| c.is_whitespace()) {
-                panic!(concat!(
-                    "Invalid equity symbol: '",
-                    $symbol,
-                    "' (cannot contain whitespace)"
-                ));
-            }
-
-            // Check for USDC
-            if $symbol == "USDC" {
-                panic!(concat!(
-                    "Invalid equity symbol: '",
-                    $symbol,
-                    "' (USDC is not an equity symbol)"
-                ));
-            }
-        };
-
-        // At runtime, we can safely unwrap since we validated at compile time
+    ($symbol:expr) => {
         EquitySymbol::new($symbol).unwrap()
-    }};
+    };
 }
 
 /// Represents a validated number of shares (non-negative)
@@ -509,36 +427,36 @@ mod tests {
     #[test]
     fn test_determine_schwab_trade_details_usdc_to_0x() {
         let result = determine_schwab_trade_details("USDC", "AAPL0x").unwrap();
-        assert_eq!(result.0, "AAPL");
+        assert_eq!(result.0, symbol!("AAPL"));
         assert_eq!(result.1, Direction::Sell); // Onchain sold AAPL0x for USDC
 
         let result = determine_schwab_trade_details("USDC", "TSLA0x").unwrap();
-        assert_eq!(result.0, "TSLA");
+        assert_eq!(result.0, symbol!("TSLA"));
         assert_eq!(result.1, Direction::Sell); // Onchain sold TSLA0x for USDC
     }
 
     #[test]
     fn test_determine_schwab_trade_details_usdc_to_s1() {
         let result = determine_schwab_trade_details("USDC", "NVDAs1").unwrap();
-        assert_eq!(result.0, "NVDA");
+        assert_eq!(result.0, symbol!("NVDA"));
         assert_eq!(result.1, Direction::Sell); // Onchain sold NVDAs1 for USDC
     }
 
     #[test]
     fn test_determine_schwab_trade_details_0x_to_usdc() {
         let result = determine_schwab_trade_details("AAPL0x", "USDC").unwrap();
-        assert_eq!(result.0, "AAPL");
+        assert_eq!(result.0, symbol!("AAPL"));
         assert_eq!(result.1, Direction::Buy); // Onchain bought AAPL0x with USDC
 
         let result = determine_schwab_trade_details("TSLA0x", "USDC").unwrap();
-        assert_eq!(result.0, "TSLA");
+        assert_eq!(result.0, symbol!("TSLA"));
         assert_eq!(result.1, Direction::Buy); // Onchain bought TSLA0x with USDC
     }
 
     #[test]
     fn test_determine_schwab_trade_details_s1_to_usdc() {
         let result = determine_schwab_trade_details("NVDAs1", "USDC").unwrap();
-        assert_eq!(result.0, "NVDA");
+        assert_eq!(result.0, symbol!("NVDA"));
         assert_eq!(result.1, Direction::Buy); // Onchain bought NVDAs1 with USDC
     }
 
