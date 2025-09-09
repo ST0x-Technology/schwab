@@ -4,10 +4,10 @@ use clap::Parser;
 pub(crate) mod accumulator;
 pub mod backfill;
 mod clear;
+pub(crate) mod io;
 pub(crate) mod position_calculator;
 mod take_order;
 pub(crate) mod trade;
-pub(crate) mod trade_execution_link;
 
 pub use trade::OnchainTrade;
 

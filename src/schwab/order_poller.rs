@@ -206,27 +206,37 @@ impl OrderStatusPoller {
         update_execution_status_within_transaction(&mut tx, execution_id, new_state).await?;
 
         // Clear pending execution ID and execution lease to unblock future executions
-        clear_pending_execution_id(&mut tx, &execution.symbol)
-            .await
-            .map_err(|e| {
-                error!(
-                    "Failed to clear pending execution ID for symbol {}: {e}",
-                    execution.symbol
-                );
-                SchwabError::InvalidConfiguration(
-                    "Failed to clear pending execution ID".to_string(),
-                )
-            })?;
+        clear_pending_execution_id(
+            &mut tx,
+            &execution.symbol.parse().map_err(|e| {
+                error!("Failed to parse symbol {}: {e}", execution.symbol);
+                SchwabError::InvalidConfiguration("Invalid symbol in execution".to_string())
+            })?,
+        )
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to clear pending execution ID for symbol {}: {e}",
+                execution.symbol
+            );
+            SchwabError::InvalidConfiguration("Failed to clear pending execution ID".to_string())
+        })?;
 
-        clear_execution_lease(&mut tx, &execution.symbol)
-            .await
-            .map_err(|e| {
-                error!(
-                    "Failed to clear execution lease for symbol {}: {e}",
-                    execution.symbol
-                );
-                SchwabError::InvalidConfiguration("Failed to clear execution lease".to_string())
-            })?;
+        clear_execution_lease(
+            &mut tx,
+            &execution.symbol.parse().map_err(|e| {
+                error!("Failed to parse symbol {}: {e}", execution.symbol);
+                SchwabError::InvalidConfiguration("Invalid symbol in execution".to_string())
+            })?,
+        )
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to clear execution lease for symbol {}: {e}",
+                execution.symbol
+            );
+            SchwabError::InvalidConfiguration("Failed to clear execution lease".to_string())
+        })?;
 
         tx.commit().await?;
 
@@ -265,27 +275,37 @@ impl OrderStatusPoller {
         update_execution_status_within_transaction(&mut tx, execution_id, new_state).await?;
 
         // Clear pending execution ID and execution lease to unblock future executions
-        clear_pending_execution_id(&mut tx, &execution.symbol)
-            .await
-            .map_err(|e| {
-                error!(
-                    "Failed to clear pending execution ID for symbol {}: {e}",
-                    execution.symbol
-                );
-                SchwabError::InvalidConfiguration(
-                    "Failed to clear pending execution ID".to_string(),
-                )
-            })?;
+        clear_pending_execution_id(
+            &mut tx,
+            &execution.symbol.parse().map_err(|e| {
+                error!("Failed to parse symbol {}: {e}", execution.symbol);
+                SchwabError::InvalidConfiguration("Invalid symbol in execution".to_string())
+            })?,
+        )
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to clear pending execution ID for symbol {}: {e}",
+                execution.symbol
+            );
+            SchwabError::InvalidConfiguration("Failed to clear pending execution ID".to_string())
+        })?;
 
-        clear_execution_lease(&mut tx, &execution.symbol)
-            .await
-            .map_err(|e| {
-                error!(
-                    "Failed to clear execution lease for symbol {}: {e}",
-                    execution.symbol
-                );
-                SchwabError::InvalidConfiguration("Failed to clear execution lease".to_string())
-            })?;
+        clear_execution_lease(
+            &mut tx,
+            &execution.symbol.parse().map_err(|e| {
+                error!("Failed to parse symbol {}: {e}", execution.symbol);
+                SchwabError::InvalidConfiguration("Invalid symbol in execution".to_string())
+            })?,
+        )
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to clear execution lease for symbol {}: {e}",
+                execution.symbol
+            );
+            SchwabError::InvalidConfiguration("Failed to clear execution lease".to_string())
+        })?;
 
         tx.commit().await?;
 
@@ -767,14 +787,14 @@ mod tests {
         let calculator = crate::onchain::position_calculator::PositionCalculator::new();
         crate::onchain::accumulator::save_within_transaction(
             &mut sql_tx,
-            "TSLA",
+            &"TSLA".parse().unwrap(),
             &calculator,
             Some(execution_id),
         )
         .await
         .unwrap();
 
-        crate::lock::try_acquire_execution_lease(&mut sql_tx, "TSLA")
+        crate::lock::try_acquire_execution_lease(&mut sql_tx, &"TSLA".parse().unwrap())
             .await
             .unwrap();
         sql_tx.commit().await.unwrap();
