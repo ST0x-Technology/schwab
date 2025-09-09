@@ -60,6 +60,8 @@ pub enum Commands {
         #[arg(long = "tx-hash")]
         tx_hash: B256,
     },
+    /// Perform Charles Schwab OAuth authentication flow
+    Auth,
 }
 
 #[derive(Debug, Parser)]
@@ -71,6 +73,8 @@ pub struct CliEnv {
     pub database_url: String,
     #[clap(long, env, default_value = "info")]
     pub log_level: LogLevel,
+    #[clap(long, env, default_value = "8080")]
+    pub server_port: u16,
     #[clap(flatten)]
     pub schwab_auth: SchwabAuthEnv,
     #[clap(flatten)]
@@ -87,6 +91,7 @@ impl CliEnv {
         let env = Env {
             database_url: cli_env.database_url,
             log_level: cli_env.log_level,
+            server_port: cli_env.server_port,
             schwab_auth: cli_env.schwab_auth,
             evm_env: cli_env.evm_env,
         };
@@ -167,6 +172,37 @@ async fn run_command_with_writers<W: Write>(
             let provider = ProviderBuilder::new().connect_ws(ws).await?;
             let cache = SymbolCache::default();
             process_tx_with_provider(tx_hash, &env, pool, stdout, &provider, &cache).await?;
+        }
+        Commands::Auth => {
+            info!("Starting OAuth authentication flow");
+            writeln!(
+                stdout,
+                "🔄 Starting Charles Schwab OAuth authentication process..."
+            )?;
+            writeln!(
+                stdout,
+                "   You will be guided through the authentication process."
+            )?;
+
+            match run_oauth_flow(pool, &env.schwab_auth).await {
+                Ok(()) => {
+                    info!("OAuth authentication completed successfully");
+                    writeln!(stdout, "✅ Authentication successful!")?;
+                    writeln!(
+                        stdout,
+                        "   Your tokens have been saved and are ready to use."
+                    )?;
+                }
+                Err(oauth_error) => {
+                    error!("OAuth authentication failed: {oauth_error:?}");
+                    writeln!(stdout, "❌ Authentication failed: {oauth_error}")?;
+                    writeln!(
+                        stdout,
+                        "   Please ensure you have a valid Charles Schwab account and try again."
+                    )?;
+                    return Err(oauth_error.into());
+                }
+            }
         }
     }
 
@@ -822,6 +858,7 @@ mod tests {
         Env {
             database_url: ":memory:".to_string(),
             log_level: LogLevel::Debug,
+            server_port: 8080,
             schwab_auth: SchwabAuthEnv {
                 app_key: "test_app_key".to_string(),
                 app_secret: "test_app_secret".to_string(),
@@ -1680,6 +1717,17 @@ mod tests {
         // Verify Schwab API was only called once (for the first trade)
         account_mock.assert_hits(1);
         order_mock.assert_hits(1);
+    }
+
+    #[test]
+    fn test_auth_command_cli_help_text() {
+        let mut cmd = Cli::command();
+
+        // Verify that the auth command is properly defined in the CLI
+        let help_output = cmd.render_help().to_string();
+        assert!(help_output.contains("auth"));
+        assert!(help_output.contains("OAuth"));
+        assert!(help_output.contains("authentication"));
     }
 
     #[tokio::test]

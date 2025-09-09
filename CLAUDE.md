@@ -1,10 +1,15 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with
+code in this repository.
 
 ## Project Overview
 
-This is a Rust-based arbitrage bot for tokenized equities that monitors onchain trades via the Raindex orderbook and executes offsetting trades on Charles Schwab to maintain market-neutral positions. The bot bridges the gap between onchain tokenized equity markets and traditional brokerage platforms by exploiting price discrepancies.
+This is a Rust-based arbitrage bot for tokenized equities that monitors onchain
+trades via the Raindex orderbook and executes offsetting trades on Charles
+Schwab to maintain market-neutral positions. The bot bridges the gap between
+onchain tokenized equity markets and traditional brokerage platforms by
+exploiting price discrepancies.
 
 ## Key Development Commands
 
@@ -12,7 +17,8 @@ This is a Rust-based arbitrage bot for tokenized equities that monitors onchain 
 
 - `cargo build` - Build the project
 - `cargo run --bin main` - Run the main arbitrage bot
-- `cargo run --bin auth` - Run the authentication flow for Charles Schwab OAuth setup
+- `cargo run --bin cli -- auth` - Run the authentication flow for Charles Schwab
+  OAuth setup
 - `cargo run --bin cli` - Run the command-line interface for manual operations
 
 ### Testing
@@ -32,49 +38,61 @@ This is a Rust-based arbitrage bot for tokenized equities that monitors onchain 
 ### Development Tools
 
 - `rainix-rs-static` - Run Rust static analysis
-- `cargo clippy --all-targets --all-features -- -D clippy::all` - Run Clippy for linting
+- `cargo clippy --all-targets --all-features -- -D clippy::all` - Run Clippy for
+  linting
 - `cargo fmt` - Format code
 - `cargo-tarpaulin --skip-clean --out Html` - Generate test coverage report
 
 ### Nix Development Environment
 
 - `nix develop` - Enter development shell with all dependencies
-- `nix run .#prepSolArtifacts` - Build Solidity artifacts for orderbook interface
+- `nix run .#prepSolArtifacts` - Build Solidity artifacts for orderbook
+  interface
 - `nix run .#checkTestCoverage` - Generate test coverage report
 
 ## Development Workflow Notes
 
-- When running `git diff`, make sure to add `--no-pager` to avoid opening it in the interactive view, e.g. `git --no-pager diff`
+- When running `git diff`, make sure to add `--no-pager` to avoid opening it in
+  the interactive view, e.g. `git --no-pager diff`
 
 ## Architecture Overview
 
 ### Core Event Processing Flow
 
-**Main Event Loop ([`run` function in `src/lib.rs`])**
-- Monitors two concurrent WebSocket event streams: `ClearV2` and `TakeOrderV2` from the Raindex orderbook
+**Main Event Loop ([`launch` function in `src/lib.rs`])**
+
+- Monitors two concurrent WebSocket event streams: `ClearV2` and `TakeOrderV2`
+  from the Raindex orderbook
 - Uses `tokio::select!` to handle events from either stream without blocking
 - Converts blockchain events to structured `Trade` objects for processing
 
 **Trade Conversion Logic ([`Trade` struct and methods in `src/trade/mod.rs`])**
+
 - Parses onchain events into actionable trade data with strict validation
-- Expects symbol pairs of USDC + tokenized equity with "s1" suffix (e.g., "AAPLs1")
-- Determines Schwab trade direction: buying tokenized equity onchain → selling on Schwab
+- Expects symbol pairs of USDC + tokenized equity with "s1" suffix (e.g.,
+  "AAPLs1")
+- Determines Schwab trade direction: buying tokenized equity onchain → selling
+  on Schwab
 - Calculates prices in cents and maintains onchain/offchain trade ratios
 
 **Async Event Processing Architecture**
+
 - Each blockchain event spawns independent async execution flow
 - Handles throughput mismatch: fast onchain events vs slower Schwab API calls
 - No artificial concurrency limits - processes events as they arrive
-- Flow: Parse Event → SQLite Deduplication Check → Schwab API Call → Record Result
+- Flow: Parse Event → SQLite Deduplication Check → Schwab API Call → Record
+  Result
 
 ### Authentication & API Integration
 
 **Charles Schwab OAuth (`src/schwab.rs`)**
+
 - OAuth 2.0 flow with 30-minute access tokens and 7-day refresh tokens
 - Token storage and retrieval from SQLite database
 - Comprehensive error handling for authentication failures
 
 **Symbol Caching (`crate::symbol::cache::SymbolCache`)**
+
 - Thread-safe caching of ERC20 token symbols using `tokio::sync::RwLock`
 - Prevents repeated RPC calls for the same token addresses
 
@@ -143,15 +161,18 @@ This is a Rust-based arbitrage bot for tokenized equities that monitors onchain 
   - `locked_at`: Lock acquisition timestamp
 
 **Idempotency Controls:**
-- Uses `(tx_hash, log_index)` as unique identifier to prevent duplicate trade execution
+
+- Uses `(tx_hash, log_index)` as unique identifier to prevent duplicate trade
+  execution
 - Trade status tracking: pending → completed/failed
 - Retry logic with exponential backoff for failed trades
 
 ### Configuration
 
 Environment variables (can be set via `.env` file):
+
 - `DATABASE_URL`: SQLite database path
-- `WS_RPC_URL`: WebSocket RPC endpoint for blockchain monitoring  
+- `WS_RPC_URL`: WebSocket RPC endpoint for blockchain monitoring
 - `ORDERBOOK`: Raindex orderbook contract address
 - `ORDER_HASH`: Target order hash to monitor for trades
 - `APP_KEY`, `APP_SECRET`: Charles Schwab API credentials
@@ -160,7 +181,8 @@ Environment variables (can be set via `.env` file):
 
 ### Charles Schwab Setup Process
 
-1. Create Charles Schwab brokerage account (Charles Schwab International if outside US)
+1. Create Charles Schwab brokerage account (Charles Schwab International if
+   outside US)
 2. Register developer account at https://developer.schwab.com/
 3. Set up as Individual Developer and request Trader API access
 4. Include your Charles Schwab account number in the API access request
@@ -168,25 +190,47 @@ Environment variables (can be set via `.env` file):
 
 ### Code Quality & Best Practices
 
-- **Event-Driven Architecture**: Each trade spawns independent async task for maximum throughput
-- **SQLite Persistence**: Embedded database for trade tracking and authentication tokens
-- **Symbol Suffix Convention**: Tokenized equities use "s1" suffix to distinguish from base assets
-- **Price Direction Logic**: Onchain buy = offchain sell (and vice versa) to maintain market-neutral positions
-- **Comprehensive Error Handling**: Custom error types (`OnChainError`, `SchwabError`) with proper propagation
-- **Idiomatic Functional Programming**: Prefer iterator-based functional programming patterns over imperative loops unless it increases complexity. Use itertools to be able to do more with iterators and functional programming in Rust
-- **Comments**: Follow comprehensive commenting guidelines (see detailed section below)
-- **Spacing**: Leave an empty line in between code blocks to allow vim curly braces jumping between blocks and for easier reading
-- **Import Conventions**: Use qualified imports when they prevent ambiguity (e.g. `contract::Error` for `alloy::contract::Error`), but avoid them when the module is clear (e.g. use `info!` instead of `tracing::info!`). Generally avoid imports inside functions
-- **Error Handling**: Avoid `unwrap()` even post-validation since validation logic changes might leave panics in the codebase
+- **Event-Driven Architecture**: Each trade spawns independent async task for
+  maximum throughput
+- **SQLite Persistence**: Embedded database for trade tracking and
+  authentication tokens
+- **Symbol Suffix Convention**: Tokenized equities use "s1" suffix to
+  distinguish from base assets
+- **Price Direction Logic**: Onchain buy = offchain sell (and vice versa) to
+  maintain market-neutral positions
+- **Comprehensive Error Handling**: Custom error types (`OnChainError`,
+  `SchwabError`) with proper propagation
+- **Idiomatic Functional Programming**: Prefer iterator-based functional
+  programming patterns over imperative loops unless it increases complexity. Use
+  itertools to be able to do more with iterators and functional programming in
+  Rust
+- **Comments**: Follow comprehensive commenting guidelines (see detailed section
+  below)
+- **Spacing**: Leave an empty line in between code blocks to allow vim curly
+  braces jumping between blocks and for easier reading
+- **Import Conventions**: Use qualified imports when they prevent ambiguity
+  (e.g. `contract::Error` for `alloy::contract::Error`), but avoid them when the
+  module is clear (e.g. use `info!` instead of `tracing::info!`). Generally
+  avoid imports inside functions. We don't do function-level imports, instead we
+  do top-of-module imports. Note that I said top-of-module and not top-of-file,
+  e.g. imports required only inside a tests module should be done in the module
+  and not hidden behind #[cfg(test)] at the top of the file
+- **Error Handling**: Avoid `unwrap()` even post-validation since validation
+  logic changes might leave panics in the codebase
 
 ### Testing Strategy
 
-- **Mock Blockchain Interactions**: Uses `alloy::providers::mock::Asserter` for deterministic testing
+- **Mock Blockchain Interactions**: Uses `alloy::providers::mock::Asserter` for
+  deterministic testing
 - **HTTP API Mocking**: `httpmock` crate for Charles Schwab API testing
 - **Database Isolation**: In-memory SQLite databases for test isolation
-- **Edge Case Coverage**: Comprehensive error scenario testing for trade conversion logic
-- **Testing Principle**: Only cover happy paths with all components working and connected in integration tests and cover everything in unit tests
-- **Debugging failing tests**: When debugging tests with failing assert! macros, add additional context to the assert! macro instead of adding temporary println! statements
+- **Edge Case Coverage**: Comprehensive error scenario testing for trade
+  conversion logic
+- **Testing Principle**: Only cover happy paths with all components working and
+  connected in integration tests and cover everything in unit tests
+- **Debugging failing tests**: When debugging tests with failing assert! macros,
+  add additional context to the assert! macro instead of adding temporary
+  println! statements
 
 ### Workflow Best Practices
 
@@ -198,16 +242,22 @@ Environment variables (can be set via `.env` file):
 
 ### Commenting Guidelines
 
-Code should be primarily self-documenting through clear naming, structure, and type modeling. Comments should only be used when they add meaningful context that cannot be expressed through code structure alone.
+Code should be primarily self-documenting through clear naming, structure, and
+type modeling. Comments should only be used when they add meaningful context
+that cannot be expressed through code structure alone.
 
 #### When to Use Comments
 
 **✅ DO comment when:**
 
-- **Complex business logic**: Explaining non-obvious domain-specific rules or calculations
-- **Algorithm rationale**: Why a particular approach was chosen over alternatives
-- **External system interactions**: Behavior that depends on external APIs or protocols
-- **Non-obvious technical constraints**: Performance considerations, platform limitations
+- **Complex business logic**: Explaining non-obvious domain-specific rules or
+  calculations
+- **Algorithm rationale**: Why a particular approach was chosen over
+  alternatives
+- **External system interactions**: Behavior that depends on external APIs or
+  protocols
+- **Non-obvious technical constraints**: Performance considerations, platform
+  limitations
 - **Test data context**: Explaining what mock values represent or test scenarios
 - **Workarounds**: Temporary solutions with context about why they exist
 
@@ -302,8 +352,9 @@ pub async fn refresh_if_needed(pool: &SqlitePool) -> Result<bool, SchwabError> {
 #### Comment Maintenance
 
 - Remove comments when refactoring makes them obsolete
-- Update comments when changing the logic they describe  
-- If a comment is needed to explain what code does, consider refactoring for clarity
+- Update comments when changing the logic they describe
+- If a comment is needed to explain what code does, consider refactoring for
+  clarity
 - Keep comments concise and focused on the "why" rather than the "what"
 
 ### Code style
@@ -340,7 +391,8 @@ so that if we get an unexpected result value, we immediately see the value.
 
 #### Avoid deep nesting
 
-Prefer flat code over deeply nested blocks to improve readability and maintainability.
+Prefer flat code over deeply nested blocks to improve readability and
+maintainability.
 
 **Use early returns:**
 
@@ -570,7 +622,8 @@ trades
 
 #### Struct field access
 
-Avoid creating unnecessary constructors or getters when they don't add logic beyond setting/getting field values. Use public fields directly instead.
+Avoid creating unnecessary constructors or getters when they don't add logic
+beyond setting/getting field values. Use public fields directly instead.
 
 **Prefer direct field access:**
 
@@ -607,4 +660,5 @@ impl SchwabTokens {
 }
 ```
 
-This preserves argument clarity and avoids losing information about what each field represents.
+This preserves argument clarity and avoids losing information about what each
+field represents.
