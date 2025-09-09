@@ -109,6 +109,7 @@ mod tests {
             },
             order_polling_interval: 15,
             order_polling_max_jitter: 5,
+            dry_run: false,
         }
     }
 

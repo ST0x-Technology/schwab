@@ -5,6 +5,7 @@ use std::io::{self, Write};
 use thiserror::Error;
 
 pub(crate) mod auth;
+pub(crate) mod broker;
 pub(crate) mod execution;
 pub(crate) mod market_hours;
 pub(crate) mod market_hours_cache;
