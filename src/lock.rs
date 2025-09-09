@@ -65,7 +65,7 @@ mod tests {
     use super::*;
     use crate::onchain::accumulator::save_within_transaction;
     use crate::onchain::position_calculator::PositionCalculator;
-    use crate::schwab::{Direction, TradeStatus, execution::SchwabExecution};
+    use crate::schwab::{Direction, TradeState, execution::SchwabExecution};
     use crate::test_utils::setup_test_db;
 
     #[tokio::test]
@@ -155,7 +155,7 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 100,
             direction: Direction::Buy,
-            status: TradeStatus::Pending,
+            state: TradeState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();

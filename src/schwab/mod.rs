@@ -1,5 +1,4 @@
 use crate::error;
-use chrono::{DateTime, Utc};
 use reqwest::header::InvalidHeaderValue;
 use sqlx::SqlitePool;
 use std::io::{self, Write};
@@ -8,31 +7,32 @@ use thiserror::Error;
 pub(crate) mod auth;
 pub(crate) mod execution;
 pub(crate) mod order;
+pub(crate) mod order_poller;
+pub(crate) mod order_status;
 pub(crate) mod tokens;
+pub(crate) mod trade_state;
 
 pub(crate) use auth::SchwabAuthEnv;
+pub(crate) use order_poller::{OrderPollerConfig, OrderStatusPoller};
 pub(crate) use tokens::SchwabTokens;
+pub(crate) use trade_state::{HasTradeStatus, TradeState};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+// Flat enum for database storage (matches CHECK constraint)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TradeStatus {
     Pending,
-    Completed {
-        executed_at: DateTime<Utc>,
-        order_id: String,
-        price_cents: u64,
-    },
-    Failed {
-        failed_at: DateTime<Utc>,
-        error_reason: Option<String>,
-    },
+    Submitted,
+    Filled,
+    Failed,
 }
 
 impl TradeStatus {
-    pub const fn as_str(&self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "PENDING",
-            Self::Completed { .. } => "COMPLETED",
-            Self::Failed { .. } => "FAILED",
+            Self::Submitted => "SUBMITTED",
+            Self::Filled => "FILLED",
+            Self::Failed => "FAILED",
         }
     }
 }
@@ -43,8 +43,9 @@ impl std::str::FromStr for TradeStatus {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "PENDING" => Ok(Self::Pending),
-            "COMPLETED" => Err("Cannot create Completed status without required data".to_string()),
-            "FAILED" => Err("Cannot create Failed status without required data".to_string()),
+            "SUBMITTED" => Ok(Self::Submitted),
+            "FILLED" => Ok(Self::Filled),
+            "FAILED" => Ok(Self::Failed),
             _ => Err(format!("Invalid trade status: {s}")),
         }
     }

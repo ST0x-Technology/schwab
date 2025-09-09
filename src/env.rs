@@ -50,11 +50,24 @@ pub struct Env {
     pub schwab_auth: SchwabAuthEnv,
     #[clap(flatten)]
     pub evm_env: EvmEnv,
+    /// Interval in seconds between order status polling checks
+    #[clap(long, env, default_value = "15")]
+    pub order_polling_interval: u64,
+    /// Maximum jitter in seconds for order polling to prevent thundering herd
+    #[clap(long, env, default_value = "5")]
+    pub order_polling_max_jitter: u64,
 }
 
 impl Env {
     pub async fn get_sqlite_pool(&self) -> Result<SqlitePool, sqlx::Error> {
         SqlitePool::connect(&self.database_url).await
+    }
+
+    pub const fn get_order_poller_config(&self) -> crate::schwab::OrderPollerConfig {
+        crate::schwab::OrderPollerConfig {
+            polling_interval: std::time::Duration::from_secs(self.order_polling_interval),
+            max_jitter: std::time::Duration::from_secs(self.order_polling_max_jitter),
+        }
     }
 }
 
@@ -95,6 +108,8 @@ pub mod tests {
                 order_hash,
                 deployment_block: 1,
             },
+            order_polling_interval: 15,
+            order_polling_max_jitter: 5,
         }
     }
 
