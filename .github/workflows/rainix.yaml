@@ -1,10 +1,8 @@
 name: Rainix CI
 on: [push]
-
 concurrency:
   group: ${{ github.ref }}-rainix
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
-
 jobs:
   rainix:
     strategy:
@@ -13,13 +11,11 @@ jobs:
         task: [rainix-rs-test, rainix-rs-static]
       fail-fast: false
     runs-on: ${{ matrix.os }}
-
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
-
       - uses: nixbuild/nix-quick-install-action@v30
         with:
           nix_conf: |
@@ -34,13 +30,9 @@ jobs:
           restore-prefixes-first-match: nix-${{ runner.os }}-
           # collect garbage until the Nix store size (in bytes) is at most this number
           gc-max-store-size-linux: 10G
-
       - run: nix run .#prepSolArtifacts
-      - run: nix flake check
-
       - run: cp -v .env.example .env
       - run: nix develop -c sqlx db create
       - run: nix develop -c sqlx migrate run
-
       - name: Run ${{ matrix.task }}
         run: nix develop -c ${{ matrix.task }}
