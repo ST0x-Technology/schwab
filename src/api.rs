@@ -17,7 +17,7 @@ pub struct HealthResponse {
 pub fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "healthy".to_string(),
-        timestamp: chrono::Utc::now(),
+        timestamp: Utc::now(),
     })
 }
 
@@ -95,6 +95,7 @@ mod tests {
         Env {
             database_url: ":memory:".to_string(),
             log_level: crate::env::LogLevel::Debug,
+            server_port: 8080,
             schwab_auth: SchwabAuthEnv {
                 app_key: "test_app_key".to_string(),
                 app_secret: "test_app_secret".to_string(),
@@ -111,8 +112,6 @@ mod tests {
                 .unwrap(),
                 deployment_block: 0,
             },
-            order_polling_interval: 15,
-            order_polling_max_jitter: 5,
         }
     }
 

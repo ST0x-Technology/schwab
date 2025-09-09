@@ -44,6 +44,8 @@ pub struct Env {
     pub database_url: String,
     #[clap(long, env, default_value = "debug")]
     pub log_level: LogLevel,
+    #[clap(long, env, default_value = "8080")]
+    pub server_port: u16,
     #[clap(flatten)]
     pub schwab_auth: SchwabAuthEnv,
     #[clap(flatten)]
@@ -92,6 +94,7 @@ pub mod tests {
         Env {
             database_url: ":memory:".to_string(),
             log_level: LogLevel::Debug,
+            server_port: 8080,
             schwab_auth: SchwabAuthEnv {
                 app_key: "test_key".to_string(),
                 app_secret: "test_secret".to_string(),

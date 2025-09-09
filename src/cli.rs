@@ -73,6 +73,8 @@ pub struct CliEnv {
     pub database_url: String,
     #[clap(long, env, default_value = "info")]
     pub log_level: LogLevel,
+    #[clap(long, env, default_value = "8080")]
+    pub server_port: u16,
     #[clap(flatten)]
     pub schwab_auth: SchwabAuthEnv,
     #[clap(flatten)]
@@ -89,6 +91,7 @@ impl CliEnv {
         let env = Env {
             database_url: cli_env.database_url,
             log_level: cli_env.log_level,
+            server_port: cli_env.server_port,
             schwab_auth: cli_env.schwab_auth,
             evm_env: cli_env.evm_env,
             order_polling_interval: 15,
@@ -858,6 +861,7 @@ mod tests {
         Env {
             database_url: ":memory:".to_string(),
             log_level: LogLevel::Debug,
+            server_port: 8080,
             schwab_auth: SchwabAuthEnv {
                 app_key: "test_app_key".to_string(),
                 app_secret: "test_app_secret".to_string(),
