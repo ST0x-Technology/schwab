@@ -591,4 +591,76 @@ mod tests {
         // Test that compile-time validation works (these should compile)
         let _valid_symbols = [symbol!("MSFT"), symbol!("GOOG"), symbol!("TSLA")];
     }
+
+    // Integration tests with real transaction data that caused the 175x overexecution bug
+
+    #[test]
+    fn test_real_transaction_0x844_nvda_s1_bug_fix() {
+        // Real transaction 0x844...a42d4: 0.374 NVDAs1 sold for 64.169234 USDC
+        // The bug was using 64.169234 as share amount instead of 0.374
+        let details = TradeDetails::try_from_io("USDC", 64.169_234, "NVDAs1", 0.374).unwrap();
+
+        // Verify we extract the correct amounts
+        assert_eq!(details.ticker(), &symbol!("NVDA"));
+        assert!((details.equity_amount().value() - 0.374).abs() < 0.0001); // Share amount is 0.374, NOT 64.169234
+        assert!((details.usdc_amount().value() - 64.169_234).abs() < 0.0001); // USDC amount is 64.169234
+        assert_eq!(details.direction(), Direction::Sell); // Selling NVDAs1 onchain = Sell to Schwab
+
+        // Verify price calculation
+        let price_per_share = 64.169_234 / 0.374;
+        assert!((price_per_share - 171.58_f64).abs() < 0.01); // ~$171.58 per share
+    }
+
+    #[test]
+    fn test_real_transaction_0x700_nvda_s1_bug_fix() {
+        // Real transaction 0x700...bfb85: 0.2 NVDAs1 sold for 34.645024 USDC
+        // The bug was using 34.645024 as share amount instead of 0.2
+        let details = TradeDetails::try_from_io("USDC", 34.645_024, "NVDAs1", 0.2).unwrap();
+
+        // Verify we extract the correct amounts
+        assert_eq!(details.ticker(), &symbol!("NVDA"));
+        assert!((details.equity_amount().value() - 0.2).abs() < 0.0001); // Share amount is 0.2, NOT 34.645024
+        assert!((details.usdc_amount().value() - 34.645_024).abs() < 0.0001); // USDC amount is 34.645024
+        assert_eq!(details.direction(), Direction::Sell); // Selling NVDAs1 onchain = Sell to Schwab
+
+        // Verify price calculation
+        let price_per_share = 34.645_024 / 0.2;
+        assert!((price_per_share - 173.23_f64).abs() < 0.01); // ~$173.23 per share
+    }
+
+    #[test]
+    fn test_gme_trades_with_different_suffixes_extract_same_ticker() {
+        // Test that GME0x and GMEs1 both map to base symbol "GME"
+        let gme_0x_details = TradeDetails::try_from_io("USDC", 5.2, "GME0x", 0.2).unwrap();
+        let gme_s1_details = TradeDetails::try_from_io("USDC", 5.1, "GMEs1", 0.2).unwrap();
+
+        // Both should map to the same base ticker
+        assert_eq!(gme_0x_details.ticker(), &symbol!("GME"));
+        assert_eq!(gme_s1_details.ticker(), &symbol!("GME"));
+        assert_eq!(gme_0x_details.ticker(), gme_s1_details.ticker());
+
+        // Verify amounts are extracted correctly
+        assert!((gme_0x_details.equity_amount().value() - 0.2).abs() < f64::EPSILON);
+        assert!((gme_s1_details.equity_amount().value() - 0.2).abs() < f64::EPSILON);
+        assert!((gme_0x_details.usdc_amount().value() - 5.2).abs() < f64::EPSILON);
+        assert!((gme_s1_details.usdc_amount().value() - 5.1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_edge_case_validation_very_small_amounts() {
+        // Test very small but valid amounts
+        let details = TradeDetails::try_from_io("USDC", 0.01, "AAPLs1", 0.0001).unwrap();
+        assert_eq!(details.ticker(), &symbol!("AAPL"));
+        assert!((details.equity_amount().value() - 0.0001).abs() < f64::EPSILON);
+        assert!((details.usdc_amount().value() - 0.01).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_edge_case_validation_very_large_amounts() {
+        // Test large but realistic amounts
+        let details = TradeDetails::try_from_io("USDC", 1_000_000.0, "BRKs1", 100.0).unwrap();
+        assert_eq!(details.ticker(), &symbol!("BRK"));
+        assert!((details.equity_amount().value() - 100.0).abs() < f64::EPSILON);
+        assert!((details.usdc_amount().value() - 1_000_000.0).abs() < f64::EPSILON);
+    }
 }
