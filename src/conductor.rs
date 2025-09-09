@@ -1,10 +1,9 @@
-use std::time::Duration;
-
 use alloy::providers::Provider;
 use alloy::rpc::types::Log;
 use alloy::sol_types;
 use futures_util::{Stream, StreamExt};
 use sqlx::SqlitePool;
+use std::time::Duration;
 use tokio::sync::{mpsc::UnboundedSender, watch};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
@@ -13,6 +12,7 @@ use tracing::{debug, error, info, trace};
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
 use crate::env::Env;
 use crate::error::EventProcessingError;
+use crate::onchain::accumulator::check_all_accumulated_positions;
 use crate::onchain::trade::TradeEvent;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
 use crate::queue::{QueuedEvent, enqueue, get_next_unprocessed_event, mark_event_processed};
@@ -62,19 +62,12 @@ impl<P: Provider + Clone + Send + 'static> BackgroundTasksBuilder<P> {
         + Send
         + 'static,
     ) -> BackgroundTasks {
-        let token_refresher = BackgroundTasks::spawn_token_refresher(&self.env, &self.pool);
-        let order_poller =
-            BackgroundTasks::spawn_order_poller(&self.env, &self.pool, &self.shutdown_rx);
-        let event_receiver =
-            BackgroundTasks::spawn_event_receiver(event_sender, clear_stream, take_stream);
-        let position_checker =
-            BackgroundTasks::spawn_position_checker(&self.env, &self.pool, &self.shutdown_rx);
-        let queue_processor = BackgroundTasks::spawn_queue_processor(
-            &self.env,
-            &self.pool,
-            &self.cache,
-            self.provider,
-        );
+        let token_refresher = spawn_token_refresher(&self.env, &self.pool);
+        let order_poller = spawn_order_poller(&self.env, &self.pool, &self.shutdown_rx);
+        let event_receiver = spawn_onchain_event_receiver(event_sender, clear_stream, take_stream);
+        let position_checker = spawn_position_checker(&self.env, &self.pool, &self.shutdown_rx);
+        let queue_processor =
+            spawn_queue_processor(&self.env, &self.pool, &self.cache, self.provider);
 
         BackgroundTasks {
             token_refresher,
@@ -94,89 +87,84 @@ pub(crate) struct BackgroundTasks {
     pub(crate) queue_processor: JoinHandle<()>,
 }
 
+fn spawn_token_refresher(env: &Env, pool: &SqlitePool) -> JoinHandle<()> {
+    info!("Starting token refresh service");
+    SchwabTokens::spawn_automatic_token_refresh(pool.clone(), env.schwab_auth.clone())
+}
+
+fn spawn_order_poller(
+    env: &Env,
+    pool: &SqlitePool,
+    shutdown_rx: &watch::Receiver<bool>,
+) -> JoinHandle<()> {
+    let config = env.get_order_poller_config();
+    info!(
+        "Starting order status poller with interval: {:?}, max jitter: {:?}",
+        config.polling_interval, config.max_jitter
+    );
+    let poller = OrderStatusPoller::new(
+        config,
+        env.schwab_auth.clone(),
+        pool.clone(),
+        shutdown_rx.clone(),
+    );
+    tokio::spawn(async move {
+        if let Err(e) = poller.run().await {
+            error!("Order poller failed: {e}");
+        } else {
+            info!("Order poller completed successfully");
+        }
+    })
+}
+
+fn spawn_onchain_event_receiver(
+    event_sender: UnboundedSender<(TradeEvent, Log)>,
+    clear_stream: impl Stream<Item = Result<(ClearV2, Log), sol_types::Error>> + Unpin + Send + 'static,
+    take_stream: impl Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>>
+    + Unpin
+    + Send
+    + 'static,
+) -> JoinHandle<()> {
+    info!("Starting blockchain event receiver");
+    tokio::spawn(receive_blockchain_events(
+        clear_stream,
+        take_stream,
+        event_sender,
+    ))
+}
+
+fn spawn_position_checker(
+    env: &Env,
+    pool: &SqlitePool,
+    shutdown_rx: &watch::Receiver<bool>,
+) -> JoinHandle<()> {
+    info!("Starting periodic accumulated position checker");
+    tokio::spawn(periodic_accumulated_position_check(
+        env.clone(),
+        pool.clone(),
+        shutdown_rx.clone(),
+    ))
+}
+
+fn spawn_queue_processor<P: Provider + Clone + Send + 'static>(
+    env: &Env,
+    pool: &SqlitePool,
+    cache: &SymbolCache,
+    provider: P,
+) -> JoinHandle<()> {
+    info!("Starting queue processor service");
+    let env_clone = env.clone();
+    let pool_clone = pool.clone();
+    let cache_clone = cache.clone();
+
+    tokio::spawn(async move {
+        if let Err(e) = run_queue_processor(&env_clone, &pool_clone, &cache_clone, provider).await {
+            error!("Queue processor service failed: {e}");
+        }
+    })
+}
+
 impl BackgroundTasks {
-    fn spawn_token_refresher(env: &Env, pool: &SqlitePool) -> JoinHandle<()> {
-        info!("Starting token refresh service");
-        SchwabTokens::spawn_automatic_token_refresh(pool.clone(), env.schwab_auth.clone())
-    }
-
-    fn spawn_order_poller(
-        env: &Env,
-        pool: &SqlitePool,
-        shutdown_rx: &watch::Receiver<bool>,
-    ) -> JoinHandle<()> {
-        let config = env.get_order_poller_config();
-        info!(
-            "Starting order status poller with interval: {:?}, max jitter: {:?}",
-            config.polling_interval, config.max_jitter
-        );
-        let poller = OrderStatusPoller::new(
-            config,
-            env.schwab_auth.clone(),
-            pool.clone(),
-            shutdown_rx.clone(),
-        );
-        tokio::spawn(async move {
-            if let Err(e) = poller.run().await {
-                error!("Order poller failed: {e}");
-            } else {
-                info!("Order poller completed successfully");
-            }
-        })
-    }
-
-    fn spawn_event_receiver(
-        event_sender: UnboundedSender<(TradeEvent, Log)>,
-        clear_stream: impl Stream<Item = Result<(ClearV2, Log), sol_types::Error>>
-        + Unpin
-        + Send
-        + 'static,
-        take_stream: impl Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>>
-        + Unpin
-        + Send
-        + 'static,
-    ) -> JoinHandle<()> {
-        info!("Starting blockchain event receiver");
-        tokio::spawn(receive_blockchain_events(
-            clear_stream,
-            take_stream,
-            event_sender,
-        ))
-    }
-
-    fn spawn_position_checker(
-        env: &Env,
-        pool: &SqlitePool,
-        shutdown_rx: &watch::Receiver<bool>,
-    ) -> JoinHandle<()> {
-        info!("Starting periodic accumulated position checker");
-        tokio::spawn(periodic_accumulated_position_check(
-            env.clone(),
-            pool.clone(),
-            shutdown_rx.clone(),
-        ))
-    }
-
-    fn spawn_queue_processor<P: Provider + Clone + Send + 'static>(
-        env: &Env,
-        pool: &SqlitePool,
-        cache: &SymbolCache,
-        provider: P,
-    ) -> JoinHandle<()> {
-        info!("Starting queue processor service");
-        let env_clone = env.clone();
-        let pool_clone = pool.clone();
-        let cache_clone = cache.clone();
-
-        tokio::spawn(async move {
-            if let Err(e) =
-                run_queue_processor(&env_clone, &pool_clone, &cache_clone, provider).await
-            {
-                error!("Queue processor service failed: {e}");
-            }
-        })
-    }
-
     pub(crate) async fn wait_for_completion(self) -> Result<(), anyhow::Error> {
         let (token_result, poller_result, receiver_result, position_result, queue_result) = tokio::join!(
             self.token_refresher,
@@ -575,7 +563,7 @@ async fn process_valid_trade(
         trade.amount
     );
 
-    let symbol_lock = get_symbol_lock(&trade.symbol).await;
+    let symbol_lock = get_symbol_lock(trade.symbol.base()).await;
     let _guard = symbol_lock.lock().await;
 
     info!(
@@ -670,8 +658,7 @@ async fn check_and_execute_accumulated_positions(
     env: &Env,
     pool: &SqlitePool,
 ) -> Result<(), EventProcessingError> {
-    let executions =
-        crate::onchain::accumulator::check_all_accumulated_positions(env, pool).await?;
+    let executions = check_all_accumulated_positions(pool).await?;
 
     if executions.is_empty() {
         debug!("No accumulated positions ready for execution");
@@ -825,6 +812,7 @@ mod tests {
     use super::*;
     use crate::bindings::IOrderBookV4::{ClearConfig, ClearV2};
     use crate::env::tests::create_test_env;
+    use crate::onchain::io::tokenized_symbol;
     use crate::onchain::trade::OnchainTrade;
     use crate::schwab::Direction;
     use crate::test_utils::{OnchainTradeBuilder, setup_test_db};
@@ -908,7 +896,7 @@ mod tests {
                 "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             ),
             log_index: 293,
-            symbol: "AAPL0x".to_string(),
+            symbol: tokenized_symbol!("AAPL0x"),
             amount: 5.0,
             direction: Direction::Sell,
             price_usdc: 20000.0,

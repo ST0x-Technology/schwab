@@ -101,7 +101,7 @@ mod tests {
         .unwrap();
 
         let trade = result.unwrap();
-        assert_eq!(trade.symbol, "AAPL0x");
+        assert_eq!(trade.symbol.to_string(), "AAPL0x");
         assert!((trade.amount - 9.0).abs() < f64::EPSILON);
         assert_eq!(
             trade.tx_hash,
@@ -181,7 +181,7 @@ mod tests {
         .unwrap();
 
         let trade = result.unwrap();
-        assert_eq!(trade.symbol, "AAPL0x");
+        assert_eq!(trade.symbol.to_string(), "AAPL0x");
         assert!((trade.amount - 5.0).abs() < f64::EPSILON);
     }
 
@@ -229,7 +229,7 @@ mod tests {
         .unwrap();
 
         let trade = result.unwrap();
-        assert_eq!(trade.symbol, "AAPL0x");
+        assert_eq!(trade.symbol.to_string(), "AAPL0x");
         assert!((trade.amount - 15.0).abs() < f64::EPSILON);
         // Price should be 200 USDC / 15 shares = 13.333... USDC per share
         assert!((trade.price_usdc - 13.333_333_333_333_334).abs() < 0.001);

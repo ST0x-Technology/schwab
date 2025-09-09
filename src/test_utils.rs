@@ -1,7 +1,7 @@
-use crate::Env;
 use crate::bindings::IOrderBookV4::{EvaluableV3, IO, OrderV3};
 use crate::onchain::OnchainTrade;
 use crate::schwab::{Direction, TradeState, execution::SchwabExecution};
+use crate::onchain::io::TokenizedEquitySymbol;
 use alloy::primitives::{LogData, U256, address, bytes, fixed_bytes};
 use alloy::rpc::types::Log;
 use clap::Parser;
@@ -134,7 +134,7 @@ impl OnchainTradeBuilder {
                     "0x1111111111111111111111111111111111111111111111111111111111111111"
                 ),
                 log_index: 1,
-                symbol: "AAPL0x".to_string(),
+                symbol: "AAPL0x".parse::<TokenizedEquitySymbol>().unwrap(),
                 amount: 1.0,
                 direction: Direction::Buy,
                 price_usdc: 150.0,
@@ -144,8 +144,8 @@ impl OnchainTradeBuilder {
     }
 
     #[must_use]
-    pub(crate) fn with_symbol(mut self, symbol: impl Into<String>) -> Self {
-        self.trade.symbol = symbol.into();
+    pub(crate) fn with_symbol(mut self, symbol: &str) -> Self {
+        self.trade.symbol = symbol.parse::<TokenizedEquitySymbol>().unwrap();
         self
     }
 

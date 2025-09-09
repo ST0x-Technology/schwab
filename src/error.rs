@@ -41,6 +41,8 @@ pub(crate) enum TradeValidationError {
     NegativeShares(f64),
     #[error("Negative USDC amount: {0}")]
     NegativeUsdc(f64),
+    #[error("Symbol '{0}' is not a tokenized equity (must end with '0x' or 's1')")]
+    NotTokenizedEquity(String),
 }
 
 /// Database persistence and data corruption errors.

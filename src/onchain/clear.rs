@@ -250,7 +250,7 @@ mod tests {
                 .unwrap();
 
         let trade = result.unwrap();
-        assert_eq!(trade.symbol, "AAPL0x");
+        assert_eq!(trade.symbol.to_string(), "AAPL0x");
         assert!((trade.amount - 9.0).abs() < f64::EPSILON);
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 1);
@@ -318,7 +318,7 @@ mod tests {
                 .unwrap();
 
         let trade = result.unwrap();
-        assert_eq!(trade.symbol, "AAPL0x");
+        assert_eq!(trade.symbol.to_string(), "AAPL0x");
         assert!((trade.amount - 9.0).abs() < f64::EPSILON);
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 1);
@@ -607,7 +607,7 @@ mod tests {
 
         // Should process Alice first (alice_hash_matches is checked first)
         let trade = result.unwrap();
-        assert_eq!(trade.symbol, "AAPL0x");
+        assert_eq!(trade.symbol.to_string(), "AAPL0x");
         assert!((trade.amount - 9.0).abs() < f64::EPSILON);
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 1);
