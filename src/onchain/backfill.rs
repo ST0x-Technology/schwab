@@ -19,7 +19,7 @@ enum EventData {
     TakeOrderV2(Box<TakeOrderV2>),
 }
 
-const BACKFILL_BATCH_SIZE: usize = 10000;
+const BACKFILL_BATCH_SIZE: usize = 10_000;
 const BACKFILL_MAX_RETRIES: usize = 3;
 const BACKFILL_INITIAL_DELAY: Duration = Duration::from_millis(1000);
 const BACKFILL_MAX_DELAY: Duration = Duration::from_secs(30);

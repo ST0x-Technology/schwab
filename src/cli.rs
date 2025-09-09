@@ -470,10 +470,7 @@ fn display_trade_details<W: Write>(
     onchain_trade: &OnchainTrade,
     stdout: &mut W,
 ) -> anyhow::Result<()> {
-    let schwab_ticker = onchain_trade
-        .symbol
-        .strip_suffix("0x")
-        .unwrap_or(&onchain_trade.symbol);
+    let schwab_ticker = onchain_trade.symbol.extract_base();
 
     writeln!(stdout, "✅ Found opposite-side trade opportunity:")?;
     writeln!(stdout, "   Transaction: {}", onchain_trade.tx_hash)?;
@@ -499,6 +496,7 @@ mod tests {
     use crate::bindings::IERC20::symbolCall;
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
     use crate::env::LogLevel;
+    use crate::onchain::io::tokenized_symbol;
     use crate::onchain::trade::OnchainTrade;
     use crate::schwab::TradeStatus;
     use crate::schwab::execution::find_executions_by_symbol_and_status;
@@ -1662,7 +1660,7 @@ mod tests {
         let trade = OnchainTrade::find_by_tx_hash_and_log_index(&pool, tx_hash, 0)
             .await
             .unwrap();
-        assert_eq!(trade.symbol, "AAPL0x"); // Tokenized symbol
+        assert_eq!(trade.symbol.to_string(), "AAPL0x"); // Tokenized symbol
         assert!((trade.amount - 9.0).abs() < f64::EPSILON); // Amount from the test data
 
         // Verify SchwabExecution was created (due to TradeAccumulator)
@@ -1769,7 +1767,7 @@ mod tests {
         let trade = OnchainTrade::find_by_tx_hash_and_log_index(&pool, tx_hash, 0)
             .await
             .unwrap();
-        assert_eq!(trade.symbol, "TSLA0x"); // Tokenized symbol
+        assert_eq!(trade.symbol.to_string(), "TSLA0x"); // Tokenized symbol
         assert!((trade.amount - 5.0).abs() < f64::EPSILON); // Amount from the test data
 
         // Verify stdout output for first call
@@ -2018,7 +2016,7 @@ mod tests {
             id: None,
             tx_hash,
             log_index: 42,
-            symbol: "GOOG0x".to_string(),
+            symbol: tokenized_symbol!("GOOG0x"),
             amount: 2.5,
             direction: Direction::Buy,
             price_usdc: 20000.0,
@@ -2048,7 +2046,7 @@ mod tests {
 
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 42);
-        assert_eq!(trade.symbol, "GOOG0x");
+        assert_eq!(trade.symbol.to_string(), "GOOG0x");
         assert!((trade.amount - 2.5).abs() < f64::EPSILON);
         assert!((trade.price_usdc - 20000.0).abs() < f64::EPSILON);
     }

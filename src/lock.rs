@@ -1,19 +1,21 @@
 use crate::error::OnChainError;
+use crate::onchain::io::EquitySymbol;
 use tracing::{info, warn};
 
 /// Atomically acquires an execution lease for the given symbol.
 /// Returns true if lease was acquired, false if another worker holds it.
 pub(crate) async fn try_acquire_execution_lease(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    symbol: &str,
+    symbol: &EquitySymbol,
 ) -> Result<bool, OnChainError> {
     const LOCK_TIMEOUT_MINUTES: i32 = 5;
 
     // Clean up stale lock for this specific symbol (older than 5 minutes)
     let timeout_param = format!("-{LOCK_TIMEOUT_MINUTES} minutes");
+    let symbol_str = symbol.as_str();
     let cleanup_result = sqlx::query!(
         "DELETE FROM symbol_locks WHERE symbol = ?1 AND locked_at < datetime('now', ?2)",
-        symbol,
+        symbol_str,
         timeout_param
     )
     .execute(sql_tx.as_mut())
@@ -29,13 +31,13 @@ pub(crate) async fn try_acquire_execution_lease(
 
     // Try to acquire lock by inserting into symbol_locks table
     let result = sqlx::query("INSERT OR IGNORE INTO symbol_locks (symbol) VALUES (?1)")
-        .bind(symbol)
+        .bind(symbol.as_str())
         .execute(sql_tx.as_mut())
         .await?;
 
     let lease_acquired = result.rows_affected() > 0;
     if lease_acquired {
-        info!("Acquired execution lease for symbol: {}", symbol);
+        info!("Acquired execution lease for symbol: {symbol}");
     } else {
         warn!(
             "Failed to acquire execution lease for symbol: {} (already held)",
@@ -49,10 +51,10 @@ pub(crate) async fn try_acquire_execution_lease(
 /// Clears the execution lease when no execution was created
 pub(crate) async fn clear_execution_lease(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    symbol: &str,
+    symbol: &EquitySymbol,
 ) -> Result<(), OnChainError> {
     let result = sqlx::query("DELETE FROM symbol_locks WHERE symbol = ?1")
-        .bind(symbol)
+        .bind(symbol.as_str())
         .execute(sql_tx.as_mut())
         .await?;
 
@@ -66,9 +68,10 @@ pub(crate) async fn clear_execution_lease(
 /// Sets the actual execution ID after successful execution creation
 pub(crate) async fn set_pending_execution_id(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    symbol: &str,
+    symbol: &EquitySymbol,
     execution_id: i64,
 ) -> Result<(), OnChainError> {
+    let symbol_str = symbol.as_str();
     sqlx::query!(
         r#"
         UPDATE trade_accumulators 
@@ -76,7 +79,7 @@ pub(crate) async fn set_pending_execution_id(
         WHERE symbol = ?2
         "#,
         execution_id,
-        symbol
+        symbol_str
     )
     .execute(sql_tx.as_mut())
     .await?;
@@ -87,11 +90,12 @@ pub(crate) async fn set_pending_execution_id(
 /// Clears the pending execution ID when an execution completes or fails
 pub(crate) async fn clear_pending_execution_id(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    symbol: &str,
+    symbol: &EquitySymbol,
 ) -> Result<(), OnChainError> {
+    let symbol_str = symbol.as_str();
     sqlx::query!(
         "UPDATE trade_accumulators SET pending_execution_id = NULL WHERE symbol = ?1",
-        symbol
+        symbol_str
     )
     .execute(sql_tx.as_mut())
     .await?;
@@ -112,7 +116,8 @@ mod tests {
         let pool = setup_test_db().await;
         let mut sql_tx = pool.begin().await.unwrap();
 
-        let result = try_acquire_execution_lease(&mut sql_tx, "AAPL")
+        let symbol = EquitySymbol::new("AAPL").unwrap();
+        let result = try_acquire_execution_lease(&mut sql_tx, &symbol)
             .await
             .unwrap();
         assert!(result);
@@ -126,7 +131,8 @@ mod tests {
 
         // First transaction acquires the lease
         let mut sql_tx1 = pool.begin().await.unwrap();
-        let result1 = try_acquire_execution_lease(&mut sql_tx1, "AAPL")
+        let symbol = EquitySymbol::new("AAPL").unwrap();
+        let result1 = try_acquire_execution_lease(&mut sql_tx1, &symbol)
             .await
             .unwrap();
         assert!(result1);
@@ -134,7 +140,7 @@ mod tests {
 
         // Second transaction tries to acquire the same lease and should fail
         let mut sql_tx2 = pool.begin().await.unwrap();
-        let result2 = try_acquire_execution_lease(&mut sql_tx2, "AAPL")
+        let result2 = try_acquire_execution_lease(&mut sql_tx2, &symbol)
             .await
             .unwrap();
         assert!(!result2);
@@ -147,7 +153,8 @@ mod tests {
 
         // Acquire lease for first symbol
         let mut sql_tx1 = pool.begin().await.unwrap();
-        let result1 = try_acquire_execution_lease(&mut sql_tx1, "AAPL")
+        let symbol1 = EquitySymbol::new("AAPL").unwrap();
+        let result1 = try_acquire_execution_lease(&mut sql_tx1, &symbol1)
             .await
             .unwrap();
         assert!(result1);
@@ -155,7 +162,8 @@ mod tests {
 
         // Acquire lease for different symbol (should succeed)
         let mut sql_tx2 = pool.begin().await.unwrap();
-        let result2 = try_acquire_execution_lease(&mut sql_tx2, "MSFT")
+        let symbol2 = EquitySymbol::new("MSFT").unwrap();
+        let result2 = try_acquire_execution_lease(&mut sql_tx2, &symbol2)
             .await
             .unwrap();
         assert!(result2);
@@ -167,18 +175,19 @@ mod tests {
         let pool = setup_test_db().await;
 
         let mut sql_tx1 = pool.begin().await.unwrap();
-        let result = try_acquire_execution_lease(&mut sql_tx1, "AAPL")
+        let symbol = EquitySymbol::new("AAPL").unwrap();
+        let result = try_acquire_execution_lease(&mut sql_tx1, &symbol)
             .await
             .unwrap();
         assert!(result);
         sql_tx1.commit().await.unwrap();
 
         let mut sql_tx2 = pool.begin().await.unwrap();
-        clear_execution_lease(&mut sql_tx2, "AAPL").await.unwrap();
+        clear_execution_lease(&mut sql_tx2, &symbol).await.unwrap();
         sql_tx2.commit().await.unwrap();
 
         let mut sql_tx3 = pool.begin().await.unwrap();
-        let result = try_acquire_execution_lease(&mut sql_tx3, "AAPL")
+        let result = try_acquire_execution_lease(&mut sql_tx3, &symbol)
             .await
             .unwrap();
         assert!(result);
@@ -189,9 +198,10 @@ mod tests {
     async fn test_clear_pending_execution() {
         let pool = setup_test_db().await;
 
+        let symbol = EquitySymbol::new("AAPL").unwrap();
         let execution = SchwabExecution {
             id: None,
-            symbol: "AAPL".to_string(),
+            symbol: symbol.to_string(),
             shares: 100,
             direction: Direction::Buy,
             state: TradeState::Pending,
@@ -204,11 +214,11 @@ mod tests {
             .unwrap();
 
         let calculator = PositionCalculator::new();
-        save_within_transaction(&mut sql_tx, "AAPL", &calculator, Some(execution_id))
+        save_within_transaction(&mut sql_tx, &symbol, &calculator, Some(execution_id))
             .await
             .unwrap();
 
-        try_acquire_execution_lease(&mut sql_tx, "AAPL")
+        try_acquire_execution_lease(&mut sql_tx, &symbol)
             .await
             .unwrap();
         sql_tx.commit().await.unwrap();
@@ -222,7 +232,7 @@ mod tests {
         let pool = setup_test_db().await;
 
         let mut sql_tx = pool.begin().await.unwrap();
-        let result = try_acquire_execution_lease(&mut sql_tx, "TEST")
+        let result = try_acquire_execution_lease(&mut sql_tx, &"TEST".parse().unwrap())
             .await
             .unwrap();
         assert!(result);
@@ -242,7 +252,8 @@ mod tests {
 
         // First, acquire a lease
         let mut sql_tx = pool.begin().await.unwrap();
-        let result = try_acquire_execution_lease(&mut sql_tx, "AAPL")
+        let symbol = EquitySymbol::new("AAPL").unwrap();
+        let result = try_acquire_execution_lease(&mut sql_tx, &symbol)
             .await
             .unwrap();
         assert!(result);
@@ -253,7 +264,7 @@ mod tests {
         sqlx::query(
             "UPDATE symbol_locks SET locked_at = datetime('now', '-100 minutes') WHERE symbol = ?1",
         )
-        .bind("AAPL")
+        .bind(symbol.as_str())
         .execute(sql_tx.as_mut())
         .await
         .unwrap();
@@ -261,7 +272,7 @@ mod tests {
 
         // Now try to acquire the same lease - should succeed due to TTL cleanup
         let mut sql_tx = pool.begin().await.unwrap();
-        let result = try_acquire_execution_lease(&mut sql_tx, "AAPL")
+        let result = try_acquire_execution_lease(&mut sql_tx, &symbol)
             .await
             .unwrap();
         assert!(result); // Should succeed because old lock was cleaned up
@@ -294,7 +305,8 @@ mod tests {
 
         // Acquire lease for one of the stale symbols - should cleanup only that symbol's stale lock
         let mut sql_tx = pool.begin().await.unwrap();
-        let result = try_acquire_execution_lease(&mut sql_tx, "AAPL")
+        let symbol = EquitySymbol::new("AAPL").unwrap();
+        let result = try_acquire_execution_lease(&mut sql_tx, &symbol)
             .await
             .unwrap();
         assert!(result);
@@ -314,9 +326,10 @@ mod tests {
     async fn test_clear_pending_execution_id() {
         let pool = setup_test_db().await;
 
+        let symbol = EquitySymbol::new("TSLA").unwrap();
         let execution = SchwabExecution {
             id: None,
-            symbol: "TSLA".to_string(),
+            symbol: symbol.to_string(),
             shares: 100,
             direction: Direction::Buy,
             state: TradeState::Pending,
@@ -329,16 +342,17 @@ mod tests {
             .unwrap();
 
         let calculator = PositionCalculator::new();
-        save_within_transaction(&mut sql_tx, "TSLA", &calculator, Some(execution_id))
+        save_within_transaction(&mut sql_tx, &symbol, &calculator, Some(execution_id))
             .await
             .unwrap();
 
         sql_tx.commit().await.unwrap();
 
         // Verify pending_execution_id is set
+        let symbol_str = symbol.as_str();
         let row = sqlx::query!(
             "SELECT pending_execution_id FROM trade_accumulators WHERE symbol = ?1",
-            "TSLA"
+            symbol_str
         )
         .fetch_one(&pool)
         .await
@@ -347,15 +361,16 @@ mod tests {
 
         // Clear pending execution ID
         let mut sql_tx = pool.begin().await.unwrap();
-        clear_pending_execution_id(&mut sql_tx, "TSLA")
+        clear_pending_execution_id(&mut sql_tx, &symbol)
             .await
             .unwrap();
         sql_tx.commit().await.unwrap();
 
         // Verify pending_execution_id is now NULL
+        let symbol_str = symbol.as_str();
         let row = sqlx::query!(
             "SELECT pending_execution_id FROM trade_accumulators WHERE symbol = ?1",
-            "TSLA"
+            symbol_str
         )
         .fetch_one(&pool)
         .await

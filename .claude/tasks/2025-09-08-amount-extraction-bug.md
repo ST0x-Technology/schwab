@@ -163,24 +163,93 @@ impl Usdc {
 
 ## Task 3. Fix amount extraction in try_from_order_and_fill_details
 
-- [ ] Replace lines 158-164 with Symbol-based extraction
-- [ ] Use pattern matching on (input_symbol, output_symbol) tuple
-- [ ] Create Shares and Usdc through their constructors (with validation)
-- [ ] Determine Direction from symbol combination
-- [ ] Preserve original suffix in the trade symbol field
-- [ ] Return proper errors for invalid symbol combinations
-- [ ] Add logging for amount extraction steps
+- [x] Replace buggy amount extraction logic (lines 240-246) with centralized
+      TradeDetails::try_from_io
+- [x] Use the existing centralized helper to ensure all symbol
+      pair/amount/direction extraction uses the same logic
+- [x] Preserve original tokenized equity symbol with its suffix (0x or s1)
+- [x] Ensure no diverging behavior can occur by using single source of truth
+- [x] Fixed the missing "s1" suffix support that caused the 175x overexecution
+      bug
+
+### Completed Changes
+
+- Replaced the buggy `if onchain_output_symbol.ends_with("0x")` logic that only
+  checked "0x" suffix
+- Now calls `TradeDetails::try_from_io()` which correctly handles both "0x" and
+  "s1" suffixes
+- Preserves the original tokenized equity symbol from onchain data instead of
+  hardcoding format
+- Eliminated the separate `determine_schwab_trade_details` call since
+  TradeDetails handles it internally
+- All tests passing, confirming the fix works correctly
+- **BONUS: Updated TradeDetails to use Shares and Usdc newtypes for additional
+  type safety**
 
 ## Task 4. Remove duplicated suffix checking logic
 
-- [ ] Remove the buggy if/else at lines 158-164
-- [ ] Remove local is_tokenized_equity closure at line 247
-- [ ] Update determine_schwab_trade_details to use Symbol enum
-- [ ] Update extract_ticker_from_0x_symbol to use Symbol enum
-- [ ] Search for any other suffix checks and centralize them
-- [ ] Ensure all suffix handling goes through Symbol::classify
+- [x] Remove duplicated `is_tokenized_equity` closures from
+      `TradeDetails::try_from_io` and `determine_schwab_trade_details`
+- [x] Create centralized `is_tokenized_equity_symbol()` function
+- [x] Create centralized `extract_ticker_from_symbol()` function
+- [x] Update `extract_ticker_from_0x_symbol` to use centralized logic
+- [x] Update CLI code (`src/cli.rs`) to use centralized suffix stripping
+- [x] Update `trade_execution_link.rs` to use centralized suffix stripping
+- [x] Update `accumulator.rs` to use centralized suffix stripping
+- [x] Ensure all suffix handling goes through centralized functions
 
-## Task 5. Add comprehensive tests
+### Completed Changes
+
+- Added two centralized functions in `src/onchain/trade.rs`:
+  - `is_tokenized_equity_symbol(symbol: &str) -> bool` - checks for "0x" or "s1"
+    suffixes
+  - `extract_ticker_from_symbol(symbol: &str) -> Option<String>` - extracts
+    ticker by removing suffix
+- Replaced all duplicated suffix checking logic across the codebase:
+  - `TradeDetails::try_from_io` - removed local `is_tokenized_equity` closure
+  - `determine_schwab_trade_details` - removed local `is_tokenized_equity`
+    closure
+  - `extract_ticker_from_0x_symbol` - now uses centralized
+    `extract_ticker_from_symbol`
+  - `src/cli.rs` - replaced `.strip_suffix("0x")` with centralized function
+  - `src/onchain/trade_execution_link.rs` - replaced `.strip_suffix("0x")` with
+    centralized function
+  - `src/onchain/accumulator.rs` - replaced manual suffix stripping with
+    centralized function
+- All suffix handling now goes through the same centralized logic, preventing
+  future diverging behavior
+- Fixed clippy warnings for optimal functional programming patterns
+- All tests passing (377 tests) and code passes static analysis
+
+## Task 5. Complete type-safe symbol architecture
+
+- [ ] Fix create_trade_execution_linkages query to use LIKE pattern matching
+      instead of hardcoded suffixes
+- [ ] Update create_execution_within_transaction to take `symbol: &EquitySymbol`
+      instead of `&str`
+- [ ] Update SchwabExecution struct from `symbol: String` to
+      `symbol: EquitySymbol`
+- [ ] Update lock.rs functions to use `&EquitySymbol` instead of `&str`
+- [ ] Fix remaining accumulator.rs references to use EquitySymbol properly
+- [ ] Ensure all database operations use to_string() for saving and parse() for
+      loading
+- [ ] Test that trades with different suffixes (GME0x, GMEs1) accumulate
+      together correctly
+
+### Design Rationale
+
+The architecture should maintain clear separation:
+
+- **onchain_trades**: Stores TokenizedEquitySymbol (what was actually traded
+  on-chain)
+- **trade_accumulators**: Stores EquitySymbol (base symbols for aggregation)
+- **schwab_executions**: Stores EquitySymbol (base symbols for Schwab trading)
+- **symbol_locks**: Uses EquitySymbol (locks per underlying asset)
+
+This ensures we aggregate all trades for the same underlying asset regardless of
+their tokenized suffix, while preserving the actual on-chain trade information.
+
+## Task 6. Add comprehensive tests
 
 - [ ] Create test for TX 0x844...a42d4 (should extract 0.374 NVDAs1, not
       64.169234)
@@ -195,7 +264,7 @@ impl Usdc {
 - [ ] Add integration test with real ClearV2 event data
 - [ ] Test that original suffix is preserved in output
 
-## Task 6. Update existing code to use new types
+## Task 7. Update existing code to use new types
 
 - [ ] Update code to use Shares::value() for accessing share amounts
 - [ ] Update code to use Usdc::value() for accessing USDC amounts
@@ -239,6 +308,41 @@ From actual failed transactions:
 4. **Forced validation** - Can't create trades without proper classification
 5. **No silent failures** - Explicit errors for invalid symbols
 6. **Preserves information** - Keeps original suffix from onchain data
+
+## Task 7. Add Dry-Run Mode for Safe Testing
+
+- [ ] Add `--dry-run` CLI flag to Env struct (default: false)
+- [ ] Modify `execute_schwab_order` function to check dry-run flag before
+      placing orders
+- [ ] Update `Order.place` method to accept dry-run flag parameter
+- [ ] Handle database updates appropriately in dry-run mode (still track
+      accumulator, use special status)
+- [ ] Add comprehensive logging with "[DRY-RUN]" prefixes for all simulated
+      actions
+- [ ] Test dry-run mode to ensure no actual Schwab API calls are made
+
+### Design Goals
+
+- Allow full bot testing without financial risk
+- Process all onchain events normally
+- Log detailed information about what would be executed
+- Update database tracking appropriately
+- Maintain same code paths except for actual API calls
+
+### Implementation Strategy
+
+1. **Environment Configuration**: Add `dry_run: bool` field to `Env` struct with
+   CLI flag support
+2. **Order Execution Mock**: When dry-run enabled, log order details and return
+   mock success response
+3. **Database Handling**: Continue accumulator tracking but mark executions with
+   dry-run status
+4. **Clear Logging**: Prefix all dry-run actions with "[DRY-RUN]" for visibility
+5. **API Call Prevention**: Ensure no actual HTTP requests to Schwab API during
+   dry-run
+
+This enables safe testing of the amount extraction bug fix and general bot
+functionality without risking real trades.
 
 ## Risk Mitigation
 
