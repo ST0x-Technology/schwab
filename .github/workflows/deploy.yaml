@@ -57,10 +57,6 @@ jobs:
           username: root
           key: ${{ secrets.DROPLET_SSH_KEY }}
           envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_OWNER,DEPLOYMENT_BLOCK,APP_KEY,APP_SECRET
-        env:
-          WS_RPC_URL: ${{ secrets.WS_RPC_URL }}
-          APP_KEY: ${{ secrets.APP_KEY }}
-          APP_SECRET: ${{ secrets.APP_SECRET }}
           script: |
             set -euo pipefail
 
@@ -153,3 +149,7 @@ jobs:
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Deployment completed successfully!" | tee -a "${DEPLOY_LOG}"
             echo "Deployment logs: ${DEPLOY_LOG}"
             echo "Container logs: ${DOCKER_LOG}"
+        env:
+          WS_RPC_URL: ${{ secrets.WS_RPC_URL }}
+          APP_KEY: ${{ secrets.APP_KEY }}
+          APP_SECRET: ${{ secrets.APP_SECRET }}
