@@ -73,7 +73,7 @@ jobs:
             docker rm schwarbot || true
 
             # Ensure database directory exists and has proper permissions
-            mkdir -p /mnt/volume_nyc3_01
+            # mkdir -p /mnt/volume_nyc3_01 # should be set up when creating a droplet
             chmod 755 /mnt/volume_nyc3_01
 
             docker run -d \
