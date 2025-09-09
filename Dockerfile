@@ -1,4 +1,4 @@
-FROM ubuntu:latest
+FROM ubuntu:latest AS builder
 
 RUN apt update -y
 RUN apt install curl git -y
@@ -35,7 +35,7 @@ RUN nix develop --command cargo chef cook --release --recipe-path recipe.json
 
 COPY . .
 
-# Build Solidity artifacts (cached if lib/ doesn't change)
+# Build Solidity artifacts
 RUN nix run .#prepSolArtifacts
 
 # Set up database and run migrations for SQLx compile-time verification
@@ -51,22 +51,33 @@ RUN nix develop --command bash -c ' \
     cargo build --release --bin main --bin auth \
 '
 
-# Create non-root user
+# Fix binary interpreter path to use standard Linux paths
+RUN apt-get update && apt-get install -y patchelf && \
+    patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 /app/target/release/main && \
+    patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 /app/target/release/auth && \
+    apt-get remove -y patchelf && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+
+FROM debian:12-slim
+
+# Install runtime dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create schwab user and group
 RUN groupadd -r schwab && useradd --no-log-init -r -g schwab schwab
 
-# Create runtime directory and set permissions
+WORKDIR /app
+
+# Copy only the compiled binaries from builder stage (now with fixed interpreter paths)
+COPY --from=builder /app/target/release/main ./
+COPY --from=builder /app/migrations ./migrations
+
+# Set proper ownership and permissions
 RUN chown -R schwab:schwab /app
-
-# Remove unnecessary packages and files from runtime image
-RUN apt-get remove --purge -y curl git && \
-    apt-get autoremove -y && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-
-# Remove build database file
-RUN rm -f /tmp/build_db.sqlite
 
 # Switch to non-root user
 USER schwab
 
-ENTRYPOINT ["./target/release/main"]
+ENTRYPOINT ["./main"]
