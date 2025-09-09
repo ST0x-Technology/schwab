@@ -33,6 +33,7 @@ rocket = { version = "0.5.1", features = ["json"] }
 
 [dev-dependencies]
 httpmock = "0.7.0"
+serial_test = "3.2.0"
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -47,6 +48,7 @@ nursery = { level = "deny", priority = -1 }
 
 doc_markdown = "allow"
 items_after_statements = "allow"
+missing_const_for_fn = "allow"
 missing_docs_in_private_items = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"

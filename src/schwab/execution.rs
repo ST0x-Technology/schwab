@@ -204,14 +204,6 @@ impl SchwabExecution {
 }
 
 #[cfg(test)]
-pub(crate) async fn schwab_execution_db_count(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
-    let row = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
-        .fetch_one(pool)
-        .await?;
-    Ok(row.count)
-}
-
-#[cfg(test)]
 mod tests {
     use super::super::TradeStatus;
     use super::*;
@@ -233,7 +225,11 @@ mod tests {
         assert!(id > 0);
 
         // Verify execution was saved by checking the count
-        let count = schwab_execution_db_count(&pool).await.unwrap();
+        let count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .count;
         assert_eq!(count, 1);
     }
 
@@ -256,7 +252,7 @@ mod tests {
             direction: Direction::Sell,
             state: TradeState::Filled {
                 executed_at: Utc::now(),
-                order_id: "ORDER123".to_string(),
+                order_id: "1004055538123".to_string(),
                 price_cents: 15025,
             },
         };
@@ -310,7 +306,7 @@ mod tests {
         assert!(matches!(
             &completed_aapl[0].state,
             TradeState::Filled { order_id, price_cents, .. }
-            if order_id == "ORDER123" && *price_cents == 15025
+            if order_id == "1004055538123" && *price_cents == 15025
         ));
     }
 
@@ -381,7 +377,7 @@ mod tests {
                 direction: Direction::Buy,
                 state: TradeState::Filled {
                     executed_at: Utc::now(),
-                    order_id: "ORDER123".to_string(),
+                    order_id: "1004055538123".to_string(),
                     price_cents: 15000,
                 },
             },
@@ -552,7 +548,7 @@ mod tests {
             direction: Direction::Sell,
             state: TradeState::Filled {
                 executed_at: Utc::now(),
-                order_id: "ORDER789".to_string(),
+                order_id: "1004055538789".to_string(),
                 price_cents: 98765,
             },
         };
@@ -578,7 +574,7 @@ mod tests {
         assert!(matches!(
             &found.state,
             TradeState::Filled { order_id, price_cents, .. }
-            if order_id == "ORDER789" && *price_cents == 98765
+            if order_id == "1004055538789" && *price_cents == 98765
         ));
         assert!(found.id.is_some());
     }
@@ -627,7 +623,11 @@ mod tests {
         assert!(result.is_err());
 
         // Verify our database maintains data integrity
-        let count = schwab_execution_db_count(&pool).await.unwrap();
+        let count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .count;
         assert_eq!(count, 0); // No invalid data should have been inserted
     }
 
@@ -657,7 +657,7 @@ mod tests {
             id,
             TradeState::Filled {
                 executed_at: Utc::now(),
-                order_id: "ORDER456".to_string(),
+                order_id: "1004055538456".to_string(),
                 price_cents: 20050,
             },
         )
@@ -675,7 +675,7 @@ mod tests {
         assert!(matches!(
             &completed_executions[0].state,
             TradeState::Filled { order_id, price_cents, .. }
-            if order_id == "ORDER456" && *price_cents == 20050
+            if order_id == "1004055538456" && *price_cents == 20050
         ));
     }
 
@@ -683,7 +683,11 @@ mod tests {
     async fn test_db_count() {
         let pool = setup_test_db().await;
 
-        let count = schwab_execution_db_count(&pool).await.unwrap();
+        let count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .count;
         assert_eq!(count, 0);
 
         let execution = SchwabExecution {
@@ -701,7 +705,11 @@ mod tests {
             .unwrap();
         sql_tx.commit().await.unwrap();
 
-        let count = schwab_execution_db_count(&pool).await.unwrap();
+        let count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .count;
         assert_eq!(count, 1);
     }
 
@@ -777,7 +785,7 @@ mod tests {
             direction: Direction::Sell,
             state: TradeState::Filled {
                 executed_at: Utc::now(),
-                order_id: "ORDER123".to_string(),
+                order_id: "1004055538123".to_string(),
                 price_cents: 15000,
             },
         };
@@ -846,7 +854,7 @@ mod tests {
             "AAPL".to_string(),
             100,
             "BUY",
-            Some("ORDER123".to_string()),
+            Some("1004055538123".to_string()),
             None, // Missing price_cents for COMPLETED status
             "COMPLETED",
             Some(chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc()),
@@ -865,7 +873,7 @@ mod tests {
             "AAPL".to_string(),
             100,
             "BUY",
-            Some("ORDER123".to_string()),
+            Some("1004055538123".to_string()),
             Some(15000),
             "COMPLETED",
             None, // Missing executed_at for COMPLETED status
@@ -958,7 +966,10 @@ mod tests {
     async fn test_database_connection_failure_handling() {
         let pool = setup_test_db().await;
         pool.close().await;
-        schwab_execution_db_count(&pool).await.unwrap_err();
+        sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+            .fetch_one(&pool)
+            .await
+            .unwrap_err();
     }
 
     #[tokio::test]
@@ -1013,8 +1024,8 @@ mod tests {
     #[tokio::test]
     async fn test_filled_status_requires_price_cents() {
         let pool = setup_test_db().await;
-        let order_id_1 = Some("ORDER123");
-        let order_id_2 = Some("ORDER456");
+        let order_id_1 = Some("1004055538123");
+        let order_id_2 = Some("1004055538456");
         let timestamp = Some(chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc());
 
         // Test that database constraint prevents FILLED status with NULL price_cents
@@ -1081,7 +1092,7 @@ mod tests {
             execution_id,
             TradeState::Filled {
                 executed_at: Utc::now(),
-                order_id: "ORDER999".to_string(),
+                order_id: "1004055538888".to_string(),
                 price_cents: 300_000,
             },
         )
