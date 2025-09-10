@@ -31,6 +31,13 @@ flate2 = "1.0"
 itertools = "0.14.0"
 rocket = { version = "0.5.1", features = ["json"] }
 chrono-tz = "0.10.4"
+opentelemetry = "0.30.0"
+opentelemetry_sdk = { version = "0.30.0", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.30.0", features = [
+  "http-json",
+  "reqwest-client",
+] }
+tracing-opentelemetry = "0.31.0"
 
 [dev-dependencies]
 httpmock = "0.7.0"

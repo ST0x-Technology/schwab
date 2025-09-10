@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc::UnboundedSender, watch};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
-use tracing::{debug, error, info, trace};
+use tracing::{Instrument, debug, error, info, trace};
 
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
 use crate::env::Env;
@@ -114,11 +114,16 @@ fn spawn_order_poller(
         broker,
     );
     tokio::spawn(async move {
-        if let Err(e) = poller.run().await {
-            error!("Order poller failed: {e}");
-        } else {
-            info!("Order poller completed successfully");
+        let span = tracing::info_span!("order_poller_task", component = "order_poller");
+        async move {
+            if let Err(e) = poller.run().await {
+                error!("Order poller failed: {e}");
+            } else {
+                info!("Order poller completed successfully");
+            }
         }
+        .instrument(span)
+        .await;
     })
 }
 
@@ -131,11 +136,12 @@ fn spawn_onchain_event_receiver(
     + 'static,
 ) -> JoinHandle<()> {
     info!("Starting blockchain event receiver");
-    tokio::spawn(receive_blockchain_events(
-        clear_stream,
-        take_stream,
-        event_sender,
-    ))
+    tokio::spawn(async move {
+        let span = tracing::info_span!("blockchain_events_task", component = "websocket");
+        receive_blockchain_events(clear_stream, take_stream, event_sender)
+            .instrument(span)
+            .await;
+    })
 }
 
 fn spawn_position_checker(
@@ -145,12 +151,15 @@ fn spawn_position_checker(
     shutdown_rx: &watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     info!("Starting periodic accumulated position checker");
-    tokio::spawn(periodic_accumulated_position_check(
-        broker,
-        env.clone(),
-        pool.clone(),
-        shutdown_rx.clone(),
-    ))
+    let env_clone = env.clone();
+    let pool_clone = pool.clone();
+    let shutdown_rx_clone = shutdown_rx.clone();
+    tokio::spawn(async move {
+        let span = tracing::info_span!("position_checker_task", component = "accumulator");
+        periodic_accumulated_position_check(broker, env_clone, pool_clone, shutdown_rx_clone)
+            .instrument(span)
+            .await;
+    })
 }
 
 fn spawn_queue_processor<P: Provider + Clone + Send + 'static>(
@@ -166,11 +175,16 @@ fn spawn_queue_processor<P: Provider + Clone + Send + 'static>(
     let cache_clone = cache.clone();
 
     tokio::spawn(async move {
-        if let Err(e) =
-            run_queue_processor(&broker, &env_clone, &pool_clone, &cache_clone, provider).await
-        {
-            error!("Queue processor service failed: {e}");
+        let span = tracing::info_span!("queue_processor_task", component = "conductor");
+        async move {
+            if let Err(e) =
+                run_queue_processor(&broker, &env_clone, &pool_clone, &cache_clone, provider).await
+            {
+                error!("Queue processor service failed: {e}");
+            }
         }
+        .instrument(span)
+        .await;
     })
 }
 
@@ -233,6 +247,7 @@ async fn periodic_accumulated_position_check(
     }
 }
 
+#[tracing::instrument(skip_all, fields(component = "websocket"))]
 async fn receive_blockchain_events<S1, S2>(
     mut clear_stream: S1,
     mut take_stream: S2,
@@ -308,6 +323,7 @@ where
     Ok(block_number)
 }
 
+#[tracing::instrument(skip_all, fields(component = "conductor"))]
 pub(crate) async fn run_live<P, S1, S2>(
     env: Env,
     pool: SqlitePool,
@@ -512,7 +528,7 @@ async fn handle_filtered_event(
     queued_event: &QueuedEvent,
     event_id: i64,
 ) -> Result<Option<SchwabExecution>, EventProcessingError> {
-    info!(
+    debug!(
         "Event filtered out (no matching owner): event_type={:?}, tx_hash={:?}, log_index={}",
         match &queued_event.event {
             TradeEvent::ClearV2(_) => "ClearV2",
@@ -563,8 +579,8 @@ async fn process_valid_trade(
     let _guard = symbol_lock.lock().await;
 
     info!(
-        "Processing queued trade: symbol={}, amount={}, direction={:?}, tx_hash={:?}, log_index={}",
-        trade.symbol, trade.amount, trade.direction, trade.tx_hash, trade.log_index
+        "Processing trade: {} {} {}",
+        trade.direction, trade.amount, trade.symbol
     );
 
     process_trade_within_transaction(pool, queued_event, event_id, trade).await
@@ -581,7 +597,7 @@ async fn process_trade_within_transaction(
         EventProcessingError::AccumulatorProcessing(format!("Failed to begin transaction: {e}"))
     })?;
 
-    info!(
+    debug!(
         "Started transaction for atomic event processing: event_id={}, tx_hash={:?}, log_index={}",
         event_id, queued_event.tx_hash, queued_event.log_index
     );
@@ -613,7 +629,7 @@ async fn process_trade_within_transaction(
         EventProcessingError::AccumulatorProcessing(format!("Failed to commit transaction: {e}"))
     })?;
 
-    info!(
+    debug!(
         "Successfully committed atomic event processing: event_id={}, tx_hash={:?}, log_index={}",
         event_id, queued_event.tx_hash, queued_event.log_index
     );
@@ -682,24 +698,33 @@ async fn check_and_execute_accumulated_positions(
         let pool_clone = pool.clone();
         let broker_clone = broker.clone();
         tokio::spawn(async move {
-            if let Err(e) = execute_pending_schwab_execution(
-                &broker_clone,
-                &env_clone,
-                &pool_clone,
-                execution_id,
-            )
-            .await
-            {
-                error!(
-                    "Failed to execute accumulated position for execution_id {}: {e}",
-                    execution_id
-                );
-            } else {
-                info!(
-                    "Successfully executed accumulated position for execution_id {}",
-                    execution_id
-                );
+            let span = tracing::info_span!(
+                "trade_execution_task",
+                component = "conductor",
+                execution_id
+            );
+            async move {
+                if let Err(e) = execute_pending_schwab_execution(
+                    &broker_clone,
+                    &env_clone,
+                    &pool_clone,
+                    execution_id,
+                )
+                .await
+                {
+                    error!(
+                        "Failed to execute accumulated position for execution_id {}: {e}",
+                        execution_id
+                    );
+                } else {
+                    info!(
+                        "Successfully executed accumulated position for execution_id {}",
+                        execution_id
+                    );
+                }
             }
+            .instrument(span)
+            .await;
         });
     }
 

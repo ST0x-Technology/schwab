@@ -56,11 +56,12 @@ jobs:
           host: ${{ secrets.DROPLET_HOST }}
           username: root
           key: ${{ secrets.DROPLET_SSH_KEY }}
-          envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_HASH,DEPLOYMENT_BLOCK,APP_KEY,APP_SECRET
+          envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_HASH,DEPLOYMENT_BLOCK,APP_KEY,APP_SECRET,HYPERDX_API_KEY
         env:
           WS_RPC_URL: ${{ secrets.WS_RPC_URL }}
           APP_KEY: ${{ secrets.APP_KEY }}
           APP_SECRET: ${{ secrets.APP_SECRET }}
+          HYPERDX_API_KEY: ${{ secrets.HYPERDX_API_KEY }}
           script: |
             set -euo pipefail
 
@@ -87,6 +88,7 @@ jobs:
               -e DEPLOYMENT_BLOCK="${DEPLOYMENT_BLOCK}" \
               -e APP_KEY="${APP_KEY}" \
               -e APP_SECRET="${APP_SECRET}" \
+              -e HYPERDX_API_KEY="${HYPERDX_API_KEY:-}" \
               "registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}"
 
             sleep 10

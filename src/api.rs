@@ -110,6 +110,8 @@ mod tests {
             order_polling_interval: 15,
             order_polling_max_jitter: 5,
             dry_run: false,
+            hyperdx_api_key: None,
+            hyperdx_service_name: "schwab-bot".to_string(),
         }
     }
 

@@ -1,5 +1,5 @@
 use sqlx::SqlitePool;
-use tracing::info;
+use tracing::{debug, info};
 
 use super::OnchainTrade;
 use crate::error::{OnChainError, TradeValidationError};
@@ -23,6 +23,7 @@ use crate::trade_execution_link::TradeExecutionLink;
 /// was accumulated but didn't trigger an execution (or was a duplicate).
 ///
 /// The transaction must be committed by the caller.
+#[tracing::instrument(skip_all, fields(component = "accumulator"))]
 pub async fn process_onchain_trade(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     trade: OnchainTrade,
@@ -52,15 +53,10 @@ pub async fn process_onchain_trade(
         return Ok(None);
     }
 
-    let trade_id = trade.save_within_transaction(sql_tx).await?;
+    trade.save_within_transaction(sql_tx).await?;
     info!(
-        trade_id = trade_id,
-        symbol = %trade.symbol,
-        amount = trade.amount,
-        direction = ?trade.direction,
-        tx_hash = ?trade.tx_hash,
-        log_index = trade.log_index,
-        "Saved onchain trade"
+        "Saved trade: {} {} {}",
+        trade.direction, trade.amount, trade.symbol
     );
 
     let base_symbol = trade.symbol.base();
@@ -76,14 +72,10 @@ pub async fn process_onchain_trade(
     };
     calculator.add_trade(trade.amount, exposure_bucket);
 
-    info!(
-        symbol = %base_symbol,
-        net_position = calculator.net_position(),
-        accumulated_long = calculator.accumulated_long,
-        accumulated_short = calculator.accumulated_short,
-        exposure_bucket = ?exposure_bucket,
-        trade_amount = trade.amount,
-        "Updated calculator"
+    debug!(
+        "Position updated: {} net={:.2}",
+        base_symbol,
+        calculator.net_position()
     );
 
     // Clean up any stale executions for this symbol before attempting new execution
@@ -106,10 +98,7 @@ pub async fn process_onchain_trade(
 
         result
     } else {
-        info!(
-            symbol = %base_symbol,
-            "Another worker holds execution lease, skipping execution creation"
-        );
+        debug!("Execution lease held by another worker for {}", base_symbol);
         None
     };
 

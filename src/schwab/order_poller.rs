@@ -59,6 +59,7 @@ impl<B: Broker> OrderStatusPoller<B> {
 }
 
 impl<B: Broker> OrderStatusPoller<B> {
+    #[tracing::instrument(skip_all, fields(component = "order_poller"))]
     pub(crate) async fn run(mut self) -> Result<(), SchwabError> {
         info!(
             "Starting order status poller with interval: {:?}",

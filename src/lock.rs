@@ -1,6 +1,6 @@
 use crate::error::OnChainError;
 use crate::onchain::io::EquitySymbol;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// Atomically acquires an execution lease for the given symbol.
 /// Returns true if lease was acquired, false if another worker holds it.
@@ -37,7 +37,7 @@ pub(crate) async fn try_acquire_execution_lease(
 
     let lease_acquired = result.rows_affected() > 0;
     if lease_acquired {
-        info!("Acquired execution lease for symbol: {symbol}");
+        debug!("Acquired execution lease for symbol: {symbol}");
     } else {
         warn!(
             "Failed to acquire execution lease for symbol: {} (already held)",
@@ -59,7 +59,7 @@ pub(crate) async fn clear_execution_lease(
         .await?;
 
     if result.rows_affected() > 0 {
-        info!("Cleared execution lease for symbol: {}", symbol);
+        debug!("Cleared execution lease for symbol: {}", symbol);
     }
 
     Ok(())

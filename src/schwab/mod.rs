@@ -81,6 +81,12 @@ impl std::str::FromStr for Direction {
     }
 }
 
+impl std::fmt::Display for Direction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 impl serde::Serialize for Direction {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
