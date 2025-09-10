@@ -1,8 +1,8 @@
 use clap::Parser;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry::{KeyValue, global};
-use opentelemetry_otlp::{SpanExporter, WithExportConfig, WithHttpConfig};
-use opentelemetry_sdk::{Resource, trace as sdktrace};
+use opentelemetry_otlp::{LogExporter, SpanExporter, WithExportConfig, WithHttpConfig};
+use opentelemetry_sdk::{Resource, logs as sdklogs, trace as sdktrace};
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use tracing::Level;
@@ -94,7 +94,7 @@ impl Env {
     }
 }
 
-pub fn setup_tracing(env: &Env) {
+pub fn setup_tracing(env: &Env) -> Option<Box<dyn Fn() + Send + Sync>> {
     let level: Level = (&env.log_level).into();
     let default_filter = format!("rain_schwab={level},auth={level},main={level}");
 
@@ -104,7 +104,7 @@ pub fn setup_tracing(env: &Env) {
             default_filter,
             api_key.clone(),
             env.hyperdx_service_name.clone(),
-        );
+        )
     } else {
         // Console logging only
         tracing_subscriber::fmt()
@@ -117,10 +117,21 @@ pub fn setup_tracing(env: &Env) {
 
         // Warn user about console-only mode
         tracing::warn!("No HYPERDX_API_KEY configured - running with console logging only");
+        None
     }
 }
 
-fn setup_tracing_with_hyperdx(default_filter: String, api_key: String, service_name: String) {
+fn setup_tracing_with_hyperdx(
+    default_filter: String,
+    api_key: String,
+    service_name: String,
+) -> Option<Box<dyn Fn() + Send + Sync>> {
+    const HYPERDX_ENDPOINT: &str = "https://in-otel.hyperdx.io/v1/traces";
+
+    println!("Setting up HyperDX OTLP exporter:");
+    println!("  Endpoint: {}", HYPERDX_ENDPOINT);
+    println!("  Service: {}", service_name);
+
     // Create resource with service information
     let resource = Resource::builder()
         .with_attributes(vec![
@@ -129,13 +140,8 @@ fn setup_tracing_with_hyperdx(default_filter: String, api_key: String, service_n
         ])
         .build();
 
-    // Configure OTLP exporter for HyperDX
     let mut headers = std::collections::HashMap::new();
     headers.insert("authorization".to_string(), format!("Bearer {}", api_key));
-
-    println!("Setting up HyperDX OTLP exporter:");
-    println!("  Endpoint: https://in-otel.hyperdx.io/v1/traces");
-    println!("  Service: {}", service_name);
     println!(
         "  API Key: {}...{}",
         &api_key[..4.min(api_key.len())],
@@ -144,7 +150,7 @@ fn setup_tracing_with_hyperdx(default_filter: String, api_key: String, service_n
 
     let otlp_exporter = match SpanExporter::builder()
         .with_http()
-        .with_endpoint("https://in-otel.hyperdx.io/v1/traces")
+        .with_endpoint(HYPERDX_ENDPOINT)
         .with_headers(headers)
         .with_http_client(reqwest::Client::new())
         .build()
@@ -159,7 +165,7 @@ fn setup_tracing_with_hyperdx(default_filter: String, api_key: String, service_n
                 )
                 .compact()
                 .init();
-            return;
+            return None;
         }
     };
 
@@ -172,12 +178,14 @@ fn setup_tracing_with_hyperdx(default_filter: String, api_key: String, service_n
     // Set as global tracer provider
     global::set_tracer_provider(tracer_provider.clone());
 
+    // TODO: Add log export once we resolve the Tokio runtime context issue
+
     // Get tracer and create OpenTelemetry layer
     let tracer = tracer_provider.tracer("schwab-bot");
     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
     println!("✅ HyperDX OTLP exporter configured successfully");
-    println!("📡 Telemetry will be sent to: https://in-otel.hyperdx.io/v1/traces");
+    println!("📡 Traces: {}", HYPERDX_ENDPOINT);
 
     // Create console layer
     let fmt_layer = tracing_subscriber::fmt::layer().compact();
@@ -193,6 +201,27 @@ fn setup_tracing_with_hyperdx(default_filter: String, api_key: String, service_n
         .init();
 
     println!("🔍 Tracing initialized with both console and HyperDX layers");
+    println!("⏱️  Batch exporter will export spans automatically (default: every 5s or 512 spans)");
+
+    // Return shutdown function
+    Some(Box::new(move || {
+        println!("🔄 Flushing OpenTelemetry spans before shutdown...");
+
+        // First, flush any pending spans
+        if let Err(e) = tracer_provider.force_flush() {
+            println!("⚠️  Error flushing spans: {e}");
+        } else {
+            println!("✅ Spans flushed successfully");
+        }
+
+        // Allow time for final exports to complete
+        std::thread::sleep(std::time::Duration::from_millis(3000));
+
+        // Shutdown the tracer provider
+        if let Err(e) = tracer_provider.shutdown() {
+            tracing::debug!("Tracer provider shutdown completed with note: {e}");
+        }
+    }))
 }
 
 #[cfg(test)]

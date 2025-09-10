@@ -6,7 +6,7 @@ use rain_schwab::launch;
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv_override().ok();
     let env = Env::try_parse()?;
-    setup_tracing(&env);
+    let shutdown_fn = setup_tracing(&env);
 
     launch(env).await
 }
