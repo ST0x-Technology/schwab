@@ -364,7 +364,7 @@ From actual failed transactions:
 5. **No silent failures** - Explicit errors for invalid symbols
 6. **Preserves information** - Keeps original suffix from onchain data
 
-## Task 7. Add Dry-Run Mode for Safe Testing
+## Task 8. Add Dry-Run Mode for Safe Testing
 
 - [x] Add `--dry-run` CLI flag to Env struct (default: false)
 - [x] Create Broker trait abstraction for order execution
@@ -381,7 +381,7 @@ From actual failed transactions:
 - [x] Add Clone trait to LogBroker struct
 - [x] Use Arc<AtomicU64> for LogBroker's order_counter for safe cloning
 - [x] Update execute_pending_schwab_execution to accept broker parameter (remove
-      line 707: let broker = env.get_broker())
+      local broker creation from within the function)
 - [x] Update run_queue_processor to accept and pass broker parameter
 - [x] Update spawn_queue_processor to accept and pass broker parameter
 - [x] Update process_next_queued_event to accept and pass broker parameter if
