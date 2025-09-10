@@ -94,13 +94,13 @@ impl Env {
     }
 }
 
-pub fn setup_tracing(env: &Env) -> Option<Box<dyn Fn() + Send + Sync>> {
+pub fn setup_tracing(env: &Env) {
     let level: Level = (&env.log_level).into();
     let default_filter = format!("rain_schwab={level},auth={level},main={level}");
 
     if let Some(ref api_key) = env.hyperdx_api_key {
         // Set up OpenTelemetry with HyperDX
-        setup_tracing_with_hyperdx(default_filter, api_key, env.hyperdx_service_name.clone())
+        setup_tracing_with_hyperdx(default_filter, api_key, env.hyperdx_service_name.clone());
     } else {
         // Console logging only
         tracing_subscriber::fmt()
@@ -113,15 +113,10 @@ pub fn setup_tracing(env: &Env) -> Option<Box<dyn Fn() + Send + Sync>> {
 
         // Warn user about console-only mode
         tracing::warn!("No HYPERDX_API_KEY configured - running with console logging only");
-        None
     }
 }
 
-fn setup_tracing_with_hyperdx(
-    default_filter: String,
-    api_key: &str,
-    service_name: String,
-) -> Option<Box<dyn Fn() + Send + Sync>> {
+fn setup_tracing_with_hyperdx(default_filter: String, api_key: &str, service_name: String) {
     const HYPERDX_ENDPOINT: &str = "https://in-otel.hyperdx.io/v1/traces";
 
     println!("Setting up HyperDX OTLP exporter:");
@@ -161,7 +156,7 @@ fn setup_tracing_with_hyperdx(
                 )
                 .compact()
                 .init();
-            return None;
+            return;
         }
     };
 
@@ -199,25 +194,9 @@ fn setup_tracing_with_hyperdx(
     println!("🔍 Tracing initialized with both console and HyperDX layers");
     println!("⏱️  Batch exporter will export spans automatically (default: every 5s or 512 spans)");
 
-    // Return shutdown function
-    Some(Box::new(move || {
-        println!("🔄 Flushing OpenTelemetry spans before shutdown...");
-
-        // First, flush any pending spans
-        if let Err(e) = tracer_provider.force_flush() {
-            println!("⚠️  Error flushing spans: {e}");
-        } else {
-            println!("✅ Spans flushed successfully");
-        }
-
-        // Allow time for final exports to complete
-        std::thread::sleep(std::time::Duration::from_millis(3000));
-
-        // Shutdown the tracer provider
-        if let Err(e) = tracer_provider.shutdown() {
-            tracing::debug!("Tracer provider shutdown completed with note: {e}");
-        }
-    }))
+    // Skip OpenTelemetry shutdown to avoid "there is no reactor running" panic
+    // The batch exporter will handle its own cleanup when the process exits
+    println!("⚠️  OpenTelemetry shutdown skipped to avoid runtime issues");
 }
 
 #[cfg(test)]
