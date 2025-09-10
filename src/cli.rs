@@ -9,7 +9,7 @@ use crate::error::OnChainError;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
 use crate::schwab::SchwabAuthEnv;
 use crate::schwab::market_hours::{MarketStatus as MarketStatusEnum, fetch_market_hours};
-use crate::schwab::order::{Instruction, Order, execute_schwab_order};
+use crate::schwab::order::{Instruction, Order};
 use crate::schwab::run_oauth_flow;
 use crate::schwab::tokens::SchwabTokens;
 use crate::symbol::cache::SymbolCache;
@@ -102,6 +102,7 @@ impl CliEnv {
             evm_env: cli_env.evm_env,
             order_polling_interval: 15,
             order_polling_max_jitter: 5,
+            dry_run: false,
         };
 
         Ok((env, cli_env.command))
@@ -448,7 +449,9 @@ async fn process_found_trade<W: Write>(
         )?;
         ensure_authentication(pool, &env.schwab_auth, stdout).await?;
         writeln!(stdout, "🔄 Executing Schwab order...")?;
-        execute_schwab_order(env, pool, execution)
+        let broker = env.get_broker();
+        broker
+            .execute_order(env, pool, execution)
             .await
             .map_err(anyhow::Error::from)?;
         writeln!(stdout, "🎯 Trade processing completed!")?;
@@ -959,6 +962,7 @@ mod tests {
             },
             order_polling_interval: 15,
             order_polling_max_jitter: 5,
+            dry_run: false,
         }
     }
 
