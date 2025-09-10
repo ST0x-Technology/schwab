@@ -1,8 +1,8 @@
 use clap::Parser;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry::{KeyValue, global};
-use opentelemetry_otlp::{LogExporter, SpanExporter, WithExportConfig, WithHttpConfig};
-use opentelemetry_sdk::{Resource, logs as sdklogs, trace as sdktrace};
+use opentelemetry_otlp::{SpanExporter, WithExportConfig, WithHttpConfig};
+use opentelemetry_sdk::{Resource, trace as sdktrace};
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use tracing::Level;
@@ -100,11 +100,7 @@ pub fn setup_tracing(env: &Env) -> Option<Box<dyn Fn() + Send + Sync>> {
 
     if let Some(ref api_key) = env.hyperdx_api_key {
         // Set up OpenTelemetry with HyperDX
-        setup_tracing_with_hyperdx(
-            default_filter,
-            api_key.clone(),
-            env.hyperdx_service_name.clone(),
-        )
+        setup_tracing_with_hyperdx(default_filter, api_key, env.hyperdx_service_name.clone())
     } else {
         // Console logging only
         tracing_subscriber::fmt()
@@ -123,14 +119,14 @@ pub fn setup_tracing(env: &Env) -> Option<Box<dyn Fn() + Send + Sync>> {
 
 fn setup_tracing_with_hyperdx(
     default_filter: String,
-    api_key: String,
+    api_key: &str,
     service_name: String,
 ) -> Option<Box<dyn Fn() + Send + Sync>> {
     const HYPERDX_ENDPOINT: &str = "https://in-otel.hyperdx.io/v1/traces";
 
     println!("Setting up HyperDX OTLP exporter:");
-    println!("  Endpoint: {}", HYPERDX_ENDPOINT);
-    println!("  Service: {}", service_name);
+    println!("  Endpoint: {HYPERDX_ENDPOINT}");
+    println!("  Service: {service_name}");
 
     // Create resource with service information
     let resource = Resource::builder()
@@ -141,7 +137,7 @@ fn setup_tracing_with_hyperdx(
         .build();
 
     let mut headers = std::collections::HashMap::new();
-    headers.insert("authorization".to_string(), format!("Bearer {}", api_key));
+    headers.insert("authorization".to_string(), format!("Bearer {api_key}"));
     println!(
         "  API Key: {}...{}",
         &api_key[..4.min(api_key.len())],
@@ -185,7 +181,7 @@ fn setup_tracing_with_hyperdx(
     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
     println!("✅ HyperDX OTLP exporter configured successfully");
-    println!("📡 Traces: {}", HYPERDX_ENDPOINT);
+    println!("📡 Traces: {HYPERDX_ENDPOINT}");
 
     // Create console layer
     let fmt_layer = tracing_subscriber::fmt::layer().compact();

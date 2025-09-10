@@ -8,5 +8,11 @@ async fn main() -> anyhow::Result<()> {
     let env = Env::try_parse()?;
     let shutdown_fn = setup_tracing(&env);
 
-    launch(env).await
+    let result = launch(env).await;
+
+    if let Some(shutdown) = shutdown_fn {
+        shutdown();
+    }
+
+    result
 }
