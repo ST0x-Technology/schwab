@@ -29,23 +29,15 @@ pub(crate) struct BackgroundTasksBuilder<P> {
     pool: SqlitePool,
     cache: SymbolCache,
     provider: P,
-    shutdown_rx: watch::Receiver<bool>,
 }
 
 impl<P: Provider + Clone + Send + 'static> BackgroundTasksBuilder<P> {
-    pub(crate) fn new(
-        env: Env,
-        pool: SqlitePool,
-        cache: SymbolCache,
-        provider: P,
-        shutdown_rx: watch::Receiver<bool>,
-    ) -> Self {
+    pub(crate) fn new(env: Env, pool: SqlitePool, cache: SymbolCache, provider: P) -> Self {
         Self {
             env,
             pool,
             cache,
             provider,
-            shutdown_rx,
         }
     }
 
@@ -70,24 +62,16 @@ impl<P: Provider + Clone + Send + 'static> BackgroundTasksBuilder<P> {
             )
         };
         let broker = self.env.get_broker();
-        let order_poller =
-            spawn_order_poller(&self.env, &self.pool, &self.shutdown_rx, broker.clone());
-        let event_receiver = spawn_onchain_event_receiver(event_sender, clear_stream, take_stream);
-        let position_checker =
-            spawn_position_checker(broker.clone(), &self.env, &self.pool, &self.shutdown_rx);
-        let queue_processor = spawn_queue_processor(
-            broker,
-            &self.env,
-            &self.pool,
-            &self.cache,
-            self.provider,
-            &self.shutdown_rx,
-        );
+        let order_poller = spawn_order_poller(&self.env, &self.pool, broker.clone());
+        let event_processor = spawn_onchain_event_receiver(event_sender, clear_stream, take_stream);
+        let position_checker = spawn_position_checker(broker.clone(), &self.env, &self.pool);
+        let queue_processor =
+            spawn_queue_processor(broker, &self.env, &self.pool, &self.cache, self.provider);
 
         BackgroundTasks {
             token_refresher,
             order_poller,
-            event_receiver,
+            event_processor,
             position_checker,
             queue_processor,
         }
@@ -97,27 +81,31 @@ impl<P: Provider + Clone + Send + 'static> BackgroundTasksBuilder<P> {
 pub(crate) struct BackgroundTasks {
     pub(crate) token_refresher: JoinHandle<()>,
     pub(crate) order_poller: JoinHandle<()>,
-    pub(crate) event_receiver: JoinHandle<()>,
+    pub(crate) event_processor: JoinHandle<()>,
     pub(crate) position_checker: JoinHandle<()>,
     pub(crate) queue_processor: JoinHandle<()>,
 }
 
-fn spawn_order_poller(
-    env: &Env,
-    pool: &SqlitePool,
-    shutdown_rx: &watch::Receiver<bool>,
-    broker: DynBroker,
-) -> JoinHandle<()> {
+fn spawn_token_refresher(env: &Env, pool: &SqlitePool) -> JoinHandle<()> {
+    info!("Starting token refresh service");
+    SchwabTokens::spawn_automatic_token_refresh(pool.clone(), env.schwab_auth.clone())
+}
+
+fn spawn_order_poller(env: &Env, pool: &SqlitePool, broker: DynBroker) -> JoinHandle<()> {
     let config = env.get_order_poller_config();
     info!(
         "Starting order status poller with interval: {:?}, max jitter: {:?}",
         config.polling_interval, config.max_jitter
     );
+
+    // Create a dummy shutdown receiver since we now use abort mechanism instead
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
     let poller = OrderStatusPoller::new(
         config,
         env.schwab_auth.clone(),
         pool.clone(),
-        shutdown_rx.clone(),
+        shutdown_rx,
         broker,
     );
     tokio::spawn(async move {
@@ -145,18 +133,17 @@ fn spawn_onchain_event_receiver(
     ))
 }
 
-fn spawn_position_checker(
-    broker: DynBroker,
-    env: &Env,
-    pool: &SqlitePool,
-    shutdown_rx: &watch::Receiver<bool>,
-) -> JoinHandle<()> {
+fn spawn_position_checker(broker: DynBroker, env: &Env, pool: &SqlitePool) -> JoinHandle<()> {
     info!("Starting periodic accumulated position checker");
+
+    // Create a dummy shutdown receiver since we now use abort mechanism instead
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
     tokio::spawn(periodic_accumulated_position_check(
         broker,
         env.clone(),
         pool.clone(),
-        shutdown_rx.clone(),
+        shutdown_rx,
     ))
 }
 
@@ -191,13 +178,13 @@ fn spawn_queue_processor<P: Provider + Clone + Send + 'static>(
 }
 
 impl BackgroundTasks {
-    pub(crate) async fn wait_for_completion(self) -> Result<(), anyhow::Error> {
-        let (token_result, poller_result, receiver_result, position_result, queue_result) = tokio::join!(
-            self.token_refresher,
-            self.order_poller,
-            self.event_receiver,
-            self.position_checker,
-            self.queue_processor
+    pub(crate) async fn wait_for_completion(&mut self) -> Result<(), anyhow::Error> {
+        let (token_result, poller_result, processor_result, position_result, queue_result) = tokio::join!(
+            &mut self.token_refresher,
+            &mut self.order_poller,
+            &mut self.event_processor,
+            &mut self.position_checker,
+            &mut self.queue_processor
         );
 
         if let Err(e) = token_result {
@@ -206,8 +193,8 @@ impl BackgroundTasks {
         if let Err(e) = poller_result {
             error!("Order poller task panicked: {e}");
         }
-        if let Err(e) = receiver_result {
-            error!("Event receiver task panicked: {e}");
+        if let Err(e) = processor_result {
+            error!("Event processor task panicked: {e}");
         }
         if let Err(e) = position_result {
             error!("Position checker task panicked: {e}");
@@ -217,6 +204,18 @@ impl BackgroundTasks {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn abort_all(self) {
+        info!("Aborting all background tasks");
+
+        self.token_refresher.abort();
+        self.order_poller.abort();
+        self.event_processor.abort();
+        self.position_checker.abort();
+        self.queue_processor.abort();
+
+        info!("All background tasks aborted successfully");
     }
 }
 
@@ -324,50 +323,48 @@ where
     Ok(block_number)
 }
 
-pub(crate) async fn run_live<P, S1, S2>(
-    env: Env,
-    pool: SqlitePool,
+pub(crate) fn run_live<P, S1, S2>(
+    env: &Env,
+    pool: &SqlitePool,
     cache: SymbolCache,
     provider: P,
     clear_stream: S1,
     take_stream: S2,
-) -> anyhow::Result<()>
+) -> BackgroundTasks
 where
     P: Provider + Clone + Send + 'static,
     S1: Stream<Item = Result<(ClearV2, Log), sol_types::Error>> + Unpin + Send + 'static,
     S2: Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin + Send + 'static,
 {
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let (event_sender, mut event_receiver) =
         tokio::sync::mpsc::unbounded_channel::<(TradeEvent, Log)>();
 
-    let background_tasks = BackgroundTasksBuilder::new(
-        env.clone(),
-        pool.clone(),
-        cache.clone(),
-        provider,
-        shutdown_rx.clone(),
-    )
-    .spawn(event_sender, clear_stream, take_stream);
+    let background_tasks = BackgroundTasksBuilder::new(env.clone(), pool.clone(), cache, provider)
+        .spawn(event_sender, clear_stream, take_stream);
 
-    while let Some((event, log)) = event_receiver.recv().await {
-        trace!(
-            "Processing live event: tx_hash={:?}, log_index={:?}",
-            log.transaction_hash, log.log_index
-        );
-        if let Err(e) = process_live_event(&pool, event, log).await {
-            error!("Failed to process live event: {e}");
+    // Spawn the event processing loop as a background task
+    let pool_clone = pool.clone();
+    let event_processor = tokio::spawn(async move {
+        while let Some((event, log)) = event_receiver.recv().await {
+            trace!(
+                "Processing live event: tx_hash={:?}, log_index={:?}",
+                log.transaction_hash, log.log_index
+            );
+            if let Err(e) = process_live_event(&pool_clone, event, log).await {
+                error!("Failed to process live event: {e}");
+            }
         }
-    }
+        info!("Event processing loop ended");
+    });
 
-    info!("Event processing loop ended, shutting down background tasks");
-    if let Err(e) = shutdown_tx.send(true) {
-        error!("Failed to send shutdown signal: {e}");
+    // Return BackgroundTasks with the event processor included
+    BackgroundTasks {
+        token_refresher: background_tasks.token_refresher,
+        order_poller: background_tasks.order_poller,
+        event_processor,
+        position_checker: background_tasks.position_checker,
+        queue_processor: background_tasks.queue_processor,
     }
-
-    background_tasks.wait_for_completion().await?;
-    info!("All background tasks completed");
-    Ok(())
 }
 
 async fn process_live_event(
@@ -1559,5 +1556,112 @@ mod tests {
         let result = execute_pending_schwab_execution(&broker, &env, &pool, 99999).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_background_tasks_abort_all() {
+        let pool = setup_test_db().await;
+        let env = create_test_env();
+        let cache = SymbolCache::default();
+        let asserter = Asserter::new();
+        let provider = alloy::providers::ProviderBuilder::new().connect_mocked_client(asserter);
+
+        // Create empty streams for testing
+        let clear_stream = stream::empty();
+        let take_stream = stream::empty();
+
+        // Get BackgroundTasks by calling run_live
+        let background_tasks = run_live(&env, &pool, cache, provider, clear_stream, take_stream);
+
+        // Verify all tasks are initially running (not aborted)
+        assert!(!background_tasks.token_refresher.is_finished());
+        assert!(!background_tasks.order_poller.is_finished());
+        assert!(!background_tasks.event_processor.is_finished());
+        assert!(!background_tasks.position_checker.is_finished());
+        assert!(!background_tasks.queue_processor.is_finished());
+
+        // Call abort_all
+        background_tasks.abort_all();
+
+        // Give tasks a moment to be aborted
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        // Note: We can't easily verify the tasks are aborted since abort_all consumes self
+        // The important thing is that abort_all doesn't panic and completes successfully
+    }
+
+    #[tokio::test]
+    async fn test_background_tasks_individual_abort() {
+        let pool = setup_test_db().await;
+        let env = create_test_env();
+        let cache = SymbolCache::default();
+        let asserter = Asserter::new();
+        let provider = alloy::providers::ProviderBuilder::new().connect_mocked_client(asserter);
+
+        // Create empty streams for testing
+        let clear_stream = stream::empty();
+        let take_stream = stream::empty();
+
+        // Get BackgroundTasks by calling run_live
+        let background_tasks = run_live(&env, &pool, cache, provider, clear_stream, take_stream);
+
+        // Test that individual JoinHandles can be aborted
+        let token_handle = background_tasks.token_refresher;
+        let order_handle = background_tasks.order_poller;
+        let event_handle = background_tasks.event_processor;
+        let position_handle = background_tasks.position_checker;
+        let queue_handle = background_tasks.queue_processor;
+
+        // Initially not finished
+        assert!(!token_handle.is_finished());
+        assert!(!order_handle.is_finished());
+        assert!(!event_handle.is_finished());
+        assert!(!position_handle.is_finished());
+        assert!(!queue_handle.is_finished());
+
+        // Abort each task individually
+        token_handle.abort();
+        order_handle.abort();
+        event_handle.abort();
+        position_handle.abort();
+        queue_handle.abort();
+
+        // Give tasks a moment to be aborted
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        // Tasks should now be finished (aborted)
+        assert!(token_handle.is_finished());
+        assert!(order_handle.is_finished());
+        assert!(event_handle.is_finished());
+        assert!(position_handle.is_finished());
+        assert!(queue_handle.is_finished());
+    }
+
+    #[tokio::test]
+    async fn test_run_live_returns_background_tasks_immediately() {
+        let pool = setup_test_db().await;
+        let env = create_test_env();
+        let cache = SymbolCache::default();
+        let asserter = Asserter::new();
+        let provider = alloy::providers::ProviderBuilder::new().connect_mocked_client(asserter);
+
+        // Create empty streams
+        let clear_stream = stream::empty();
+        let take_stream = stream::empty();
+
+        let start_time = std::time::Instant::now();
+
+        // run_live should return immediately with BackgroundTasks
+        let background_tasks = run_live(&env, &pool, cache, provider, clear_stream, take_stream);
+
+        let elapsed = start_time.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "run_live should return quickly, took: {elapsed:?}"
+        );
+
+        // Clean up by aborting tasks
+        background_tasks.abort_all();
     }
 }
