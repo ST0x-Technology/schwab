@@ -404,9 +404,18 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
         info!("No unprocessed events found, starting fresh");
     }
 
+    let mut empty_polls = 0u32;
+    let mut total_polls = 0u32;
+    let mut successful_polls = 0u32;
+
     loop {
+        total_polls += 1;
+
         match process_next_queued_event(env, pool, cache, &provider).await {
             Ok(Some(execution)) => {
+                empty_polls = 0;
+                successful_polls += 1;
+
                 if let Some(exec_id) = execution.id {
                     if let Err(e) =
                         execute_pending_schwab_execution(broker, env, pool, exec_id).await
@@ -416,7 +425,29 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
                 }
             }
             Ok(None) => {
-                sleep(Duration::from_millis(100)).await;
+                empty_polls = empty_polls.saturating_add(1);
+
+                // Log stats every 100 polls
+                if total_polls % 100 == 0 {
+                    trace!(
+                        "Queue processor stats: polls={}, successful={}, empty_streak={}",
+                        total_polls, successful_polls, empty_polls
+                    );
+                }
+
+                // Progressive backoff for idle polling: 100ms -> 500ms -> 2s -> 10s -> 30s
+                let delay_ms = match empty_polls {
+                    1..=10 => 100,
+                    11..=50 => 500,
+                    51..=200 => 2000,
+                    201..=1000 => 10000,
+                    _ => 30000,
+                };
+                trace!(
+                    "Queue empty (poll #{}), sleeping {}ms",
+                    empty_polls, delay_ms
+                );
+                sleep(Duration::from_millis(delay_ms)).await;
             }
             Err(e) => {
                 error!("Error processing queued event: {e}");

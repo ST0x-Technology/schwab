@@ -2,7 +2,7 @@ name: Build and deploy
 
 on:
   push:
-    branches: [master, fix/task-shutdown]
+    branches: [master, fix/cputilization]
   workflow_dispatch:
 
 concurrency:
@@ -106,6 +106,7 @@ jobs:
               -e DEPLOYMENT_BLOCK="${DEPLOYMENT_BLOCK}" \
               -e APP_KEY="${APP_KEY}" \
               -e APP_SECRET="${APP_SECRET}" \
+              -e RUST_LOG="rain_schwab=trace" \
               "registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}" 2>&1 | tee -a "${DEPLOY_LOG}"
 
             # Wait for container to start
