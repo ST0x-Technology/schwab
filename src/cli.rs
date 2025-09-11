@@ -968,6 +968,7 @@ mod tests {
             dry_run: false,
             hyperdx_api_key: None,
             hyperdx_service_name: "schwab-bot".to_string(),
+            otel_exporter_endpoint: None,
         }
     }
 

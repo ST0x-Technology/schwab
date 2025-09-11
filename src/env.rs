@@ -17,9 +17,9 @@ use crate::schwab::broker::{DynBroker, LogBroker, Schwab};
 #[derive(Debug)]
 struct DebugLayer;
 
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for DebugLayer
+impl<S> tracing_subscriber::Layer<S> for DebugLayer
 where
-    S: for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
     fn on_new_span(
         &self,
@@ -27,7 +27,7 @@ where
         id: &tracing::span::Id,
         ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
-        let span = ctx.span(id).unwrap();
+        let span = ctx.span(id).expect("span should exist");
         println!(
             "📍 New span: {} (id: {:?}, level: {:?})",
             attrs.metadata().name(),
@@ -47,11 +47,11 @@ where
     }
 
     fn on_enter(&self, id: &tracing::span::Id, _ctx: tracing_subscriber::layer::Context<'_, S>) {
-        println!("➡️ Entering span: {:?}", id);
+        println!("➡️ Entering span: {id:?}");
     }
 
     fn on_exit(&self, id: &tracing::span::Id, _ctx: tracing_subscriber::layer::Context<'_, S>) {
-        println!("⬅️ Exiting span: {:?}", id);
+        println!("⬅️ Exiting span: {id:?}");
     }
 }
 
@@ -151,7 +151,7 @@ pub fn setup_tracing(env: &Env) {
             default_filter,
             api_key,
             env.hyperdx_service_name.clone(),
-            env.otel_exporter_endpoint.clone(),
+            env.otel_exporter_endpoint.as_deref(),
         );
     } else {
         // Console logging only
@@ -172,11 +172,11 @@ fn setup_tracing_with_hyperdx(
     default_filter: String,
     api_key: &str,
     service_name: String,
-    custom_endpoint: Option<String>,
+    custom_endpoint: Option<&str>,
 ) {
     const HYPERDX_ENDPOINT: &str = "https://in-otel.hyperdx.io/v1/traces";
 
-    let endpoint = custom_endpoint.as_deref().unwrap_or(HYPERDX_ENDPOINT);
+    let endpoint = custom_endpoint.unwrap_or(HYPERDX_ENDPOINT);
     let is_hyperdx = custom_endpoint.is_none();
 
     println!("Setting up OTLP exporter:");
