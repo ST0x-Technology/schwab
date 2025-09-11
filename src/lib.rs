@@ -1,7 +1,7 @@
 use alloy::providers::{ProviderBuilder, WsConnect};
 use rocket::Config;
 use sqlx::SqlitePool;
-use tracing::{debug, error, info, warn};
+use tracing::{Instrument, debug, error, info, warn};
 
 pub mod api;
 mod bindings;
@@ -28,6 +28,7 @@ use crate::symbol::cache::SymbolCache;
 use crate::trading_hours_controller::TradingHoursController;
 use bindings::IOrderBookV4::IOrderBookV4Instance;
 
+#[tracing::instrument(skip_all, fields(component = "main"))]
 pub async fn launch(env: Env) -> anyhow::Result<()> {
     let pool = env.get_sqlite_pool().await?;
 
@@ -43,13 +44,21 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
         .manage(pool.clone())
         .manage(env.clone());
 
-    let server_task = tokio::spawn(rocket.launch());
+    let server_task = tokio::spawn(async move {
+        let span = tracing::info_span!("api_server_task", component = "main");
+        rocket.launch().instrument(span).await
+    });
 
     let bot_pool = pool.clone();
     let bot_task = tokio::spawn(async move {
-        if let Err(e) = run(env, bot_pool).await {
-            error!("Bot failed: {e}");
+        let span = tracing::info_span!("bot_main_task", component = "main");
+        async move {
+            if let Err(e) = run(env, bot_pool).await {
+                error!("Bot failed: {e}");
+            }
         }
+        .instrument(span)
+        .await;
     });
 
     tokio::select! {
@@ -77,6 +86,7 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tracing::instrument(skip_all, fields(component = "main"))]
 async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
     let run_bot = {
         let env = env.clone();

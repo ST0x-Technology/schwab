@@ -46,13 +46,10 @@ impl OnchainTrade {
         );
 
         if !(alice_owner_matches || bob_owner_matches) {
-            info!(
-                "ClearV2 event filtered (no owner match): tx_hash={:?}, log_index={}, alice.owner={:?}, bob.owner={:?}, target={:?}",
+            debug!(
+                "ClearV2 event filtered (no owner match): tx_hash={:?}, log_index={}",
                 log.transaction_hash,
-                log.log_index.unwrap_or(0),
-                alice_owner,
-                bob_owner,
-                env.order_owner
+                log.log_index.unwrap_or(0)
             );
             return Ok(None);
         }
@@ -116,16 +113,8 @@ impl OnchainTrade {
 
         if let Ok(Some(ref trade)) = result {
             info!(
-                "ClearV2 trade created successfully: tx_hash={:?}, log_index={}, symbol={}, amount={}, owner={:?}",
-                trade.tx_hash,
-                trade.log_index,
-                trade.symbol,
-                trade.amount,
-                if alice_owner_matches {
-                    alice_owner
-                } else {
-                    bob_owner
-                }
+                "ClearV2 trade created: tx_hash={:?}, symbol={}, amount={}",
+                trade.tx_hash, trade.symbol, trade.amount
             );
         }
 
