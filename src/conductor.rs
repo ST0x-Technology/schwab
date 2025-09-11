@@ -243,18 +243,29 @@ async fn receive_blockchain_events<S1, S2>(
 {
     info!("WebSocket event receiver started, waiting for blockchain events");
     let mut iterations = 0u32;
+    let mut consecutive_errors = 0u32;
 
     loop {
         iterations = iterations.saturating_add(1);
 
         if iterations % 100 == 0 {
-            trace!("WebSocket receiver iteration #{}", iterations);
+            trace!(
+                "WebSocket receiver iteration #{}, consecutive_errors={}",
+                iterations, consecutive_errors
+            );
         }
+
+        trace!(
+            "WebSocket receiver entering tokio::select! (iteration #{})",
+            iterations
+        );
         let event_result = tokio::select! {
             Some(result) = clear_stream.next() => {
+                trace!("WebSocket receiver got ClearV2 result");
                 result.map(|(event, log)| (TradeEvent::ClearV2(Box::new(event)), log))
             }
             Some(result) = take_stream.next() => {
+                trace!("WebSocket receiver got TakeOrderV2 result");
                 result.map(|(event, log)| (TradeEvent::TakeOrderV2(Box::new(event)), log))
             }
             else => {
@@ -262,9 +273,14 @@ async fn receive_blockchain_events<S1, S2>(
                 break;
             }
         };
+        trace!(
+            "WebSocket receiver exited tokio::select! (iteration #{})",
+            iterations
+        );
 
         match event_result {
             Ok((event, log)) => {
+                consecutive_errors = 0;
                 trace!(
                     "Received blockchain event: tx_hash={:?}, log_index={:?}, block_number={:?}",
                     log.transaction_hash, log.log_index, log.block_number
@@ -275,7 +291,25 @@ async fn receive_blockchain_events<S1, S2>(
                 }
             }
             Err(e) => {
-                error!("Error in event stream: {e}");
+                consecutive_errors = consecutive_errors.saturating_add(1);
+                error!(
+                    "Error in event stream (consecutive errors: {}): {e}",
+                    consecutive_errors
+                );
+
+                // Add exponential backoff for errors to prevent tight spin loop
+                let delay_ms = match consecutive_errors {
+                    1..=3 => 100,
+                    4..=10 => 500,
+                    11..=50 => 2000,
+                    _ => 5000,
+                };
+
+                error!(
+                    "Sleeping {}ms after event stream error before retry",
+                    delay_ms
+                );
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             }
         }
     }

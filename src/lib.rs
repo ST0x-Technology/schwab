@@ -1,7 +1,7 @@
 use alloy::providers::{ProviderBuilder, WsConnect};
 use rocket::Config;
 use sqlx::SqlitePool;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 pub mod api;
 mod bindings;
@@ -140,7 +140,10 @@ async fn run_market_hours_loop(
     const RERUN_DELAY_SECS: u64 = 10;
 
     // Main market hours control loop
+    let mut loop_iterations = 0u32;
     loop {
+        loop_iterations = loop_iterations.saturating_add(1);
+        trace!("Market hours control loop iteration #{}", loop_iterations);
         // Wait until market opens
         controller.wait_until_market_open().await?;
 
