@@ -361,6 +361,11 @@ async fn receive_blockchain_events<S1, S2>(
                 trace!("WebSocket receiver got TakeOrderV2 result");
                 result.map(|(event, log)| (TradeEvent::TakeOrderV2(Box::new(event)), log))
             }
+            () = tokio::time::sleep(Duration::from_millis(50)) => {
+                // Rate-limit the polling to prevent CPU spinning when no events are available
+                trace!("WebSocket polling rate limiter triggered (iteration #{})", iterations);
+                continue;
+            }
             else => {
                 error!("All event streams ended, shutting down event receiver");
                 break;
