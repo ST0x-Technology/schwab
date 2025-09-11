@@ -14,6 +14,47 @@ use crate::schwab::OrderPollerConfig;
 use crate::schwab::SchwabAuthEnv;
 use crate::schwab::broker::{DynBroker, LogBroker, Schwab};
 
+#[derive(Debug)]
+struct DebugLayer;
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for DebugLayer
+where
+    S: for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        id: &tracing::span::Id,
+        ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let span = ctx.span(id).unwrap();
+        println!(
+            "📍 New span: {} (id: {:?}, level: {:?})",
+            attrs.metadata().name(),
+            id,
+            attrs.metadata().level()
+        );
+        // Check if span has OpenTelemetry extensions
+        if span
+            .extensions()
+            .get::<tracing_opentelemetry::OtelData>()
+            .is_some()
+        {
+            println!("   ✅ Has OpenTelemetry data");
+        } else {
+            println!("   ❌ Missing OpenTelemetry data");
+        }
+    }
+
+    fn on_enter(&self, id: &tracing::span::Id, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+        println!("➡️ Entering span: {:?}", id);
+    }
+
+    fn on_exit(&self, id: &tracing::span::Id, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+        println!("⬅️ Exiting span: {:?}", id);
+    }
+}
+
 #[derive(clap::ValueEnum, Debug, Clone)]
 pub enum LogLevel {
     Trace,
@@ -71,6 +112,9 @@ pub struct Env {
     /// Service name for HyperDX identification
     #[clap(long, env, default_value = "schwab-bot")]
     pub hyperdx_service_name: String,
+    /// OpenTelemetry exporter endpoint (defaults to HyperDX if not specified)
+    #[clap(long, env)]
+    pub otel_exporter_endpoint: Option<String>,
 }
 
 impl Env {
@@ -96,11 +140,19 @@ impl Env {
 
 pub fn setup_tracing(env: &Env) {
     let level: Level = (&env.log_level).into();
-    let default_filter = format!("rain_schwab={level},auth={level},main={level}");
+    // Include OpenTelemetry internal logging for debugging
+    let default_filter = format!(
+        "rain_schwab={level},auth={level},main={level},opentelemetry={level},opentelemetry_otlp={level},opentelemetry_sdk={level}"
+    );
 
     if let Some(ref api_key) = env.hyperdx_api_key {
         // Set up OpenTelemetry with HyperDX
-        setup_tracing_with_hyperdx(default_filter, api_key, env.hyperdx_service_name.clone());
+        setup_tracing_with_hyperdx(
+            default_filter,
+            api_key,
+            env.hyperdx_service_name.clone(),
+            env.otel_exporter_endpoint.clone(),
+        );
     } else {
         // Console logging only
         tracing_subscriber::fmt()
@@ -116,12 +168,25 @@ pub fn setup_tracing(env: &Env) {
     }
 }
 
-fn setup_tracing_with_hyperdx(default_filter: String, api_key: &str, service_name: String) {
+fn setup_tracing_with_hyperdx(
+    default_filter: String,
+    api_key: &str,
+    service_name: String,
+    custom_endpoint: Option<String>,
+) {
     const HYPERDX_ENDPOINT: &str = "https://in-otel.hyperdx.io/v1/traces";
 
-    println!("Setting up HyperDX OTLP exporter:");
-    println!("  Endpoint: {HYPERDX_ENDPOINT}");
+    let endpoint = custom_endpoint.as_deref().unwrap_or(HYPERDX_ENDPOINT);
+    let is_hyperdx = custom_endpoint.is_none();
+
+    println!("Setting up OTLP exporter:");
+    println!("  Endpoint: {endpoint}");
     println!("  Service: {service_name}");
+    if is_hyperdx {
+        println!("  Mode: HyperDX (with API key authentication)");
+    } else {
+        println!("  Mode: Custom endpoint (no authentication)");
+    }
 
     // Create resource with service information
     let resource = Resource::builder()
@@ -132,16 +197,18 @@ fn setup_tracing_with_hyperdx(default_filter: String, api_key: &str, service_nam
         .build();
 
     let mut headers = std::collections::HashMap::new();
-    headers.insert("authorization".to_string(), format!("Bearer {api_key}"));
-    println!(
-        "  API Key: {}...{}",
-        &api_key[..4.min(api_key.len())],
-        &api_key[api_key.len().saturating_sub(4)..]
-    );
+    if is_hyperdx {
+        headers.insert("authorization".to_string(), format!("Bearer {api_key}"));
+        println!(
+            "  API Key: {}...{}",
+            &api_key[..4.min(api_key.len())],
+            &api_key[api_key.len().saturating_sub(4)..]
+        );
+    }
 
     let otlp_exporter = match SpanExporter::builder()
         .with_http()
-        .with_endpoint(HYPERDX_ENDPOINT)
+        .with_endpoint(endpoint)
         .with_headers(headers)
         .with_http_client(reqwest::Client::new())
         .build()
@@ -156,18 +223,23 @@ fn setup_tracing_with_hyperdx(default_filter: String, api_key: &str, service_nam
                 )
                 .compact()
                 .init();
-            return;
+            panic!("Failed to create OTLP exporter: {e}");
         }
     };
 
-    // Create tracer provider with batch exporter
+    // Create tracer provider with simple exporter to avoid runtime issues
     let tracer_provider = sdktrace::SdkTracerProvider::builder()
-        .with_batch_exporter(otlp_exporter)
+        .with_simple_exporter(otlp_exporter)
         .with_resource(resource)
         .build();
 
     // Set as global tracer provider
     global::set_tracer_provider(tracer_provider.clone());
+
+    // Set up global propagator (CRITICAL for span propagation)
+    opentelemetry::global::set_text_map_propagator(
+        opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+    );
 
     // TODO: Add log export once we resolve the Tokio runtime context issue
 
@@ -175,24 +247,25 @@ fn setup_tracing_with_hyperdx(default_filter: String, api_key: &str, service_nam
     let tracer = tracer_provider.tracer("schwab-bot");
     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
-    println!("✅ HyperDX OTLP exporter configured successfully");
-    println!("📡 Traces: {HYPERDX_ENDPOINT}");
+    println!("✅ OTLP exporter configured successfully");
+    println!("📡 Traces: {endpoint}");
 
     // Create console layer
     let fmt_layer = tracing_subscriber::fmt::layer().compact();
 
-    // Combine layers and initialize subscriber
+    // Combine layers and initialize subscriber (OpenTelemetry layer first)
     tracing_subscriber::registry()
+        .with(otel_layer) // OpenTelemetry first
+        .with(DebugLayer) // Debug layer AFTER OpenTelemetry to see its data
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| default_filter.into()),
         )
-        .with(fmt_layer)
-        .with(otel_layer)
+        .with(fmt_layer) // Console output last
         .init();
 
     println!("🔍 Tracing initialized with both console and HyperDX layers");
-    println!("⏱️  Batch exporter will export spans automatically (default: every 5s or 512 spans)");
+    println!("⏱️  Simple exporter will export spans immediately");
 
     // Skip OpenTelemetry shutdown to avoid "there is no reactor running" panic
     // The batch exporter will handle its own cleanup when the process exits
@@ -228,6 +301,7 @@ pub mod tests {
             dry_run: false,
             hyperdx_api_key: None,
             hyperdx_service_name: "schwab-bot".to_string(),
+            otel_exporter_endpoint: None,
         }
     }
 

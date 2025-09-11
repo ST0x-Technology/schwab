@@ -105,6 +105,7 @@ impl CliEnv {
             dry_run: false,
             hyperdx_api_key: None,
             hyperdx_service_name: "schwab-bot".to_string(),
+            otel_exporter_endpoint: None,
         };
 
         Ok((env, cli_env.command))
