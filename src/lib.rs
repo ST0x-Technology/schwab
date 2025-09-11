@@ -77,66 +77,67 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
-    let run_bot = {
+fn create_bot_runner(
+    env: Env,
+    pool: SqlitePool,
+) -> impl Fn() -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = anyhow::Result<conductor::BackgroundTasks>> + Send>,
+> + Send {
+    move || {
         let env = env.clone();
         let pool = pool.clone();
-        move || {
-            let env = env.clone();
-            let pool = pool.clone();
-            async move {
-                debug!("Validating Schwab tokens...");
-                match schwab::tokens::SchwabTokens::refresh_if_needed(&pool, &env.schwab_auth).await
-                {
-                    Err(SchwabError::RefreshTokenExpired) => {
-                        warn!("Refresh token expired, waiting for manual authentication via API");
-                        return Err(anyhow::anyhow!("RefreshTokenExpired"));
-                    }
-                    Err(e) => return Err(anyhow::anyhow!("Token validation failed: {}", e)),
-                    Ok(_) => {
-                        info!("Token validation successful");
-                    }
+        Box::pin(async move {
+            debug!("Validating Schwab tokens...");
+            match schwab::tokens::SchwabTokens::refresh_if_needed(&pool, &env.schwab_auth).await {
+                Err(SchwabError::RefreshTokenExpired) => {
+                    warn!("Refresh token expired, waiting for manual authentication via API");
+                    return Err(anyhow::anyhow!("RefreshTokenExpired"));
                 }
+                Err(e) => return Err(anyhow::anyhow!("Token validation failed: {}", e)),
+                Ok(_) => {
+                    info!("Token validation successful");
+                }
+            }
 
-                let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
-                let provider = ProviderBuilder::new().connect_ws(ws).await?;
-                let cache = SymbolCache::default();
-                let orderbook = IOrderBookV4Instance::new(env.evm_env.orderbook, &provider);
+            let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
+            let provider = ProviderBuilder::new().connect_ws(ws).await?;
+            let cache = SymbolCache::default();
+            let orderbook = IOrderBookV4Instance::new(env.evm_env.orderbook, &provider);
 
-                schwab::tokens::SchwabTokens::spawn_automatic_token_refresh(
-                    pool.clone(),
-                    env.schwab_auth.clone(),
-                );
+            schwab::tokens::SchwabTokens::spawn_automatic_token_refresh(
+                pool.clone(),
+                env.schwab_auth.clone(),
+            );
 
-                let mut clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
-                let mut take_stream = orderbook.TakeOrderV2_filter().watch().await?.into_stream();
+            let mut clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
+            let mut take_stream = orderbook.TakeOrderV2_filter().watch().await?.into_stream();
 
-                let cutoff_block =
-                    get_cutoff_block(&mut clear_stream, &mut take_stream, &provider, &pool).await?;
+            let cutoff_block =
+                get_cutoff_block(&mut clear_stream, &mut take_stream, &provider, &pool).await?;
 
-                onchain::backfill::backfill_events(
-                    &pool,
-                    &provider,
-                    &env.evm_env,
-                    cutoff_block - 1,
-                )
+            onchain::backfill::backfill_events(&pool, &provider, &env.evm_env, cutoff_block - 1)
                 .await?;
 
-                // Start all services through unified background tasks management
-                conductor::run_live(env, pool, cache, provider, clear_stream, take_stream).await
-            }
-        }
-    };
+            // Start all services through unified background tasks management
+            Ok(conductor::run_live(
+                &env,
+                &pool,
+                cache,
+                provider,
+                clear_stream,
+                take_stream,
+            ))
+        })
+    }
+}
 
+async fn run_market_hours_loop(
+    controller: TradingHoursController,
+    run_bot: impl Fn() -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<conductor::BackgroundTasks>> + Send>,
+    >,
+) -> anyhow::Result<()> {
     const RERUN_DELAY_SECS: u64 = 10;
-
-    // Initialize market hours controller
-    let market_hours_cache = std::sync::Arc::new(MarketHoursCache::new());
-    let controller = TradingHoursController::new(
-        market_hours_cache,
-        env.schwab_auth.clone(),
-        std::sync::Arc::new(pool.clone()),
-    );
 
     // Main market hours control loop
     loop {
@@ -155,12 +156,26 @@ async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
                     timeout_duration.as_secs() / 60
                 );
 
-                tokio::select! {
-                    result = run_bot() => result,
-                    () = tokio::time::sleep(timeout_duration) => {
-                        info!("Market closing, shutting down bot gracefully");
-                        continue; // Go back to wait for next market open
+                // Run the bot and get background tasks handle
+                let bot_result = run_bot().await;
+                match bot_result {
+                    Ok(mut background_tasks) => {
+                        info!("Market opened, starting backfilling and live trading services");
+
+                        tokio::select! {
+                            result = background_tasks.wait_for_completion() => {
+                                info!("All background tasks completed");
+                                result
+                            }
+                            () = tokio::time::sleep(timeout_duration) => {
+                                info!("Market closed, shutting down all background tasks");
+                                background_tasks.abort_all();
+                                info!("All tasks shutdown. Backfill will start on market open");
+                                continue; // Go back to wait for next market open
+                            }
+                        }
                     }
+                    Err(e) => Err(e),
                 }
             } else {
                 // Market already closed, continue to wait
@@ -186,6 +201,20 @@ async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
             }
         }
     }
+}
+
+async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
+    let run_bot = create_bot_runner(env.clone(), pool.clone());
+
+    // Initialize market hours controller
+    let market_hours_cache = std::sync::Arc::new(MarketHoursCache::new());
+    let controller = TradingHoursController::new(
+        market_hours_cache,
+        env.schwab_auth.clone(),
+        std::sync::Arc::new(pool.clone()),
+    );
+
+    run_market_hours_loop(controller, run_bot).await
 }
 
 #[cfg(test)]
@@ -222,5 +251,87 @@ mod tests {
         env.database_url = "invalid://database/url".to_string();
         let pool = create_test_pool().await;
         run(env, pool).await.unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn test_market_close_timeout_simulation() {
+        use crate::conductor;
+        use crate::symbol::cache::SymbolCache;
+        use alloy::providers::mock::Asserter;
+        use futures_util::stream;
+        use std::time::Duration;
+
+        let pool = create_test_pool().await;
+        let env = create_test_env();
+        let cache = SymbolCache::default();
+        let asserter = Asserter::new();
+        let provider = alloy::providers::ProviderBuilder::new().connect_mocked_client(asserter);
+
+        // Create empty streams (simulating no events)
+        let clear_stream = stream::empty();
+        let take_stream = stream::empty();
+
+        // Simulate getting BackgroundTasks from run_live
+        let mut background_tasks =
+            conductor::run_live(&env, &pool, cache, provider, clear_stream, take_stream);
+
+        // Simulate market close timeout scenario
+        let timeout_duration = Duration::from_millis(50); // Very short for testing
+
+        let start_time = std::time::Instant::now();
+
+        // This simulates the tokio::select! pattern in the main lib.rs logic
+        tokio::select! {
+            _ = background_tasks.wait_for_completion() => {
+                panic!("Tasks should not complete before timeout");
+            }
+            () = tokio::time::sleep(timeout_duration) => {
+                let elapsed = start_time.elapsed();
+                assert!(elapsed >= timeout_duration, "Timeout should have elapsed");
+                assert!(elapsed < timeout_duration + Duration::from_millis(20), "Should timeout quickly");
+
+                // This is where the market close logic would abort tasks
+                background_tasks.abort_all();
+                // Test passes if abort_all completes without panic
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_background_tasks_wait_vs_abort_race() {
+        use crate::conductor;
+        use crate::symbol::cache::SymbolCache;
+        use alloy::providers::mock::Asserter;
+        use futures_util::stream;
+        use std::time::Duration;
+
+        let pool = create_test_pool().await;
+        let env = create_test_env();
+        let cache = SymbolCache::default();
+        let asserter = Asserter::new();
+        let provider = alloy::providers::ProviderBuilder::new().connect_mocked_client(asserter);
+
+        let clear_stream = stream::empty();
+        let take_stream = stream::empty();
+
+        let mut background_tasks =
+            conductor::run_live(&env, &pool, cache, provider, clear_stream, take_stream);
+
+        // Test the race condition between wait_for_completion and abort
+        // This simulates what happens when market closes during normal operation
+
+        let wait_future = background_tasks.wait_for_completion();
+        let timeout = tokio::time::sleep(Duration::from_millis(10));
+
+        tokio::select! {
+            result = wait_future => {
+                // Tasks completed before timeout (should not happen with infinite loops)
+                assert!(result.is_ok(), "wait_for_completion should succeed even if tasks are aborted");
+            }
+            () = timeout => {
+                // Timeout occurred first, abort tasks (this is the expected path)
+                background_tasks.abort_all();
+            }
+        }
     }
 }
