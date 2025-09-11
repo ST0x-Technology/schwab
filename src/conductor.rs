@@ -241,7 +241,15 @@ async fn receive_blockchain_events<S1, S2>(
     S1: Stream<Item = Result<(ClearV2, Log), sol_types::Error>> + Unpin,
     S2: Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin,
 {
+    info!("WebSocket event receiver started, waiting for blockchain events");
+    let mut iterations = 0u32;
+
     loop {
+        iterations = iterations.saturating_add(1);
+
+        if iterations % 100 == 0 {
+            trace!("WebSocket receiver iteration #{}", iterations);
+        }
         let event_result = tokio::select! {
             Some(result) = clear_stream.next() => {
                 result.map(|(event, log)| (TradeEvent::ClearV2(Box::new(event)), log))
