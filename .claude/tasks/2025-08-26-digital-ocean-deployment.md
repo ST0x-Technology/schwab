@@ -41,14 +41,33 @@ deployment and eliminates external dependencies.
 
 **Tasks:**
 
-- [ ] Create GitHub Actions workflow based on updated report example
-- [ ] Configure doctl installation and authentication in CI
-- [ ] Implement Docker build with commit-based tagging strategy (7-char SHA)
-- [ ] Add image push to DO Container Registry
-- [ ] Configure SSH deployment with graceful container restart and health check
+- [x] Create GitHub Actions workflow based on updated report example
+- [x] Configure doctl installation and authentication in CI
+- [x] Implement Docker build with commit-based tagging strategy (7-char SHA)
+- [x] Add image push to DO Container Registry
+- [x] Configure SSH deployment with graceful container restart and health check
       validation
-- [ ] Set up required repository secrets (DIGITALOCEAN_ACCESS_TOKEN,
-      DROPLET_HOST, DROPLET_SSH_KEY)
+- [x] Set up required repository secrets (DIGITALOCEAN_ACCESS_TOKEN,
+      DROPLET_HOST, DROPLET_SSH_KEY). Start by just having those as environment
+      variables, so that the deployment config can be tested with a separate
+      account and plain text values and then that account can be cleaned up and
+      actual production values will be set.
+
+**Implementation Details:**
+
+Created `.github/workflows/deploy.yaml` with:
+
+- doctl installation and authentication using environment variables
+- Docker build with 7-character SHA tagging plus latest tag
+- Image push to DO Container Registry (registry.digitalocean.com/stox)
+- SSH-based deployment to Droplet using appleboy/ssh-action
+- Graceful container restart (stop/rm old, start new with --restart
+  unless-stopped)
+- Health checks that fail the pipeline if container doesn't start or shows
+  errors
+- Automatic cleanup of old Docker images (keeps last 3 versions)
+- Environment variable injection for all application configuration
+- Uses environment variables instead of secrets for initial testing phase
 
 **Rationale:** DO Container Registry with doctl provides native integration.
 Commit-based tagging enables rollback capabilities. Health checks ensure
@@ -66,7 +85,7 @@ deployment
       variables
 - [ ] Set WebSocket RPC URL for mainnet operations
 - [ ] Configure DATABASE_URL for Block Storage mount path
-      (`/mnt/volume_nyc3_01/data/app.db`)
+      (`/mnt/volume_nyc3_01/schwab.db`)
 - [ ] Set orderbook contract addresses and order hashes for production
 - [ ] Test complete application startup with production configuration
 
