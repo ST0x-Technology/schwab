@@ -104,7 +104,8 @@ impl TradingHoursController {
                         );
                     }
 
-                    sleep(TokioDuration::from_secs(sleep_duration.as_secs())).await;
+                    // Use the full duration instead of truncating to seconds to prevent 0-second sleeps
+                    sleep(sleep_duration).await;
                     continue;
                 }
             }
