@@ -14,8 +14,8 @@ use crate::error::OnChainError;
 use crate::queue::enqueue;
 
 fn get_backfill_retry_strat() -> ExponentialBuilder {
-    const BACKFILL_MAX_RETRIES: usize = 10;
-    const BACKFILL_INITIAL_DELAY: Duration = Duration::from_millis(3000);
+    const BACKFILL_MAX_RETRIES: usize = 15;
+    const BACKFILL_INITIAL_DELAY: Duration = Duration::from_millis(100);
     const BACKFILL_MAX_DELAY: Duration = Duration::from_secs(120);
 
     ExponentialBuilder::default()
@@ -156,12 +156,12 @@ async fn enqueue_batch_events<P: Provider + Clone, B: BackoffBuilder + Clone>(
         get_clear_logs
             .retry(retry_strategy.clone().build())
             .notify(|err, dur| {
-                trace!("Retrying clear_logs after error: {err} (waiting {dur:?})");
+                trace!("Retrying clear_logs for blocks between {batch_start}-{batch_end} after error: {err} (waiting {dur:?})");
             }),
         get_take_logs
             .retry(retry_strategy.build())
             .notify(|err, dur| {
-                trace!("Retrying take_logs after error: {err} (waiting {dur:?})");
+                trace!("Retrying take_logs for blocks between {batch_start}-{batch_end} after error: {err} (waiting {dur:?})");
             }),
     )
     .await?;
@@ -223,7 +223,7 @@ async fn enqueue_batch_events<P: Provider + Clone, B: BackoffBuilder + Clone>(
 }
 
 fn generate_batch_ranges(start_block: u64, end_block: u64) -> Vec<(u64, u64)> {
-    const BACKFILL_BATCH_SIZE: usize = 10_000;
+    const BACKFILL_BATCH_SIZE: usize = 1_000;
 
     (start_block..=end_block)
         .step_by(BACKFILL_BATCH_SIZE)
@@ -298,7 +298,36 @@ mod tests {
     #[test]
     fn test_generate_batch_ranges_multiple_batches() {
         let ranges = generate_batch_ranges(100, 25000);
-        assert_eq!(ranges, vec![(100, 10099), (10100, 20099), (20100, 25000)]);
+        assert_eq!(
+            ranges,
+            vec![
+                (100, 1099),
+                (1100, 2099),
+                (2100, 3099),
+                (3100, 4099),
+                (4100, 5099),
+                (5100, 6099),
+                (6100, 7099),
+                (7100, 8099),
+                (8100, 9099),
+                (9100, 10099),
+                (10100, 11099),
+                (11100, 12099),
+                (12100, 13099),
+                (13100, 14099),
+                (14100, 15099),
+                (15100, 16099),
+                (16100, 17099),
+                (17100, 18099),
+                (18100, 19099),
+                (19100, 20099),
+                (20100, 21099),
+                (21100, 22099),
+                (22100, 23099),
+                (23100, 24099),
+                (24100, 25000)
+            ]
+        );
     }
 
     #[test]
@@ -1311,8 +1340,8 @@ mod tests {
         );
 
         let asserter = Asserter::new();
-        asserter.push_success(&serde_json::Value::from(25000u64));
 
+        // Use a smaller range to avoid excessive mock responses: blocks 1-3000 (3 batches)
         // Multiple batches with events in different batches
         for batch_idx in 0..3 {
             // All batches start with clear events
@@ -1328,7 +1357,7 @@ mod tests {
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        backfill_events(&pool, &provider, &evm_env, 25000)
+        backfill_events(&pool, &provider, &evm_env, 3000)
             .await
             .unwrap();
 
