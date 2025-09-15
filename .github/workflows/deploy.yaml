@@ -64,6 +64,12 @@ jobs:
           docker push registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:${{ env.SHORT_SHA }}
           docker push registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:latest
 
+      - name: Read env template
+        run: |
+          echo "ENV_TEMPLATE<<EOF" >> $GITHUB_ENV
+          cat .env.example >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
       - name: Deploy to Droplet
         uses: appleboy/ssh-action@v1.0.3
         with:
