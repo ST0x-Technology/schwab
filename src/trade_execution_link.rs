@@ -399,6 +399,10 @@ mod tests {
                 executed_at: Utc::now(),
                 order_id: "1004055538123".to_string(),
                 price_cents: 30250,
+                commission_cents: 65,
+                sec_fee_cents: 1,
+                taf_fee_cents: 2,
+                other_fees_cents: 5,
             },
         };
 

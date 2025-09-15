@@ -52,6 +52,8 @@ pub(crate) struct OrderStatusResponse {
     pub close_time: Option<String>,
     #[serde(rename = "orderActivityCollection")]
     pub order_activity_collection: Option<Vec<OrderActivity>>,
+    #[serde(rename = "commissionAndFee")]
+    pub commission_and_fee: Option<CommissionAndFee>,
 }
 
 /// Order activity from Schwab API orderActivityCollection
@@ -68,6 +70,92 @@ pub(crate) struct OrderActivity {
 pub(crate) struct ExecutionLeg {
     pub quantity: f64,
     pub price: f64,
+}
+
+/// Commission and fee data from Schwab API
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CommissionAndFee {
+    pub commission: Option<Commission>,
+    pub fee: Option<Fees>,
+    pub true_commission: Option<f64>,
+}
+
+/// Commission details from Schwab API
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Commission {
+    pub commission_legs: Option<Vec<CommissionLeg>>,
+}
+
+/// Commission leg containing commission values
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CommissionLeg {
+    pub commission_values: Option<Vec<CommissionValue>>,
+}
+
+/// Individual commission value with type
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CommissionValue {
+    pub value: f64,
+    #[serde(rename = "type")]
+    pub fee_type: FeeType,
+}
+
+/// Fee details from Schwab API
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Fees {
+    pub fee_legs: Option<Vec<FeeLeg>>,
+}
+
+/// Fee leg containing fee values
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FeeLeg {
+    pub fee_values: Option<Vec<FeeValue>>,
+}
+
+/// Individual fee value with type
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FeeValue {
+    pub value: f64,
+    #[serde(rename = "type")]
+    pub fee_type: FeeType,
+}
+
+/// Fee type enum with all possible values from Schwab API
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub(crate) enum FeeType {
+    Commission,
+    SecFee,
+    TafFee,
+    NsccFee,
+    AdditionalFee,
+    MiscFee,
+    CommissionAdjustment,
+    IndexOptionFee,
+    ForeignExchangeFee,
+    RegulatoryFee,
+    OtherCharges,
+    LowProceedsFee,
+    BaseCharge,
+    GSLFee,
+    STTFee,
+    TransactionFee,
+    ServiceCharge,
+    SpecialTransactionFee,
+    ClearingFee,
+    ExchangeFee,
+    FloorBrokerageFee,
+    CDSLFee,
+    StampDuty,
+    PassThroughFee,
+    ActivityAssessmentFee,
 }
 
 impl OrderStatusResponse {
@@ -138,6 +226,106 @@ impl OrderStatusResponse {
             Some(OrderStatus::Canceled | OrderStatus::Rejected | OrderStatus::Expired)
         )
     }
+
+    /// Extract commission amount from commissionAndFee structure
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub(crate) fn extract_commission_cents(&self) -> u64 {
+        self.commission_and_fee
+            .as_ref()
+            .and_then(|cf| cf.commission.as_ref())
+            .and_then(|commission| commission.commission_legs.as_ref())
+            .map_or(0, |legs| {
+                legs.iter()
+                    .filter_map(|leg| leg.commission_values.as_ref())
+                    .flat_map(|values| values.iter())
+                    .filter(|value| matches!(value.fee_type, FeeType::Commission))
+                    .map(|value| (value.value * 100.0).round() as u64)
+                    .sum()
+            })
+    }
+
+    /// Extract SEC fee amount from commissionAndFee structure
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub(crate) fn extract_sec_fee_cents(&self) -> u64 {
+        self.commission_and_fee
+            .as_ref()
+            .and_then(|cf| cf.fee.as_ref())
+            .and_then(|fees| fees.fee_legs.as_ref())
+            .map_or(0, |legs| {
+                legs.iter()
+                    .filter_map(|leg| leg.fee_values.as_ref())
+                    .flat_map(|values| values.iter())
+                    .filter(|value| matches!(value.fee_type, FeeType::SecFee))
+                    .map(|value| (value.value * 100.0).round() as u64)
+                    .sum()
+            })
+    }
+
+    /// Extract TAF fee amount from commissionAndFee structure
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub(crate) fn extract_taf_fee_cents(&self) -> u64 {
+        self.commission_and_fee
+            .as_ref()
+            .and_then(|cf| cf.fee.as_ref())
+            .and_then(|fees| fees.fee_legs.as_ref())
+            .map_or(0, |legs| {
+                legs.iter()
+                    .filter_map(|leg| leg.fee_values.as_ref())
+                    .flat_map(|values| values.iter())
+                    .filter(|value| matches!(value.fee_type, FeeType::TafFee))
+                    .map(|value| (value.value * 100.0).round() as u64)
+                    .sum()
+            })
+    }
+
+    /// Extract other fees (excluding commission, SEC fee, TAF fee) from commissionAndFee structure
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub(crate) fn extract_other_fees_cents(&self) -> u64 {
+        self.commission_and_fee.as_ref().map_or(0, |cf| {
+            let commission_other_fees = cf
+                .commission
+                .as_ref()
+                .and_then(|commission| commission.commission_legs.as_ref())
+                .map_or(0, |legs| {
+                    legs.iter()
+                        .filter_map(|leg| leg.commission_values.as_ref())
+                        .flat_map(|values| values.iter())
+                        .filter(|value| {
+                            !matches!(
+                                value.fee_type,
+                                FeeType::Commission | FeeType::SecFee | FeeType::TafFee
+                            )
+                        })
+                        .map(|value| (value.value * 100.0).round() as u64)
+                        .sum::<u64>()
+                });
+
+            let fee_other_fees = cf
+                .fee
+                .as_ref()
+                .and_then(|fees| fees.fee_legs.as_ref())
+                .map_or(0, |legs| {
+                    legs.iter()
+                        .filter_map(|leg| leg.fee_values.as_ref())
+                        .flat_map(|values| values.iter())
+                        .filter(|value| {
+                            !matches!(value.fee_type, FeeType::SecFee | FeeType::TafFee)
+                        })
+                        .map(|value| (value.value * 100.0).round() as u64)
+                        .sum::<u64>()
+                });
+
+            commission_other_fees + fee_other_fees
+        })
+    }
+
+    /// Calculate total fees across all legs and values - ESSENTIAL for P&L calculations
+    pub(crate) fn extract_total_fees_cents(&self) -> u64 {
+        self.extract_commission_cents()
+            + self.extract_sec_fee_cents()
+            + self.extract_taf_fee_cents()
+            + self.extract_other_fees_cents()
+    }
 }
 
 #[cfg(test)]
@@ -203,6 +391,7 @@ mod tests {
                     price: 150.25,
                 }]),
             }]),
+            commission_and_fee: None,
         };
 
         assert_eq!(response.calculate_weighted_average_price(), Some(150.25));
@@ -230,6 +419,7 @@ mod tests {
                     },
                 ]),
             }]),
+            commission_and_fee: None,
         };
 
         assert_eq!(response.calculate_weighted_average_price(), Some(150.5));
@@ -257,6 +447,7 @@ mod tests {
                     },
                 ]),
             }]),
+            commission_and_fee: None,
         };
 
         assert_eq!(response.calculate_weighted_average_price(), Some(151.0));
@@ -272,6 +463,7 @@ mod tests {
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: None,
             order_activity_collection: Some(vec![]),
+            commission_and_fee: None,
         };
 
         assert_eq!(response.calculate_weighted_average_price(), None);
@@ -293,6 +485,7 @@ mod tests {
                     price: 150.25,
                 }]),
             }]),
+            commission_and_fee: None,
         };
 
         assert_eq!(response.price_in_cents().unwrap(), Some(15025));
@@ -308,6 +501,7 @@ mod tests {
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: None,
             order_activity_collection: Some(vec![]),
+            commission_and_fee: None,
         };
 
         assert_eq!(response.price_in_cents().unwrap(), None);
@@ -329,6 +523,7 @@ mod tests {
                     price: 150.254,
                 }]),
             }]),
+            commission_and_fee: None,
         };
 
         assert_eq!(response.price_in_cents().unwrap(), Some(15025));
@@ -344,6 +539,7 @@ mod tests {
             entered_time: Some("2023-10-15T10:25:00Z".to_string()),
             close_time: Some("2023-10-15T10:30:00Z".to_string()),
             order_activity_collection: Some(vec![]),
+            commission_and_fee: None,
         };
 
         assert!(response.is_filled());
@@ -378,6 +574,7 @@ mod tests {
                 entered_time: Some("2023-10-15T10:25:00Z".to_string()),
                 close_time: None,
                 order_activity_collection: Some(vec![]),
+                commission_and_fee: None,
             };
             assert!(response.is_pending(), "Status {status:?} should be pending");
         }
@@ -399,6 +596,7 @@ mod tests {
                 entered_time: Some("2023-10-15T10:25:00Z".to_string()),
                 close_time: Some("2023-10-15T10:30:00Z".to_string()),
                 order_activity_collection: Some(vec![]),
+                commission_and_fee: None,
             };
             assert!(
                 !response.is_pending(),
@@ -424,6 +622,7 @@ mod tests {
                 entered_time: Some("2023-10-15T10:25:00Z".to_string()),
                 close_time: Some("2023-10-15T10:30:00Z".to_string()),
                 order_activity_collection: Some(vec![]),
+                commission_and_fee: None,
             };
             assert!(
                 response.is_terminal_failure(),
@@ -447,6 +646,7 @@ mod tests {
                 entered_time: Some("2023-10-15T10:25:00Z".to_string()),
                 close_time: None,
                 order_activity_collection: Some(vec![]),
+                commission_and_fee: None,
             };
             assert!(
                 !response.is_terminal_failure(),
@@ -518,6 +718,7 @@ mod tests {
                     price: 150.25,
                 }]),
             }]),
+            commission_and_fee: None,
         };
 
         assert_eq!(response.calculate_weighted_average_price(), None);
@@ -684,6 +885,234 @@ mod tests {
         assert_eq!(parsed.status, None);
         assert_eq!(parsed.filled_quantity, Some(0.0));
         assert_eq!(parsed.remaining_quantity, Some(100.0));
+    }
+
+    #[test]
+    fn test_fee_extraction_with_commission_and_fees() {
+        let response = OrderStatusResponse {
+            order_id: Some("1004055538123".to_string()),
+            status: Some(OrderStatus::Filled),
+            filled_quantity: Some(100.0),
+            remaining_quantity: Some(0.0),
+            entered_time: Some("2023-10-15T10:25:00Z".to_string()),
+            close_time: Some("2023-10-15T10:30:00Z".to_string()),
+            order_activity_collection: Some(vec![]),
+            commission_and_fee: Some(CommissionAndFee {
+                commission: Some(Commission {
+                    commission_legs: Some(vec![CommissionLeg {
+                        commission_values: Some(vec![CommissionValue {
+                            value: 0.65,
+                            fee_type: FeeType::Commission,
+                        }]),
+                    }]),
+                }),
+                fee: Some(Fees {
+                    fee_legs: Some(vec![FeeLeg {
+                        fee_values: Some(vec![
+                            FeeValue {
+                                value: 0.01,
+                                fee_type: FeeType::SecFee,
+                            },
+                            FeeValue {
+                                value: 0.02,
+                                fee_type: FeeType::TafFee,
+                            },
+                            FeeValue {
+                                value: 0.05,
+                                fee_type: FeeType::RegulatoryFee,
+                            },
+                        ]),
+                    }]),
+                }),
+                true_commission: Some(0.65),
+            }),
+        };
+
+        assert_eq!(response.extract_commission_cents(), 65);
+        assert_eq!(response.extract_sec_fee_cents(), 1);
+        assert_eq!(response.extract_taf_fee_cents(), 2);
+        assert_eq!(response.extract_other_fees_cents(), 5);
+        assert_eq!(response.extract_total_fees_cents(), 73);
+    }
+
+    #[test]
+    fn test_fee_extraction_no_commission_and_fee() {
+        let response = OrderStatusResponse {
+            order_id: Some("1004055538123".to_string()),
+            status: Some(OrderStatus::Filled),
+            filled_quantity: Some(100.0),
+            remaining_quantity: Some(0.0),
+            entered_time: Some("2023-10-15T10:25:00Z".to_string()),
+            close_time: Some("2023-10-15T10:30:00Z".to_string()),
+            order_activity_collection: Some(vec![]),
+            commission_and_fee: None,
+        };
+
+        assert_eq!(response.extract_commission_cents(), 0);
+        assert_eq!(response.extract_sec_fee_cents(), 0);
+        assert_eq!(response.extract_taf_fee_cents(), 0);
+        assert_eq!(response.extract_other_fees_cents(), 0);
+        assert_eq!(response.extract_total_fees_cents(), 0);
+    }
+
+    #[test]
+    fn test_fee_extraction_empty_legs() {
+        let response = OrderStatusResponse {
+            order_id: Some("1004055538123".to_string()),
+            status: Some(OrderStatus::Filled),
+            filled_quantity: Some(100.0),
+            remaining_quantity: Some(0.0),
+            entered_time: Some("2023-10-15T10:25:00Z".to_string()),
+            close_time: Some("2023-10-15T10:30:00Z".to_string()),
+            order_activity_collection: Some(vec![]),
+            commission_and_fee: Some(CommissionAndFee {
+                commission: Some(Commission {
+                    commission_legs: Some(vec![]),
+                }),
+                fee: Some(Fees {
+                    fee_legs: Some(vec![]),
+                }),
+                true_commission: Some(0.0),
+            }),
+        };
+
+        assert_eq!(response.extract_commission_cents(), 0);
+        assert_eq!(response.extract_sec_fee_cents(), 0);
+        assert_eq!(response.extract_taf_fee_cents(), 0);
+        assert_eq!(response.extract_other_fees_cents(), 0);
+        assert_eq!(response.extract_total_fees_cents(), 0);
+    }
+
+    #[test]
+    fn test_fee_extraction_multiple_legs_and_values() {
+        let response = OrderStatusResponse {
+            order_id: Some("1004055538123".to_string()),
+            status: Some(OrderStatus::Filled),
+            filled_quantity: Some(100.0),
+            remaining_quantity: Some(0.0),
+            entered_time: Some("2023-10-15T10:25:00Z".to_string()),
+            close_time: Some("2023-10-15T10:30:00Z".to_string()),
+            order_activity_collection: Some(vec![]),
+            commission_and_fee: Some(CommissionAndFee {
+                commission: Some(Commission {
+                    commission_legs: Some(vec![
+                        CommissionLeg {
+                            commission_values: Some(vec![CommissionValue {
+                                value: 0.50,
+                                fee_type: FeeType::Commission,
+                            }]),
+                        },
+                        CommissionLeg {
+                            commission_values: Some(vec![CommissionValue {
+                                value: 0.15,
+                                fee_type: FeeType::Commission,
+                            }]),
+                        },
+                    ]),
+                }),
+                fee: Some(Fees {
+                    fee_legs: Some(vec![
+                        FeeLeg {
+                            fee_values: Some(vec![
+                                FeeValue {
+                                    value: 0.005,
+                                    fee_type: FeeType::SecFee,
+                                },
+                                FeeValue {
+                                    value: 0.01,
+                                    fee_type: FeeType::TafFee,
+                                },
+                            ]),
+                        },
+                        FeeLeg {
+                            fee_values: Some(vec![
+                                FeeValue {
+                                    value: 0.005,
+                                    fee_type: FeeType::SecFee,
+                                },
+                                FeeValue {
+                                    value: 0.02,
+                                    fee_type: FeeType::TafFee,
+                                },
+                            ]),
+                        },
+                    ]),
+                }),
+                true_commission: Some(0.65),
+            }),
+        };
+
+        assert_eq!(response.extract_commission_cents(), 65); // 50 + 15
+        assert_eq!(response.extract_sec_fee_cents(), 2); // 0.005*100=0.5→1 + 0.005*100=0.5→1 = 2 cents
+        assert_eq!(response.extract_taf_fee_cents(), 3); // 0.01*100=1 + 0.02*100=2 = 3 cents
+        assert_eq!(response.extract_other_fees_cents(), 0);
+        assert_eq!(response.extract_total_fees_cents(), 70); // 65 + 2 + 3
+    }
+
+    #[test]
+    fn test_fee_type_serialization() {
+        assert_eq!(
+            serde_json::to_string(&FeeType::Commission).unwrap(),
+            "\"COMMISSION\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FeeType::SecFee).unwrap(),
+            "\"SEC_FEE\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FeeType::TafFee).unwrap(),
+            "\"TAF_FEE\""
+        );
+
+        let deserialized: FeeType = serde_json::from_str("\"SEC_FEE\"").unwrap();
+        assert_eq!(deserialized, FeeType::SecFee);
+    }
+
+    #[test]
+    fn test_commission_and_fee_parsing_from_json() {
+        let json_response = r#"{
+            "commission": {
+                "commissionLegs": [{
+                    "commissionValues": [{
+                        "value": 0.65,
+                        "type": "COMMISSION"
+                    }]
+                }]
+            },
+            "fee": {
+                "feeLegs": [{
+                    "feeValues": [{
+                        "value": 0.01,
+                        "type": "SEC_FEE"
+                    }]
+                }]
+            },
+            "trueCommission": 0.65
+        }"#;
+
+        let parsed: CommissionAndFee = serde_json::from_str(json_response).unwrap();
+
+        assert!(parsed.commission.is_some());
+        assert!(parsed.fee.is_some());
+        assert_eq!(parsed.true_commission, Some(0.65));
+
+        let commission = parsed.commission.unwrap();
+        let commission_legs = commission.commission_legs.unwrap();
+        assert_eq!(commission_legs.len(), 1);
+
+        let commission_values = commission_legs[0].commission_values.as_ref().unwrap();
+        assert_eq!(commission_values.len(), 1);
+        assert!((commission_values[0].value - 0.65).abs() < f64::EPSILON);
+        assert_eq!(commission_values[0].fee_type, FeeType::Commission);
+
+        let fees = parsed.fee.unwrap();
+        let fee_legs = fees.fee_legs.unwrap();
+        assert_eq!(fee_legs.len(), 1);
+
+        let fee_values = fee_legs[0].fee_values.as_ref().unwrap();
+        assert_eq!(fee_values.len(), 1);
+        assert!((fee_values[0].value - 0.01).abs() < f64::EPSILON);
+        assert_eq!(fee_values[0].fee_type, FeeType::SecFee);
     }
 
     #[test]

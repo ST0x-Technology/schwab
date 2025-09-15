@@ -88,7 +88,7 @@ impl<B: Broker> OrderStatusPoller<B> {
         debug!("Starting polling cycle for submitted orders");
 
         let submitted_executions =
-            find_executions_by_symbol_and_status(&self.pool, "", TradeStatus::Submitted)
+            find_executions_by_symbol_and_status(&self.pool, None, TradeStatus::Submitted)
                 .await
                 .map_err(|e| {
                     error!("Failed to query pending executions: {e}");
@@ -195,6 +195,10 @@ impl<B: Broker> OrderStatusPoller<B> {
                 .clone()
                 .unwrap_or_else(|| format!("UNKNOWN_{execution_id}")),
             price_cents,
+            commission_cents: order_status.extract_commission_cents(),
+            sec_fee_cents: order_status.extract_sec_fee_cents(),
+            taf_fee_cents: order_status.extract_taf_fee_cents(),
+            other_fees_cents: order_status.extract_other_fees_cents(),
         };
 
         let mut tx = self.pool.begin().await?;
@@ -480,7 +484,7 @@ mod tests {
         // Step 2: Verify execution was saved to database with SUBMITTED status
         let saved_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
-            "AAPL",
+            Some("AAPL"),
             crate::schwab::TradeStatus::Submitted,
         )
         .await
@@ -545,7 +549,7 @@ mod tests {
         // Step 7: Verify no more SUBMITTED executions for this symbol
         let submitted_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
-            "AAPL",
+            Some("AAPL"),
             crate::schwab::TradeStatus::Submitted,
         )
         .await
@@ -555,7 +559,7 @@ mod tests {
         // Step 8: Verify there is now one FILLED execution
         let filled_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
-            "AAPL",
+            Some("AAPL"),
             crate::schwab::TradeStatus::Filled,
         )
         .await
@@ -731,7 +735,7 @@ mod tests {
         // Verify all executions were updated to FILLED
         let filled_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
-            "", // Empty string finds all symbols
+            None, // None finds all symbols
             crate::schwab::TradeStatus::Filled,
         )
         .await

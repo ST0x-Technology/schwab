@@ -1670,7 +1670,7 @@ mod tests {
         // Verify SchwabExecution was created (due to TradeAccumulator)
         // Executions are now in SUBMITTED status with order_id stored for order status polling
         let executions =
-            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Submitted)
+            find_executions_by_symbol_and_status(&pool, Some("AAPL"), TradeStatus::Submitted)
                 .await
                 .unwrap();
         assert_eq!(executions.len(), 1);

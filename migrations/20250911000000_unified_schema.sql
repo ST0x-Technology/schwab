@@ -29,16 +29,15 @@ CREATE TABLE schwab_executions (
   sec_fee_cents INTEGER CHECK (sec_fee_cents IS NULL OR sec_fee_cents >= 0),  -- SEC transaction fee
   taf_fee_cents INTEGER CHECK (taf_fee_cents IS NULL OR taf_fee_cents >= 0),  -- TAF (Trading Activity Fee)
   other_fees_cents INTEGER CHECK (other_fees_cents IS NULL OR other_fees_cents >= 0),  -- Any other regulatory fees
-  total_fees_cents INTEGER CHECK (total_fees_cents IS NULL OR total_fees_cents >= 0),  -- Sum of all fees
   
   status TEXT CHECK (status IN ('PENDING', 'SUBMITTED', 'FILLED', 'FAILED')) NOT NULL DEFAULT 'PENDING',
   executed_at TIMESTAMP,
   
-  -- Status-based constraints including fee requirements for FILLED status
+  -- Status-based constraints for execution state validation
   CHECK (
     (status = 'PENDING' AND executed_at IS NULL) OR
     (status = 'SUBMITTED' AND order_id IS NOT NULL AND executed_at IS NULL) OR
-    (status = 'FILLED' AND order_id IS NOT NULL AND executed_at IS NOT NULL AND price_cents IS NOT NULL AND total_fees_cents IS NOT NULL) OR
+    (status = 'FILLED' AND order_id IS NOT NULL AND executed_at IS NOT NULL AND price_cents IS NOT NULL) OR
     (status = 'FAILED' AND executed_at IS NOT NULL)
   )
 );

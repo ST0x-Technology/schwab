@@ -42,33 +42,23 @@ and executions but doesn't capture trading fees or calculate P&L.
 
 ### Phase 2: Implementation
 
-### Task 1: Database Schema Updates (REVISED - Consolidating migrations)
+### Task 1: Database Schema Updates
 
-- [x] **COMPLETED**: Consolidate all existing migrations into single
-      comprehensive schema file
-  - Removed fragmented migrations (20250703115746_trades.sql,
-    20250903223459_drop_net_position_column.sql,
-    20250911000001_add_fees_to_executions.sql)
-  - Created new unified migration (20250911000000_unified_schema.sql) with
-    complete schema including fee tracking columns:
-    - commission_cents: INTEGER (nullable) - brokerage commission
-    - sec_fee_cents: INTEGER (nullable) - SEC transaction fee
-    - taf_fee_cents: INTEGER (nullable) - TAF (Trading Activity Fee)
-    - other_fees_cents: INTEGER (nullable) - any other fees
-    - total_fees_cents: INTEGER (nullable) - sum of all fees
-  - Updated database constraints to require total_fees_cents for FILLED status
-- [ ] Update TradeState enum to include fee fields in Filled variant
-- [ ] Update TradeStateDbFields struct to handle fee data
+- [x] **COMPLETED**: Database schema with individual fee tracking columns
+  - commission_cents: INTEGER (nullable) - brokerage commission
+  - sec_fee_cents: INTEGER (nullable) - SEC transaction fee
+  - taf_fee_cents: INTEGER (nullable) - TAF (Trading Activity Fee)
+  - other_fees_cents: INTEGER (nullable) - any other fees
+  - Total fees calculated at query time to maintain normalization
+- [x] **COMPLETED**: Update TradeState enum to include fee fields in Filled
+      variant
+- [x] **COMPLETED**: Update TradeStateDbFields struct to handle fee data
 
-### Task 2: Update Order Status Response Parsing (NEEDS REVISION for API schema)
+### Task 2: Update Order Status Response Parsing
 
-- [ ] Fix API structure mismatch discovered with account_orders_openapi.yaml
-  - Fix CommissionLeg to use commissionValues array (not simple value field)
-  - Fix FeeLeg to use feeValues array (not simple value/fee_type fields)
-  - Add FeeType enum matching Schwab API (25+ fee types including SEC_FEE,
-    TAF_FEE, etc.)
-  - Update fee extraction methods to work with corrected nested structure
-- [ ] Add comprehensive tests for fee parsing with various scenarios
+- [x] **COMPLETED**: API structs for complex fee structure parsing
+- [x] **COMPLETED**: Fee extraction methods for all fee types
+- [x] **COMPLETED**: Comprehensive tests for fee parsing scenarios
 
 ### Task 3: Modify Order Poller to Save Fees (NEEDS REVISION after Task 1 & 2)
 

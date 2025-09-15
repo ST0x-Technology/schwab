@@ -1,33 +1,36 @@
 use sqlx::SqlitePool;
 
+use super::trade_state::TradeStateDbFields;
 use super::{Direction, HasTradeStatus, TradeState, shares_from_db_i64};
 use crate::error::{OnChainError, PersistenceError};
 
-/// Converts database row data to a SchwabExecution instance.
-/// Centralizes the conversion logic and casting operations.
-#[allow(clippy::too_many_arguments)]
-fn row_to_execution(
+/// Database row fields for SchwabExecution conversion
+struct ExecutionDbFields {
     id: i64,
     symbol: String,
     shares: i64,
-    direction: &str,
-    order_id: Option<String>,
-    price_cents: Option<i64>,
-    status: &str,
-    executed_at: Option<chrono::NaiveDateTime>,
+    direction: String,
+    status: String,
+}
+
+/// Converts database row data to a SchwabExecution instance.
+/// Centralizes the conversion logic and casting operations.
+fn row_to_execution(
+    execution_fields: ExecutionDbFields,
+    trade_state_fields: TradeStateDbFields,
 ) -> Result<SchwabExecution, OnChainError> {
-    let parsed_direction = direction.parse().map_err(|err: String| {
+    let parsed_direction = execution_fields.direction.parse().map_err(|err: String| {
         OnChainError::Persistence(PersistenceError::InvalidSchwabInstruction(err))
     })?;
-    let status_enum = status.parse().map_err(|err: String| {
+    let status_enum = execution_fields.status.parse().map_err(|err: String| {
         OnChainError::Persistence(PersistenceError::InvalidTradeStatus(err))
     })?;
-    let parsed_state = TradeState::from_db_row(status_enum, order_id, price_cents, executed_at)?;
+    let parsed_state = TradeState::from_db_row(status_enum, trade_state_fields)?;
 
     Ok(SchwabExecution {
-        id: Some(id),
-        symbol,
-        shares: shares_from_db_i64(shares)?,
+        id: Some(execution_fields.id),
+        symbol: execution_fields.symbol,
+        shares: shares_from_db_i64(execution_fields.shares)?,
         direction: parsed_direction,
         state: parsed_state,
     })
@@ -72,13 +75,19 @@ pub(crate) async fn update_execution_status_within_transaction(
     sqlx::query!(
         "
         UPDATE schwab_executions
-        SET status = ?1, order_id = ?2, price_cents = ?3, executed_at = ?4
-        WHERE id = ?5
+        SET status = ?1, order_id = ?2, price_cents = ?3, executed_at = ?4, 
+            commission_cents = ?5, sec_fee_cents = ?6, taf_fee_cents = ?7, 
+            other_fees_cents = ?8
+        WHERE id = ?9
         ",
         status_str,
         db_fields.order_id,
         db_fields.price_cents,
         db_fields.executed_at,
+        db_fields.commission_cents,
+        db_fields.sec_fee_cents,
+        db_fields.taf_fee_cents,
+        db_fields.other_fees_cents,
         execution_id
     )
     .execute(&mut **sql_tx)
@@ -89,56 +98,75 @@ pub(crate) async fn update_execution_status_within_transaction(
 
 pub(crate) async fn find_executions_by_symbol_and_status<S: HasTradeStatus>(
     pool: &SqlitePool,
-    symbol: &str,
+    symbol: Option<&str>,
     status: S,
 ) -> Result<Vec<SchwabExecution>, OnChainError> {
     let status_str = status.status_str();
 
-    if symbol.is_empty() {
-        let rows = sqlx::query!(
-            "SELECT * FROM schwab_executions WHERE status = ?1 ORDER BY id ASC",
-            status_str
-        )
-        .fetch_all(pool)
-        .await?;
+    match symbol {
+        None => {
+            let rows = sqlx::query!(
+                "SELECT * FROM schwab_executions WHERE status = ?1 ORDER BY id ASC",
+                status_str
+            )
+            .fetch_all(pool)
+            .await?;
 
-        rows.into_iter()
-            .map(|row| {
-                row_to_execution(
-                    row.id,
-                    row.symbol,
-                    row.shares,
-                    &row.direction,
-                    row.order_id,
-                    row.price_cents,
-                    &row.status,
-                    row.executed_at,
-                )
-            })
-            .collect()
-    } else {
-        let rows = sqlx::query!(
-            "SELECT * FROM schwab_executions WHERE symbol = ?1 AND status = ?2 ORDER BY id ASC",
-            symbol,
-            status_str
-        )
-        .fetch_all(pool)
-        .await?;
+            rows.into_iter()
+                .map(|row| {
+                    row_to_execution(
+                        ExecutionDbFields {
+                            id: row.id,
+                            symbol: row.symbol,
+                            shares: row.shares,
+                            direction: row.direction,
+                            status: row.status,
+                        },
+                        TradeStateDbFields {
+                            order_id: row.order_id,
+                            price_cents: row.price_cents,
+                            executed_at: row.executed_at,
+                            commission_cents: row.commission_cents,
+                            sec_fee_cents: row.sec_fee_cents,
+                            taf_fee_cents: row.taf_fee_cents,
+                            other_fees_cents: row.other_fees_cents,
+                        },
+                    )
+                })
+                .collect()
+        }
+        Some(symbol_str) => {
+            let rows = sqlx::query!(
+                "SELECT * FROM schwab_executions WHERE symbol = ?1 AND status = ?2 ORDER BY id ASC",
+                symbol_str,
+                status_str
+            )
+            .fetch_all(pool)
+            .await?;
 
-        rows.into_iter()
-            .map(|row| {
-                row_to_execution(
-                    row.id,
-                    row.symbol,
-                    row.shares,
-                    &row.direction,
-                    row.order_id,
-                    row.price_cents,
-                    &row.status,
-                    row.executed_at,
-                )
-            })
-            .collect()
+            rows.into_iter()
+                .map(|row| {
+                    row_to_execution(
+                        ExecutionDbFields {
+                            id: row.id,
+                            symbol: row.symbol,
+                            shares: row.shares,
+                            direction: row.direction,
+                            status: row.status,
+                        },
+                        TradeStateDbFields {
+                            order_id: row.order_id,
+                            price_cents: row.price_cents,
+                            executed_at: row.executed_at,
+                            commission_cents: row.commission_cents,
+                            sec_fee_cents: row.sec_fee_cents,
+                            taf_fee_cents: row.taf_fee_cents,
+                            other_fees_cents: row.other_fees_cents,
+                        },
+                    )
+                })
+                .collect()
+        }
     }
 }
 
@@ -155,14 +183,22 @@ pub(crate) async fn find_execution_by_id(
 
     if let Some(row) = row {
         row_to_execution(
-            row.id,
-            row.symbol,
-            row.shares,
-            &row.direction,
-            row.order_id,
-            row.price_cents,
-            &row.status,
-            row.executed_at,
+            ExecutionDbFields {
+                id: row.id,
+                symbol: row.symbol,
+                shares: row.shares,
+                direction: row.direction,
+                status: row.status,
+            },
+            TradeStateDbFields {
+                order_id: row.order_id,
+                price_cents: row.price_cents,
+                executed_at: row.executed_at,
+                commission_cents: row.commission_cents,
+                sec_fee_cents: row.sec_fee_cents,
+                taf_fee_cents: row.taf_fee_cents,
+                other_fees_cents: row.other_fees_cents,
+            },
         )
         .map(Some)
     } else {
@@ -185,8 +221,20 @@ impl SchwabExecution {
 
         let result = sqlx::query!(
             r#"
-            INSERT INTO schwab_executions (symbol, shares, direction, order_id, price_cents, status, executed_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            INSERT INTO schwab_executions (
+                symbol,
+                shares,
+                direction,
+                order_id,
+                price_cents,
+                status,
+                executed_at,
+                commission_cents,
+                sec_fee_cents,
+                taf_fee_cents,
+                other_fees_cents
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             "#,
             self.symbol,
             shares_i64,
@@ -194,7 +242,11 @@ impl SchwabExecution {
             db_fields.order_id,
             db_fields.price_cents,
             status_str,
-            db_fields.executed_at
+            db_fields.executed_at,
+            db_fields.commission_cents,
+            db_fields.sec_fee_cents,
+            db_fields.taf_fee_cents,
+            db_fields.other_fees_cents
         )
         .execute(&mut **sql_tx)
         .await?;
@@ -254,6 +306,10 @@ mod tests {
                 executed_at: Utc::now(),
                 order_id: "1004055538123".to_string(),
                 price_cents: 15025,
+                commission_cents: 65,
+                sec_fee_cents: 1,
+                taf_fee_cents: 2,
+                other_fees_cents: 5,
             },
         };
 
@@ -287,7 +343,7 @@ mod tests {
         sql_tx3.commit().await.unwrap();
 
         let pending_aapl =
-            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
+            find_executions_by_symbol_and_status(&pool, Some("AAPL"), TradeStatus::Pending)
                 .await
                 .unwrap();
 
@@ -296,7 +352,7 @@ mod tests {
         assert_eq!(pending_aapl[0].direction, Direction::Buy);
 
         let completed_aapl =
-            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Filled)
+            find_executions_by_symbol_and_status(&pool, Some("AAPL"), TradeStatus::Filled)
                 .await
                 .unwrap();
 
@@ -314,12 +370,13 @@ mod tests {
     async fn test_find_by_symbol_and_status_empty_database() {
         let pool = setup_test_db().await;
 
-        let result = find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
-            .await
-            .unwrap();
+        let result =
+            find_executions_by_symbol_and_status(&pool, Some("AAPL"), TradeStatus::Pending)
+                .await
+                .unwrap();
         assert_eq!(result.len(), 0);
 
-        let result = find_executions_by_symbol_and_status(&pool, "", TradeStatus::Pending)
+        let result = find_executions_by_symbol_and_status(&pool, None, TradeStatus::Pending)
             .await
             .unwrap();
         assert_eq!(result.len(), 0);
@@ -339,12 +396,12 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         let result =
-            find_executions_by_symbol_and_status(&pool, "NONEXISTENT", TradeStatus::Pending)
+            find_executions_by_symbol_and_status(&pool, Some("NONEXISTENT"), TradeStatus::Pending)
                 .await
                 .unwrap();
         assert_eq!(result.len(), 0);
 
-        let result = find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Filled)
+        let result = find_executions_by_symbol_and_status(&pool, Some("AAPL"), TradeStatus::Filled)
             .await
             .unwrap();
         assert_eq!(result.len(), 0);
@@ -379,6 +436,10 @@ mod tests {
                     executed_at: Utc::now(),
                     order_id: "1004055538123".to_string(),
                     price_cents: 15000,
+                    commission_cents: 65,
+                    sec_fee_cents: 1,
+                    taf_fee_cents: 2,
+                    other_fees_cents: 5,
                 },
             },
         ];
@@ -393,17 +454,17 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Empty symbol should find all executions with the specified status
-        let pending_all = find_executions_by_symbol_and_status(&pool, "", TradeStatus::Pending)
+        let pending_all = find_executions_by_symbol_and_status(&pool, None, TradeStatus::Pending)
             .await
             .unwrap();
         assert_eq!(pending_all.len(), 2); // AAPL and MSFT pending
 
-        let filled_all = find_executions_by_symbol_and_status(&pool, "", TradeStatus::Filled)
+        let filled_all = find_executions_by_symbol_and_status(&pool, None, TradeStatus::Filled)
             .await
             .unwrap();
         assert_eq!(filled_all.len(), 1); // Only AAPL filled
 
-        let failed_all = find_executions_by_symbol_and_status(&pool, "", TradeStatus::Failed)
+        let failed_all = find_executions_by_symbol_and_status(&pool, None, TradeStatus::Failed)
             .await
             .unwrap();
         assert_eq!(failed_all.len(), 0); // None failed
@@ -449,21 +510,24 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Test ordering for each symbol individually
-        let aapl_result = find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
-            .await
-            .unwrap();
+        let aapl_result =
+            find_executions_by_symbol_and_status(&pool, Some("AAPL"), TradeStatus::Pending)
+                .await
+                .unwrap();
         assert_eq!(aapl_result.len(), 1);
         assert_eq!(aapl_result[0].shares, 100);
 
-        let tsla_result = find_executions_by_symbol_and_status(&pool, "TSLA", TradeStatus::Pending)
-            .await
-            .unwrap();
+        let tsla_result =
+            find_executions_by_symbol_and_status(&pool, Some("TSLA"), TradeStatus::Pending)
+                .await
+                .unwrap();
         assert_eq!(tsla_result.len(), 1);
         assert_eq!(tsla_result[0].shares, 200);
 
-        let msft_result = find_executions_by_symbol_and_status(&pool, "MSFT", TradeStatus::Pending)
-            .await
-            .unwrap();
+        let msft_result =
+            find_executions_by_symbol_and_status(&pool, Some("MSFT"), TradeStatus::Pending)
+                .await
+                .unwrap();
         assert_eq!(msft_result.len(), 1);
         assert_eq!(msft_result[0].shares, 300);
     }
@@ -487,19 +551,22 @@ mod tests {
             .unwrap();
         sql_tx.commit().await.unwrap();
 
-        let result = find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
-            .await
-            .unwrap();
+        let result =
+            find_executions_by_symbol_and_status(&pool, Some("AAPL"), TradeStatus::Pending)
+                .await
+                .unwrap();
         assert_eq!(result.len(), 1);
 
-        let result = find_executions_by_symbol_and_status(&pool, "aapl", TradeStatus::Pending)
-            .await
-            .unwrap();
+        let result =
+            find_executions_by_symbol_and_status(&pool, Some("aapl"), TradeStatus::Pending)
+                .await
+                .unwrap();
         assert_eq!(result.len(), 0);
 
-        let result = find_executions_by_symbol_and_status(&pool, "Aapl", TradeStatus::Pending)
-            .await
-            .unwrap();
+        let result =
+            find_executions_by_symbol_and_status(&pool, Some("Aapl"), TradeStatus::Pending)
+                .await
+                .unwrap();
         assert_eq!(result.len(), 0);
     }
 
@@ -529,9 +596,10 @@ mod tests {
 
         // Test each symbol can be found
         for symbol in ["BRK.B", "BF-B", "TEST123", "A-B_C.D"] {
-            let result = find_executions_by_symbol_and_status(&pool, symbol, TradeStatus::Pending)
-                .await
-                .unwrap();
+            let result =
+                find_executions_by_symbol_and_status(&pool, Some(symbol), TradeStatus::Pending)
+                    .await
+                    .unwrap();
             assert_eq!(result.len(), 1, "Failed to find symbol: {symbol}");
             assert_eq!(result[0].symbol, symbol);
         }
@@ -550,6 +618,10 @@ mod tests {
                 executed_at: Utc::now(),
                 order_id: "1004055538789".to_string(),
                 price_cents: 98765,
+                commission_cents: 65,
+                sec_fee_cents: 1,
+                taf_fee_cents: 2,
+                other_fees_cents: 5,
             },
         };
 
@@ -560,7 +632,7 @@ mod tests {
             .unwrap();
         sql_tx.commit().await.unwrap();
 
-        let result = find_executions_by_symbol_and_status(&pool, "TEST", TradeStatus::Filled)
+        let result = find_executions_by_symbol_and_status(&pool, Some("TEST"), TradeStatus::Filled)
             .await
             .unwrap();
 
@@ -659,6 +731,10 @@ mod tests {
                 executed_at: Utc::now(),
                 order_id: "1004055538456".to_string(),
                 price_cents: 20050,
+                commission_cents: 65,
+                sec_fee_cents: 1,
+                taf_fee_cents: 2,
+                other_fees_cents: 5,
             },
         )
         .await
@@ -667,7 +743,7 @@ mod tests {
 
         // Verify the update persisted by finding executions with the new status
         let completed_executions =
-            find_executions_by_symbol_and_status(&pool, "TSLA", TradeStatus::Filled)
+            find_executions_by_symbol_and_status(&pool, Some("TSLA"), TradeStatus::Filled)
                 .await
                 .unwrap();
 
@@ -787,6 +863,10 @@ mod tests {
                 executed_at: Utc::now(),
                 order_id: "1004055538123".to_string(),
                 price_cents: 15000,
+                commission_cents: 65,
+                sec_fee_cents: 1,
+                taf_fee_cents: 2,
+                other_fees_cents: 5,
             },
         };
         let mut sql_tx2 = pool.begin().await.unwrap();
@@ -798,11 +878,11 @@ mod tests {
 
         // Should have both executions for AAPL now
         let pending_aapl =
-            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Pending)
+            find_executions_by_symbol_and_status(&pool, Some("AAPL"), TradeStatus::Pending)
                 .await
                 .unwrap();
         let completed_aapl =
-            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Filled)
+            find_executions_by_symbol_and_status(&pool, Some("AAPL"), TradeStatus::Filled)
                 .await
                 .unwrap();
         assert_eq!(pending_aapl.len(), 1);
@@ -812,14 +892,22 @@ mod tests {
     #[test]
     fn test_row_to_execution_invalid_direction() {
         let result = row_to_execution(
-            1,
-            "AAPL".to_string(),
-            100,
-            "INVALID_DIRECTION",
-            None,
-            None,
-            "PENDING",
-            None,
+            ExecutionDbFields {
+                id: 1,
+                symbol: "AAPL".to_string(),
+                shares: 100,
+                direction: "INVALID_DIRECTION".to_string(),
+                status: "PENDING".to_string(),
+            },
+            TradeStateDbFields {
+                order_id: None,
+                price_cents: None,
+                executed_at: None,
+                commission_cents: None,
+                sec_fee_cents: None,
+                taf_fee_cents: None,
+                other_fees_cents: None,
+            },
         );
 
         assert!(matches!(
@@ -831,14 +919,22 @@ mod tests {
     #[test]
     fn test_row_to_execution_completed_missing_order_id() {
         let result = row_to_execution(
-            1,
-            "AAPL".to_string(),
-            100,
-            "BUY",
-            None, // Missing order_id for COMPLETED status
-            Some(15000),
-            "COMPLETED",
-            Some(chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc()),
+            ExecutionDbFields {
+                id: 1,
+                symbol: "AAPL".to_string(),
+                shares: 100,
+                direction: "BUY".to_string(),
+                status: "FILLED".to_string(),
+            },
+            TradeStateDbFields {
+                order_id: None, // Missing order_id for FILLED status
+                price_cents: Some(15000),
+                executed_at: Some(chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc()),
+                commission_cents: Some(65),
+                sec_fee_cents: Some(1),
+                taf_fee_cents: Some(2),
+                other_fees_cents: Some(5),
+            },
         );
 
         assert!(matches!(
@@ -850,14 +946,22 @@ mod tests {
     #[test]
     fn test_row_to_execution_completed_missing_price_cents() {
         let result = row_to_execution(
-            1,
-            "AAPL".to_string(),
-            100,
-            "BUY",
-            Some("1004055538123".to_string()),
-            None, // Missing price_cents for COMPLETED status
-            "COMPLETED",
-            Some(chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc()),
+            ExecutionDbFields {
+                id: 1,
+                symbol: "AAPL".to_string(),
+                shares: 100,
+                direction: "BUY".to_string(),
+                status: "FILLED".to_string(),
+            },
+            TradeStateDbFields {
+                order_id: Some("1004055538123".to_string()),
+                price_cents: None, // Missing price_cents for FILLED status
+                executed_at: Some(chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc()),
+                commission_cents: Some(65),
+                sec_fee_cents: Some(1),
+                taf_fee_cents: Some(2),
+                other_fees_cents: Some(5),
+            },
         );
 
         assert!(matches!(
@@ -869,14 +973,22 @@ mod tests {
     #[test]
     fn test_row_to_execution_completed_missing_executed_at() {
         let result = row_to_execution(
-            1,
-            "AAPL".to_string(),
-            100,
-            "BUY",
-            Some("1004055538123".to_string()),
-            Some(15000),
-            "COMPLETED",
-            None, // Missing executed_at for COMPLETED status
+            ExecutionDbFields {
+                id: 1,
+                symbol: "AAPL".to_string(),
+                shares: 100,
+                direction: "BUY".to_string(),
+                status: "FILLED".to_string(),
+            },
+            TradeStateDbFields {
+                order_id: Some("1004055538123".to_string()),
+                price_cents: Some(15000),
+                executed_at: None, // Missing executed_at for FILLED status
+                commission_cents: Some(65),
+                sec_fee_cents: Some(1),
+                taf_fee_cents: Some(2),
+                other_fees_cents: Some(5),
+            },
         );
 
         assert!(matches!(
@@ -888,14 +1000,22 @@ mod tests {
     #[test]
     fn test_row_to_execution_invalid_status() {
         let result = row_to_execution(
-            1,
-            "AAPL".to_string(),
-            100,
-            "BUY",
-            None,
-            None,
-            "INVALID_STATUS",
-            None,
+            ExecutionDbFields {
+                id: 1,
+                symbol: "AAPL".to_string(),
+                shares: 100,
+                direction: "BUY".to_string(),
+                status: "INVALID_STATUS".to_string(),
+            },
+            TradeStateDbFields {
+                order_id: None,
+                price_cents: None,
+                executed_at: None,
+                commission_cents: None,
+                sec_fee_cents: None,
+                taf_fee_cents: None,
+                other_fees_cents: None,
+            },
         );
 
         assert!(matches!(
@@ -908,14 +1028,22 @@ mod tests {
     fn test_row_to_execution_negative_shares() {
         // Test with negative shares value
         let result = row_to_execution(
-            1,
-            "AAPL".to_string(),
-            -100, // Negative shares
-            "BUY",
-            None,
-            None,
-            "PENDING",
-            None,
+            ExecutionDbFields {
+                id: 1,
+                symbol: "AAPL".to_string(),
+                shares: -100, // Negative shares
+                direction: "BUY".to_string(),
+                status: "PENDING".to_string(),
+            },
+            TradeStateDbFields {
+                order_id: None,
+                price_cents: None,
+                executed_at: None,
+                commission_cents: None,
+                sec_fee_cents: None,
+                taf_fee_cents: None,
+                other_fees_cents: None,
+            },
         );
 
         assert!(matches!(
@@ -1038,7 +1166,7 @@ mod tests {
             order_id_1,
             None::<i64>, // NULL price_cents with FILLED status should be rejected
             "FILLED",
-            timestamp
+            timestamp,
         )
         .execute(&pool)
         .await;
@@ -1058,7 +1186,7 @@ mod tests {
             order_id_2,
             Some(15025i64), // Valid price_cents for FILLED status
             "FILLED",
-            timestamp
+            timestamp,
         )
         .execute(&pool)
         .await;
@@ -1094,6 +1222,10 @@ mod tests {
                 executed_at: Utc::now(),
                 order_id: "1004055538888".to_string(),
                 price_cents: 300_000,
+                commission_cents: 65,
+                sec_fee_cents: 1,
+                taf_fee_cents: 2,
+                other_fees_cents: 5,
             },
         )
         .await
@@ -1113,14 +1245,22 @@ mod tests {
     #[test]
     fn test_row_to_execution_failed_missing_executed_at() {
         let result = row_to_execution(
-            1,
-            "AAPL".to_string(),
-            100,
-            "BUY",
-            None,
-            None,
-            "FAILED",
-            None, // Missing executed_at for FAILED status
+            ExecutionDbFields {
+                id: 1,
+                symbol: "AAPL".to_string(),
+                shares: 100,
+                direction: "BUY".to_string(),
+                status: "FAILED".to_string(),
+            },
+            TradeStateDbFields {
+                order_id: None,
+                price_cents: None,
+                executed_at: None, // Missing executed_at for FAILED status
+                commission_cents: None,
+                sec_fee_cents: None,
+                taf_fee_cents: None,
+                other_fees_cents: None,
+            },
         );
 
         assert!(matches!(

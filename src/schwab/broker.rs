@@ -254,6 +254,7 @@ impl Broker for LogBroker {
                         price: mock_price,
                     }]),
                 }]),
+                commission_and_fee: None, // Mock response has no fee data
             };
 
             Ok(response)

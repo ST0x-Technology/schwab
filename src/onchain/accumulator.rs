@@ -821,7 +821,7 @@ mod tests {
         // Verify only the original execution remains
         let executions = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
-            "AAPL",
+            Some("AAPL"),
             TradeStatus::Pending,
         )
         .await
@@ -1377,7 +1377,7 @@ mod tests {
         // Verify the stale execution was marked as failed
         let stale_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
-            "AAPL",
+            Some("AAPL"),
             crate::schwab::TradeStatus::Failed,
         )
         .await
@@ -1388,7 +1388,7 @@ mod tests {
         // Verify the new execution was created and is pending
         let pending_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
-            "AAPL",
+            Some("AAPL"),
             crate::schwab::TradeStatus::Pending,
         )
         .await
@@ -1463,7 +1463,7 @@ mod tests {
         // Verify recent execution (MSFT) is still submitted
         let msft_submitted = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
-            "MSFT",
+            Some("MSFT"),
             crate::schwab::TradeStatus::Submitted,
         )
         .await
@@ -1474,7 +1474,7 @@ mod tests {
         // Verify stale execution (TSLA) was failed
         let tsla_failed = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
-            "TSLA",
+            Some("TSLA"),
             crate::schwab::TradeStatus::Failed,
         )
         .await
@@ -1539,7 +1539,7 @@ mod tests {
         // Verify execution is still submitted (not failed)
         let submitted_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
-            "NVDA",
+            Some("NVDA"),
             crate::schwab::TradeStatus::Submitted,
         )
         .await
