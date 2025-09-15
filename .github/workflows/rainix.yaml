@@ -7,6 +7,8 @@ concurrency:
 
 jobs:
   rainix:
+    env:
+      DATABASE_URL: "sqlite:schwab.db"
     strategy:
       matrix:
         os: [ubuntu-latest]
@@ -38,7 +40,6 @@ jobs:
       - run: nix run .#prepSolArtifacts
       - run: nix flake check
 
-      - run: envsubst < .env.example > .env
       - run: nix develop -c sqlx db create
       - run: nix develop -c sqlx migrate run
 

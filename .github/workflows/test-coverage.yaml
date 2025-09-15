@@ -7,6 +7,8 @@ concurrency:
 
 jobs:
   rainix:
+    env:
+      DATABASE_URL: "sqlite:schwab.db"
     runs-on: [ubuntu-latest]
 
     steps:
@@ -31,7 +33,6 @@ jobs:
           gc-max-store-size-linux: 10G
 
       - run: nix run .#prepSolArtifacts
-      - run: envsubst < .env.example > .env
       - run: nix develop -c sqlx db create
       - run: nix develop -c sqlx migrate run
       - run: nix run .#checkTestCoverage
