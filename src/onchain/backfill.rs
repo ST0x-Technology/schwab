@@ -6,7 +6,7 @@ use futures_util::future;
 use itertools::Itertools;
 use sqlx::SqlitePool;
 use std::time::Duration;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use super::EvmEnv;
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
@@ -130,12 +130,12 @@ async fn enqueue_batch_events<P: Provider + Clone, B: BackoffBuilder + Clone>(
         get_clear_logs
             .retry(retry_strategy.clone().build())
             .notify(|err, dur| {
-                debug!("Retrying clear_logs after error: {err} (waiting {dur:?})");
+                trace!("Retrying clear_logs after error: {err} (waiting {dur:?})");
             }),
         get_take_logs
             .retry(retry_strategy.build())
             .notify(|err, dur| {
-                debug!("Retrying take_logs after error: {err} (waiting {dur:?})");
+                trace!("Retrying take_logs after error: {err} (waiting {dur:?})");
             }),
     )
     .await?;
