@@ -50,13 +50,19 @@ jobs:
           docker push registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:${{ env.SHORT_SHA }}
           docker push registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:latest
 
+      - name: Read env template
+        run: |
+          echo "ENV_TEMPLATE<<EOF" >> $GITHUB_ENV
+          cat .env.example >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
       - name: Deploy to Droplet
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.DROPLET_HOST }}
           username: root
           key: ${{ secrets.DROPLET_SSH_KEY }}
-          envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_OWNER,DEPLOYMENT_BLOCK,APP_KEY,APP_SECRET
+          envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_OWNER,DEPLOYMENT_BLOCK,APP_KEY,APP_SECRET,ENV_TEMPLATE
           script: |
             set -euo pipefail
 
@@ -93,19 +99,16 @@ jobs:
             # Ensure database directory exists and has proper permissions
             log_exec chmod 755 /mnt/volume_nyc3_01
 
-            # Create .env file for container configuration
-            echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating .env file" | tee -a "${DEPLOY_LOG}"
-            cat > /mnt/volume_nyc3_01/schwarbot.env << 'EOF'
-            DATABASE_URL=sqlite:///data/schwab.db
-            WS_RPC_URL=${WS_RPC_URL}
-            ORDERBOOK=${ORDERBOOK}
-            ORDER_OWNER=${ORDER_OWNER}
-            DEPLOYMENT_BLOCK=${DEPLOYMENT_BLOCK}
-            APP_KEY=${APP_KEY}
-            APP_SECRET=${APP_SECRET}
-            RUST_LOG=rain_schwab=debug
-            EOF
-            chmod 600 /mnt/volume_nyc3_01/schwarbot.env
+            # Create .env file for container configuration using .env.example as template
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating .env file from template" | tee -a "${DEPLOY_LOG}"
+
+            # Set deployment-specific values
+            export DATABASE_URL="sqlite:///data/schwab.db"
+            export RUST_LOG="rain_schwab=debug"
+
+            # Create .env file using template with envsubst
+            echo "$ENV_TEMPLATE" | envsubst > /mnt/volume_nyc3_01/.env
+            chmod 600 /mnt/volume_nyc3_01/.env
 
             # Start new container
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting new container" | tee -a "${DEPLOY_LOG}"
@@ -113,7 +116,7 @@ jobs:
               --name schwarbot \
               --restart unless-stopped \
               -v /mnt/volume_nyc3_01:/data \
-              --env-file /mnt/volume_nyc3_01/schwarbot.env \
+              --env-file /mnt/volume_nyc3_01/.env \
               "registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}" 2>&1 | tee -a "${DEPLOY_LOG}"
 
             # Wait for container to start
@@ -161,3 +164,4 @@ jobs:
           WS_RPC_URL: ${{ secrets.WS_RPC_URL }}
           APP_KEY: ${{ secrets.APP_KEY }}
           APP_SECRET: ${{ secrets.APP_SECRET }}
+          ENV_TEMPLATE: ${{ env.ENV_TEMPLATE }}
