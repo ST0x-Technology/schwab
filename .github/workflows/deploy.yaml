@@ -2,7 +2,7 @@ name: Build and deploy
 
 on:
   push:
-    branches: [master, fix/cputilization]
+    branches: [master, feat/smart-backfilling]
   workflow_dispatch:
 
 concurrency:

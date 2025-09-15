@@ -108,6 +108,8 @@ pub(crate) enum OnChainError {
     Persistence(#[from] PersistenceError),
     #[error("Alloy error: {0}")]
     Alloy(#[from] AlloyError),
+    #[error("Event queue error: {0}")]
+    EventQueue(#[from] EventQueueError),
 }
 
 impl From<sqlx::Error> for OnChainError {

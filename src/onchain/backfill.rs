@@ -48,18 +48,44 @@ async fn backfill_events_with_retry_strat<P: Provider + Clone, B: BackoffBuilder
     end_block: u64,
     retry_strategy: B,
 ) -> Result<(), OnChainError> {
-    if evm_env.deployment_block > end_block {
+    // Query the last processed block from event_queue to determine start point
+    let start_block = crate::queue::get_max_processed_block(pool)
+        .await?
+        .map_or_else(
+            || {
+                info!(
+                    "Starting initial backfill from deployment block {}",
+                    evm_env.deployment_block
+                );
+                evm_env.deployment_block
+            },
+            |max_block| {
+                let resume_block = max_block + 1;
+                info!(
+                    "Resuming backfill from block {} (last processed: {})",
+                    resume_block, max_block
+                );
+                resume_block
+            },
+        );
+
+    // Skip if we're already caught up
+    if start_block > end_block {
+        info!(
+            "Already caught up to block {}, skipping backfill",
+            end_block
+        );
         return Ok(());
     }
 
-    let total_blocks = end_block - evm_env.deployment_block + 1;
+    let total_blocks = end_block - start_block + 1;
 
     info!(
-        "Starting backfill from block {} to {} ({} blocks)",
-        evm_env.deployment_block, end_block, total_blocks
+        "Backfilling from block {} to {} ({} blocks)",
+        start_block, end_block, total_blocks
     );
 
-    let batch_ranges = generate_batch_ranges(evm_env.deployment_block, end_block);
+    let batch_ranges = generate_batch_ranges(start_block, end_block);
 
     let batch_tasks = batch_ranges
         .into_iter()
@@ -1432,5 +1458,163 @@ mod tests {
         // Verify both events were enqueued
         let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_max_processed_block_no_events() {
+        let pool = setup_test_db().await;
+
+        let result = crate::queue::get_max_processed_block(&pool).await.unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn test_get_max_processed_block_with_processed_events() {
+        let pool = setup_test_db().await;
+
+        // Insert some events with different processed states
+        sqlx::query!(
+            r#"
+            INSERT INTO event_queue (tx_hash, log_index, block_number, event_data, processed)
+            VALUES 
+                ('0x1111111111111111111111111111111111111111111111111111111111111111', 0, 100, '{}', 1),
+                ('0x2222222222222222222222222222222222222222222222222222222222222222', 0, 150, '{}', 1),
+                ('0x3333333333333333333333333333333333333333333333333333333333333333', 0, 200, '{}', 0)
+            "#
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = crate::queue::get_max_processed_block(&pool).await.unwrap();
+        assert_eq!(result, Some(150)); // Should return highest processed block
+    }
+
+    #[tokio::test]
+    async fn test_backfill_resumes_from_last_processed_block() {
+        let pool = setup_test_db().await;
+
+        // Insert a processed event at block 100
+        sqlx::query!(
+            r#"
+            INSERT INTO event_queue (tx_hash, log_index, block_number, event_data, processed)
+            VALUES ('0x1111111111111111111111111111111111111111111111111111111111111111', 0, 100, '{}', 1)
+            "#
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_owner: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            deployment_block: 50, // Earlier than processed block
+        };
+
+        // Mock provider should only receive requests for blocks 101-200, not 50-200
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::json!([])); // clear events for 101-200
+        asserter.push_success(&serde_json::json!([])); // take events for 101-200
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        // Should start from block 101 (last processed + 1), not deployment_block
+        backfill_events(&pool, &provider, &evm_env, 200)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_backfill_initial_run_starts_from_deployment() {
+        let pool = setup_test_db().await;
+
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_owner: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            deployment_block: 50,
+        };
+
+        // No processed events exist, should start from deployment_block
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::json!([])); // clear events for 50-100
+        asserter.push_success(&serde_json::json!([])); // take events for 50-100
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        backfill_events(&pool, &provider, &evm_env, 100)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_backfill_skips_when_caught_up() {
+        let pool = setup_test_db().await;
+
+        // Insert processed event at block 150
+        sqlx::query!(
+            r#"
+            INSERT INTO event_queue (tx_hash, log_index, block_number, event_data, processed)
+            VALUES ('0x1111111111111111111111111111111111111111111111111111111111111111', 0, 150, '{}', 1)
+            "#
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_owner: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            deployment_block: 50,
+        };
+
+        // No RPC calls should be made since we're already caught up
+        let asserter = Asserter::new();
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        // Last processed: 150, end_block: 150, so start would be 151 > 150
+        backfill_events(&pool, &provider, &evm_env, 150)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_backfill_handles_mixed_processed_states() {
+        let pool = setup_test_db().await;
+
+        // Insert events with mixed processed states - only processed ones should affect resume point
+        sqlx::query!(
+            r#"
+            INSERT INTO event_queue (tx_hash, log_index, block_number, event_data, processed)
+            VALUES 
+                ('0x1111111111111111111111111111111111111111111111111111111111111111', 0, 50, '{}', 1),
+                ('0x2222222222222222222222222222222222222222222222222222222222222222', 0, 75, '{}', 0),
+                ('0x3333333333333333333333333333333333333333333333333333333333333333', 0, 100, '{}', 1),
+                ('0x4444444444444444444444444444444444444444444444444444444444444444', 0, 125, '{}', 0)
+            "#
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let evm_env = EvmEnv {
+            ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
+            orderbook: address!("0x1111111111111111111111111111111111111111"),
+            order_owner: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            deployment_block: 1,
+        };
+
+        // Should resume from block 101 (max processed block 100 + 1)
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::json!([])); // clear events for 101-200
+        asserter.push_success(&serde_json::json!([])); // take events for 101-200
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        backfill_events(&pool, &provider, &evm_env, 200)
+            .await
+            .unwrap();
     }
 }
