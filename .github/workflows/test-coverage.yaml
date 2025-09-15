@@ -31,7 +31,7 @@ jobs:
           gc-max-store-size-linux: 10G
 
       - run: nix run .#prepSolArtifacts
-      - run: cp -v .env.example .env
+      - run: envsubst < .env.example > .env
       - run: nix develop -c sqlx db create
       - run: nix develop -c sqlx migrate run
       - run: nix run .#checkTestCoverage
