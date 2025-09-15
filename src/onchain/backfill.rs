@@ -1,7 +1,7 @@
 use alloy::providers::Provider;
 use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
-use backon::{ExponentialBuilder, Retryable};
+use backon::{BackoffBuilder, ExponentialBuilder, Retryable};
 use futures_util::future;
 use itertools::Itertools;
 use sqlx::SqlitePool;
@@ -13,22 +13,40 @@ use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
 use crate::error::OnChainError;
 use crate::queue::enqueue;
 
+fn get_backfill_retry_strat() -> ExponentialBuilder {
+    const BACKFILL_MAX_RETRIES: usize = 10;
+    const BACKFILL_INITIAL_DELAY: Duration = Duration::from_millis(3000);
+    const BACKFILL_MAX_DELAY: Duration = Duration::from_secs(120);
+
+    ExponentialBuilder::default()
+        .with_max_times(BACKFILL_MAX_RETRIES)
+        .with_min_delay(BACKFILL_INITIAL_DELAY)
+        .with_max_delay(BACKFILL_MAX_DELAY)
+        .with_jitter()
+}
+
 #[derive(Debug)]
 enum EventData {
     ClearV2(Box<ClearV2>),
     TakeOrderV2(Box<TakeOrderV2>),
 }
 
-const BACKFILL_BATCH_SIZE: usize = 10_000;
-const BACKFILL_MAX_RETRIES: usize = 10;
-const BACKFILL_INITIAL_DELAY: Duration = Duration::from_millis(3000);
-const BACKFILL_MAX_DELAY: Duration = Duration::from_secs(120);
-
-pub async fn backfill_events<P: Provider + Clone>(
+pub(crate) async fn backfill_events<P: Provider + Clone>(
     pool: &SqlitePool,
     provider: &P,
     evm_env: &EvmEnv,
     end_block: u64,
+) -> Result<(), OnChainError> {
+    let retry_strat = get_backfill_retry_strat();
+    backfill_events_with_retry_strat(pool, provider, evm_env, end_block, retry_strat).await
+}
+
+async fn backfill_events_with_retry_strat<P: Provider + Clone, B: BackoffBuilder + Clone>(
+    pool: &SqlitePool,
+    provider: &P,
+    evm_env: &EvmEnv,
+    end_block: u64,
+    retry_strategy: B,
 ) -> Result<(), OnChainError> {
     if evm_env.deployment_block > end_block {
         return Ok(());
@@ -46,7 +64,14 @@ pub async fn backfill_events<P: Provider + Clone>(
     let batch_tasks = batch_ranges
         .into_iter()
         .map(|(batch_start, batch_end)| {
-            enqueue_batch_events(pool, provider, evm_env, batch_start, batch_end)
+            enqueue_batch_events(
+                pool,
+                provider,
+                evm_env,
+                batch_start,
+                batch_end,
+                retry_strategy.clone(),
+            )
         })
         .collect::<Vec<_>>();
 
@@ -63,12 +88,13 @@ pub async fn backfill_events<P: Provider + Clone>(
     Ok(())
 }
 
-async fn enqueue_batch_events<P: Provider + Clone>(
+async fn enqueue_batch_events<P: Provider + Clone, B: BackoffBuilder + Clone>(
     pool: &SqlitePool,
     provider: &P,
     evm_env: &EvmEnv,
     batch_start: u64,
     batch_end: u64,
+    retry_strategy: B,
 ) -> Result<usize, OnChainError> {
     let clear_filter = Filter::new()
         .address(evm_env.orderbook)
@@ -82,11 +108,7 @@ async fn enqueue_batch_events<P: Provider + Clone>(
         .to_block(batch_end)
         .event_signature(TakeOrderV2::SIGNATURE_HASH);
 
-    let retry_strategy = ExponentialBuilder::default()
-        .with_max_times(BACKFILL_MAX_RETRIES)
-        .with_min_delay(BACKFILL_INITIAL_DELAY)
-        .with_max_delay(BACKFILL_MAX_DELAY)
-        .with_jitter();
+    // Use the provided retry strategy
 
     let provider_clear = provider.clone();
     let provider_take = provider.clone();
@@ -105,8 +127,16 @@ async fn enqueue_batch_events<P: Provider + Clone>(
     };
 
     let (clear_logs, take_logs) = future::try_join(
-        get_clear_logs.retry(&retry_strategy),
-        get_take_logs.retry(&retry_strategy),
+        get_clear_logs
+            .retry(retry_strategy.clone().build())
+            .notify(|err, dur| {
+                debug!("Retrying clear_logs after error: {err} (waiting {dur:?})");
+            }),
+        get_take_logs
+            .retry(retry_strategy.build())
+            .notify(|err, dur| {
+                debug!("Retrying take_logs after error: {err} (waiting {dur:?})");
+            }),
     )
     .await?;
 
@@ -167,6 +197,8 @@ async fn enqueue_batch_events<P: Provider + Clone>(
 }
 
 fn generate_batch_ranges(start_block: u64, end_block: u64) -> Vec<(u64, u64)> {
+    const BACKFILL_BATCH_SIZE: usize = 10_000;
+
     (start_block..=end_block)
         .step_by(BACKFILL_BATCH_SIZE)
         .map(|batch_start| {
@@ -193,6 +225,13 @@ mod tests {
     use crate::bindings::IOrderBookV4;
     use crate::onchain::EvmEnv;
     use crate::test_utils::{get_test_order, setup_test_db};
+
+    fn test_retry_strategy() -> ExponentialBuilder {
+        ExponentialBuilder::default()
+            .with_max_times(2) // Only 2 retries for tests (3 attempts total)
+            .with_min_delay(Duration::from_millis(1))
+            .with_max_delay(Duration::from_millis(10))
+    }
 
     #[tokio::test]
     async fn test_backfill_events_empty_results() {
@@ -438,7 +477,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // TEMPORARILY DISABLED: Test hangs with new retry logic - needs fix after deploy
     async fn test_backfill_events_handles_rpc_errors() {
         let pool = setup_test_db().await;
         let evm_env = EvmEnv {
@@ -456,7 +494,14 @@ mod tests {
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        let result = backfill_events(&pool, &provider, &evm_env, 100).await;
+        let result = backfill_events_with_retry_strat(
+            &pool,
+            &provider,
+            &evm_env,
+            100,
+            test_retry_strategy(),
+        )
+        .await;
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), OnChainError::Alloy(_)));
@@ -648,9 +693,15 @@ mod tests {
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        backfill_events(&pool, &provider, &evm_env, 1900)
-            .await
-            .unwrap();
+        backfill_events_with_retry_strat(
+            &pool,
+            &provider,
+            &evm_env,
+            1900,
+            get_backfill_retry_strat(),
+        )
+        .await
+        .unwrap();
 
         // Verify the batching worked correctly for different deployment/current block combination
         let count = count_unprocessed(&pool).await.unwrap();
@@ -679,9 +730,10 @@ mod tests {
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        let enqueued_count = enqueue_batch_events(&pool, &provider, &evm_env, 100, 200)
-            .await
-            .unwrap();
+        let enqueued_count =
+            enqueue_batch_events(&pool, &provider, &evm_env, 100, 200, test_retry_strategy())
+                .await
+                .unwrap();
 
         assert_eq!(enqueued_count, 1);
 
@@ -736,9 +788,15 @@ mod tests {
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        backfill_events(&pool, &provider, &evm_env, 3000)
-            .await
-            .unwrap();
+        backfill_events_with_retry_strat(
+            &pool,
+            &provider,
+            &evm_env,
+            3000,
+            get_backfill_retry_strat(),
+        )
+        .await
+        .unwrap();
 
         let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 0);
@@ -759,7 +817,7 @@ mod tests {
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        backfill_events(&pool, &provider, &evm_env, 100)
+        backfill_events_with_retry_strat(&pool, &provider, &evm_env, 100, test_retry_strategy())
             .await
             .unwrap();
 
@@ -956,7 +1014,8 @@ mod tests {
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        let result = enqueue_batch_events(&pool, &provider, &evm_env, 100, 200).await;
+        let result =
+            enqueue_batch_events(&pool, &provider, &evm_env, 100, 200, test_retry_strategy()).await;
 
         assert!(result.is_ok());
         let enqueued_count = result.unwrap();
@@ -964,7 +1023,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // TEMPORARILY DISABLED: Test hangs with new retry logic - needs fix after deploy
     async fn test_process_batch_exhausted_retries() {
         let pool = setup_test_db().await;
         let evm_env = EvmEnv {
@@ -976,23 +1034,24 @@ mod tests {
 
         let asserter = Asserter::new();
         // All retry attempts fail - need double since clear_logs and take_logs retry in parallel
-        for _ in 0..=BACKFILL_MAX_RETRIES {
+        // With test retry strategy: 2 retries = 3 total attempts per call
+        for _ in 0..3 {
             asserter.push_failure_msg("Persistent RPC error"); // clear_logs failures
         }
-        for _ in 0..=BACKFILL_MAX_RETRIES {
+        for _ in 0..3 {
             asserter.push_failure_msg("Persistent RPC error"); // take_logs failures
         }
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        let result = enqueue_batch_events(&pool, &provider, &evm_env, 100, 200).await;
+        let result =
+            enqueue_batch_events(&pool, &provider, &evm_env, 100, 200, test_retry_strategy()).await;
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), OnChainError::Alloy(_)));
     }
 
     #[tokio::test]
-    #[ignore] // TEMPORARILY DISABLED: Test hangs with new retry logic - needs fix after deploy
     async fn test_backfill_events_partial_batch_failure() {
         let pool = setup_test_db().await;
         let evm_env = EvmEnv {
@@ -1011,16 +1070,24 @@ mod tests {
 
         // Second batch fails completely (after retries)
         // Need double the failures since clear_logs and take_logs retry in parallel
-        for _ in 0..=BACKFILL_MAX_RETRIES {
+        // With test retry strategy: 2 retries = 3 total attempts per call
+        for _ in 0..3 {
             asserter.push_failure_msg("Network failure"); // clear_logs failures
         }
-        for _ in 0..=BACKFILL_MAX_RETRIES {
+        for _ in 0..3 {
             asserter.push_failure_msg("Network failure"); // take_logs failures
         }
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        let result = backfill_events(&pool, &provider, &evm_env, 25000).await;
+        let result = backfill_events_with_retry_strat(
+            &pool,
+            &provider,
+            &evm_env,
+            25000,
+            test_retry_strategy(),
+        )
+        .await;
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), OnChainError::Alloy(_)));
@@ -1124,7 +1191,8 @@ mod tests {
         // Close the database to simulate connection failure
         pool.close().await;
 
-        let result = enqueue_batch_events(&pool, &provider, &evm_env, 100, 200).await;
+        let result =
+            enqueue_batch_events(&pool, &provider, &evm_env, 100, 200, test_retry_strategy()).await;
 
         // Should succeed at RPC level but fail at database level
         // The function handles enqueue failures gracefully by continuing
@@ -1149,7 +1217,8 @@ mod tests {
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
         // Test with specific block range
-        let result = enqueue_batch_events(&pool, &provider, &evm_env, 100, 150).await;
+        let result =
+            enqueue_batch_events(&pool, &provider, &evm_env, 100, 150, test_retry_strategy()).await;
         assert_eq!(result.unwrap(), 0);
     }
 
@@ -1188,7 +1257,8 @@ mod tests {
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        let result = enqueue_batch_events(&pool, &provider, &evm_env, 100, 200).await;
+        let result =
+            enqueue_batch_events(&pool, &provider, &evm_env, 100, 200, test_retry_strategy()).await;
 
         // Should succeed with 2 events enqueued
         assert!(result.is_ok());
@@ -1251,24 +1321,26 @@ mod tests {
         };
 
         let asserter = Asserter::new();
-        // Fail twice, then succeed
-        asserter.push_failure_msg("Temporary network failure");
-        asserter.push_failure_msg("Rate limit exceeded");
-        asserter.push_success(&serde_json::json!([])); // clear events
-        asserter.push_success(&serde_json::json!([])); // take events
+        // First attempt fails for both parallel calls
+        asserter.push_failure_msg("Temporary network failure"); // clear_logs first attempt
+        asserter.push_failure_msg("Rate limit exceeded"); // take_logs first attempt
+        // Second attempt succeeds for both
+        asserter.push_success(&serde_json::json!([])); // clear events (retry)
+        asserter.push_success(&serde_json::json!([])); // take events (retry)
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
         let start_time = std::time::Instant::now();
-        let result = enqueue_batch_events(&pool, &provider, &evm_env, 100, 200).await;
+        let result =
+            enqueue_batch_events(&pool, &provider, &evm_env, 100, 200, test_retry_strategy()).await;
         let elapsed = start_time.elapsed();
 
         // Should succeed after retries
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 0);
 
-        // Should have taken at least the initial delay time due to retries
-        assert!(elapsed >= BACKFILL_INITIAL_DELAY);
+        // Should have taken at least the test initial delay time due to retries
+        assert!(elapsed >= Duration::from_millis(1));
     }
 
     #[tokio::test]
@@ -1350,7 +1422,8 @@ mod tests {
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        let result = enqueue_batch_events(&pool, &provider, &evm_env, 100, 200).await;
+        let result =
+            enqueue_batch_events(&pool, &provider, &evm_env, 100, 200, test_retry_strategy()).await;
 
         // Should process both event types
         assert!(result.is_ok());
