@@ -200,6 +200,26 @@ pub(crate) async fn count_unprocessed(pool: &SqlitePool) -> Result<i64, EventQue
     Ok(row.count)
 }
 
+/// Gets the highest processed block number from the event queue
+pub(crate) async fn get_max_processed_block(
+    pool: &SqlitePool,
+) -> Result<Option<u64>, EventQueueError> {
+    let row =
+        sqlx::query!("SELECT MAX(block_number) as max_block FROM event_queue WHERE processed = 1")
+            .fetch_one(pool)
+            .await?;
+
+    match row.max_block {
+        Some(block) => {
+            let block_u64 = u64::try_from(block).map_err(|_| {
+                EventQueueError::Processing("Block number conversion failed".to_string())
+            })?;
+            Ok(Some(block_u64))
+        }
+        None => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
