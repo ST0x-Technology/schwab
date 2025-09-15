@@ -93,20 +93,27 @@ jobs:
             # Ensure database directory exists and has proper permissions
             log_exec chmod 755 /mnt/volume_nyc3_01
 
+            # Create .env file for container configuration
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating .env file" | tee -a "${DEPLOY_LOG}"
+            cat > /mnt/volume_nyc3_01/schwarbot.env << 'EOF'
+            DATABASE_URL=sqlite:///data/schwab.db
+            WS_RPC_URL=${WS_RPC_URL}
+            ORDERBOOK=${ORDERBOOK}
+            ORDER_OWNER=${ORDER_OWNER}
+            DEPLOYMENT_BLOCK=${DEPLOYMENT_BLOCK}
+            APP_KEY=${APP_KEY}
+            APP_SECRET=${APP_SECRET}
+            RUST_LOG=rain_schwab=debug
+            EOF
+            chmod 600 /mnt/volume_nyc3_01/schwarbot.env
+
             # Start new container
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting new container" | tee -a "${DEPLOY_LOG}"
             docker run -d \
               --name schwarbot \
               --restart unless-stopped \
               -v /mnt/volume_nyc3_01:/data \
-              -e DATABASE_URL=sqlite:///data/schwab.db \
-              -e WS_RPC_URL="${WS_RPC_URL}" \
-              -e ORDERBOOK="${ORDERBOOK}" \
-              -e ORDER_OWNER="${ORDER_OWNER}" \
-              -e DEPLOYMENT_BLOCK="${DEPLOYMENT_BLOCK}" \
-              -e APP_KEY="${APP_KEY}" \
-              -e APP_SECRET="${APP_SECRET}" \
-              -e RUST_LOG="rain_schwab=debug" \
+              --env-file /mnt/volume_nyc3_01/schwarbot.env \
               "registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}" 2>&1 | tee -a "${DEPLOY_LOG}"
 
             # Wait for container to start
