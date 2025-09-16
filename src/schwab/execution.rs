@@ -3,7 +3,7 @@ use sqlx::SqlitePool;
 
 use super::{price_cents_from_db_i64, shares_from_db_i64};
 use crate::error::{OnChainError, PersistenceError};
-use crate::schwab::SchwabInstruction;
+use crate::schwab::Direction;
 use crate::schwab::TradeStatus;
 
 /// Converts database row data to a SchwabExecution instance.
@@ -19,9 +19,9 @@ fn row_to_execution(
     status: &str,
     executed_at: Option<chrono::NaiveDateTime>,
 ) -> Result<SchwabExecution, OnChainError> {
-    let parsed_direction = direction.parse().map_err(|e: String| {
-        OnChainError::Persistence(PersistenceError::InvalidSchwabInstruction(e))
-    })?;
+    let parsed_direction = direction
+        .parse()
+        .map_err(|e: String| OnChainError::Persistence(PersistenceError::InvalidDirection(e)))?;
 
     let parsed_status = match status {
         "PENDING" => TradeStatus::Pending,
@@ -92,7 +92,7 @@ pub(crate) struct SchwabExecution {
     pub(crate) id: Option<i64>,
     pub(crate) symbol: String,
     pub(crate) shares: u64,
-    pub(crate) direction: SchwabInstruction,
+    pub(crate) direction: Direction,
     pub(crate) status: TradeStatus,
 }
 
@@ -324,7 +324,7 @@ mod tests {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 50,
-            direction: SchwabInstruction::Buy,
+            direction: Direction::Buy,
             status: TradeStatus::Pending,
         };
 
@@ -332,7 +332,7 @@ mod tests {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 25,
-            direction: SchwabInstruction::Sell,
+            direction: Direction::Sell,
             status: TradeStatus::Completed {
                 executed_at: Utc::now(),
                 order_id: "ORDER123".to_string(),
@@ -344,7 +344,7 @@ mod tests {
             id: None,
             symbol: "MSFT".to_string(),
             shares: 10,
-            direction: SchwabInstruction::Buy,
+            direction: Direction::Buy,
             status: TradeStatus::Pending,
         };
 
@@ -375,7 +375,7 @@ mod tests {
 
         assert_eq!(pending_aapl.len(), 1);
         assert_eq!(pending_aapl[0].shares, 50);
-        assert_eq!(pending_aapl[0].direction, SchwabInstruction::Buy);
+        assert_eq!(pending_aapl[0].direction, Direction::Buy);
 
         let completed_aapl = find_completed_executions_by_symbol(&pool, "AAPL")
             .await
@@ -383,7 +383,7 @@ mod tests {
 
         assert_eq!(completed_aapl.len(), 1);
         assert_eq!(completed_aapl[0].shares, 25);
-        assert_eq!(completed_aapl[0].direction, SchwabInstruction::Sell);
+        assert_eq!(completed_aapl[0].direction, Direction::Sell);
         assert!(matches!(
             &completed_aapl[0].status,
             TradeStatus::Completed { order_id, price_cents, .. }
@@ -440,21 +440,21 @@ mod tests {
                 id: None,
                 symbol: "AAPL".to_string(),
                 shares: 100,
-                direction: SchwabInstruction::Buy,
+                direction: Direction::Buy,
                 status: TradeStatus::Pending,
             },
             SchwabExecution {
                 id: None,
                 symbol: "MSFT".to_string(),
                 shares: 50,
-                direction: SchwabInstruction::Sell,
+                direction: Direction::Sell,
                 status: TradeStatus::Pending,
             },
             SchwabExecution {
                 id: None,
                 symbol: "AAPL".to_string(),
                 shares: 200,
-                direction: SchwabInstruction::Buy,
+                direction: Direction::Buy,
                 status: TradeStatus::Completed {
                     executed_at: Utc::now(),
                     order_id: "ORDER123".to_string(),
@@ -500,21 +500,21 @@ mod tests {
                 id: None,
                 symbol: "AAPL".to_string(),
                 shares: 100,
-                direction: SchwabInstruction::Buy,
+                direction: Direction::Buy,
                 status: TradeStatus::Pending,
             },
             SchwabExecution {
                 id: None,
                 symbol: "TSLA".to_string(),
                 shares: 200,
-                direction: SchwabInstruction::Sell,
+                direction: Direction::Sell,
                 status: TradeStatus::Pending,
             },
             SchwabExecution {
                 id: None,
                 symbol: "MSFT".to_string(),
                 shares: 300,
-                direction: SchwabInstruction::Buy,
+                direction: Direction::Buy,
                 status: TradeStatus::Pending,
             },
         ];
@@ -556,7 +556,7 @@ mod tests {
             id: None,
             symbol: "AAPL".to_string(), // Uppercase
             shares: 100,
-            direction: SchwabInstruction::Buy,
+            direction: Direction::Buy,
             status: TradeStatus::Pending,
         };
 
@@ -596,7 +596,7 @@ mod tests {
                 id: None,
                 symbol: symbol.to_string(),
                 shares: 100,
-                direction: SchwabInstruction::Buy,
+                direction: Direction::Buy,
                 status: TradeStatus::Pending,
             };
 
@@ -625,7 +625,7 @@ mod tests {
             id: None,
             symbol: "TEST".to_string(),
             shares: 12345,
-            direction: SchwabInstruction::Sell,
+            direction: Direction::Sell,
             status: TradeStatus::Completed {
                 executed_at: Utc::now(),
                 order_id: "ORDER789".to_string(),
@@ -650,7 +650,7 @@ mod tests {
         // Verify all fields are correctly preserved and converted
         assert_eq!(found.symbol, "TEST");
         assert_eq!(found.shares, 12345);
-        assert_eq!(found.direction, SchwabInstruction::Sell);
+        assert_eq!(found.direction, Direction::Sell);
         assert!(matches!(
             &found.status,
             TradeStatus::Completed { order_id, price_cents, .. }
@@ -715,7 +715,7 @@ mod tests {
             id: None,
             symbol: "TSLA".to_string(),
             shares: 15,
-            direction: SchwabInstruction::Sell,
+            direction: Direction::Sell,
             status: TradeStatus::Pending,
         };
 
@@ -765,7 +765,7 @@ mod tests {
             id: None,
             symbol: "NVDA".to_string(),
             shares: 5,
-            direction: SchwabInstruction::Buy,
+            direction: Direction::Buy,
             status: TradeStatus::Pending,
         };
 
@@ -789,7 +789,7 @@ mod tests {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 100,
-            direction: SchwabInstruction::Buy,
+            direction: Direction::Buy,
             status: TradeStatus::Pending,
         };
 
@@ -805,7 +805,7 @@ mod tests {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 200,
-            direction: SchwabInstruction::Sell,
+            direction: Direction::Sell,
             status: TradeStatus::Pending,
         };
 
@@ -834,7 +834,7 @@ mod tests {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 100,
-            direction: SchwabInstruction::Buy,
+            direction: Direction::Buy,
             status: TradeStatus::Pending,
         };
         let mut sql_tx1 = pool.begin().await.unwrap();
@@ -849,7 +849,7 @@ mod tests {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 200,
-            direction: SchwabInstruction::Sell,
+            direction: Direction::Sell,
             status: TradeStatus::Completed {
                 executed_at: Utc::now(),
                 order_id: "ORDER123".to_string(),
@@ -889,7 +889,7 @@ mod tests {
 
         assert!(matches!(
             result.unwrap_err(),
-            OnChainError::Persistence(PersistenceError::InvalidSchwabInstruction(_))
+            OnChainError::Persistence(PersistenceError::InvalidDirection(_))
         ));
     }
 
@@ -998,7 +998,7 @@ mod tests {
             id: None,
             symbol: "MSFT".to_string(),
             shares: 50,
-            direction: SchwabInstruction::Sell,
+            direction: Direction::Sell,
             status: TradeStatus::Failed {
                 failed_at: Utc::now(),
                 error_reason: Some("Authentication failed".to_string()),
@@ -1050,7 +1050,7 @@ mod tests {
             id: None,
             symbol: "TSLA".to_string(),
             shares: 100,
-            direction: SchwabInstruction::Buy,
+            direction: Direction::Buy,
             status: TradeStatus::Pending,
         };
 
@@ -1066,7 +1066,7 @@ mod tests {
             id: None,
             symbol: "TSLA".to_string(),
             shares: 200,
-            direction: SchwabInstruction::Sell,
+            direction: Direction::Sell,
             status: TradeStatus::Pending,
         };
 
@@ -1091,7 +1091,7 @@ mod tests {
             id: None,
             symbol: "GOOG".to_string(),
             shares: 25,
-            direction: SchwabInstruction::Buy,
+            direction: Direction::Buy,
             status: TradeStatus::Pending,
         };
 

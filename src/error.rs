@@ -35,8 +35,8 @@ pub(crate) enum TradeValidationError {
 pub(crate) enum PersistenceError {
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
-    #[error("Invalid Schwab instruction in database: {0}")]
-    InvalidSchwabInstruction(String),
+    #[error("Invalid direction in database: {0}")]
+    InvalidDirection(String),
     #[error("Invalid trade status in database: {0}")]
     InvalidTradeStatus(String),
     #[error("Invalid share quantity in database: {0}")]
