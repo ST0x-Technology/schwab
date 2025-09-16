@@ -10,7 +10,7 @@ use super::execution::{
     update_execution_status_within_transaction,
 };
 use super::order::Order;
-use super::{SchwabAuthEnv, SchwabError, TradeStatus};
+use super::{SchwabAuthEnv, SchwabError, TradeState};
 
 #[derive(Debug, Clone)]
 pub struct OrderPollerConfig {
@@ -131,15 +131,15 @@ impl OrderStatusPoller {
                 SchwabError::InvalidConfiguration("Execution not found".to_string())
             })?;
 
-        let order_id = match &execution.status {
-            TradeStatus::Pending => {
+        let order_id = match &execution.state {
+            TradeState::Pending => {
                 debug!("Execution {execution_id} is PENDING but no order_id yet");
                 return Ok(());
             }
-            TradeStatus::Submitted { order_id } | TradeStatus::Filled { order_id, .. } => {
+            TradeState::Submitted { order_id } | TradeState::Filled { order_id, .. } => {
                 order_id.clone()
             }
-            TradeStatus::Failed { .. } => {
+            TradeState::Failed { .. } => {
                 debug!("Execution {execution_id} already failed, skipping poll");
                 return Ok(());
             }
@@ -155,7 +155,7 @@ impl OrderStatusPoller {
                 .await?;
         } else {
             debug!(
-                "Order {order_id} (execution {execution_id}) still pending with status: {:?}",
+                "Order {order_id} (execution {execution_id}) still pending with state: {:?}",
                 order_status.status
             );
         }
@@ -179,7 +179,7 @@ impl OrderStatusPoller {
                 SchwabError::InvalidConfiguration("Missing execution price".to_string())
             })?;
 
-        let new_status = TradeStatus::Filled {
+        let new_status = TradeState::Filled {
             executed_at: Utc::now(),
             order_id: order_status
                 .order_id
@@ -204,16 +204,16 @@ impl OrderStatusPoller {
         execution_id: i64,
         order_status: &super::order_status::OrderStatusResponse,
     ) -> Result<(), SchwabError> {
-        let new_status = TradeStatus::Failed {
+        let new_status = TradeState::Failed {
             failed_at: Utc::now(),
-            error_reason: Some(format!("Order status: {:?}", order_status.status)),
+            error_reason: Some(format!("Order state: {:?}", order_status.status)),
         };
 
         self.update_execution_status(execution_id, new_status)
             .await?;
 
         info!(
-            "Updated execution {execution_id} to FAILED due to order status: {:?}",
+            "Updated execution {execution_id} to FAILED due to order state: {:?}",
             order_status.status
         );
 
@@ -223,10 +223,10 @@ impl OrderStatusPoller {
     async fn update_execution_status(
         &self,
         execution_id: i64,
-        new_status: TradeStatus,
+        new_state: TradeState,
     ) -> Result<(), SchwabError> {
         let mut tx = self.pool.begin().await?;
-        update_execution_status_within_transaction(&mut tx, execution_id, new_status).await?;
+        update_execution_status_within_transaction(&mut tx, execution_id, new_state).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -246,6 +246,7 @@ impl OrderStatusPoller {
 mod tests {
     use super::*;
     use crate::schwab::Direction;
+    use crate::schwab::TradeStatus;
     use crate::schwab::execution::SchwabExecution;
     use crate::test_utils::setup_test_db;
     use tokio::sync::watch;
@@ -312,7 +313,7 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 100,
             direction: Direction::Buy,
-            status: TradeStatus::Pending,
+            state: TradeState::Pending,
         };
 
         let mut tx = pool.begin().await.unwrap();
@@ -386,7 +387,7 @@ mod tests {
         let saved_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
             "AAPL",
-            crate::schwab::TradeStatus::Submitted,
+            TradeStatus::Submitted,
         )
         .await
         .unwrap();
@@ -448,20 +449,17 @@ mod tests {
         let submitted_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
             "AAPL",
-            crate::schwab::TradeStatus::Submitted,
+            TradeStatus::Submitted,
         )
         .await
         .unwrap();
         assert_eq!(submitted_executions.len(), 0);
 
         // Step 8: Verify there is now one FILLED execution
-        let filled_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
-            &pool,
-            "AAPL",
-            crate::schwab::TradeStatus::Filled,
-        )
-        .await
-        .unwrap();
+        let filled_executions =
+            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Filled)
+                .await
+                .unwrap();
         assert_eq!(filled_executions.len(), 1);
         assert_eq!(filled_executions[0].id, Some(execution_id));
 
@@ -603,7 +601,7 @@ mod tests {
         let filled_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
             "", // Empty string finds all symbols
-            crate::schwab::TradeStatus::Filled,
+            TradeStatus::Filled,
         )
         .await
         .unwrap();

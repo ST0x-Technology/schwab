@@ -79,7 +79,7 @@ pub(crate) async fn setup_test_db() -> SqlitePool {
 }
 
 use crate::onchain::OnchainTrade;
-use crate::schwab::TradeStatus;
+use crate::schwab::TradeState;
 use crate::schwab::{Direction, execution::SchwabExecution};
 
 /// Builder for creating OnchainTrade test instances with sensible defaults.
@@ -167,7 +167,7 @@ impl SchwabExecutionBuilder {
                 symbol: "AAPL".to_string(),
                 shares: 100,
                 direction: Direction::Buy,
-                status: TradeStatus::Pending,
+                state: TradeState::Pending,
             },
         }
     }

@@ -2,7 +2,7 @@
 use crate::error::OnChainError;
 #[cfg(test)]
 use crate::schwab::shares_from_db_i64;
-use crate::schwab::{Direction, TradeStatus};
+use crate::schwab::{Direction, TradeState};
 use chrono::{DateTime, Utc};
 #[cfg(test)]
 use sqlx::SqlitePool;
@@ -244,7 +244,7 @@ pub struct ExecutionContribution {
     pub execution_symbol: String,
     pub execution_total_shares: u64,
     pub execution_direction: Direction,
-    pub execution_status: TradeStatus,
+    pub execution_status: TradeState,
     pub created_at: Option<DateTime<Utc>>,
 }
 
@@ -294,9 +294,9 @@ fn parse_trade_status_from_db(
     order_id: Option<&str>,
     price_cents: Option<i64>,
     executed_at: Option<chrono::NaiveDateTime>,
-) -> Result<TradeStatus, OnChainError> {
+) -> Result<TradeState, OnChainError> {
     match status {
-        "PENDING" => Ok(TradeStatus::Pending),
+        "PENDING" => Ok(TradeState::Pending),
         "COMPLETED" => {
             let order_id = order_id.ok_or(OnChainError::Persistence(
                 crate::error::PersistenceError::InvalidTradeStatus(
@@ -323,7 +323,7 @@ fn parse_trade_status_from_db(
             }
 
             #[allow(clippy::cast_sign_loss)]
-            Ok(TradeStatus::Filled {
+            Ok(TradeState::Filled {
                 executed_at: DateTime::from_naive_utc_and_offset(executed_at, Utc),
                 order_id: order_id.to_string(),
                 price_cents: price_cents as u64,
@@ -336,7 +336,7 @@ fn parse_trade_status_from_db(
                 ),
             ))?;
 
-            Ok(TradeStatus::Failed {
+            Ok(TradeState::Failed {
                 failed_at: DateTime::from_naive_utc_and_offset(executed_at, Utc),
                 error_reason: None, // Database doesn't store error reason currently
             })
@@ -379,7 +379,7 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 1,
             direction: Direction::Sell,
-            status: TradeStatus::Pending,
+            state: TradeState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -450,7 +450,7 @@ mod tests {
             symbol: "MSFT".to_string(),
             shares: 1,
             direction: Direction::Buy,
-            status: TradeStatus::Filled {
+            state: TradeState::Filled {
                 executed_at: Utc::now(),
                 order_id: "ORDER123".to_string(),
                 price_cents: 30250,
@@ -499,7 +499,7 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 1,
             direction: Direction::Sell,
-            status: TradeStatus::Pending,
+            state: TradeState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -576,7 +576,7 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 1,
             direction: Direction::Buy,
-            status: TradeStatus::Pending,
+            state: TradeState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
