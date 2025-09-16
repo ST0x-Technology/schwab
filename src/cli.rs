@@ -415,9 +415,9 @@ mod tests {
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
     use crate::env::LogLevel;
     use crate::onchain::trade::OnchainTrade;
+    use crate::schwab::Direction;
     use crate::schwab::TradeStatus;
     use crate::schwab::execution::find_executions_by_symbol_and_status;
-    use crate::schwab::{Direction, SchwabInstruction};
     use crate::test_utils::get_test_order;
     use crate::test_utils::setup_test_db;
     use crate::{onchain::EvmEnv, schwab::SchwabAuthEnv};
