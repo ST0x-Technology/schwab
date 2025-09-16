@@ -17,8 +17,8 @@ exploiting price discrepancies.
 
 - `cargo build` - Build the project
 - `cargo run --bin main` - Run the main arbitrage bot
-- `cargo run --bin auth` - Run the authentication flow for Charles Schwab OAuth
-  setup
+- `cargo run --bin cli -- auth` - Run the authentication flow for Charles Schwab
+  OAuth setup
 - `cargo run --bin cli` - Run the command-line interface for manual operations
 
 ### Testing
@@ -59,15 +59,14 @@ exploiting price discrepancies.
 
 ### Core Event Processing Flow
 
-**Main Event Loop (\[`run` function in `src/lib.rs`\])**
+**Main Event Loop ([`launch` function in `src/lib.rs`])**
 
 - Monitors two concurrent WebSocket event streams: `ClearV2` and `TakeOrderV2`
   from the Raindex orderbook
 - Uses `tokio::select!` to handle events from either stream without blocking
 - Converts blockchain events to structured `Trade` objects for processing
 
-**Trade Conversion Logic (\[`Trade` struct and methods in
-`src/trade/mod.rs`\])**
+**Trade Conversion Logic ([`Trade` struct and methods in `src/trade/mod.rs`])**
 
 - Parses onchain events into actionable trade data with strict validation
 - Expects symbol pairs of USDC + tokenized equity with "s1" suffix (e.g.,
@@ -219,7 +218,10 @@ Environment variables (can be set via `.env` file):
 - **Import Conventions**: Use qualified imports when they prevent ambiguity
   (e.g. `contract::Error` for `alloy::contract::Error`), but avoid them when the
   module is clear (e.g. use `info!` instead of `tracing::info!`). Generally
-  avoid imports inside functions
+  avoid imports inside functions. We don't do function-level imports, instead we
+  do top-of-module imports. Note that I said top-of-module and not top-of-file,
+  e.g. imports required only inside a tests module should be done in the module
+  and not hidden behind #[cfg(test)] at the top of the file
 - **Error Handling**: Avoid `unwrap()` even post-validation since validation
   logic changes might leave panics in the codebase
 
