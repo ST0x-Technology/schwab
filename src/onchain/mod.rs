@@ -2,7 +2,7 @@ use alloy::primitives::{Address, B256};
 use clap::Parser;
 
 pub(crate) mod accumulator;
-pub mod backfill;
+pub(crate) mod backfill;
 mod clear;
 pub(crate) mod position_calculator;
 mod take_order;
