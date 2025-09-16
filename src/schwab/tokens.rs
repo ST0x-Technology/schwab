@@ -20,7 +20,7 @@ pub struct SchwabTokens {
 }
 
 impl SchwabTokens {
-    pub async fn store(&self, pool: &SqlitePool) -> Result<(), SchwabError> {
+    pub(crate) async fn store(&self, pool: &SqlitePool) -> Result<(), SchwabError> {
         sqlx::query!(
             r#"
             INSERT INTO schwab_auth (
@@ -48,7 +48,7 @@ impl SchwabTokens {
         Ok(())
     }
 
-    pub async fn load(pool: &SqlitePool) -> Result<Self, SchwabError> {
+    pub(crate) async fn load(pool: &SqlitePool) -> Result<Self, SchwabError> {
         let row = sqlx::query!(
             r#"
             SELECT
@@ -98,14 +98,7 @@ impl SchwabTokens {
         expires_at - now
     }
 
-    pub fn refresh_token_expires_in(&self) -> Duration {
-        let now = Utc::now();
-        let expires_at =
-            self.refresh_token_fetched_at + Duration::days(REFRESH_TOKEN_DURATION_DAYS);
-        expires_at - now
-    }
-
-    pub async fn get_valid_access_token(
+    pub(crate) async fn get_valid_access_token(
         pool: &SqlitePool,
         env: &SchwabAuthEnv,
     ) -> Result<String, SchwabError> {
@@ -124,7 +117,8 @@ impl SchwabTokens {
         Ok(new_tokens.access_token)
     }
 
-    pub async fn db_count(pool: &SqlitePool) -> Result<i64, SchwabError> {
+    #[cfg(test)]
+    pub(crate) async fn db_count(pool: &SqlitePool) -> Result<i64, SchwabError> {
         let count = sqlx::query_scalar!("SELECT COUNT(*) FROM schwab_auth")
             .fetch_one(pool)
             .await?;
@@ -180,7 +174,7 @@ impl SchwabTokens {
         }
     }
 
-    pub async fn refresh_if_needed(
+    pub(crate) async fn refresh_if_needed(
         pool: &SqlitePool,
         env: &SchwabAuthEnv,
     ) -> Result<bool, SchwabError> {
@@ -386,35 +380,6 @@ mod tests {
         };
 
         let expires_in = tokens.access_token_expires_in();
-        assert!(expires_in < Duration::zero());
-    }
-
-    #[test]
-    fn test_refresh_token_expires_in_positive() {
-        let now = Utc::now();
-        let tokens = SchwabTokens {
-            access_token: "test_access_token".to_string(),
-            access_token_fetched_at: now,
-            refresh_token: "test_refresh_token".to_string(),
-            refresh_token_fetched_at: now - Duration::days(2),
-        };
-
-        let expires_in = tokens.refresh_token_expires_in();
-        assert!(expires_in > Duration::days(4));
-        assert!(expires_in <= Duration::days(5));
-    }
-
-    #[test]
-    fn test_refresh_token_expires_in_negative() {
-        let now = Utc::now();
-        let tokens = SchwabTokens {
-            access_token: "test_access_token".to_string(),
-            access_token_fetched_at: now,
-            refresh_token: "test_refresh_token".to_string(),
-            refresh_token_fetched_at: now - Duration::days(10),
-        };
-
-        let expires_in = tokens.refresh_token_expires_in();
         assert!(expires_in < Duration::zero());
     }
 

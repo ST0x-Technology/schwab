@@ -41,7 +41,7 @@ pub(crate) struct AccountNumbers {
 }
 
 impl SchwabAuthEnv {
-    pub async fn get_account_hash(&self, pool: &SqlitePool) -> Result<String, SchwabError> {
+    pub(crate) async fn get_account_hash(&self, pool: &SqlitePool) -> Result<String, SchwabError> {
         let access_token = SchwabTokens::get_valid_access_token(pool, self).await?;
 
         let headers = [
@@ -103,7 +103,10 @@ impl SchwabAuthEnv {
         )
     }
 
-    pub async fn get_tokens_from_code(&self, code: &str) -> Result<SchwabTokens, SchwabError> {
+    pub(crate) async fn get_tokens_from_code(
+        &self,
+        code: &str,
+    ) -> Result<SchwabTokens, SchwabError> {
         info!("Getting tokens for code: {code}");
         let credentials = format!("{}:{}", self.app_key, self.app_secret);
         let credentials = BASE64_STANDARD.encode(credentials);
@@ -177,7 +180,10 @@ impl SchwabAuthEnv {
         })
     }
 
-    pub async fn refresh_tokens(&self, refresh_token: &str) -> Result<SchwabTokens, SchwabError> {
+    pub(crate) async fn refresh_tokens(
+        &self,
+        refresh_token: &str,
+    ) -> Result<SchwabTokens, SchwabError> {
         let credentials = format!("{}:{}", self.app_key, self.app_secret);
         let credentials = BASE64_STANDARD.encode(credentials);
 

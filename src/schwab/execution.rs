@@ -36,14 +36,12 @@ fn row_to_execution(
 /// Converts u64 share quantity to i64 for database storage with exact conversion.
 /// NEVER silently changes amounts - returns error if conversion would lose data.
 /// This is critical for financial applications where data integrity is paramount.
-const fn shares_to_db_i64(shares: u64) -> Result<i64, OnChainError> {
+const fn shares_to_db_i64(shares: u64) -> Result<i64, crate::error::PersistenceError> {
     if shares > i64::MAX as u64 {
-        Err(OnChainError::Persistence(
-            PersistenceError::InvalidShareQuantity({
-                #[allow(clippy::cast_possible_wrap)]
-                (shares as i64) // This will be negative, which is what we want to signal invalid
-            }),
-        ))
+        Err(crate::error::PersistenceError::InvalidShareQuantity({
+            #[allow(clippy::cast_possible_wrap)]
+            (shares as i64) // This will be negative, which is what we want to signal invalid
+        }))
     } else {
         #[allow(clippy::cast_possible_wrap)]
         Ok(shares as i64) // Safe: verified within i64 range
@@ -63,7 +61,7 @@ pub(crate) async fn update_execution_status_within_transaction(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     execution_id: i64,
     new_state: TradeState,
-) -> Result<(), OnChainError> {
+) -> Result<(), crate::error::PersistenceError> {
     let status_str = new_state.status_str();
     let db_fields = new_state.to_db_fields()?;
 
@@ -171,7 +169,7 @@ impl SchwabExecution {
     pub(crate) async fn save_within_transaction(
         &self,
         sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    ) -> Result<i64, OnChainError> {
+    ) -> Result<i64, crate::error::PersistenceError> {
         let shares_i64 = shares_to_db_i64(self.shares)?;
         let direction_str = self.direction.as_str();
         let status_str = self.state.status().as_str();

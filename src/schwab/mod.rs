@@ -87,7 +87,7 @@ impl serde::Serialize for Direction {
 }
 
 #[derive(Error, Debug)]
-pub enum SchwabError {
+pub(crate) enum SchwabError {
     #[error("Failed to create header value: {0}")]
     InvalidHeader(#[from] InvalidHeaderValue),
     #[error("Request failed: {0}")]
@@ -117,10 +117,13 @@ pub enum SchwabError {
     #[error("Invalid configuration: {0}")]
     InvalidConfiguration(String),
     #[error("Execution persistence error: {0}")]
-    ExecutionPersistence(#[from] crate::error::OnChainError),
+    ExecutionPersistence(#[from] crate::error::PersistenceError),
 }
 
-pub async fn run_oauth_flow(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<(), SchwabError> {
+pub(crate) async fn run_oauth_flow(
+    pool: &SqlitePool,
+    env: &SchwabAuthEnv,
+) -> Result<(), SchwabError> {
     println!(
         "Authenticate portfolio brokerage account (not dev account) and paste URL: {}",
         env.get_auth_url()
@@ -163,7 +166,7 @@ pub(crate) const fn price_cents_from_db_i64(db_value: i64) -> Result<u64, error:
     }
 }
 
-pub fn extract_code_from_url(url: &str) -> Result<String, SchwabError> {
+pub(crate) fn extract_code_from_url(url: &str) -> Result<String, SchwabError> {
     let parsed_url = url::Url::parse(url)?;
 
     parsed_url
