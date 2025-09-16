@@ -233,6 +233,7 @@ impl SchwabAuthEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::setup_test_db;
     use chrono::{Duration, Utc};
     use httpmock::prelude::*;
     use serde_json::json;
@@ -704,12 +705,6 @@ mod tests {
             }
             other => panic!("Expected RequestFailed error, got: {other:?}"),
         }
-    }
-
-    async fn setup_test_db() -> SqlitePool {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
-        sqlx::migrate!().run(&pool).await.unwrap();
-        pool
     }
 
     async fn setup_test_tokens(pool: &SqlitePool) {

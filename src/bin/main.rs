@@ -1,5 +1,6 @@
 use clap::Parser;
-use rain_schwab::{Env, run, setup_tracing};
+use rain_schwab::env::{Env, setup_tracing};
+use rain_schwab::run;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
