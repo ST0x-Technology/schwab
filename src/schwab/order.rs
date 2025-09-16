@@ -9,7 +9,7 @@ use chrono::Utc;
 #[cfg(test)]
 use super::execution::find_execution_by_id;
 use super::{
-    SchwabAuthEnv, SchwabError, SchwabInstruction, SchwabTokens,
+    Direction, SchwabAuthEnv, SchwabError, SchwabTokens,
     execution::{SchwabExecution, update_execution_status_within_transaction},
     order_status::OrderStatusResponse,
 };
@@ -311,8 +311,8 @@ pub(crate) async fn execute_schwab_order(
     execution: SchwabExecution,
 ) -> Result<(), SchwabError> {
     let schwab_instruction = match execution.direction {
-        SchwabInstruction::Buy => Instruction::Buy,
-        SchwabInstruction::Sell => Instruction::Sell,
+        Direction::Buy => Instruction::Buy,
+        Direction::Sell => Instruction::Sell,
     };
 
     let order = Order::new(
@@ -945,7 +945,7 @@ mod tests {
     #[tokio::test]
     async fn test_execution_success_handling() {
         use super::super::execution::SchwabExecution;
-        use crate::schwab::SchwabInstruction;
+        use crate::schwab::Direction;
 
         let pool = setup_test_db().await;
 
@@ -955,7 +955,7 @@ mod tests {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 100,
-            direction: SchwabInstruction::Buy,
+            direction: Direction::Buy,
             state: TradeState::Pending,
         };
 
@@ -986,7 +986,7 @@ mod tests {
     #[tokio::test]
     async fn test_execution_failure_handling() {
         use super::super::execution::SchwabExecution;
-        use crate::schwab::{SchwabError, SchwabInstruction};
+        use crate::schwab::{Direction, SchwabError};
 
         let pool = setup_test_db().await;
 
@@ -996,7 +996,7 @@ mod tests {
             id: None,
             symbol: "TSLA".to_string(),
             shares: 50,
-            direction: SchwabInstruction::Sell,
+            direction: Direction::Sell,
             state: TradeState::Pending,
         };
 

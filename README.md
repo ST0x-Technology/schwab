@@ -50,9 +50,12 @@ and the system proves market fit.
    spread
 2. Bot monitors Raindex for clears involving the arbitrageur's order
 3. Bot records onchain trades and accumulates net position changes per symbol
-4. When accumulated net position reaches ≥1 whole share, execute offsetting
-   trade on Charles Schwab for the floor of the net amount, continuing to track
-   the remaining fractional amount
+4. When accumulated net position reaches an absolute value of ≥1.0 share,
+   execute offsetting trade for floor(abs(net_position)) shares on Charles
+   Schwab, using the sign of the net position to determine side (positive = sell
+   to reduce a long, negative = buy to cover a short), and continue tracking the
+   remaining fractional share (net_position minus the executed floor) with its
+   sign for future batching
 5. Bot maintains running inventory of positions across both venues
 6. Periodic rebalancing via st0x bridge to normalize inventory levels
 
@@ -214,8 +217,8 @@ implementation. Solutions will be developed in later iterations.
 To begin arbitraging, you must first set up a Charles Schwab account. If you are
 based outside of the US, please register with Charles Schwab International.
 
-Once your trading account is established, navigate to the developer site at:
-https://developer.schwab.com/
+Once your trading account is established, navigate to the
+[Schwab Developer Portal](https://developer.schwab.com/).
 
 Register a new account on this site using the same details as your trading
 account. After completing registration, you will see three setup options:

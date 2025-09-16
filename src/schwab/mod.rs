@@ -87,9 +87,6 @@ impl serde::Serialize for Direction {
     }
 }
 
-// TODO: remove
-pub(crate) type SchwabInstruction = Direction;
-
 #[derive(Error, Debug)]
 pub enum SchwabError {
     #[error("Failed to create header value: {0}")]

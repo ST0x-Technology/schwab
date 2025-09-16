@@ -1591,7 +1591,7 @@ mod tests {
                 .unwrap();
         assert_eq!(executions.len(), 1);
         assert_eq!(executions[0].shares, 9);
-        assert_eq!(executions[0].direction, SchwabInstruction::Buy);
+        assert_eq!(executions[0].direction, Direction::Buy);
 
         // Verify order_id was stored in database
         let execution_id = executions[0].id.unwrap();

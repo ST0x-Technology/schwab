@@ -17,7 +17,7 @@ fn row_to_execution(
     executed_at: Option<chrono::NaiveDateTime>,
 ) -> Result<SchwabExecution, OnChainError> {
     let parsed_direction = direction.parse().map_err(|err: String| {
-        OnChainError::Persistence(PersistenceError::InvalidSchwabInstruction(err))
+        OnChainError::Persistence(PersistenceError::InvalidDirection(err))
     })?;
     let status_enum = status.parse().map_err(|err: String| {
         OnChainError::Persistence(PersistenceError::InvalidTradeStatus(err))
@@ -816,7 +816,7 @@ mod tests {
 
         assert!(matches!(
             result.unwrap_err(),
-            OnChainError::Persistence(PersistenceError::InvalidSchwabInstruction(_))
+            OnChainError::Persistence(PersistenceError::InvalidDirection(_))
         ));
     }
 
