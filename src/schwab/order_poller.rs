@@ -1,4 +1,5 @@
 use chrono::Utc;
+use rand::Rng;
 use sqlx::SqlitePool;
 use std::time::Duration;
 use tokio::sync::watch;
@@ -112,7 +113,7 @@ impl OrderStatusPoller {
                 error!("Failed to poll execution {execution_id}: {e}");
             }
 
-            self.add_jittered_delay(execution_id).await;
+            self.add_jittered_delay().await;
         }
 
         debug!("Completed polling cycle");
@@ -231,11 +232,11 @@ impl OrderStatusPoller {
         Ok(())
     }
 
-    async fn add_jittered_delay(&self, execution_id: i64) {
+    async fn add_jittered_delay(&self) {
         if self.config.max_jitter > Duration::ZERO {
-            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-            let jitter_millis =
-                (execution_id as u64 * 17 + 42) % self.config.max_jitter.as_millis() as u64;
+            #[allow(clippy::cast_possible_truncation)]
+            let max_jitter_millis = self.config.max_jitter.as_millis() as u64;
+            let jitter_millis = rand::thread_rng().gen_range(0..max_jitter_millis);
             let jitter = Duration::from_millis(jitter_millis);
             tokio::time::sleep(jitter).await;
         }

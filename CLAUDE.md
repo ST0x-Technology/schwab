@@ -271,7 +271,7 @@ Tests should verify our application logic, not just language features. Avoid
 tests that only exercise struct construction or field access without testing any
 business logic.
 
-**❌ Bad: Testing language features instead of our code**
+##### ❌ Bad: Testing language features instead of our code
 
 ```rust
 #[test]
@@ -289,7 +289,7 @@ fn test_order_poller_config_custom() {
 This test creates a struct and verifies field assignments, but doesn't test any
 of our code logic - it only tests Rust's struct field assignment mechanism.
 
-**✅ Good: Testing actual business logic**
+##### ✅ Good: Testing actual business logic
 
 ```rust
 #[test]
@@ -326,7 +326,7 @@ that cannot be expressed through code structure alone.
 
 #### When to Use Comments
 
-**✅ DO comment when:**
+##### ✅ DO comment when:
 
 - **Complex business logic**: Explaining non-obvious domain-specific rules or
   calculations
@@ -339,7 +339,7 @@ that cannot be expressed through code structure alone.
 - **Test data context**: Explaining what mock values represent or test scenarios
 - **Workarounds**: Temporary solutions with context about why they exist
 
-**❌ DON'T comment when:**
+##### ❌ DON'T comment when:
 
 - The code is self-explanatory through naming and structure
 - Restating what the code obviously does
@@ -469,7 +469,7 @@ so that if we get an unexpected result value, we immediately see the value.
 
 #### Type modeling examples
 
-**Make invalid states unrepresentable:**
+##### Make invalid states unrepresentable:
 
 Instead of using multiple fields that can contradict each other:
 
@@ -502,7 +502,7 @@ pub enum OrderStatus {
 }
 ```
 
-**Use newtypes for domain concepts:**
+##### Use newtypes for domain concepts:
 
 ```rust
 // ❌ Bad: Easy to mix up parameters of the same type
@@ -524,7 +524,7 @@ struct PriceCents(i64);
 fn place_order(symbol: Symbol, account: AccountId, amount: Shares, price: PriceCents) { }
 ```
 
-**The Typestate Pattern:**
+##### The Typestate Pattern:
 
 The typestate pattern encodes information about an object's runtime state in its
 compile-time type. This moves state-related errors from runtime to compile time,
@@ -574,7 +574,7 @@ impl<S> Task<S> {
 }
 ```
 
-**Session Types and Protocol Enforcement:**
+##### Session Types and Protocol Enforcement:
 
 ```rust
 // ✅ Good: Enforce protocol sequences at compile time
@@ -618,7 +618,7 @@ impl Connection<Active> {
 }
 ```
 
-**Builder Pattern with Typestate:**
+##### Builder Pattern with Typestate:
 
 ```rust
 // ✅ Good: Can't build incomplete objects at compile time
@@ -694,7 +694,7 @@ let request = RequestBuilder::new()
 Prefer flat code over deeply nested blocks to improve readability and
 maintainability.
 
-**Use early returns:**
+##### Use early returns:
 
 Instead of
 
@@ -734,7 +734,7 @@ fn process_data(data: Option<&str>) -> Result<String, Error> {
 }
 ```
 
-**Extract functions for complex logic:**
+##### Extract functions for complex logic:
 
 Instead of
 
@@ -858,7 +858,7 @@ fn handle_trade_processing(
 }
 ```
 
-**Use pattern matching with guards:**
+##### Use pattern matching with guards:
 
 Instead of
 
@@ -893,7 +893,7 @@ match (input, state) {
 }
 ```
 
-**Prefer iterator chains over nested loops:**
+##### Prefer iterator chains over nested loops:
 
 Instead of
 
@@ -925,7 +925,7 @@ trades
 Avoid creating unnecessary constructors or getters when they don't add logic
 beyond setting/getting field values. Use public fields directly instead.
 
-**Prefer direct field access:**
+##### Prefer direct field access:
 
 ```rust
 pub struct SchwabTokens {
@@ -947,7 +947,7 @@ let tokens = SchwabTokens {
 println!("Token: {}", tokens.access_token);
 ```
 
-**Avoid unnecessary constructors and getters:**
+##### Avoid unnecessary constructors and getters:
 
 ```rust
 // Don't create these unless they add meaningful logic

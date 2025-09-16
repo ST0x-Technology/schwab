@@ -964,7 +964,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify execution remains PENDING with order_id stored in database
+        // Verify execution is now Submitted with order_id stored in database
         let updated_execution = find_execution_by_id(&pool, execution_id)
             .await
             .unwrap()
