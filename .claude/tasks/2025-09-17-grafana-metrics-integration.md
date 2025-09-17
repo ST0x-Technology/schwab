@@ -48,10 +48,10 @@ Use the existing `dry_run` flag to determine deployment environment:
 
 ### Task 1. Add OpenTelemetry Dependencies
 
-- [ ] Run `cargo add opentelemetry --features metrics,otel_unstable`
-- [ ] Run `cargo add opentelemetry_sdk --features rt-tokio,metrics`
-- [ ] Run `cargo add opentelemetry-otlp --features http-proto,reqwest-client`
-- [ ] Verify dependencies compile correctly
+- [x] Run `cargo add opentelemetry --features metrics,otel_unstable`
+- [x] Run `cargo add opentelemetry_sdk --features rt-tokio,metrics`
+- [x] Run `cargo add opentelemetry-otlp --features http-proto,reqwest-client`
+- [x] Verify dependencies compile correctly
 
 ### Task 2. Update Environment Configuration
 
