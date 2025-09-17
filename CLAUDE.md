@@ -101,6 +101,7 @@ exploiting price discrepancies.
 **SQLite Tables:**
 
 - `onchain_trades`: Immutable blockchain trade records
+
   - `id`: Primary key (auto-increment)
   - `tx_hash`: Transaction hash (66 chars, 0x-prefixed)
   - `log_index`: Event log index (non-negative)
@@ -112,6 +113,7 @@ exploiting price discrepancies.
   - Unique constraint: `(tx_hash, log_index)`
 
 - `schwab_executions`: Schwab order execution tracking
+
   - `id`: Primary key (auto-increment)
   - `symbol`: Asset symbol (non-empty string)
   - `shares`: Whole shares executed (positive integer)
@@ -123,6 +125,7 @@ exploiting price discrepancies.
   - Check constraints ensure consistent status transitions
 
 - `trade_accumulators`: Unified position tracking per symbol
+
   - `symbol`: Primary key (non-empty string)
   - `net_position`: Running net position (real number)
   - `accumulated_long`: Fractional shares for buying (non-negative)
@@ -131,6 +134,7 @@ exploiting price discrepancies.
   - `last_updated`: Last update timestamp (default CURRENT_TIMESTAMP)
 
 - `trade_execution_links`: Many-to-many audit trail
+
   - `id`: Primary key (auto-increment)
   - `trade_id`: Foreign key to onchain_trades
   - `execution_id`: Foreign key to schwab_executions
@@ -139,6 +143,7 @@ exploiting price discrepancies.
   - Unique constraint: `(trade_id, execution_id)`
 
 - `schwab_auth`: OAuth token storage (sensitive data)
+
   - `id`: Primary key (constrained to 1 for singleton)
   - `access_token`: Current access token
   - `access_token_fetched_at`: Access token timestamp
@@ -146,6 +151,7 @@ exploiting price discrepancies.
   - `refresh_token_fetched_at`: Refresh token timestamp
 
 - `event_queue`: Idempotent event processing queue
+
   - `id`: Primary key (auto-increment)
   - `tx_hash`: Transaction hash (66 chars, 0x-prefixed)
   - `log_index`: Event log index (non-negative)
@@ -157,6 +163,7 @@ exploiting price discrepancies.
   - Unique constraint: `(tx_hash, log_index)`
 
 - `symbol_locks`: Per-symbol execution concurrency control
+
   - `symbol`: Primary key (non-empty string)
   - `locked_at`: Lock acquisition timestamp
 
@@ -234,11 +241,14 @@ Environment variables (can be set via `.env` file):
 
 ### Workflow Best Practices
 
-- **Always run tests, clippy, and fmt before handing over a piece of work**
+- **Always run tests, clippy, and pre-commit before handing over a piece of
+  work**
   - Run tests first, as changing tests can break clippy
   - Run clippy next, as fixing linting errors can break formatting
   - Deny warnings when running clippy
-  - Always run `cargo fmt` last to ensure clean code formatting
+  - Always run `pre-commit run -a` last to ensure git hooks pass. If it failed
+    due to a formatting change then running `pre-commit run -a` again should
+    pass
 
 ### Commenting Guidelines
 

@@ -6,7 +6,7 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, flake-utils, rainix }:
+  outputs = { flake-utils, rainix, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let pkgs = rainix.pkgs.${system};
       in rec {
@@ -33,7 +33,8 @@
         };
 
         devShell = pkgs.mkShell {
-          shellHook = rainix.devShells.${system}.default.shellHook;
+          inherit (rainix.devShells.${system}.default) shellHook;
+          inherit (rainix.devShells.${system}.default) nativeBuildInputs;
           buildInputs = with pkgs;
             [
               sqlx-cli
@@ -42,8 +43,6 @@
               packages.prepSolArtifacts
               packages.checkTestCoverage
             ] ++ rainix.devShells.${system}.default.buildInputs;
-          nativeBuildInputs =
-            rainix.devShells.${system}.default.nativeBuildInputs;
         };
       });
 }
