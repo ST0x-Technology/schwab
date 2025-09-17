@@ -112,6 +112,8 @@ mod tests {
                 .unwrap(),
                 deployment_block: 0,
             },
+            order_polling_interval: 15,
+            order_polling_max_jitter: 5,
         }
     }
 
