@@ -224,6 +224,11 @@ Environment variables (can be set via `.env` file):
   and not hidden behind #[cfg(test)] at the top of the file
 - **Error Handling**: Avoid `unwrap()` even post-validation since validation
   logic changes might leave panics in the codebase
+- **Visibility Levels**: Always keep visibility levels as restrictive as
+  possible (prefer `pub(crate)` over `pub`, private over `pub(crate)`) to enable
+  better dead code detection by the compiler and tooling. This makes the
+  codebase easier to navigate and understand by making the relevance scope
+  explicit
 
 ### Testing Strategy
 
@@ -241,14 +246,12 @@ Environment variables (can be set via `.env` file):
 
 ### Workflow Best Practices
 
-- **Always run tests, clippy, and pre-commit before handing over a piece of
+- **Always run tests, clippy, and formatters before handing over a piece of
   work**
   - Run tests first, as changing tests can break clippy
   - Run clippy next, as fixing linting errors can break formatting
   - Deny warnings when running clippy
-  - Always run `pre-commit run -a` last to ensure git hooks pass. If it failed
-    due to a formatting change then running `pre-commit run -a` again should
-    pass
+  - Always run `cargo fmt` last to ensure clean code formatting
 
 ### Commenting Guidelines
 

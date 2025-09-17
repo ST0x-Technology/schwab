@@ -84,9 +84,7 @@ impl TradeExecutionLink {
         rows.into_iter()
             .map(|row| {
                 let execution_direction = row.direction.parse::<Direction>().map_err(|e| {
-                    OnChainError::Persistence(
-                        crate::error::PersistenceError::InvalidSchwabInstruction(e),
-                    )
+                    OnChainError::Persistence(crate::error::PersistenceError::InvalidDirection(e))
                 })?;
 
                 let execution_status = parse_trade_status_from_db(

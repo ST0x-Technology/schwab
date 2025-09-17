@@ -413,8 +413,8 @@ mod tests {
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
     use crate::env::LogLevel;
     use crate::onchain::trade::OnchainTrade;
+    use crate::schwab::Direction;
     use crate::schwab::execution::find_completed_executions_by_symbol;
-    use crate::schwab::{Direction, SchwabInstruction};
     use crate::test_utils::get_test_order;
     use crate::test_utils::setup_test_db;
     use crate::{onchain::EvmEnv, schwab::SchwabAuthEnv};
@@ -1584,7 +1584,7 @@ mod tests {
             .unwrap();
         assert_eq!(executions.len(), 1);
         assert_eq!(executions[0].shares, 9);
-        assert_eq!(executions[0].direction, SchwabInstruction::Buy);
+        assert_eq!(executions[0].direction, Direction::Buy);
 
         // Verify Schwab API was called
         account_mock.assert();

@@ -81,14 +81,14 @@ impl OnchainTrade {
         .await?;
 
         let tx_hash = row.tx_hash.parse().map_err(|_| {
-            OnChainError::Persistence(PersistenceError::InvalidSchwabInstruction(format!(
+            OnChainError::Persistence(PersistenceError::InvalidDirection(format!(
                 "Invalid tx_hash format: {}",
                 row.tx_hash
             )))
         })?;
 
         let direction = row.direction.parse().map_err(|_| {
-            OnChainError::Persistence(PersistenceError::InvalidSchwabInstruction(format!(
+            OnChainError::Persistence(PersistenceError::InvalidDirection(format!(
                 "Invalid direction in database: {}",
                 row.direction
             )))
