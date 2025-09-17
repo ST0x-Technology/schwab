@@ -20,7 +20,12 @@ sqlx = { version = "0.8.6", features = [
 thiserror = "2.0.12"
 tokio = { version = "1.46.0", features = ["full"] }
 url = { version = "2.5.4", features = ["serde"] }
-reqwest = { version = "0.12.4", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12.4", features = [
+  "json",
+  "rustls-tls",
+  "gzip",
+  "blocking",
+] }
 serde = { version = "1.0.197", features = ["derive"] }
 chrono = { version = "0.4.38", features = ["serde"] }
 base64 = "0.22"
@@ -36,6 +41,7 @@ opentelemetry_sdk = { version = "0.30.0", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.30.0", features = [
   "http-json",
   "reqwest-client",
+  "grpc-tonic",
 ] }
 tracing-opentelemetry = "0.31.0"
 

@@ -82,6 +82,8 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
         }
     }
 
+    // Note: Span flushing is handled in the server binary
+
     info!("Shutdown complete");
     Ok(())
 }
