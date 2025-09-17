@@ -1,6 +1,8 @@
 #[cfg(test)]
 use crate::error::OnChainError;
 #[cfg(test)]
+use crate::schwab::TradeStatus;
+#[cfg(test)]
 use crate::schwab::shares_from_db_i64;
 use crate::schwab::{Direction, TradeState};
 use chrono::{DateTime, Utc};
@@ -59,7 +61,7 @@ impl TradeExecutionLink {
     ) -> Result<Vec<ExecutionContribution>, OnChainError> {
         let rows = sqlx::query!(
             r#"
-            SELECT 
+            SELECT
                 tel.id,
                 tel.execution_id,
                 tel.contributed_shares,
@@ -87,9 +89,13 @@ impl TradeExecutionLink {
                     OnChainError::Persistence(crate::error::PersistenceError::InvalidDirection(e))
                 })?;
 
-                let execution_status = parse_trade_status_from_db(
-                    &row.status,
-                    row.order_id.as_deref(),
+                let execution_status_enum = row.status.parse::<TradeStatus>().map_err(|e| {
+                    OnChainError::Persistence(crate::error::PersistenceError::InvalidTradeStatus(e))
+                })?;
+
+                let execution_status = TradeState::from_db_row(
+                    execution_status_enum,
+                    row.order_id,
                     row.price_cents,
                     row.executed_at,
                 )?;
@@ -116,7 +122,7 @@ impl TradeExecutionLink {
     ) -> Result<Vec<TradeContribution>, OnChainError> {
         let rows = sqlx::query!(
             r#"
-            SELECT 
+            SELECT
                 tel.id,
                 tel.trade_id,
                 tel.contributed_shares,
@@ -165,7 +171,7 @@ impl TradeExecutionLink {
         let base_symbol = symbol.strip_suffix("0x").unwrap_or(symbol).to_string();
         let rows = sqlx::query!(
             r#"
-            SELECT 
+            SELECT
                 tel.id as link_id,
                 tel.contributed_shares,
                 tel.created_at as link_created_at,
@@ -286,65 +292,6 @@ pub struct AuditTrailEntry {
     pub execution_status: String,
     pub execution_order_id: Option<String>,
     pub execution_executed_at: Option<DateTime<Utc>>,
-}
-
-#[cfg(test)]
-fn parse_trade_status_from_db(
-    status: &str,
-    order_id: Option<&str>,
-    price_cents: Option<i64>,
-    executed_at: Option<chrono::NaiveDateTime>,
-) -> Result<TradeState, OnChainError> {
-    match status {
-        "PENDING" => Ok(TradeState::Pending),
-        "COMPLETED" => {
-            let order_id = order_id.ok_or(OnChainError::Persistence(
-                crate::error::PersistenceError::InvalidTradeStatus(
-                    "COMPLETED status missing order_id".to_string(),
-                ),
-            ))?;
-            let price_cents = price_cents.ok_or(OnChainError::Persistence(
-                crate::error::PersistenceError::InvalidTradeStatus(
-                    "COMPLETED status missing price_cents".to_string(),
-                ),
-            ))?;
-            let executed_at = executed_at.ok_or(OnChainError::Persistence(
-                crate::error::PersistenceError::InvalidTradeStatus(
-                    "COMPLETED status missing executed_at".to_string(),
-                ),
-            ))?;
-
-            if price_cents < 0 {
-                return Err(OnChainError::Persistence(
-                    crate::error::PersistenceError::InvalidTradeStatus(format!(
-                        "COMPLETED status has negative price_cents: {price_cents}"
-                    )),
-                ));
-            }
-
-            #[allow(clippy::cast_sign_loss)]
-            Ok(TradeState::Filled {
-                executed_at: DateTime::from_naive_utc_and_offset(executed_at, Utc),
-                order_id: order_id.to_string(),
-                price_cents: price_cents as u64,
-            })
-        }
-        "FAILED" => {
-            let executed_at = executed_at.ok_or(OnChainError::Persistence(
-                crate::error::PersistenceError::InvalidTradeStatus(
-                    "FAILED status missing executed_at".to_string(),
-                ),
-            ))?;
-
-            Ok(TradeState::Failed {
-                failed_at: DateTime::from_naive_utc_and_offset(executed_at, Utc),
-                error_reason: None, // Database doesn't store error reason currently
-            })
-        }
-        _ => Err(OnChainError::Persistence(
-            crate::error::PersistenceError::InvalidTradeStatus(format!("Invalid status: {status}")),
-        )),
-    }
 }
 
 #[cfg(test)]

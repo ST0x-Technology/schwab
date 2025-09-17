@@ -79,7 +79,7 @@ fn setup_schwab_api_mocks(server: &MockServer) -> Vec<Mock> {
 #[serial]
 async fn test_end_to_end_server_and_bot_integration() {
     let server = MockServer::start();
-    let server_port = 8081; // Use different port to avoid conflicts
+    let server_port = 8081;
     let env = create_test_env_with_mock_server(&server, server_port);
     let server_base_url = format!("http://127.0.0.1:{server_port}");
 
