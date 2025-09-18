@@ -77,7 +77,9 @@ pub(crate) enum EventQueueError {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum EventProcessingError {
     #[error("Event queue error: {0}")]
-    Queue(#[from] EventQueueError),
+    Queue(EventQueueError),
+    #[error("Failed to enqueue ClearV2 event: {0}")]
+    EnqueueClearV2(#[source] EventQueueError),
     #[error("Failed to enqueue TakeOrderV2 event: {0}")]
     EnqueueTakeOrderV2(#[source] EventQueueError),
     #[error("Failed to process trade through accumulator: {0}")]

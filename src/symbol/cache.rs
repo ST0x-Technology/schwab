@@ -9,7 +9,7 @@ use crate::bindings::{IERC20::IERC20Instance, IOrderBookV4::IO};
 use crate::error::OnChainError;
 
 #[derive(Debug, Default, Clone)]
-pub struct SymbolCache {
+pub(crate) struct SymbolCache {
     map: Arc<RwLock<BTreeMap<Address, String>>>,
 }
 

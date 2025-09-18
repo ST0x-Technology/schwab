@@ -365,7 +365,9 @@ async fn process_live_event(
                 log.transaction_hash, log.log_index
             );
 
-            enqueue(pool, clear_event.as_ref(), &log).await?;
+            enqueue(pool, clear_event.as_ref(), &log)
+                .await
+                .map_err(EventProcessingError::EnqueueClearV2)?;
         }
         TradeEvent::TakeOrderV2(take_event) => {
             info!(
@@ -393,7 +395,9 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
     info!("Starting queue processor service");
 
     // Log initial unprocessed event count
-    let unprocessed_count = crate::queue::count_unprocessed(pool).await?;
+    let unprocessed_count = crate::queue::count_unprocessed(pool)
+        .await
+        .map_err(EventProcessingError::Queue)?;
 
     if unprocessed_count > 0 {
         info!(
@@ -479,7 +483,9 @@ async fn process_next_queued_event<P: Provider + Clone>(
             "Event filtered out (no matching owner), tx_hash={:?}, log_index={}",
             queued_event.tx_hash, queued_event.log_index
         );
-        mark_event_processed(pool, event_id).await?;
+        mark_event_processed(pool, event_id)
+            .await
+            .map_err(EventProcessingError::Queue)?;
         return Ok(None);
     };
 

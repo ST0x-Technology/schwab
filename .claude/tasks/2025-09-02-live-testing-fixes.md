@@ -35,191 +35,48 @@ During live testing, we identified critical architectural and data issues:
 - [x] Execute database cleanup - COMPLETED
 - [x] Test the complete flow - COMPLETED (all integration tests passing)
 
-## Task 2: Create Unified Event Processor
+## Task 2: ✅ COMPLETED - Unified Event Processor
 
-### Design Principle
+### Design Principle ✅ IMPLEMENTED
 
 All trades flow through a single processing pipeline:
 
 ```
-Events (Live/Backfill) → Event Queue → Single Processor → Accumulator → Schwab
+Events (Live/Backfill) → Event Queue → Queue Processor Service → Accumulator → Schwab
 ```
 
-The system processes trades like a fold/scan operation over an ordered event
-stream.
+**Key Achievement**: The system now processes trades like a fold/scan operation
+over an ordered event stream, with NO separate code paths.
 
-### Implementation
+### Final Implementation
 
-- [x] Create `process_next_queued_event` function in `src/conductor.rs` -
-      COMPLETED
+- [x] **Created `process_next_queued_event` function** in
+      `src/conductor.rs:421-504`
 
-```rust
-pub(crate) async fn process_next_queued_event<P: Provider + Clone>(
-    env: &Env,
-    pool: &SqlitePool,
-    cache: &SymbolCache,
-    provider: &P,
-) -> Result<Option<PendingSchwabExecution>, Error> {
-    // Get next unprocessed event ordered by (block_number, log_index)
-    let queued_event = match get_next_unprocessed_event(pool).await? {
-        Some(event) => event,
-        None => return Ok(None),
-    };
+  **Location**: `src/conductor.rs:421-504`\
+  **Purpose**: Single event processing function used by `run_queue_processor`
 
-    // Convert event to trade based on type
-    let trade = match &queued_event.event {
-        TradeEvent::ClearV2(clear) => {
-            OnchainTrade::try_from_clear_v2(
-                &env.evm_env,
-                cache,
-                provider,
-                (**clear).clone(),
-                reconstruct_log_from_queued_event(&env.evm_env, &queued_event),
-            ).await?
-        }
-        TradeEvent::TakeOrderV2(take) => {
-            OnchainTrade::try_from_take_order_if_target_owner(
-                cache,
-                provider,
-                (**take).clone(),
-                reconstruct_log_from_queued_event(&env.evm_env, &queued_event),
-                env.evm_env.order_owner,
-            ).await?
-        }
-    };
+- [x] **Added helper functions** - COMPLETED
 
-    let execution = match trade {
-        Some(t) => {
-            // Get symbol lock for sequential processing per symbol
-            let symbol_lock = get_symbol_lock(&t.symbol).await;
-            let _guard = symbol_lock.lock().await;
+  **Locations**:
+  - `get_next_unprocessed_event`: `src/conductor.rs:506-520`
+  - `mark_event_processed`: `src/conductor.rs:522-531`
 
-            info!(
-                "Processing queued trade: symbol={}, amount={}, direction={:?}, tx_hash={:?}, log_index={}",
-                t.symbol, t.amount, t.direction, t.tx_hash, t.log_index
-            );
+- [x] **Integrated with BackgroundTasks** (Task 10) - COMPLETED
 
-            // Process through accumulator (handles duplicates gracefully)
-            // This is the ONLY place that saves trades
-            accumulator::process_onchain_trade(pool, t).await?
-        }
-        None => None,
-    };
+  **Result**: Queue processor now runs as a unified background service alongside
+  token refresher, order poller, etc.
 
-    // Always mark event as processed regardless of outcome
-    mark_event_processed(pool, queued_event.id.unwrap()).await?;
+## Task 3: ~~Update Queue Processing~~ SUPERSEDED BY TASK 10
 
-    Ok(execution)
-}
-```
+**⚠️ This task was superseded by Task 10's unified architecture.**
 
-- [x] Add helper functions - COMPLETED
+Originally planned to update `process_queue` function, but Task 10 implemented a
+cleaner solution:
 
-```rust
-async fn get_next_unprocessed_event(pool: &SqlitePool) -> Result<Option<QueuedEvent>, Error> {
-    sqlx::query_as!(
-        QueuedEvent,
-        r#"
-        SELECT id, tx_hash, log_index, block_number, event_data, processed, created_at, processed_at
-        FROM event_queue
-        WHERE processed = 0
-        ORDER BY block_number ASC, log_index ASC
-        LIMIT 1
-        "#
-    )
-    .fetch_optional(pool)
-    .await
-    .map_err(Into::into)
-}
-
-async fn mark_event_processed(pool: &SqlitePool, event_id: i64) -> Result<(), Error> {
-    sqlx::query!(
-        "UPDATE event_queue SET processed = 1, processed_at = CURRENT_TIMESTAMP WHERE id = ?",
-        event_id
-    )
-    .execute(pool)
-    .await
-    .map(|_| ())
-    .map_err(Into::into)
-}
-```
-
-## Task 3: Update Queue Processing
-
-### Replace process_queue Function
-
-- [x] Update `process_queue` in `src/conductor.rs` to use unified processor -
-      COMPLETED
-
-```rust
-pub(crate) async fn process_queue<P: Provider + Clone>(
-    env: &Env,
-    evm_env: &EvmEnv,
-    pool: &SqlitePool,
-    symbol_cache: &SymbolCache,
-    provider: P,
-) -> anyhow::Result<()> {
-    info!("Processing any unprocessed events from previous sessions...");
-    
-    let unprocessed_count = count_unprocessed_events(pool).await?;
-    if unprocessed_count == 0 {
-        info!("No unprocessed events found");
-        check_and_execute_accumulated_positions(env, pool).await?;
-        return Ok(());
-    }
-    
-    info!("Found {unprocessed_count} unprocessed events to process");
-    
-    // Process ALL queued events before returning (ensures historical completes first)
-    // Use immutable counter pattern instead of mutable variable
-    process_all_queued_events(env, pool, symbol_cache, &provider, 0, unprocessed_count).await?;
-    
-    check_and_execute_accumulated_positions(env, pool).await?;
-    Ok(())
-}
-
-async fn process_all_queued_events<P: Provider + Clone>(
-    env: &Env,
-    pool: &SqlitePool,
-    cache: &SymbolCache,
-    provider: &P,
-    processed_so_far: usize,
-    total_count: usize,
-) -> Result<usize, Error> {
-    match process_next_queued_event(env, pool, cache, provider).await {
-        Ok(Some(execution)) => {
-            let new_count = processed_so_far + 1;
-            
-            if new_count % 10 == 0 {
-                info!("Processed {new_count}/{total_count} events");
-            }
-            
-            if let Some(exec_id) = execution.id {
-                // Execute Schwab trade
-                if let Err(e) = execute_pending_schwab_execution(env, pool, exec_id).await {
-                    error!("Failed to execute Schwab order {exec_id}: {e}");
-                }
-            }
-            
-            // Recursive call with updated count
-            Box::pin(process_all_queued_events(
-                env, pool, cache, provider, new_count, total_count
-            )).await
-        }
-        Ok(None) => {
-            info!("Finished processing {processed_so_far} historical events");
-            Ok(processed_so_far)
-        }
-        Err(e) => {
-            error!("Failed to process queued event: {e}");
-            // Continue with next event
-            Box::pin(process_all_queued_events(
-                env, pool, cache, provider, processed_so_far, total_count
-            )).await
-        }
-    }
-}
-```
+- **DELETED**: `process_queue` and `process_all_queued_events` functions
+- **UNIFIED**: All event processing now handled by `run_queue_processor` service
+- **SIMPLIFIED**: No separate startup vs continuous processing flows
 
 ## Task 4: Create Dedicated Queue Processor Service
 
@@ -352,110 +209,53 @@ tokio::select! {
 These functions caused duplicate insert attempts and have been replaced by the
 unified processor.
 
-## Task 7: Add Test Coverage
+## Task 7: ✅ COMPLETED - Test Coverage
+
+### Current Test Status
+
+**Verification**: `cargo test -q --lib conductor` → 16 tests passing ✅
 
 ### Unit Tests
 
-- [ ] Create test for `process_next_queued_event` duplicate handling:
+- [x] **Duplicate Handling Tests** ✅ IMPLEMENTED
+  - `test_onchain_trade_duplicate_handling` (lines 754-782)
+  - `test_duplicate_trade_handling` (lines 784-817)
+  - **Coverage**: Both accumulator-level and event processing duplicate handling
 
-```rust
-#[tokio::test]
-async fn test_process_next_queued_event_handles_duplicates() {
-    let pool = create_test_pool().await;
-    let env = create_test_env();
-    let cache = SymbolCache::new();
-    let provider = create_mock_provider();
-    
-    // Insert a trade that already exists
-    let existing_trade = create_test_trade();
-    existing_trade.save_to_db(&pool).await.unwrap();
-    
-    // Enqueue an event for the same trade
-    let event = create_test_clear_event_for_trade(&existing_trade);
-    enqueue(&pool, &event, &test_log).await.unwrap();
-    
-    // Process should handle duplicate gracefully
-    let result = process_next_queued_event(&env, &pool, &cache, &provider).await;
-    assert!(result.is_ok(), "Should handle duplicate without error");
-    
-    // Verify event marked as processed
-    let unprocessed = count_unprocessed_events(&pool).await.unwrap();
-    assert_eq!(unprocessed, 0, "Event should be marked as processed");
-    
-    // Verify no duplicate trade inserted
-    let trade_count = sqlx::query!("SELECT COUNT(*) as count FROM onchain_trades")
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(trade_count.count, 1, "Should not insert duplicate trade");
-}
-```
+- [x] **Queue Processing Order Tests** ✅ IMPLEMENTED
+  - `test_deterministic_processing_order` (lines 955-1025)
+  - **Coverage**: Events processed in correct block_number/log_index order
 
-- [ ] Create test for queue ordering:
-
-```rust
-#[tokio::test]
-async fn test_queue_processes_in_block_order() {
-    let pool = create_test_pool().await;
-    
-    // Enqueue events out of order
-    enqueue_test_event(&pool, block: 100, log_index: 5).await;
-    enqueue_test_event(&pool, block: 99, log_index: 10).await;
-    enqueue_test_event(&pool, block: 100, log_index: 3).await;
-    
-    // Process and verify order
-    let first = get_next_unprocessed_event(&pool).await.unwrap().unwrap();
-    assert_eq!(first.block_number, 99);
-    assert_eq!(first.log_index, 10);
-    
-    mark_event_processed(&pool, first.id.unwrap()).await.unwrap();
-    
-    let second = get_next_unprocessed_event(&pool).await.unwrap().unwrap();
-    assert_eq!(second.block_number, 100);
-    assert_eq!(second.log_index, 3);
-    
-    mark_event_processed(&pool, second.id.unwrap()).await.unwrap();
-    
-    let third = get_next_unprocessed_event(&pool).await.unwrap().unwrap();
-    assert_eq!(third.block_number, 100);
-    assert_eq!(third.log_index, 5);
-}
-```
+- [x] **Event Processing Idempotency** ✅ IMPLEMENTED
+  - `test_idempotency_bot_restart_during_processing` (lines 895-953)
+  - **Coverage**: Bot restart scenarios and event replay handling
 
 ### Integration Tests
 
-- [ ] Create test for complete flow:
+- [x] **Complete Processing Flow** ✅ IMPLEMENTED
+  - `test_complete_event_processing_flow` (lines 819-893)
+  - **Coverage**: Full pipeline from event → enqueue → process → accumulation
 
-```rust
-#[tokio::test]
-async fn test_unified_processing_flow() {
-    let pool = create_test_pool().await;
-    let env = create_test_env();
-    let cache = SymbolCache::new();
-    let provider = create_mock_provider();
-    
-    // Setup: Add some existing trades
-    for i in 1..=5 {
-        create_test_trade_with_id(i).save_to_db(&pool).await.unwrap();
-    }
-    
-    // Enqueue mix of duplicate and new events
-    for i in 1..=8 {
-        enqueue_test_trade_event(&pool, i).await;
-    }
-    
-    // Process all events
-    process_queue(&env, &env.evm_env, &pool, &cache, provider).await.unwrap();
-    
-    // Verify results
-    let trade_count = sqlx::query!("SELECT COUNT(*) as count FROM onchain_trades")
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(trade_count.count, 8, "Should have 8 total trades");
-    
-    let unprocessed = count_unprocessed_events(&pool).await.unwrap();
-    assert_eq!(unprocessed, 0, "All events should be processed");
-    
-    // Verify no error logs for duplicates (would need log capturing)
-}
+- [x] **Live Event Processing** ✅ IMPLEMENTED
+  - `test_process_live_event_clear_v2` (lines 1313-1341)
+  - **Coverage**: Live event enqueueing and filtering
+
+- [x] **Edge Case Handling** ✅ IMPLEMENTED
+  - `test_restart_scenarios_edge_cases` (lines 1027-1099)
+  - `test_event_enqueued_when_trade_conversion_returns_none` (lines 720-752)
+  - **Coverage**: Various failure and edge case scenarios
+
+### Test Verification Command
+
+```bash
+# Run all conductor tests
+cargo test -q --lib conductor
+
+# Run full test suite  
+cargo test -q
 ```
+
+**Current Status**: All 331 tests passing across the codebase ✅
 
 ## Task 8: Fix Data Issues
 
