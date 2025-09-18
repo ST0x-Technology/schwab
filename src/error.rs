@@ -20,8 +20,15 @@ pub(crate) enum TradeValidationError {
     NoInputAtIndex(usize),
     #[error("No output found at index: {0}")]
     NoOutputAtIndex(usize),
-    #[error("Expected IO to contain USDC and one s1-suffixed symbol but got {0} and {1}")]
+    #[error("Expected IO to contain USDC and one 0x-suffixed symbol but got {0} and {1}")]
     InvalidSymbolConfiguration(String, String),
+    #[error(
+        "Could not fully allocate execution shares for symbol {symbol}. Remaining: {remaining_shares}"
+    )]
+    InsufficientTradeAllocation {
+        symbol: String,
+        remaining_shares: f64,
+    },
     #[error("Failed to convert U256 to f64: {0}")]
     U256ToF64(#[from] ParseFloatError),
     #[error("Transaction not found: {0}")]
@@ -43,8 +50,6 @@ pub(crate) enum PersistenceError {
     InvalidShareQuantity(i64),
     #[error("Invalid price cents in database: {0}")]
     InvalidPriceCents(i64),
-    #[error("Failed to acquire symbol map lock")]
-    SymbolMapLock,
     #[error("Execution missing ID after database save")]
     MissingExecutionId,
 }
@@ -66,6 +71,23 @@ pub(crate) enum EventQueueError {
     Database(#[from] sqlx::Error),
     #[error("Event queue error: {0}")]
     Processing(String),
+}
+
+/// Event processing errors for live event handling.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum EventProcessingError {
+    #[error("Event queue error: {0}")]
+    Queue(EventQueueError),
+    #[error("Failed to enqueue ClearV2 event: {0}")]
+    EnqueueClearV2(#[source] EventQueueError),
+    #[error("Failed to enqueue TakeOrderV2 event: {0}")]
+    EnqueueTakeOrderV2(#[source] EventQueueError),
+    #[error("Failed to process trade through accumulator: {0}")]
+    AccumulatorProcessing(String),
+    #[error("Onchain trade processing error: {0}")]
+    OnChain(#[from] OnChainError),
+    #[error("Schwab execution error: {0}")]
+    Schwab(#[from] crate::schwab::SchwabError),
 }
 
 /// Unified error type for onchain trade processing with clear domain boundaries.

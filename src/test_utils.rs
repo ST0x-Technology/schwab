@@ -1,13 +1,18 @@
+use crate::Env;
 use crate::bindings::IOrderBookV4::{EvaluableV3, IO, OrderV3};
+use crate::onchain::OnchainTrade;
+use crate::schwab::{Direction, TradeState, execution::SchwabExecution};
 use alloy::primitives::{LogData, U256, address, bytes, fixed_bytes};
 use alloy::rpc::types::Log;
+use clap::Parser;
+use sqlx::SqlitePool;
 
 /// Returns a test `OrderV3` instance that is shared across multiple
 /// unit-tests. The exact values are not important – only that the
 /// structure is valid and deterministic.
 pub(crate) fn get_test_order() -> OrderV3 {
     OrderV3 {
-        owner: address!("0x1111111111111111111111111111111111111111"),
+        owner: address!("0xdddddddddddddddddddddddddddddddddddddddd"),
         evaluable: EvaluableV3 {
             interpreter: address!("0x2222222222222222222222222222222222222222"),
             store: address!("0x3333333333333333333333333333333333333333"),
@@ -68,8 +73,6 @@ pub(crate) fn get_test_log() -> Log {
     create_log(293)
 }
 
-use sqlx::SqlitePool;
-
 /// Centralized test database setup to eliminate duplication across test files.
 /// Creates an in-memory SQLite database with all migrations applied.
 pub(crate) async fn setup_test_db() -> SqlitePool {
@@ -78,9 +81,37 @@ pub(crate) async fn setup_test_db() -> SqlitePool {
     pool
 }
 
-use crate::onchain::OnchainTrade;
-use crate::schwab::TradeState;
-use crate::schwab::{Direction, execution::SchwabExecution};
+/// Creates a test `Env` instance for use in unit tests.
+/// Uses dummy values that are suitable for testing but not for real usage.
+pub(crate) fn setup_test_env() -> Env {
+    let args = vec![
+        "test_program",
+        "--db",
+        ":memory:",
+        "--log-level",
+        "info",
+        "--ws-rpc-url",
+        "ws://127.0.0.1:8545",
+        "--orderbook",
+        "0x1234567890123456789012345678901234567890",
+        "--order-owner",
+        "0xdddddddddddddddddddddddddddddddddddddddd",
+        "--deployment-block",
+        "1",
+        "--app-key",
+        "test_app_key",
+        "--app-secret",
+        "test_app_secret",
+        "--redirect-uri",
+        "https://127.0.0.1",
+        "--base-url",
+        "https://api.schwabapi.com",
+        "--account-index",
+        "0",
+    ];
+
+    Env::try_parse_from(args).expect("Failed to parse test environment")
+}
 
 /// Builder for creating OnchainTrade test instances with sensible defaults.
 /// Reduces duplication in test data setup.
@@ -103,7 +134,7 @@ impl OnchainTradeBuilder {
                     "0x1111111111111111111111111111111111111111111111111111111111111111"
                 ),
                 log_index: 1,
-                symbol: "AAPLs1".to_string(),
+                symbol: "AAPL0x".to_string(),
                 amount: 1.0,
                 direction: Direction::Buy,
                 price_usdc: 150.0,

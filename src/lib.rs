@@ -75,49 +75,54 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
 }
 
 async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
-    let run_bot = || async {
-        debug!("Validating Schwab tokens...");
-        match schwab::tokens::SchwabTokens::refresh_if_needed(&pool, &env.schwab_auth).await {
-            Err(SchwabError::RefreshTokenExpired) => {
-                warn!("Refresh token expired, waiting for manual authentication via API");
-                return Err(anyhow::anyhow!("RefreshTokenExpired"));
-            }
-            Err(e) => return Err(anyhow::anyhow!("Token validation failed: {}", e)),
-            Ok(_) => {
-                info!("Token validation successful");
+    let run_bot = {
+        let env = env.clone();
+        let pool = pool.clone();
+        move || {
+            let env = env.clone();
+            let pool = pool.clone();
+            async move {
+                debug!("Validating Schwab tokens...");
+                match schwab::tokens::SchwabTokens::refresh_if_needed(&pool, &env.schwab_auth).await
+                {
+                    Err(SchwabError::RefreshTokenExpired) => {
+                        warn!("Refresh token expired, waiting for manual authentication via API");
+                        return Err(anyhow::anyhow!("RefreshTokenExpired"));
+                    }
+                    Err(e) => return Err(anyhow::anyhow!("Token validation failed: {}", e)),
+                    Ok(_) => {
+                        info!("Token validation successful");
+                    }
+                }
+
+                let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
+                let provider = ProviderBuilder::new().connect_ws(ws).await?;
+                let cache = SymbolCache::default();
+                let orderbook = IOrderBookV4Instance::new(env.evm_env.orderbook, &provider);
+
+                schwab::tokens::SchwabTokens::spawn_automatic_token_refresh(
+                    pool.clone(),
+                    env.schwab_auth.clone(),
+                );
+
+                let mut clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
+                let mut take_stream = orderbook.TakeOrderV2_filter().watch().await?.into_stream();
+
+                let cutoff_block =
+                    get_cutoff_block(&mut clear_stream, &mut take_stream, &provider, &pool).await?;
+
+                onchain::backfill::backfill_events(
+                    &pool,
+                    &provider,
+                    &env.evm_env,
+                    cutoff_block - 1,
+                )
+                .await?;
+
+                // Start all services through unified background tasks management
+                conductor::run_live(env, pool, cache, provider, clear_stream, take_stream).await
             }
         }
-
-        let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
-        let provider = ProviderBuilder::new().connect_ws(ws).await?;
-        let cache = SymbolCache::default();
-        let orderbook = IOrderBookV4Instance::new(env.evm_env.orderbook, &provider);
-
-        schwab::tokens::SchwabTokens::spawn_automatic_token_refresh(
-            pool.clone(),
-            env.schwab_auth.clone(),
-        );
-
-        let mut clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
-        let mut take_stream = orderbook.TakeOrderV2_filter().watch().await?.into_stream();
-
-        let cutoff_block =
-            get_cutoff_block(&mut clear_stream, &mut take_stream, &provider, &pool).await?;
-
-        onchain::backfill::backfill_events(&pool, &provider, &env.evm_env, cutoff_block - 1)
-            .await?;
-
-        conductor::process_queue(&env, &env.evm_env, &pool, &cache, &provider).await?;
-
-        conductor::run_live(
-            env.clone(),
-            pool.clone(),
-            cache,
-            provider,
-            clear_stream,
-            take_stream,
-        )
-        .await
     };
 
     const RERUN_DELAY_SECS: u64 = 10;

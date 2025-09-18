@@ -12,6 +12,7 @@ use super::execution::{
 };
 use super::order::Order;
 use super::{SchwabAuthEnv, SchwabError, TradeState};
+use crate::lock::{clear_execution_lease, clear_pending_execution_id};
 
 #[derive(Debug, Clone)]
 pub struct OrderPollerConfig {
@@ -189,12 +190,50 @@ impl OrderStatusPoller {
             price_cents,
         };
 
-        self.update_execution_status(execution_id, new_status)
-            .await?;
+        let mut tx = self.pool.begin().await?;
+
+        // Get the symbol from the execution before updating status
+        let execution = find_execution_by_id(&self.pool, execution_id)
+            .await
+            .map_err(|e| {
+                error!("Failed to find execution {execution_id}: {e}");
+                SchwabError::InvalidConfiguration("Database query failed".to_string())
+            })?
+            .ok_or_else(|| {
+                error!("Execution {execution_id} not found in database");
+                SchwabError::InvalidConfiguration("Execution not found".to_string())
+            })?;
+
+        update_execution_status_within_transaction(&mut tx, execution_id, new_status).await?;
+
+        // Clear pending execution ID and execution lease to unblock future executions
+        clear_pending_execution_id(&mut tx, &execution.symbol)
+            .await
+            .map_err(|e| {
+                error!(
+                    "Failed to clear pending execution ID for symbol {}: {e}",
+                    execution.symbol
+                );
+                SchwabError::InvalidConfiguration(
+                    "Failed to clear pending execution ID".to_string(),
+                )
+            })?;
+
+        clear_execution_lease(&mut tx, &execution.symbol)
+            .await
+            .map_err(|e| {
+                error!(
+                    "Failed to clear execution lease for symbol {}: {e}",
+                    execution.symbol
+                );
+                SchwabError::InvalidConfiguration("Failed to clear execution lease".to_string())
+            })?;
+
+        tx.commit().await?;
 
         info!(
-            "Updated execution {execution_id} to FILLED with price: {} cents",
-            price_cents
+            "Updated execution {execution_id} to FILLED with price: {} cents and cleared locks for symbol: {}",
+            price_cents, execution.symbol
         );
 
         Ok(())
@@ -210,25 +249,52 @@ impl OrderStatusPoller {
             error_reason: Some(format!("Order state: {:?}", order_status.status)),
         };
 
-        self.update_execution_status(execution_id, new_status)
-            .await?;
+        let mut tx = self.pool.begin().await?;
+
+        // Get the symbol from the execution before updating status
+        let execution = find_execution_by_id(&self.pool, execution_id)
+            .await
+            .map_err(|e| {
+                error!("Failed to find execution {execution_id}: {e}");
+                SchwabError::InvalidConfiguration("Database query failed".to_string())
+            })?
+            .ok_or_else(|| {
+                error!("Execution {execution_id} not found in database");
+                SchwabError::InvalidConfiguration("Execution not found".to_string())
+            })?;
+
+        update_execution_status_within_transaction(&mut tx, execution_id, new_status).await?;
+
+        // Clear pending execution ID and execution lease to unblock future executions
+        clear_pending_execution_id(&mut tx, &execution.symbol)
+            .await
+            .map_err(|e| {
+                error!(
+                    "Failed to clear pending execution ID for symbol {}: {e}",
+                    execution.symbol
+                );
+                SchwabError::InvalidConfiguration(
+                    "Failed to clear pending execution ID".to_string(),
+                )
+            })?;
+
+        clear_execution_lease(&mut tx, &execution.symbol)
+            .await
+            .map_err(|e| {
+                error!(
+                    "Failed to clear execution lease for symbol {}: {e}",
+                    execution.symbol
+                );
+                SchwabError::InvalidConfiguration("Failed to clear execution lease".to_string())
+            })?;
+
+        tx.commit().await?;
 
         info!(
-            "Updated execution {execution_id} to FAILED due to order state: {:?}",
-            order_status.status
+            "Updated execution {execution_id} to FAILED due to order status: {:?} and cleared locks for symbol: {}",
+            order_status.status, execution.symbol
         );
 
-        Ok(())
-    }
-
-    async fn update_execution_status(
-        &self,
-        execution_id: i64,
-        new_state: TradeState,
-    ) -> Result<(), SchwabError> {
-        let mut tx = self.pool.begin().await?;
-        update_execution_status_within_transaction(&mut tx, execution_id, new_state).await?;
-        tx.commit().await?;
         Ok(())
     }
 
@@ -250,6 +316,9 @@ mod tests {
     use crate::schwab::TradeStatus;
     use crate::schwab::execution::SchwabExecution;
     use crate::test_utils::setup_test_db;
+    use httpmock::Mock;
+    use httpmock::prelude::*;
+    use serde_json::json;
     use tokio::sync::watch;
 
     #[tokio::test]
@@ -330,9 +399,6 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::too_many_lines)]
     async fn test_end_to_end_order_flow() {
-        use httpmock::prelude::*;
-        use serde_json::json;
-
         let server = MockServer::start();
         let pool = setup_test_db().await;
 
@@ -373,7 +439,7 @@ mod tests {
             shares: 100,
             direction: Direction::Buy,
             state: TradeState::Submitted {
-                order_id: "ORDER12345".to_string(),
+                order_id: "1004055538999".to_string(),
             },
         };
 
@@ -398,29 +464,32 @@ mod tests {
         assert_eq!(saved_execution.direction, Direction::Buy);
         assert!(matches!(
             &saved_execution.state,
-            TradeState::Submitted { order_id } if order_id == "ORDER12345"
+            TradeState::Submitted { order_id } if order_id == "1004055538999"
         ));
 
         // Step 3: Mock order status polling with sequence - first WORKING, then FILLED
         let order_status_mock = server.mock(|when, then| {
             when.method(GET)
-                .path("/trader/v1/accounts/ABC123DEF456/orders/ORDER12345")
+                .path("/trader/v1/accounts/ABC123DEF456/orders/1004055538999")
                 .header("authorization", "Bearer test_access_token");
             then.status(200)
                 .header("content-type", "application/json")
                 .json_body(json!({
-                    "orderId": "ORDER12345",
+                    "orderId": 1_004_055_538_123_i64,
                     "status": "FILLED",
                     "filledQuantity": 100.0,
                     "remainingQuantity": 0.0,
-                    "executionLegs": [{
-                        "executionId": "EXEC123",
-                        "quantity": 100.0,
-                        "price": 150.25,
-                        "time": "2023-10-15T10:30:00Z"
-                    }],
                     "enteredTime": "2023-10-15T10:25:00Z",
-                    "closeTime": "2023-10-15T10:30:00Z"
+                    "closeTime": "2023-10-15T10:30:00Z",
+                    "orderActivityCollection": [{
+                        "activityType": "EXECUTION",
+                        "executionLegs": [{
+                            "executionId": "EXEC123",
+                            "quantity": 100.0,
+                            "price": 150.25,
+                            "time": "2023-10-15T10:30:00Z"
+                        }]
+                    }]
                 }));
         });
 
@@ -443,7 +512,7 @@ mod tests {
         assert!(matches!(
             &final_execution.state,
             TradeState::Filled { order_id, price_cents, .. }
-            if order_id == "ORDER12345" && *price_cents == 15025  // 150.25 * 100 cents
+            if order_id == "1004055538123" && *price_cents == 15025  // 150.25 * 100 cents
         ));
 
         // Step 7: Verify no more SUBMITTED executions for this symbol
@@ -464,6 +533,36 @@ mod tests {
         assert_eq!(filled_executions.len(), 1);
         assert_eq!(filled_executions[0].id, Some(execution_id));
 
+        // Step 9: Verify pending_execution_id was cleared from trade_accumulators
+        let accumulator_row = sqlx::query!(
+            "SELECT pending_execution_id FROM trade_accumulators WHERE symbol = ?1",
+            "AAPL"
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+
+        // If accumulator exists, pending_execution_id should be NULL
+        if let Some(row) = accumulator_row {
+            assert_eq!(
+                row.pending_execution_id, None,
+                "pending_execution_id should be cleared after order fills"
+            );
+        }
+
+        // Step 10: Verify symbol lock was cleared from symbol_locks
+        let lock_count = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM symbol_locks WHERE symbol = ?1",
+            "AAPL"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            lock_count, 0,
+            "Symbol lock should be cleared after order fills"
+        );
+
         // Verify all mocks were called as expected
         account_mock.assert_hits(1); // Called during polling
         order_status_mock.assert();
@@ -476,8 +575,6 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     #[allow(clippy::cast_precision_loss)]
     async fn test_high_volume_order_polling_performance() {
-        use httpmock::prelude::*;
-        use serde_json::json;
         use std::time::Instant;
 
         let server = MockServer::start();
@@ -552,18 +649,21 @@ mod tests {
                 then.status(200)
                     .header("content-type", "application/json")
                     .json_body(json!({
-                        "orderId": order_id,
+                        "orderId": i as u64 + 1_004_055_538_000,
                         "status": "FILLED",
                         "filledQuantity": (i as f64).mul_add(10.0, 100.0),
                         "remainingQuantity": 0.0,
-                        "executionLegs": [{
-                            "executionId": format!("EXEC{i:04}"),
-                            "quantity": (i as f64).mul_add(10.0, 100.0),
-                            "price": price,
-                            "time": "2023-10-15T10:30:00Z"
-                        }],
                         "enteredTime": "2023-10-15T10:25:00Z",
-                        "closeTime": "2023-10-15T10:30:00Z"
+                        "closeTime": "2023-10-15T10:30:00Z",
+                        "orderActivityCollection": [{
+                            "activityType": "EXECUTION",
+                            "executionLegs": [{
+                                "executionId": format!("EXEC{i:04}"),
+                                "quantity": (i as f64).mul_add(10.0, 100.0),
+                                "price": price,
+                                "time": "2023-10-15T10:30:00Z"
+                            }]
+                        }]
                     }));
             });
         }
@@ -624,6 +724,154 @@ mod tests {
         account_mock.assert_hits(num_orders); // Called once per order status check
 
         // Trigger shutdown for clean test completion
+        shutdown_tx.send(true).unwrap();
+    }
+
+    async fn setup_failed_order_test() -> (MockServer, SqlitePool, SchwabAuthEnv, i64) {
+        let server = MockServer::start();
+        let pool = setup_test_db().await;
+
+        let env = SchwabAuthEnv {
+            app_key: "test_key".to_string(),
+            app_secret: "test_secret".to_string(),
+            redirect_uri: "https://127.0.0.1".to_string(),
+            base_url: server.base_url(),
+            account_index: 0,
+        };
+
+        let tokens = crate::schwab::SchwabTokens {
+            access_token: "test_access_token".to_string(),
+            access_token_fetched_at: chrono::Utc::now(),
+            refresh_token: "test_refresh_token".to_string(),
+            refresh_token_fetched_at: chrono::Utc::now(),
+        };
+        tokens.store(&pool).await.unwrap();
+
+        let execution = SchwabExecution {
+            id: None,
+            symbol: "TSLA".to_string(),
+            shares: 100,
+            direction: Direction::Buy,
+            state: TradeState::Submitted {
+                order_id: "FAILED_ORDER_123".to_string(),
+            },
+        };
+
+        let mut sql_tx = pool.begin().await.unwrap();
+        let execution_id = execution
+            .save_within_transaction(&mut sql_tx)
+            .await
+            .unwrap();
+
+        let calculator = crate::onchain::position_calculator::PositionCalculator::new();
+        crate::onchain::accumulator::save_within_transaction(
+            &mut sql_tx,
+            "TSLA",
+            &calculator,
+            Some(execution_id),
+        )
+        .await
+        .unwrap();
+
+        crate::lock::try_acquire_execution_lease(&mut sql_tx, "TSLA")
+            .await
+            .unwrap();
+        sql_tx.commit().await.unwrap();
+
+        (server, pool, env, execution_id)
+    }
+
+    fn setup_failed_order_mocks(server: &MockServer) -> (Mock, Mock) {
+        let account_mock = server.mock(|when, then| {
+            when.method(GET).path("/trader/v1/accounts/accountNumbers");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!([{
+                    "accountNumber": "123456789",
+                    "hashValue": "ABC123DEF456"
+                }]));
+        });
+
+        let order_status_mock = server.mock(|when, then| {
+            when.method(GET)
+                .path("/trader/v1/accounts/ABC123DEF456/orders/FAILED_ORDER_123")
+                .header("authorization", "Bearer test_access_token");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "orderId": 9_999_999_999_i64,
+                    "status": "CANCELED",
+                    "filledQuantity": 0.0,
+                    "remainingQuantity": 100.0,
+                    "enteredTime": "2023-10-15T10:25:00Z",
+                    "closeTime": "2023-10-15T10:26:00Z"
+                }));
+        });
+
+        (account_mock, order_status_mock)
+    }
+
+    async fn verify_failed_order_cleanup(pool: &SqlitePool, execution_id: i64) {
+        let final_execution = find_execution_by_id(pool, execution_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(&final_execution.state, TradeState::Failed { .. }));
+
+        let row = sqlx::query!(
+            "SELECT pending_execution_id FROM trade_accumulators WHERE symbol = ?1",
+            "TSLA"
+        )
+        .fetch_optional(pool)
+        .await
+        .unwrap();
+
+        if let Some(row) = row {
+            assert_eq!(
+                row.pending_execution_id, None,
+                "pending_execution_id should be cleared after order fails"
+            );
+        }
+
+        let lock_count = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM symbol_locks WHERE symbol = ?1",
+            "TSLA"
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            lock_count, 0,
+            "Symbol lock should be cleared after order fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_failed_order_clears_pending_execution_id() {
+        let (server, pool, env, execution_id) = setup_failed_order_test().await;
+        let (account_mock, order_status_mock) = setup_failed_order_mocks(&server);
+
+        // Verify pending_execution_id is set before the test
+        let row = sqlx::query!(
+            "SELECT pending_execution_id FROM trade_accumulators WHERE symbol = ?1",
+            "TSLA"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.pending_execution_id, Some(execution_id));
+
+        let config = OrderPollerConfig::default();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let poller = OrderStatusPoller::new(config, env, pool.clone(), shutdown_rx);
+
+        let poll_result = poller.poll_execution_status(execution_id).await;
+        assert!(poll_result.is_ok());
+
+        verify_failed_order_cleanup(&pool, execution_id).await;
+
+        account_mock.assert();
+        order_status_mock.assert();
         shutdown_tx.send(true).unwrap();
     }
 }

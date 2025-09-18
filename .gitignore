@@ -6,3 +6,4 @@ node_modules/
 *.db
 tarpaulin-report.html
 .pre-commit-config.yaml
+.claude/tasks/

@@ -27,8 +27,8 @@ fn create_test_env_with_mock_server(server: &MockServer, server_port: u16) -> En
         "ws://127.0.0.1:8545",
         "--orderbook",
         "0x1234567890123456789012345678901234567890",
-        "--order-hash",
-        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "--order-owner",
+        "0xD2843D9E7738d46D90CB6Dff8D6C83db58B9c165",
         "--deployment-block",
         "1",
         "--app-key",
@@ -79,7 +79,7 @@ fn setup_schwab_api_mocks(server: &MockServer) -> Vec<Mock> {
 #[serial]
 async fn test_end_to_end_server_and_bot_integration() {
     let server = MockServer::start();
-    let server_port = 8081; // Use different port to avoid conflicts
+    let server_port = 8081;
     let env = create_test_env_with_mock_server(&server, server_port);
     let server_base_url = format!("http://127.0.0.1:{server_port}");
 

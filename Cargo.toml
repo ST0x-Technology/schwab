@@ -49,6 +49,7 @@ nursery = { level = "deny", priority = -1 }
 
 doc_markdown = "allow"
 items_after_statements = "allow"
+missing_const_for_fn = "allow"
 missing_docs_in_private_items = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"

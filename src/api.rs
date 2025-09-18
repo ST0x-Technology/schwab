@@ -77,12 +77,11 @@ pub fn routes() -> Vec<Route> {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::{Address, FixedBytes};
+    use alloy::primitives::address;
     use httpmock::MockServer;
     use rocket::http::{ContentType, Status};
     use rocket::local::asynchronous::Client;
     use serde_json::json;
-    use std::str::FromStr;
     use url::Url;
 
     use super::*;
@@ -105,11 +104,8 @@ mod tests {
             },
             evm_env: EvmEnv {
                 ws_rpc_url: Url::parse("ws://localhost:8545").unwrap(),
-                orderbook: Address::from_str("0x1111111111111111111111111111111111111111").unwrap(),
-                order_hash: FixedBytes::from_str(
-                    "0x2222222222222222222222222222222222222222222222222222222222222222",
-                )
-                .unwrap(),
+                orderbook: address!("0x1111111111111111111111111111111111111111"),
+                order_owner: address!("0x2222222222222222222222222222222222222222"),
                 deployment_block: 0,
             },
             order_polling_interval: 15,

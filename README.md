@@ -13,10 +13,11 @@ This specification outlines a minimum viable product (MVP) arbitrage bot that
 helps establish price discovery by exploiting discrepancies between onchain
 tokenized equities and their traditional market counterparts.
 
-The bot monitors a Raindex Order that continuously offers tokenized equities at
-spreads around Pyth oracle prices. When a solver clears this order, the bot
-immediately executes an offsetting trade on Charles Schwab, maintaining
-market-neutral positions while capturing the spread differential.
+The bot monitors Raindex Orders from a specific owner that continuously offer
+tokenized equities at spreads around Pyth oracle prices. When a solver clears
+any of these orders, the bot immediately executes an offsetting trade on Charles
+Schwab, maintaining market-neutral positions while capturing the spread
+differential.
 
 The focus is on getting a functional system live quickly. There are known risks
 that will be addressed in future iterations as total value locked (TVL) grows
@@ -28,8 +29,10 @@ and the system proves market fit.
 
 **Onchain Infrastructure:**
 
-- Raindex orderbook with deployed Order using Pyth oracle feeds
-  - Continuously offers to buy/sell tokenized equities at Pyth price ± spread
+- Raindex orderbook with deployed Orders from specific owner using Pyth oracle
+  feeds
+  - Multiple orders continuously offer to buy/sell different tokenized equities
+    at Pyth price ± spread
 - Order vaults holding stablecoins and tokenized equities
 
 **Offchain Infrastructure:**
@@ -46,9 +49,10 @@ and the system proves market fit.
 
 **Normal Operation Cycle:**
 
-1. Order continuously offers to buy/sell tokenized equities at Pyth price ±
+1. Orders continuously offer to buy/sell tokenized equities at Pyth price ±
    spread
-2. Bot monitors Raindex for clears involving the arbitrageur's order
+2. Bot monitors Raindex for clears involving any orders from the arbitrageur's
+   owner address
 3. Bot records onchain trades and accumulates net position changes per symbol
 4. When accumulated net position reaches an absolute value of ≥1.0 share,
    execute offsetting trade for floor(abs(net_position)) shares on Charles
@@ -86,7 +90,8 @@ excellent async ecosystem for handling concurrent trading flows.
 **Raindex Event Monitor:**
 
 - WebSocket or polling connection to Ethereum node
-- Filter for events involving arbitrageur's Order (Clear and TakeOrder events)
+- Filter for events involving any orders from the arbitrageur's owner address
+  (Clear and TakeOrder events)
 - Parse events to extract: symbol, quantity, price, direction
 - Generate unique identifiers using transaction hash and log index for trade
   tracking
