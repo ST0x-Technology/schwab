@@ -63,12 +63,12 @@ Use the existing `dry_run` flag to determine deployment environment:
 
 ### Task 3. Adapt Metrics Module
 
-- [ ] Update `src/metrics.rs`:
+- [x] Update `src/metrics.rs`:
   - Change service name from "degen" to "schwarbot"
   - Make setup return `Option<Metrics>` (None if endpoint not configured)
   - Set deployment environment based on `dry_run` flag
   - Update imports to use `opentelemetry` instead of `opentelemetry as otlp`
-- [ ] Define bot-specific metrics:
+- [x] Define bot-specific metrics:
   - `onchain_events_received`: Counter with `event_type` label
   - `schwab_orders_executed`: Counter with `status`, `symbol`, `direction`
     labels
@@ -76,8 +76,8 @@ Use the existing `dry_run` flag to determine deployment environment:
   - `queue_depth`: Gauge for pending events
   - `accumulated_positions`: Gauge with `symbol` label
   - `trade_execution_duration_ms`: Histogram for timing
-- [ ] Add graceful error handling for missing configuration
-- [ ] Implement Drop trait for proper shutdown
+- [x] Add graceful error handling for missing configuration
+- [x] Implement Drop trait for proper shutdown
 
 ### Task 4. Initialize Metrics at Startup
 
