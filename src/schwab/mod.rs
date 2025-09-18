@@ -121,6 +121,14 @@ pub(crate) enum SchwabError {
     InvalidConfiguration(String),
     #[error("Execution persistence error: {0}")]
     ExecutionPersistence(#[from] crate::error::PersistenceError),
+    #[error(
+        "Failed to parse API response: {action}, response: {response_text}, error: {parse_error}"
+    )]
+    ApiResponseParse {
+        action: String,
+        response_text: String,
+        parse_error: String,
+    },
 }
 
 pub(crate) async fn run_oauth_flow(

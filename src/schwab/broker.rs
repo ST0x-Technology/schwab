@@ -64,9 +64,8 @@ impl Broker for Schwab {
                 execution.shares,
             );
 
-            let result = (|| async { order.place(&env.schwab_auth, pool).await })
-                .retry(&ExponentialBuilder::default().with_max_times(3))
-                .await;
+            // Order::place handles retries internally with bounded attempts for transport/5xx errors
+            let result = order.place(&env.schwab_auth, pool).await;
 
             let execution_id = execution.id.ok_or_else(|| {
                 error!("SchwabExecution missing ID when executing: {execution:?}");
@@ -112,18 +111,35 @@ impl Broker for Schwab {
             .into_iter()
             .collect::<HeaderMap>();
 
-            let client = reqwest::Client::new();
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()?;
             let response = (|| async {
-                client
+                let response = client
                     .get(format!(
                         "{}/trader/v1/accounts/{}/orders/{}",
                         env.base_url, account_hash, order_id
                     ))
                     .headers(headers.clone())
                     .send()
-                    .await
+                    .await?;
+
+                // Only retry on 5xx server errors or transport failures
+                if response.status().is_server_error() {
+                    return Err(SchwabError::RequestFailed {
+                        action: "get order status (server error)".to_string(),
+                        status: response.status(),
+                        body: "Server error, will retry".to_string(),
+                    });
+                }
+
+                Ok(response)
             })
-            .retry(ExponentialBuilder::default())
+            .retry(
+                ExponentialBuilder::default()
+                    .with_max_times(3)
+                    .with_jitter(),
+            )
             .await?;
 
             let status = response.status();
@@ -159,9 +175,11 @@ impl Broker for Schwab {
                         parse_error = %parse_error,
                         "Failed to parse Schwab order status response"
                     );
-                    Err(SchwabError::InvalidConfiguration(format!(
-                        "Failed to parse order status response: {parse_error}"
-                    )))
+                    Err(SchwabError::ApiResponseParse {
+                        action: "get order status".to_string(),
+                        response_text,
+                        parse_error: parse_error.to_string(),
+                    })
                 }
             }
         })

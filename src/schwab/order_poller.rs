@@ -117,7 +117,7 @@ impl<B: Broker> OrderStatusPoller<B> {
                 continue;
             };
 
-            if let Err(e) = self.poll_execution_status(execution_id).await {
+            if let Err(e) = self.poll_execution_status(&execution).await {
                 error!("Failed to poll execution {execution_id}: {e}");
             }
 
@@ -128,17 +128,14 @@ impl<B: Broker> OrderStatusPoller<B> {
         Ok(())
     }
 
-    async fn poll_execution_status(&self, execution_id: i64) -> Result<(), SchwabError> {
-        let execution = find_execution_by_id(&self.pool, execution_id)
-            .await
-            .map_err(|e| {
-                error!("Failed to find execution {execution_id}: {e}");
-                SchwabError::InvalidConfiguration("Database query failed".to_string())
-            })?
-            .ok_or_else(|| {
-                error!("Execution {execution_id} not found in database");
-                SchwabError::InvalidConfiguration("Execution not found".to_string())
-            })?;
+    async fn poll_execution_status(
+        &self,
+        execution: &crate::schwab::execution::SchwabExecution,
+    ) -> Result<(), SchwabError> {
+        let Some(execution_id) = execution.id else {
+            error!("Execution missing ID: {execution:?}");
+            return Ok(());
+        };
 
         let order_id = match &execution.state {
             TradeState::Pending => {
@@ -163,8 +160,7 @@ impl<B: Broker> OrderStatusPoller<B> {
             self.handle_filled_order(execution_id, &order_status)
                 .await?;
         } else if order_status.is_terminal_failure() {
-            self.handle_failed_order(execution_id, &order_status)
-                .await?;
+            self.handle_failed_order(execution, &order_status).await?;
         } else {
             debug!(
                 "Order {order_id} (execution {execution_id}) still pending with state: {:?}",
@@ -421,9 +417,14 @@ mod tests {
         let execution_id = execution.save_within_transaction(&mut tx).await.unwrap();
         tx.commit().await.unwrap();
 
-        let poller = OrderStatusPoller::new(config, env, pool, shutdown_rx, Schwab);
+        let poller = OrderStatusPoller::new(config, env, pool.clone(), shutdown_rx, Schwab);
 
-        let result = poller.poll_execution_status(execution_id).await;
+        // Fetch the execution to pass to poll_execution_status
+        let execution = find_execution_by_id(&pool, execution_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let result = poller.poll_execution_status(&execution).await;
         assert!(result.is_ok());
     }
 
@@ -530,7 +531,11 @@ mod tests {
         let poller = OrderStatusPoller::new(config, env.clone(), pool.clone(), shutdown_rx, Schwab);
 
         // Step 5: Poll for status and verify order gets updated to FILLED with actual price
-        let poll_result = poller.poll_execution_status(execution_id).await;
+        let execution = find_execution_by_id(&pool, execution_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let poll_result = poller.poll_execution_status(&execution).await;
 
         assert!(poll_result.is_ok());
 
@@ -714,7 +719,11 @@ mod tests {
         // Poll all executions sequentially (but time the batch)
         let mut results = Vec::new();
         for execution_id in execution_ids {
-            let result = poller.poll_execution_status(execution_id).await;
+            let execution = find_execution_by_id(&pool, execution_id)
+                .await
+                .unwrap()
+                .unwrap();
+            let result = poller.poll_execution_status(&execution).await;
             results.push(result);
         }
         let elapsed = start_time.elapsed();
@@ -896,7 +905,11 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let poller = OrderStatusPoller::new(config, env, pool.clone(), shutdown_rx, Schwab);
 
-        let poll_result = poller.poll_execution_status(execution_id).await;
+        let execution = find_execution_by_id(&pool, execution_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let poll_result = poller.poll_execution_status(&execution).await;
         assert!(poll_result.is_ok());
 
         verify_failed_order_cleanup(&pool, execution_id).await;
