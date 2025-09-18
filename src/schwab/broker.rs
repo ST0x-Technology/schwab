@@ -91,7 +91,7 @@ impl Broker for Schwab {
                 execution.shares,
             );
 
-            let result = (|| async { order.place(&env.schwab_auth, pool).await })
+            let result = (|| async { order.place(&env.schwab_auth, pool, metrics.clone()).await })
                 .retry(&ExponentialBuilder::default().with_max_times(3))
                 .await;
 
@@ -109,6 +109,7 @@ impl Broker for Schwab {
                     handle_execution_success(pool, execution_id, response.order_id).await?;
 
                     // Record success metrics with duration
+                    #[allow(clippy::cast_precision_loss)]
                     let duration_ms = start_time.elapsed().as_millis() as f64;
                     if let Some(ref m) = *metrics {
                         m.schwab_orders_executed.add(
@@ -157,7 +158,8 @@ impl Broker for Schwab {
         Box<dyn std::future::Future<Output = Result<OrderStatusResponse, SchwabError>> + Send + 'a>,
     > {
         Box::pin(async move {
-            let access_token = SchwabTokens::get_valid_access_token(pool, env).await?;
+            let access_token =
+                SchwabTokens::get_valid_access_token(pool, env, Arc::new(None)).await?;
             let account_hash = env.get_account_hash(pool).await?;
 
             let headers = [
@@ -302,6 +304,7 @@ impl Broker for LogBroker {
             handle_execution_success(pool, execution_id, order_id).await?;
 
             // Record success metrics with duration
+            #[allow(clippy::cast_precision_loss)]
             let duration_ms = start_time.elapsed().as_millis() as f64;
             if let Some(ref m) = *metrics {
                 m.schwab_orders_executed.add(

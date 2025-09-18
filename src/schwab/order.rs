@@ -2,6 +2,7 @@ use backon::{ExponentialBuilder, Retryable};
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::sync::Arc;
 use tracing::{error, info};
 
 use chrono::Utc;
@@ -58,8 +59,9 @@ impl Order {
         &self,
         env: &SchwabAuthEnv,
         pool: &SqlitePool,
+        metrics: Arc<Option<crate::metrics::Metrics>>,
     ) -> Result<OrderPlacementResponse, SchwabError> {
-        let access_token = SchwabTokens::get_valid_access_token(pool, env).await?;
+        let access_token = SchwabTokens::get_valid_access_token(pool, env, metrics).await?;
         let account_hash = env.get_account_hash(pool).await?;
 
         let headers = [
@@ -482,7 +484,7 @@ mod tests {
         });
 
         let order = Order::new("AAPL".to_string(), Instruction::Buy, 100);
-        let result = order.place(&env, &pool).await;
+        let result = order.place(&env, &pool, Arc::new(None)).await;
 
         account_mock.assert();
         order_mock.assert();
@@ -516,7 +518,7 @@ mod tests {
         });
 
         let order = Order::new("INVALID".to_string(), Instruction::Buy, 100);
-        let result = order.place(&env, &pool).await;
+        let result = order.place(&env, &pool, Arc::new(None)).await;
 
         account_mock.assert();
         order_mock.assert();
@@ -576,7 +578,7 @@ mod tests {
         });
 
         let order = Order::new("TSLA".to_string(), Instruction::Sell, 50);
-        let result = order.place(&env, &pool).await;
+        let result = order.place(&env, &pool, Arc::new(None)).await;
 
         account_mock.assert();
         order_mock.assert();
@@ -609,7 +611,7 @@ mod tests {
         });
 
         let order = Order::new("SPY".to_string(), Instruction::Buy, 25);
-        let result = order.place(&env, &pool).await;
+        let result = order.place(&env, &pool, Arc::new(None)).await;
 
         account_mock.assert();
         order_mock.assert();
@@ -646,7 +648,7 @@ mod tests {
         });
 
         let order = Order::new("MSFT".to_string(), Instruction::Buy, 100);
-        let result = order.place(&env, &pool).await;
+        let result = order.place(&env, &pool, Arc::new(None)).await;
 
         account_mock.assert();
         order_mock.assert();
@@ -689,7 +691,7 @@ mod tests {
         });
 
         let order = Order::new("AAPL".to_string(), Instruction::Buy, 100);
-        let result = order.place(&env, &pool).await;
+        let result = order.place(&env, &pool, Arc::new(None)).await;
 
         account_mock.assert();
 
@@ -734,7 +736,7 @@ mod tests {
         });
 
         let order = Order::new("TSLA".to_string(), Instruction::Sell, 50);
-        let result = order.place(&env, &pool).await;
+        let result = order.place(&env, &pool, Arc::new(None)).await;
 
         account_mock.assert();
         order_mock.assert();
@@ -771,7 +773,7 @@ mod tests {
         });
 
         let order = Order::new("SPY".to_string(), Instruction::Buy, 25);
-        let result = order.place(&env, &pool).await;
+        let result = order.place(&env, &pool, Arc::new(None)).await;
 
         account_mock.assert();
         order_mock.assert();
@@ -797,7 +799,7 @@ mod tests {
         });
 
         let order = Order::new("AAPL".to_string(), Instruction::Buy, 100);
-        let result = order.place(&env, &pool).await;
+        let result = order.place(&env, &pool, Arc::new(None)).await;
 
         account_mock.assert();
         let error = result.unwrap_err();
@@ -831,7 +833,7 @@ mod tests {
         });
 
         let order = Order::new("MSFT".to_string(), Instruction::Sell, 50);
-        let result = order.place(&env, &pool).await;
+        let result = order.place(&env, &pool, Arc::new(None)).await;
 
         account_mock.assert();
         order_mock.assert();

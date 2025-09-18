@@ -110,6 +110,7 @@ mod tests {
     use crate::onchain::position_calculator::PositionCalculator;
     use crate::schwab::{Direction, TradeState, execution::SchwabExecution};
     use crate::test_utils::setup_test_db;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_try_acquire_execution_lease_success() {
@@ -214,9 +215,15 @@ mod tests {
             .unwrap();
 
         let calculator = PositionCalculator::new();
-        save_within_transaction(&mut sql_tx, &symbol, &calculator, Some(execution_id))
-            .await
-            .unwrap();
+        save_within_transaction(
+            &mut sql_tx,
+            &symbol,
+            &calculator,
+            Some(execution_id),
+            Arc::new(None),
+        )
+        .await
+        .unwrap();
 
         try_acquire_execution_lease(&mut sql_tx, &symbol)
             .await
@@ -342,9 +349,15 @@ mod tests {
             .unwrap();
 
         let calculator = PositionCalculator::new();
-        save_within_transaction(&mut sql_tx, &symbol, &calculator, Some(execution_id))
-            .await
-            .unwrap();
+        save_within_transaction(
+            &mut sql_tx,
+            &symbol,
+            &calculator,
+            Some(execution_id),
+            Arc::new(None),
+        )
+        .await
+        .unwrap();
 
         sql_tx.commit().await.unwrap();
 

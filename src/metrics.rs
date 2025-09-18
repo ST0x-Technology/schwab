@@ -5,7 +5,7 @@ use opentelemetry::{
 use opentelemetry_otlp::{Protocol, WithExportConfig, WithHttpConfig};
 use opentelemetry_sdk::{Resource, metrics::SdkMeterProvider};
 use std::collections::HashMap;
-use tracing::*;
+use tracing::{debug, error, info};
 
 use crate::env::Env;
 
@@ -34,8 +34,9 @@ pub(crate) fn setup(env: &Env) -> Option<Metrics> {
         .with_protocol(Protocol::HttpBinary)
         .with_headers(HashMap::from([(
             "Authorization".to_string(),
-            format!("Basic {}", auth_token),
+            format!("Basic {auth_token}"),
         )]))
+        .with_http_client(reqwest::Client::new())
         .build()
     {
         Ok(exporter) => exporter,
@@ -84,6 +85,8 @@ pub(crate) fn setup(env: &Env) -> Option<Metrics> {
 impl Drop for Metrics {
     fn drop(&mut self) {
         debug!("Shutting down metrics provider");
-        // Shutdown is handled automatically by the SDK when the provider is dropped
+        if let Err(e) = self.provider.shutdown() {
+            error!("Failed to shutdown metrics provider: {}", e);
+        }
     }
 }

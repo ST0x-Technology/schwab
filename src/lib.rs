@@ -106,9 +106,15 @@ fn create_bot_runner(
         let metrics = metrics.clone();
         Box::pin(async move {
             debug!("Validating Schwab tokens...");
-            match schwab::tokens::SchwabTokens::refresh_if_needed(&pool, &env.schwab_auth).await {
+            match schwab::tokens::SchwabTokens::refresh_if_needed(
+                &pool,
+                &env.schwab_auth,
+                metrics.clone(),
+            )
+            .await
+            {
                 Err(SchwabError::RefreshTokenExpired) => {
-                    warn!("Refresh token expired, waiting for manual authentication via API");
+                    warn!("Refresh token expired, will retry after tokens are refreshed via API");
                     return Err(anyhow::anyhow!("RefreshTokenExpired"));
                 }
                 Err(e) => return Err(anyhow::anyhow!("Token validation failed: {}", e)),
@@ -125,6 +131,7 @@ fn create_bot_runner(
             schwab::tokens::SchwabTokens::spawn_automatic_token_refresh(
                 pool.clone(),
                 env.schwab_auth.clone(),
+                metrics.clone(),
             );
 
             let mut clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();

@@ -106,10 +106,10 @@ pub(crate) struct BackgroundTasks {
 fn spawn_token_refresher(
     env: &Env,
     pool: &SqlitePool,
-    _metrics: Arc<Option<metrics::Metrics>>,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> JoinHandle<()> {
     info!("Starting token refresh service");
-    SchwabTokens::spawn_automatic_token_refresh(pool.clone(), env.schwab_auth.clone())
+    SchwabTokens::spawn_automatic_token_refresh(pool.clone(), env.schwab_auth.clone(), metrics)
 }
 
 fn spawn_order_poller(env: &Env, pool: &SqlitePool, broker: DynBroker) -> JoinHandle<()> {
@@ -263,6 +263,16 @@ async fn periodic_accumulated_position_check(
         tokio::select! {
             _ = interval.tick() => {
                 debug!("Running periodic accumulated position check");
+
+                // Heartbeat metric - update queue depth to show system is alive
+                if let Some(ref m) = *metrics {
+                    if let Ok(count) = crate::queue::count_unprocessed(&pool).await {
+                        #[allow(clippy::cast_sign_loss)]
+                        let count_u64 = count.max(0) as u64;
+                        m.queue_depth.record(count_u64, &[]);
+                    }
+                }
+
                 if let Err(e) = check_and_execute_accumulated_positions(&broker, &env, &pool, metrics.clone()).await {
                     error!("Periodic accumulated position check failed: {e}");
                 }
@@ -516,7 +526,9 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
 
     // Initialize queue depth metric
     if let Some(ref m) = *metrics {
-        m.queue_depth.record(unprocessed_count as u64, &[]);
+        #[allow(clippy::cast_sign_loss)]
+        let count_u64 = unprocessed_count.max(0) as u64;
+        m.queue_depth.record(count_u64, &[]);
     }
 
     let mut empty_polls = 0u32;
@@ -528,12 +540,13 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
 
         // Track event processing duration
         let start_time = Instant::now();
-        match process_next_queued_event(env, pool, cache, &provider).await {
+        match process_next_queued_event(env, pool, cache, &provider, metrics.clone()).await {
             Ok(Some(execution)) => {
                 empty_polls = 0;
                 successful_polls += 1;
 
                 // Record event processing duration
+                #[allow(clippy::cast_precision_loss)]
                 let duration_ms = start_time.elapsed().as_millis() as f64;
                 if let Some(ref m) = *metrics {
                     m.trade_execution_duration_ms.record(duration_ms, &[]);
@@ -542,7 +555,9 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
                 // Update queue depth metric after processing an event
                 if let Some(ref m) = *metrics {
                     if let Ok(current_count) = crate::queue::count_unprocessed(pool).await {
-                        m.queue_depth.record(current_count as u64, &[]);
+                        #[allow(clippy::cast_sign_loss)]
+                        let count_u64 = current_count.max(0) as u64;
+                        m.queue_depth.record(count_u64, &[]);
                     }
                 }
 
@@ -600,6 +615,7 @@ async fn process_next_queued_event<P: Provider + Clone>(
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: &P,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> Result<Option<SchwabExecution>, EventProcessingError> {
     let queued_event = get_next_queued_event(pool).await?;
     let Some(queued_event) = queued_event else {
@@ -615,7 +631,7 @@ async fn process_next_queued_event<P: Provider + Clone>(
         return handle_filtered_event(pool, &queued_event, event_id).await;
     };
 
-    process_valid_trade(pool, &queued_event, event_id, trade).await
+    process_valid_trade(pool, &queued_event, event_id, trade, metrics).await
 }
 
 async fn get_next_queued_event(
@@ -711,6 +727,7 @@ async fn process_valid_trade(
     queued_event: &QueuedEvent,
     event_id: i64,
     trade: OnchainTrade,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> Result<Option<SchwabExecution>, EventProcessingError> {
     info!(
         "Event successfully converted to trade: event_type={:?}, tx_hash={:?}, log_index={}, symbol={}, amount={}",
@@ -732,7 +749,7 @@ async fn process_valid_trade(
         trade.symbol, trade.amount, trade.direction, trade.tx_hash, trade.log_index
     );
 
-    process_trade_within_transaction(pool, queued_event, event_id, trade).await
+    process_trade_within_transaction(pool, queued_event, event_id, trade, metrics).await
 }
 
 async fn process_trade_within_transaction(
@@ -740,6 +757,7 @@ async fn process_trade_within_transaction(
     queued_event: &QueuedEvent,
     event_id: i64,
     trade: OnchainTrade,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> Result<Option<SchwabExecution>, EventProcessingError> {
     let mut sql_tx = pool.begin().await.map_err(|e| {
         error!("Failed to begin transaction for event processing: {e}");
@@ -751,7 +769,7 @@ async fn process_trade_within_transaction(
         event_id, queued_event.tx_hash, queued_event.log_index
     );
 
-    let execution = accumulator::process_onchain_trade(&mut sql_tx, trade)
+    let execution = accumulator::process_onchain_trade(&mut sql_tx, trade, metrics.clone())
         .await
         .map_err(|e| {
             error!(
@@ -821,7 +839,7 @@ async fn check_and_execute_accumulated_positions(
     pool: &SqlitePool,
     metrics: Arc<Option<metrics::Metrics>>,
 ) -> Result<(), EventProcessingError> {
-    let executions = check_all_accumulated_positions(pool).await?;
+    let executions = check_all_accumulated_positions(pool, metrics.clone()).await?;
 
     if executions.is_empty() {
         debug!("No accumulated positions ready for execution");
@@ -1151,7 +1169,7 @@ mod tests {
             {
                 // Step 5: Process the trade through accumulation
                 let mut sql_tx = pool.begin().await.unwrap();
-                accumulator::process_onchain_trade(&mut sql_tx, trade)
+                accumulator::process_onchain_trade(&mut sql_tx, trade, Arc::new(None))
                     .await
                     .unwrap();
                 sql_tx.commit().await.unwrap();
@@ -1675,7 +1693,8 @@ mod tests {
         assert_eq!(count, 1);
 
         // Process the event - should filter it out without error
-        let result = process_next_queued_event(&env, &pool, &cache, &provider).await;
+        let result =
+            process_next_queued_event(&env, &pool, &cache, &provider, Arc::new(None)).await;
 
         // Should return Ok(None) indicating filtered event
         assert!(result.is_ok());

@@ -5,6 +5,7 @@ use clap::Parser;
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use serde::Deserialize;
 use sqlx::SqlitePool;
+use std::sync::Arc;
 use tracing::{debug, info};
 
 use super::{SchwabError, tokens::SchwabTokens};
@@ -42,7 +43,7 @@ pub(crate) struct AccountNumbers {
 
 impl SchwabAuthEnv {
     pub async fn get_account_hash(&self, pool: &SqlitePool) -> Result<String, SchwabError> {
-        let access_token = SchwabTokens::get_valid_access_token(pool, self).await?;
+        let access_token = SchwabTokens::get_valid_access_token(pool, self, Arc::new(None)).await?;
 
         let headers = [
             (

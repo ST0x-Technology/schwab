@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use sqlx::SqlitePool;
 use std::io::Write;
+use std::sync::Arc;
 use thiserror::Error;
 use tracing::{error, info};
 
@@ -305,7 +306,7 @@ async fn ensure_authentication<W: Write>(
 ) -> anyhow::Result<()> {
     info!("Refreshing authentication tokens if needed");
 
-    match SchwabTokens::get_valid_access_token(pool, schwab_auth).await {
+    match SchwabTokens::get_valid_access_token(pool, schwab_auth, Arc::new(None)).await {
         Ok(_access_token) => {
             info!("Authentication tokens are valid, access token obtained");
             return Ok(());
@@ -361,7 +362,7 @@ async fn execute_order_with_writers<W: Write>(
 
     info!("Created order: ticker={ticker}, instruction={instruction:?}, quantity={quantity}");
 
-    match order.place(&env.schwab_auth, pool).await {
+    match order.place(&env.schwab_auth, pool, Arc::new(None)).await {
         Ok(response) => {
             info!(
                 "Order placed successfully: ticker={ticker}, instruction={instruction:?}, quantity={quantity}, order_id={}",
@@ -438,7 +439,8 @@ async fn process_found_trade<W: Write>(
     writeln!(stdout, "🔄 Processing trade with TradeAccumulator...")?;
 
     let mut sql_tx = pool.begin().await?;
-    let execution = accumulator::process_onchain_trade(&mut sql_tx, onchain_trade).await?;
+    let execution =
+        accumulator::process_onchain_trade(&mut sql_tx, onchain_trade, Arc::new(None)).await?;
     sql_tx.commit().await?;
 
     if let Some(execution) = execution {
@@ -659,9 +661,12 @@ mod tests {
         };
         expired_tokens.store(&pool).await.unwrap();
 
-        let result =
-            crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
-                .await;
+        let result = crate::schwab::tokens::SchwabTokens::get_valid_access_token(
+            &pool,
+            &env.schwab_auth,
+            Arc::new(None),
+        )
+        .await;
 
         assert!(matches!(
             result.unwrap_err(),
@@ -715,10 +720,13 @@ mod tests {
                 .header("location", "/trader/v1/accounts/ABC123DEF456/orders/12345");
         });
 
-        let access_token =
-            crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
-                .await
-                .unwrap();
+        let access_token = crate::schwab::tokens::SchwabTokens::get_valid_access_token(
+            &pool,
+            &env.schwab_auth,
+            Arc::new(None),
+        )
+        .await
+        .unwrap();
         assert_eq!(access_token, "refreshed_access_token");
 
         execute_order_with_writers(
@@ -898,9 +906,12 @@ mod tests {
         };
         expired_tokens.store(&pool).await.unwrap();
 
-        let result =
-            crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
-                .await;
+        let result = crate::schwab::tokens::SchwabTokens::get_valid_access_token(
+            &pool,
+            &env.schwab_auth,
+            Arc::new(None),
+        )
+        .await;
 
         assert!(matches!(
             result.unwrap_err(),

@@ -1,15 +1,18 @@
 use sqlx::SqlitePool;
+use std::sync::Arc;
 use tracing::info;
 
 use super::OnchainTrade;
 use crate::error::{OnChainError, TradeValidationError};
 use crate::lock::{clear_execution_lease, set_pending_execution_id, try_acquire_execution_lease};
+use crate::metrics;
 use crate::onchain::io::EquitySymbol;
 use crate::onchain::position_calculator::{AccumulationBucket, PositionCalculator};
 use crate::schwab::TradeState;
 use crate::schwab::execution::update_execution_status_within_transaction;
 use crate::schwab::{Direction, execution::SchwabExecution};
 use crate::trade_execution_link::TradeExecutionLink;
+use opentelemetry::KeyValue;
 
 /// Processes an onchain trade through the accumulation system with duplicate detection.
 ///
@@ -26,6 +29,7 @@ use crate::trade_execution_link::TradeExecutionLink;
 pub async fn process_onchain_trade(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     trade: OnchainTrade,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> Result<Option<SchwabExecution>, OnChainError> {
     // Check if trade already exists to handle duplicates gracefully
     let tx_hash_str = trade.tx_hash.to_string();
@@ -65,7 +69,8 @@ pub async fn process_onchain_trade(
 
     let base_symbol = trade.symbol.base();
 
-    let mut calculator = get_or_create_within_transaction(sql_tx, base_symbol).await?;
+    let mut calculator =
+        get_or_create_within_transaction(sql_tx, base_symbol, metrics.clone()).await?;
 
     // Map onchain direction to exposure state
     // Onchain SELL (gave away stock for USDC) -> we're now short the stock
@@ -90,7 +95,9 @@ pub async fn process_onchain_trade(
     clean_up_stale_executions(sql_tx, base_symbol).await?;
 
     let execution = if try_acquire_execution_lease(sql_tx, base_symbol).await? {
-        let result = try_create_execution_if_ready(sql_tx, base_symbol, &mut calculator).await?;
+        let result =
+            try_create_execution_if_ready(sql_tx, base_symbol, &mut calculator, metrics.clone())
+                .await?;
 
         match &result {
             Some(execution) => {
@@ -114,7 +121,14 @@ pub async fn process_onchain_trade(
     };
 
     let pending_execution_id = execution.as_ref().and_then(|e| e.id);
-    save_within_transaction(&mut *sql_tx, base_symbol, &calculator, pending_execution_id).await?;
+    save_within_transaction(
+        &mut *sql_tx,
+        base_symbol,
+        &calculator,
+        pending_execution_id,
+        metrics.clone(),
+    )
+    .await?;
 
     Ok(execution)
 }
@@ -138,6 +152,7 @@ pub async fn find_by_symbol(
 async fn get_or_create_within_transaction(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     symbol: &EquitySymbol,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> Result<PositionCalculator, OnChainError> {
     let symbol_str = symbol.to_string();
     let row = sqlx::query!(
@@ -154,7 +169,7 @@ async fn get_or_create_within_transaction(
         ))
     } else {
         let new_calculator = PositionCalculator::new();
-        save_within_transaction(sql_tx, symbol, &new_calculator, None).await?;
+        save_within_transaction(sql_tx, symbol, &new_calculator, None, metrics).await?;
         Ok(new_calculator)
     }
 }
@@ -164,6 +179,7 @@ pub async fn save_within_transaction(
     symbol: &EquitySymbol,
     calculator: &PositionCalculator,
     pending_execution_id: Option<i64>,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> Result<(), OnChainError> {
     let symbol_str = symbol.to_string();
     sqlx::query!(
@@ -190,6 +206,13 @@ pub async fn save_within_transaction(
     .execute(sql_tx.as_mut())
     .await?;
 
+    // Update accumulated positions gauge
+    if let Some(ref m) = *metrics {
+        let net_position = calculator.net_position();
+        m.accumulated_positions
+            .record(net_position, &[KeyValue::new("symbol", symbol_str.clone())]);
+    }
+
     Ok(())
 }
 
@@ -197,12 +220,20 @@ async fn try_create_execution_if_ready(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     base_symbol: &EquitySymbol,
     calculator: &mut PositionCalculator,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> Result<Option<SchwabExecution>, OnChainError> {
     let Some(execution_type) = calculator.determine_execution_type() else {
         return Ok(None);
     };
 
-    execute_position(&mut *sql_tx, base_symbol, calculator, execution_type).await
+    execute_position(
+        &mut *sql_tx,
+        base_symbol,
+        calculator,
+        execution_type,
+        metrics,
+    )
+    .await
 }
 
 async fn execute_position(
@@ -210,6 +241,7 @@ async fn execute_position(
     base_symbol: &EquitySymbol,
     calculator: &mut PositionCalculator,
     execution_type: AccumulationBucket,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> Result<Option<SchwabExecution>, OnChainError> {
     let shares = calculator.calculate_executable_shares();
 
@@ -234,6 +266,23 @@ async fn execute_position(
         .await?;
 
     calculator.reduce_accumulation(execution_type, shares);
+
+    // Track position clearing through execution
+    if let Some(ref m) = *metrics {
+        let direction_label = match instruction {
+            Direction::Buy => "buy",
+            Direction::Sell => "sell",
+        };
+        m.schwab_orders_executed.add(
+            1,
+            &[
+                KeyValue::new("status", "pending"),
+                KeyValue::new("symbol", base_symbol.to_string()),
+                KeyValue::new("direction", direction_label),
+                KeyValue::new("context", "position_clearing"),
+            ],
+        );
+    }
 
     info!(
         symbol = %base_symbol,
@@ -433,8 +482,102 @@ async fn clean_up_stale_executions(
 /// to ensure accumulated positions execute even when no new events arrive for those symbols.
 /// It prevents positions from sitting idle indefinitely when they've accumulated
 /// enough shares to execute but the triggering trade didn't push them over the threshold.
+async fn process_symbol_for_execution(
+    pool: &SqlitePool,
+    symbol: &str,
+    accumulated_long: f64,
+    accumulated_short: f64,
+    net_position: f64,
+    metrics: Arc<Option<metrics::Metrics>>,
+) -> Result<Option<SchwabExecution>, OnChainError> {
+    let symbol = EquitySymbol::new(symbol)?;
+    info!(
+        symbol = %symbol,
+        accumulated_long = accumulated_long,
+        accumulated_short = accumulated_short,
+        net_position = net_position,
+        "Checking symbol for execution"
+    );
+
+    let mut sql_tx = pool.begin().await?;
+
+    // Clean up any stale executions for this symbol
+    clean_up_stale_executions(&mut sql_tx, &symbol).await?;
+
+    // Try to acquire execution lease for this symbol
+    if !try_acquire_execution_lease(&mut sql_tx, &symbol).await? {
+        info!(
+            symbol = %symbol,
+            "Another worker holds execution lease, skipping"
+        );
+        sql_tx.commit().await?;
+        return Ok(None);
+    }
+
+    let result = try_create_execution_for_symbol(&mut sql_tx, &symbol, metrics.clone()).await?;
+    sql_tx.commit().await?;
+    Ok(result)
+}
+
+async fn try_create_execution_for_symbol(
+    sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    symbol: &EquitySymbol,
+    metrics: Arc<Option<metrics::Metrics>>,
+) -> Result<Option<SchwabExecution>, OnChainError> {
+    // Re-fetch calculator to get current state
+    let mut calculator = get_or_create_within_transaction(sql_tx, symbol, metrics.clone()).await?;
+
+    // Check if still ready after potentially concurrent processing
+    let Some(execution_type) = calculator.determine_execution_type() else {
+        clear_execution_lease(sql_tx, symbol).await?;
+        info!(
+            symbol = %symbol,
+            "No execution needed for symbol (insufficient shares after cleanup)"
+        );
+        return Ok(None);
+    };
+
+    // The linkage system will handle allocating the oldest available trades
+    let result = execute_position(
+        sql_tx,
+        symbol,
+        &mut calculator,
+        execution_type,
+        metrics.clone(),
+    )
+    .await?;
+
+    if let Some(execution) = &result {
+        let execution_id = execution
+            .id
+            .ok_or(crate::error::PersistenceError::MissingExecutionId)?;
+        set_pending_execution_id(sql_tx, symbol, execution_id).await?;
+
+        info!(
+            symbol = %symbol,
+            execution_id = ?execution.id,
+            shares = execution.shares,
+            direction = ?execution.direction,
+            "Created execution for accumulated position"
+        );
+    } else {
+        clear_execution_lease(sql_tx, symbol).await?;
+        info!(
+            symbol = %symbol,
+            "No execution created for symbol (insufficient shares after re-check)"
+        );
+    }
+
+    // Save updated calculator state
+    let pending_execution_id = result.as_ref().and_then(|e| e.id);
+    save_within_transaction(sql_tx, symbol, &calculator, pending_execution_id, metrics).await?;
+
+    Ok(result)
+}
+
 pub async fn check_all_accumulated_positions(
     pool: &SqlitePool,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> Result<Vec<SchwabExecution>, OnChainError> {
     info!("Checking all accumulated positions for ready executions");
 
@@ -471,73 +614,18 @@ pub async fn check_all_accumulated_positions(
 
     // Process each symbol individually to respect locking
     for row in ready_symbols {
-        let symbol = EquitySymbol::new(&row.symbol)?;
-        info!(
-            symbol = %symbol,
-            accumulated_long = row.accumulated_long,
-            accumulated_short = row.accumulated_short,
-            net_position = row.net_position,
-            "Checking symbol for execution"
-        );
-
-        let mut sql_tx = pool.begin().await?;
-
-        // Clean up any stale executions for this symbol
-        clean_up_stale_executions(&mut sql_tx, &symbol).await?;
-
-        // Try to acquire execution lease for this symbol
-        if try_acquire_execution_lease(&mut sql_tx, &symbol).await? {
-            // Re-fetch calculator to get current state
-            let mut calculator = get_or_create_within_transaction(&mut sql_tx, &symbol).await?;
-
-            // Check if still ready after potentially concurrent processing
-            if let Some(execution_type) = calculator.determine_execution_type() {
-                // The linkage system will handle allocating the oldest available trades
-                let result =
-                    execute_position(&mut sql_tx, &symbol, &mut calculator, execution_type).await?;
-
-                if let Some(execution) = &result {
-                    let execution_id = execution
-                        .id
-                        .ok_or(crate::error::PersistenceError::MissingExecutionId)?;
-                    set_pending_execution_id(&mut sql_tx, &symbol, execution_id).await?;
-
-                    info!(
-                        symbol = %symbol,
-                        execution_id = ?execution.id,
-                        shares = execution.shares,
-                        direction = ?execution.direction,
-                        "Created execution for accumulated position"
-                    );
-
-                    executions.push(execution.clone());
-                } else {
-                    clear_execution_lease(&mut sql_tx, &symbol).await?;
-                    info!(
-                        symbol = %symbol,
-                        "No execution created for symbol (insufficient shares after re-check)"
-                    );
-                }
-
-                // Save updated calculator state
-                let pending_execution_id = result.as_ref().and_then(|e| e.id);
-                save_within_transaction(&mut sql_tx, &symbol, &calculator, pending_execution_id)
-                    .await?;
-            } else {
-                clear_execution_lease(&mut sql_tx, &symbol).await?;
-                info!(
-                    symbol = %symbol,
-                    "No execution needed for symbol (insufficient shares after cleanup)"
-                );
-            }
-        } else {
-            info!(
-                symbol = %symbol,
-                "Another worker holds execution lease, skipping"
-            );
+        if let Some(execution) = process_symbol_for_execution(
+            pool,
+            &row.symbol,
+            row.accumulated_long,
+            row.accumulated_short,
+            row.net_position,
+            metrics.clone(),
+        )
+        .await?
+        {
+            executions.push(execution);
         }
-
-        sql_tx.commit().await?;
     }
 
     if executions.is_empty() {
@@ -568,7 +656,7 @@ mod tests {
         trade: OnchainTrade,
     ) -> Result<Option<SchwabExecution>, OnChainError> {
         let mut sql_tx = pool.begin().await?;
-        let result = process_onchain_trade(&mut sql_tx, trade).await?;
+        let result = process_onchain_trade(&mut sql_tx, trade, Arc::new(None)).await?;
         sql_tx.commit().await?;
         Ok(result)
     }
@@ -1337,6 +1425,7 @@ mod tests {
             &symbol!("AAPL"),
             &calculator,
             Some(execution_id),
+            Arc::new(None),
         )
         .await
         .unwrap();
@@ -1435,12 +1524,24 @@ mod tests {
 
         // Set up accumulators
         let calculator = PositionCalculator::new();
-        save_within_transaction(&mut sql_tx, &symbol!("MSFT"), &calculator, Some(recent_id))
-            .await
-            .unwrap();
-        save_within_transaction(&mut sql_tx, &symbol!("TSLA"), &calculator, Some(stale_id))
-            .await
-            .unwrap();
+        save_within_transaction(
+            &mut sql_tx,
+            &symbol!("MSFT"),
+            &calculator,
+            Some(recent_id),
+            Arc::new(None),
+        )
+        .await
+        .unwrap();
+        save_within_transaction(
+            &mut sql_tx,
+            &symbol!("TSLA"),
+            &calculator,
+            Some(stale_id),
+            Arc::new(None),
+        )
+        .await
+        .unwrap();
 
         // Make TSLA accumulator stale (15 minutes ago) but leave MSFT recent
         sqlx::query!(
@@ -1524,6 +1625,7 @@ mod tests {
             &symbol!("NVDA"),
             &calculator,
             Some(execution_id),
+            Arc::new(None),
         )
         .await
         .unwrap();
@@ -1585,7 +1687,9 @@ mod tests {
         assert!(aapl_pending.is_none());
 
         // Run the function - should not create any executions since 0.8 < 1.0
-        let executions = check_all_accumulated_positions(&pool).await.unwrap();
+        let executions = check_all_accumulated_positions(&pool, Arc::new(None))
+            .await
+            .unwrap();
         assert_eq!(executions.len(), 0);
 
         // Verify AAPL state unchanged
@@ -1602,7 +1706,9 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Run the function on empty database
-        let executions = check_all_accumulated_positions(&pool).await.unwrap();
+        let executions = check_all_accumulated_positions(&pool, Arc::new(None))
+            .await
+            .unwrap();
 
         // Should create no executions
         assert_eq!(executions.len(), 0);
@@ -1634,6 +1740,7 @@ mod tests {
             &symbol!("AAPL"),
             &aapl_calculator,
             Some(execution_id),
+            Arc::new(None),
         )
         .await
         .unwrap();
@@ -1641,7 +1748,9 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Run the function
-        let executions = check_all_accumulated_positions(&pool).await.unwrap();
+        let executions = check_all_accumulated_positions(&pool, Arc::new(None))
+            .await
+            .unwrap();
 
         // Should create no executions since AAPL has pending execution
         assert_eq!(executions.len(), 0);
