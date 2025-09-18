@@ -201,6 +201,9 @@ After processing the 5 missing BUY trades:
 fixes from Tasks 1, 2, 4, and 5 are working correctly in the production
 environment.
 
+**Policy:** Missing or partial market-hours data defaults to 'closed'
+(fail-closed) to prevent permissive trading behavior.
+
 **Actual Results vs Expectations:**
 
 **Database State** ✅ BETTER THAN EXPECTED:

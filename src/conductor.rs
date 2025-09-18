@@ -62,12 +62,24 @@ impl<P: Provider + Clone + Send + 'static> BackgroundTasksBuilder<P> {
         + Send
         + 'static,
     ) -> BackgroundTasks {
-        let token_refresher = spawn_token_refresher(&self.env, &self.pool);
+        let token_refresher = {
+            info!("Starting token refresh service");
+            SchwabTokens::spawn_automatic_token_refresh(
+                self.pool.clone(),
+                self.env.schwab_auth.clone(),
+                self.shutdown_rx.clone(),
+            )
+        };
         let order_poller = spawn_order_poller(&self.env, &self.pool, &self.shutdown_rx);
         let event_receiver = spawn_onchain_event_receiver(event_sender, clear_stream, take_stream);
         let position_checker = spawn_position_checker(&self.env, &self.pool, &self.shutdown_rx);
-        let queue_processor =
-            spawn_queue_processor(&self.env, &self.pool, &self.cache, self.provider);
+        let queue_processor = spawn_queue_processor(
+            &self.env,
+            &self.pool,
+            &self.cache,
+            self.provider,
+            &self.shutdown_rx,
+        );
 
         BackgroundTasks {
             token_refresher,
@@ -85,11 +97,6 @@ pub(crate) struct BackgroundTasks {
     pub(crate) event_receiver: JoinHandle<()>,
     pub(crate) position_checker: JoinHandle<()>,
     pub(crate) queue_processor: JoinHandle<()>,
-}
-
-fn spawn_token_refresher(env: &Env, pool: &SqlitePool) -> JoinHandle<()> {
-    info!("Starting token refresh service");
-    SchwabTokens::spawn_automatic_token_refresh(pool.clone(), env.schwab_auth.clone())
 }
 
 fn spawn_order_poller(
@@ -151,14 +158,24 @@ fn spawn_queue_processor<P: Provider + Clone + Send + 'static>(
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: P,
+    shutdown_rx: &watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     info!("Starting queue processor service");
     let env_clone = env.clone();
     let pool_clone = pool.clone();
     let cache_clone = cache.clone();
+    let shutdown_rx_clone = shutdown_rx.clone();
 
     tokio::spawn(async move {
-        if let Err(e) = run_queue_processor(&env_clone, &pool_clone, &cache_clone, provider).await {
+        if let Err(e) = run_queue_processor(
+            &env_clone,
+            &pool_clone,
+            &cache_clone,
+            provider,
+            shutdown_rx_clone,
+        )
+        .await
+        {
             error!("Queue processor service failed: {e}");
         }
     })
@@ -381,6 +398,7 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: P,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), EventProcessingError> {
     info!("Starting queue processor service");
 
@@ -399,6 +417,12 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
     }
 
     loop {
+        // Check for shutdown signal
+        if *shutdown_rx.borrow_and_update() {
+            info!("Queue processor received shutdown signal, exiting");
+            break;
+        }
+
         match process_next_queued_event(env, pool, cache, &provider).await {
             Ok(Some(execution)) => {
                 if let Some(exec_id) = execution.id {
@@ -416,6 +440,8 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
             }
         }
     }
+
+    Ok(())
 }
 
 /// Processes the next unprocessed event from the queue.

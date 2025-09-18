@@ -55,7 +55,10 @@ impl TradingHoursController {
                 debug!("Market is currently open, bot should run");
                 Ok(true)
             }
-            MarketStatus::Closed => Ok(false),
+            MarketStatus::Closed => {
+                debug!("Market is currently closed, bot should not run");
+                Ok(false)
+            }
         }
     }
 

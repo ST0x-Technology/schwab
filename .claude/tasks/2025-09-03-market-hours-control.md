@@ -155,8 +155,8 @@ market hours logic independently before integrating into the main bot flow.
 ```
 $ cargo run --bin cli market-status
 Market Status: CLOSED
-Today: Saturday, September 4, 2025 (Market Closed)
-Next Open: Monday, September 6, 2025 at 9:30 AM ET (in 1d 14h 23m)
+Today: Thursday, September 4, 2025 (Market Closed)
+Next Open: Saturday, September 6, 2025 at 9:30 AM ET (in 1d 14h 23m)
 
 $ cargo run --bin cli market-status --date 2025-09-06
 Market Status for September 6, 2025: 

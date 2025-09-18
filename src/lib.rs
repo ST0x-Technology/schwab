@@ -103,9 +103,12 @@ async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
                 let cache = SymbolCache::default();
                 let orderbook = IOrderBookV4Instance::new(env.evm_env.orderbook, &provider);
 
+                // Create a dummy shutdown receiver that never signals shutdown for standalone token refresh
+                let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
                 schwab::tokens::SchwabTokens::spawn_automatic_token_refresh(
                     pool.clone(),
                     env.schwab_auth.clone(),
+                    shutdown_rx,
                 );
 
                 let mut clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
