@@ -11,7 +11,7 @@ use super::execution::{
     update_execution_status_within_transaction,
 };
 use super::order::Order;
-use super::{SchwabAuthEnv, SchwabError, TradeState, TradeStatus};
+use super::{SchwabAuthEnv, SchwabError, TradeState};
 use crate::lock::{clear_execution_lease, clear_pending_execution_id};
 
 #[derive(Debug, Clone)]
@@ -263,7 +263,7 @@ impl OrderStatusPoller {
                 SchwabError::InvalidConfiguration("Execution not found".to_string())
             })?;
 
-        update_execution_status_within_transaction(&mut tx, execution_id, new_state).await?;
+        update_execution_status_within_transaction(&mut tx, execution_id, new_status).await?;
 
         // Clear pending execution ID and execution lease to unblock future executions
         clear_pending_execution_id(&mut tx, &execution.symbol)
