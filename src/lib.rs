@@ -105,7 +105,7 @@ async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
 
                 // Create a dummy shutdown receiver that never signals shutdown for standalone token refresh
                 let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-                schwab::tokens::SchwabTokens::spawn_automatic_token_refresh(
+                schwab::tokens::spawn_automatic_token_refresh(
                     pool.clone(),
                     env.schwab_auth.clone(),
                     shutdown_rx,

@@ -20,7 +20,6 @@ use crate::schwab::{
     OrderStatusPoller,
     execution::{SchwabExecution, find_execution_by_id},
     order::execute_schwab_order,
-    tokens::SchwabTokens,
 };
 use crate::symbol::cache::SymbolCache;
 use crate::symbol::lock::get_symbol_lock;
@@ -64,7 +63,7 @@ impl<P: Provider + Clone + Send + 'static> BackgroundTasksBuilder<P> {
     ) -> BackgroundTasks {
         let token_refresher = {
             info!("Starting token refresh service");
-            SchwabTokens::spawn_automatic_token_refresh(
+            crate::schwab::tokens::spawn_automatic_token_refresh(
                 self.pool.clone(),
                 self.env.schwab_auth.clone(),
                 self.shutdown_rx.clone(),
