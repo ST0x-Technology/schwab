@@ -106,6 +106,7 @@ impl CliEnv {
             dry_run: false,
             otel_metrics_exporter_endpoint: None,
             otel_metrics_exporter_basic_auth_token: None,
+            otel_metrics_exporter_instance_id: None,
         };
 
         Ok((env, cli_env.command))
@@ -978,6 +979,7 @@ mod tests {
             dry_run: false,
             otel_metrics_exporter_endpoint: None,
             otel_metrics_exporter_basic_auth_token: None,
+            otel_metrics_exporter_instance_id: None,
         }
     }
 

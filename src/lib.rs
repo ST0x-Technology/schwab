@@ -58,19 +58,33 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
     let bot_pool = pool.clone();
     let bot_metrics = metrics.clone();
     let bot_task = tokio::spawn(async move {
-        if let Err(e) = run(env, bot_pool, bot_metrics).await {
-            error!("Bot failed: {e}");
+        loop {
+            if let Err(e) = run(env.clone(), bot_pool.clone(), bot_metrics.clone()).await {
+                if e.to_string().contains("Refresh token has expired") {
+                    warn!("Bot failed due to expired token, retrying in 10 seconds...");
+
+                    // Record a retry metric to help debug Grafana connectivity
+                    if let Some(ref m) = *bot_metrics {
+                        m.increment_token_retry();
+                    }
+
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    continue;
+                } else {
+                    error!("Bot failed with non-recoverable error: {e}");
+                    break;
+                }
+            }
+            // If run() succeeds, it means the bot completed normally (market closed, etc.)
+            // Continue the loop to restart for next market session
+            info!("Bot completed successfully, restarting for next session...");
         }
     });
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             info!("Received shutdown signal, shutting down gracefully...");
-            // Flush metrics on shutdown
-            if metrics.is_some() {
-                info!("Flushing metrics before shutdown...");
-                // Metrics will be flushed when the Arc is dropped at end of function
-            }
+            // Metrics will be flushed and shutdown automatically when the Arc is dropped
         }
 
         result = server_task => {

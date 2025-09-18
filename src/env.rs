@@ -61,6 +61,8 @@ pub struct Env {
     pub otel_metrics_exporter_endpoint: Option<String>,
     #[clap(long, env)]
     pub otel_metrics_exporter_basic_auth_token: Option<String>,
+    #[clap(long, env)]
+    pub otel_metrics_exporter_instance_id: Option<String>,
 }
 
 impl Env {
@@ -125,6 +127,7 @@ pub mod tests {
             dry_run: false,
             otel_metrics_exporter_endpoint: None,
             otel_metrics_exporter_basic_auth_token: None,
+            otel_metrics_exporter_instance_id: None,
         }
     }
 
