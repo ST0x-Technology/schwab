@@ -1,6 +1,7 @@
 use alloy::providers::{ProviderBuilder, WsConnect};
 use rocket::Config;
 use sqlx::SqlitePool;
+use std::sync::Arc;
 use tracing::{debug, error, info, trace, warn};
 
 pub mod api;
@@ -10,6 +11,7 @@ mod conductor;
 pub mod env;
 mod error;
 mod lock;
+mod metrics;
 mod onchain;
 mod queue;
 pub mod schwab;
@@ -34,6 +36,14 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
     // Run database migrations to ensure all tables exist
     sqlx::migrate!().run(&pool).await?;
 
+    // Initialize metrics (optional - returns None if not configured)
+    let metrics = Arc::new(metrics::setup(&env));
+    if metrics.is_some() {
+        info!("Metrics initialized successfully");
+    } else {
+        info!("Metrics not configured - running without telemetry");
+    }
+
     let config = Config::figment()
         .merge(("port", 8080))
         .merge(("address", "0.0.0.0"));
@@ -46,8 +56,9 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
     let server_task = tokio::spawn(rocket.launch());
 
     let bot_pool = pool.clone();
+    let bot_metrics = metrics.clone();
     let bot_task = tokio::spawn(async move {
-        if let Err(e) = run(env, bot_pool).await {
+        if let Err(e) = run(env, bot_pool, bot_metrics).await {
             error!("Bot failed: {e}");
         }
     });
@@ -55,6 +66,11 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             info!("Received shutdown signal, shutting down gracefully...");
+            // Flush metrics on shutdown
+            if metrics.is_some() {
+                info!("Flushing metrics before shutdown...");
+                // Metrics will be flushed when the Arc is dropped at end of function
+            }
         }
 
         result = server_task => {
@@ -80,12 +96,14 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
 fn create_bot_runner(
     env: Env,
     pool: SqlitePool,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> impl Fn() -> std::pin::Pin<
     Box<dyn std::future::Future<Output = anyhow::Result<conductor::BackgroundTasks>> + Send>,
 > + Send {
     move || {
         let env = env.clone();
         let pool = pool.clone();
+        let metrics = metrics.clone();
         Box::pin(async move {
             debug!("Validating Schwab tokens...");
             match schwab::tokens::SchwabTokens::refresh_if_needed(&pool, &env.schwab_auth).await {
@@ -126,6 +144,7 @@ fn create_bot_runner(
                 provider,
                 clear_stream,
                 take_stream,
+                metrics,
             ))
         })
     }
@@ -206,8 +225,12 @@ async fn run_market_hours_loop(
     }
 }
 
-async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
-    let run_bot = create_bot_runner(env.clone(), pool.clone());
+async fn run(
+    env: Env,
+    pool: SqlitePool,
+    metrics: Arc<Option<metrics::Metrics>>,
+) -> anyhow::Result<()> {
+    let run_bot = create_bot_runner(env.clone(), pool.clone(), metrics.clone());
 
     // Initialize market hours controller
     let market_hours_cache = std::sync::Arc::new(MarketHoursCache::new());

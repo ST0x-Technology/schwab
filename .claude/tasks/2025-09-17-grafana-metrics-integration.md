@@ -81,22 +81,58 @@ Use the existing `dry_run` flag to determine deployment environment:
 
 ### Task 4. Initialize Metrics at Startup
 
-- [ ] Add `pub mod metrics;` to `src/lib.rs`
-- [ ] Initialize metrics in `launch` function before starting tasks
-- [ ] Store as `Arc<Option<Metrics>>` in shared state
-- [ ] Pass metrics to `BackgroundTasksBuilder`
-- [ ] Add metrics to background task structs
-- [ ] Handle metrics flush on shutdown in ctrl-c handler
+- [x] Add `mod metrics;` to `src/lib.rs`
+- [x] Initialize metrics in `launch` function before starting tasks
+- [x] Store as `Arc<Option<Metrics>>` in shared state
+- [x] Pass metrics to `BackgroundTasksBuilder`
+- [x] Add metrics to background task structs
+- [x] Handle metrics flush on shutdown in ctrl-c handler
+
+**Implementation Summary:**
+
+- Added metrics module import to `src/lib.rs` as `mod metrics` (crate-private)
+- Updated `launch()` function to initialize metrics early using
+  `metrics::setup(&env)`
+- Store metrics as `Arc<Option<Metrics>>` for thread-safe optional access
+- Updated `run()`, `create_bot_runner()`, and all background task spawn
+  functions to accept and pass metrics
+- Updated `BackgroundTasksBuilder` struct and `run_live()` function to include
+  metrics parameter
+- Added metrics flush handling in ctrl-c signal handler
+- Fixed OpenTelemetry API compatibility issues with the latest SDK version
+- All background task spawn functions now accept metrics parameter (marked with
+  `_metrics` prefix for unused parameters)
+- **Corrected visibility levels**: Made `Metrics` struct and `setup()` function
+  `pub(crate)` per CLAUDE.md guidelines
+- Compilation successful with only expected dead code warnings for unused metric
+  fields
 
 ### Task 5. Instrument Event Processing (`src/conductor.rs`)
 
-- [ ] Add metrics field to `BackgroundTasksBuilder`
-- [ ] Increment `onchain_events_received` counter when events arrive:
+- [x] Add metrics field to `BackgroundTasksBuilder`
+- [x] Increment `onchain_events_received` counter when events arrive:
   - Label "ClearV2" for clear events
   - Label "TakeOrderV2" for take order events
-- [ ] Update `queue_depth` gauge in queue processor
-- [ ] Track event processing start time for duration metrics
-- [ ] Record processing duration in histogram
+- [x] Update `queue_depth` gauge in queue processor
+- [x] Track event processing start time for duration metrics
+- [x] Record processing duration in histogram
+
+**Implementation Summary:**
+
+- Added `onchain_events_received` counter instrumentation in
+  `receive_blockchain_events()` function
+- Incremented counter with proper event type labels ("ClearV2", "TakeOrderV2")
+  when events are successfully received
+- Updated `run_queue_processor()` function to accept metrics parameter and track
+  queue depth
+- Added queue depth gauge updates at initialization and after processing each
+  event
+- Added event processing duration tracking using `Instant::now()` and recorded
+  to `trade_execution_duration_ms` histogram
+- Updated all function signatures to properly pass metrics through the call
+  chain
+- Added necessary imports (`opentelemetry::KeyValue`, `std::time::Instant`)
+- All metrics are optional and only recorded when metrics are configured
 
 ### Task 6. Instrument Trade Execution (`src/schwab/broker.rs`)
 

@@ -2,8 +2,10 @@ use alloy::providers::Provider;
 use alloy::rpc::types::Log;
 use alloy::sol_types;
 use futures_util::{Stream, StreamExt};
+use opentelemetry::KeyValue;
 use sqlx::SqlitePool;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc::UnboundedSender, watch};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
@@ -12,6 +14,7 @@ use tracing::{debug, error, info, trace};
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
 use crate::env::Env;
 use crate::error::EventProcessingError;
+use crate::metrics;
 use crate::onchain::accumulator::check_all_accumulated_positions;
 use crate::onchain::trade::TradeEvent;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
@@ -30,15 +33,23 @@ pub(crate) struct BackgroundTasksBuilder<P> {
     pool: SqlitePool,
     cache: SymbolCache,
     provider: P,
+    metrics: Arc<Option<metrics::Metrics>>,
 }
 
 impl<P: Provider + Clone + Send + 'static> BackgroundTasksBuilder<P> {
-    pub(crate) fn new(env: Env, pool: SqlitePool, cache: SymbolCache, provider: P) -> Self {
+    pub(crate) fn new(
+        env: Env,
+        pool: SqlitePool,
+        cache: SymbolCache,
+        provider: P,
+        metrics: Arc<Option<metrics::Metrics>>,
+    ) -> Self {
         Self {
             env,
             pool,
             cache,
             provider,
+            metrics,
         }
     }
 
@@ -54,13 +65,25 @@ impl<P: Provider + Clone + Send + 'static> BackgroundTasksBuilder<P> {
         + Send
         + 'static,
     ) -> BackgroundTasks {
-        let token_refresher = spawn_token_refresher(&self.env, &self.pool);
+        let token_refresher = spawn_token_refresher(&self.env, &self.pool, self.metrics.clone());
         let broker = self.env.get_broker();
         let order_poller = spawn_order_poller(&self.env, &self.pool, broker.clone());
-        let event_processor = spawn_onchain_event_receiver(event_sender, clear_stream, take_stream);
-        let position_checker = spawn_position_checker(broker.clone(), &self.env, &self.pool);
-        let queue_processor =
-            spawn_queue_processor(broker, &self.env, &self.pool, &self.cache, self.provider);
+        let event_processor = spawn_onchain_event_receiver(
+            event_sender,
+            clear_stream,
+            take_stream,
+            self.metrics.clone(),
+        );
+        let position_checker =
+            spawn_position_checker(broker.clone(), &self.env, &self.pool, self.metrics.clone());
+        let queue_processor = spawn_queue_processor(
+            broker,
+            &self.env,
+            &self.pool,
+            &self.cache,
+            self.provider,
+            self.metrics.clone(),
+        );
 
         BackgroundTasks {
             token_refresher,
@@ -80,7 +103,11 @@ pub(crate) struct BackgroundTasks {
     pub(crate) queue_processor: JoinHandle<()>,
 }
 
-fn spawn_token_refresher(env: &Env, pool: &SqlitePool) -> JoinHandle<()> {
+fn spawn_token_refresher(
+    env: &Env,
+    pool: &SqlitePool,
+    _metrics: Arc<Option<metrics::Metrics>>,
+) -> JoinHandle<()> {
     info!("Starting token refresh service");
     SchwabTokens::spawn_automatic_token_refresh(pool.clone(), env.schwab_auth.clone())
 }
@@ -118,16 +145,23 @@ fn spawn_onchain_event_receiver(
     + Unpin
     + Send
     + 'static,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> JoinHandle<()> {
     info!("Starting blockchain event receiver");
     tokio::spawn(receive_blockchain_events(
         clear_stream,
         take_stream,
         event_sender,
+        metrics,
     ))
 }
 
-fn spawn_position_checker(broker: DynBroker, env: &Env, pool: &SqlitePool) -> JoinHandle<()> {
+fn spawn_position_checker(
+    broker: DynBroker,
+    env: &Env,
+    pool: &SqlitePool,
+    _metrics: Arc<Option<metrics::Metrics>>,
+) -> JoinHandle<()> {
     info!("Starting periodic accumulated position checker");
 
     // Create a dummy shutdown receiver since we now use abort mechanism instead
@@ -147,6 +181,7 @@ fn spawn_queue_processor<P: Provider + Clone + Send + 'static>(
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: P,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> JoinHandle<()> {
     info!("Starting queue processor service");
     let env_clone = env.clone();
@@ -154,8 +189,15 @@ fn spawn_queue_processor<P: Provider + Clone + Send + 'static>(
     let cache_clone = cache.clone();
 
     tokio::spawn(async move {
-        if let Err(e) =
-            run_queue_processor(&broker, &env_clone, &pool_clone, &cache_clone, provider).await
+        if let Err(e) = run_queue_processor(
+            &broker,
+            &env_clone,
+            &pool_clone,
+            &cache_clone,
+            provider,
+            metrics,
+        )
+        .await
         {
             error!("Queue processor service failed: {e}");
         }
@@ -237,6 +279,7 @@ async fn receive_blockchain_events<S1, S2>(
     mut clear_stream: S1,
     mut take_stream: S2,
     event_sender: UnboundedSender<(TradeEvent, Log)>,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) where
     S1: Stream<Item = Result<(ClearV2, Log), sol_types::Error>> + Unpin,
     S2: Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin,
@@ -262,11 +305,23 @@ async fn receive_blockchain_events<S1, S2>(
         let event_result = tokio::select! {
             Some(result) = clear_stream.next() => {
                 trace!("WebSocket receiver got ClearV2 result");
-                result.map(|(event, log)| (TradeEvent::ClearV2(Box::new(event)), log))
+                let mapped = result.map(|(event, log)| (TradeEvent::ClearV2(Box::new(event)), log));
+                if mapped.is_ok() {
+                    if let Some(ref m) = *metrics {
+                        m.onchain_events_received.add(1, &[KeyValue::new("event_type", "ClearV2")]);
+                    }
+                }
+                mapped
             }
             Some(result) = take_stream.next() => {
                 trace!("WebSocket receiver got TakeOrderV2 result");
-                result.map(|(event, log)| (TradeEvent::TakeOrderV2(Box::new(event)), log))
+                let mapped = result.map(|(event, log)| (TradeEvent::TakeOrderV2(Box::new(event)), log));
+                if mapped.is_ok() {
+                    if let Some(ref m) = *metrics {
+                        m.onchain_events_received.add(1, &[KeyValue::new("event_type", "TakeOrderV2")]);
+                    }
+                }
+                mapped
             }
             () = tokio::time::sleep(Duration::from_millis(50)) => {
                 // Rate-limit the polling to prevent CPU spinning when no events are available
@@ -362,6 +417,7 @@ pub(crate) fn run_live<P, S1, S2>(
     provider: P,
     clear_stream: S1,
     take_stream: S2,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> BackgroundTasks
 where
     P: Provider + Clone + Send + 'static,
@@ -371,8 +427,12 @@ where
     let (event_sender, mut event_receiver) =
         tokio::sync::mpsc::unbounded_channel::<(TradeEvent, Log)>();
 
-    let background_tasks = BackgroundTasksBuilder::new(env.clone(), pool.clone(), cache, provider)
-        .spawn(event_sender, clear_stream, take_stream);
+    let background_tasks =
+        BackgroundTasksBuilder::new(env.clone(), pool.clone(), cache, provider, metrics).spawn(
+            event_sender,
+            clear_stream,
+            take_stream,
+        );
 
     // Spawn the event processing loop as a background task
     let pool_clone = pool.clone();
@@ -436,6 +496,7 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: P,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> Result<(), EventProcessingError> {
     info!("Starting queue processor service");
 
@@ -451,6 +512,11 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
         info!("No unprocessed events found, starting fresh");
     }
 
+    // Initialize queue depth metric
+    if let Some(ref m) = *metrics {
+        m.queue_depth.record(unprocessed_count as u64, &[]);
+    }
+
     let mut empty_polls = 0u32;
     let mut total_polls = 0u32;
     let mut successful_polls = 0u32;
@@ -458,10 +524,25 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
     loop {
         total_polls += 1;
 
+        // Track event processing duration
+        let start_time = Instant::now();
         match process_next_queued_event(env, pool, cache, &provider).await {
             Ok(Some(execution)) => {
                 empty_polls = 0;
                 successful_polls += 1;
+
+                // Record event processing duration
+                let duration_ms = start_time.elapsed().as_millis() as f64;
+                if let Some(ref m) = *metrics {
+                    m.trade_execution_duration_ms.record(duration_ms, &[]);
+                }
+
+                // Update queue depth metric after processing an event
+                if let Some(ref m) = *metrics {
+                    if let Ok(current_count) = crate::queue::count_unprocessed(pool).await {
+                        m.queue_depth.record(current_count as u64, &[]);
+                    }
+                }
 
                 if let Some(exec_id) = execution.id {
                     if let Err(e) =

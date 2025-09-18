@@ -1,75 +1,72 @@
-use opentelemetry::metrics::{Counter, Gauge, Histogram};
-use opentelemetry_otlp::{Protocol, WithExportConfig};
-use opentelemetry_sdk::{metrics::reader::DefaultTemporalitySelector, Resource};
-use std::{collections::HashMap, time::Duration};
+use opentelemetry::{
+    KeyValue, global,
+    metrics::{Counter, Gauge, Histogram},
+};
+use opentelemetry_otlp::{Protocol, WithExportConfig, WithHttpConfig};
+use opentelemetry_sdk::{Resource, metrics::SdkMeterProvider};
+use std::collections::HashMap;
 use tracing::*;
 
 use crate::env::Env;
 
-pub type MeterProvider = std::sync::Arc<dyn opentelemetry::metrics::MeterProvider + Send + Sync>;
-
 #[derive(Clone)]
-pub struct Metrics {
-    pub onchain_events_received: Counter<u64>,
-    pub schwab_orders_executed: Counter<u64>,
-    pub token_refreshes: Counter<u64>,
-    pub queue_depth: Gauge<u64>,
-    pub accumulated_positions: Gauge<f64>,
-    pub trade_execution_duration_ms: Histogram<f64>,
-    pub provider: MeterProvider,
+pub(crate) struct Metrics {
+    pub(crate) onchain_events_received: Counter<u64>,
+    pub(crate) schwab_orders_executed: Counter<u64>,
+    pub(crate) token_refreshes: Counter<u64>,
+    pub(crate) queue_depth: Gauge<u64>,
+    pub(crate) accumulated_positions: Gauge<f64>,
+    pub(crate) trade_execution_duration_ms: Histogram<f64>,
+    pub(crate) provider: SdkMeterProvider,
 }
 
-pub fn setup(env: &Env) -> Option<Metrics> {
+pub(crate) fn setup(env: &Env) -> Option<Metrics> {
     let endpoint = env.otel_metrics_exporter_endpoint.as_ref()?;
     let auth_token = env.otel_metrics_exporter_basic_auth_token.as_ref()?;
-    
+
     debug!("Setting up metrics with endpoint: {}", endpoint);
 
     let deployment_environment = if env.dry_run { "dev" } else { "prod" };
 
-    let provider = match opentelemetry_otlp::new_pipeline()
-        .metrics(opentelemetry_sdk::runtime::Tokio)
-        .with_exporter(
-            opentelemetry_otlp::new_exporter()
-                .http()
-                .with_endpoint(endpoint)
-                .with_protocol(Protocol::HttpBinary)
-                .with_headers(HashMap::from([(
-                    "Authorization".to_string(),
-                    format!("Basic {}", auth_token),
-                )])),
-        )
-        .with_resource(Resource::new(vec![
-            opentelemetry::KeyValue::new("service.name", "schwarbot"),
-            opentelemetry::KeyValue::new("deployment.environment", deployment_environment),
-        ]))
-        .with_period(Duration::from_secs(3))
-        .with_timeout(Duration::from_secs(10))
-        .with_temporality_selector(DefaultTemporalitySelector::new())
+    let exporter = match opentelemetry_otlp::MetricExporter::builder()
+        .with_http()
+        .with_endpoint(endpoint)
+        .with_protocol(Protocol::HttpBinary)
+        .with_headers(HashMap::from([(
+            "Authorization".to_string(),
+            format!("Basic {}", auth_token),
+        )]))
         .build()
     {
-        Ok(provider) => provider,
+        Ok(exporter) => exporter,
         Err(e) => {
-            error!("Failed to setup metrics provider: {}", e);
+            error!("Failed to build metrics exporter: {}", e);
             return None;
         }
     };
 
-    debug!("{provider:#?}");
+    let provider = SdkMeterProvider::builder()
+        .with_periodic_exporter(exporter)
+        .with_resource(
+            Resource::builder()
+                .with_service_name("schwarbot")
+                .with_attributes(vec![KeyValue::new(
+                    "deployment.environment",
+                    deployment_environment,
+                )])
+                .build(),
+        )
+        .build();
 
-    opentelemetry::global::set_meter_provider(provider);
-    let provider = opentelemetry::global::meter_provider();
+    global::set_meter_provider(provider.clone());
+    let meter = global::meter("schwarbot");
 
-    let meter = provider.meter("schwarbot");
-    
-    let onchain_events_received = meter.u64_counter("onchain_events_received").init();
-    let schwab_orders_executed = meter.u64_counter("schwab_orders_executed").init();
-    let token_refreshes = meter.u64_counter("token_refreshes").init();
-    let queue_depth = meter.u64_gauge("queue_depth").init();
-    let accumulated_positions = meter.f64_gauge("accumulated_positions").init();
-    let trade_execution_duration_ms = meter
-        .f64_histogram("trade_execution_duration_ms")
-        .init();
+    let onchain_events_received = meter.u64_counter("onchain_events_received").build();
+    let schwab_orders_executed = meter.u64_counter("schwab_orders_executed").build();
+    let token_refreshes = meter.u64_counter("token_refreshes").build();
+    let queue_depth = meter.u64_gauge("queue_depth").build();
+    let accumulated_positions = meter.f64_gauge("accumulated_positions").build();
+    let trade_execution_duration_ms = meter.f64_histogram("trade_execution_duration_ms").build();
 
     info!("Successfully set up OTLP metrics");
 
@@ -87,8 +84,6 @@ pub fn setup(env: &Env) -> Option<Metrics> {
 impl Drop for Metrics {
     fn drop(&mut self) {
         debug!("Shutting down metrics provider");
-        if let Err(e) = opentelemetry::global::shutdown_meter_provider() {
-            error!("Failed to shutdown metrics provider: {}", e);
-        }
+        // Shutdown is handled automatically by the SDK when the provider is dropped
     }
 }
