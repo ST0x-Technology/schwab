@@ -2,7 +2,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 use sqlx::SqlitePool;
 use tokio::time::{Duration as TokioDuration, interval};
-use tracing::{error, info, warn};
+use tracing::{Instrument, error, info, warn};
 
 use super::{SchwabError, auth::SchwabAuthEnv};
 
@@ -136,9 +136,14 @@ impl SchwabTokens {
         env: SchwabAuthEnv,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            if let Err(e) = Self::start_automatic_token_refresh_loop(pool, env).await {
-                error!("Token refresh task failed: {e:?}");
+            let span = tracing::info_span!("token_refresh_task", component = "auth");
+            async move {
+                if let Err(e) = Self::start_automatic_token_refresh_loop(pool, env).await {
+                    error!("Token refresh task failed: {e:?}");
+                }
             }
+            .instrument(span)
+            .await;
         })
     }
 
