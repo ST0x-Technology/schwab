@@ -318,6 +318,60 @@ expected bounds.
   - Deny warnings when running clippy
   - Always run `cargo fmt` last to ensure clean code formatting
 
+#### CRITICAL: Lint Policy
+
+**NEVER add `#[allow(clippy::*)]` attributes or disable any lints without
+explicit permission.** This is strictly forbidden. When clippy reports issues,
+you MUST fix the underlying code problems, not suppress the warnings.
+
+**Required approach for clippy issues:**
+
+1. **Refactor the code** to address the root cause of the lint violation
+2. **Break down large functions** into smaller, more focused functions
+3. **Improve code structure** to meet clippy's standards
+4. **Use proper error handling** instead of suppressing warnings
+
+**Examples of FORBIDDEN practices:**
+
+```rust
+// ❌ NEVER DO THIS - Suppressing lints is forbidden
+#[allow(clippy::too_many_lines)]
+fn large_function() { /* ... */ }
+
+#[allow(clippy::needless_continue)]
+// ❌ NEVER DO THIS - Fix the code structure instead
+```
+
+**Required approach:**
+
+```rust
+// ✅ CORRECT - Refactor to address the issue
+fn process_data() -> Result<(), Error> {
+    let data = get_data()?;
+    validate_data(&data)?;
+    save_data(&data)?;
+    Ok(())
+}
+
+fn validate_data(data: &Data) -> Result<(), Error> {
+    // Extracted validation logic
+}
+
+fn save_data(data: &Data) -> Result<(), Error> {
+    // Extracted saving logic
+}
+```
+
+**If you encounter a clippy issue:**
+
+1. Understand WHY clippy is flagging the code
+2. Refactor the code to address the underlying problem
+3. If you believe a lint is incorrect, ask for permission before suppressing it
+4. Document your reasoning if given permission to suppress a specific lint
+
+This policy ensures code quality remains high and prevents technical debt
+accumulation through lint suppression.
+
 ### Commenting Guidelines
 
 Code should be primarily self-documenting through clear naming, structure, and

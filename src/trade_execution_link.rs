@@ -1,6 +1,8 @@
 #[cfg(test)]
 use crate::error::OnChainError;
 #[cfg(test)]
+use crate::onchain::io::TokenizedEquitySymbol;
+#[cfg(test)]
 use crate::schwab::TradeStatus;
 #[cfg(test)]
 use crate::schwab::shares_from_db_i64;
@@ -162,13 +164,15 @@ impl TradeExecutionLink {
             .collect()
     }
 
-    /// Get complete audit trail for a symbol showing all trades and their executions
+    /// Get complete audit trail for a tokenized equity symbol showing all trades and their executions
     #[cfg(test)]
     pub async fn get_symbol_audit_trail(
         pool: &SqlitePool,
-        symbol: &str,
+        tokenized_symbol: &TokenizedEquitySymbol,
     ) -> Result<Vec<AuditTrailEntry>, OnChainError> {
-        let base_symbol = symbol.strip_suffix("0x").unwrap_or(symbol).to_string();
+        let symbol = tokenized_symbol.to_string();
+        let base_symbol = tokenized_symbol.base().as_str();
+
         let rows = sqlx::query!(
             r#"
             SELECT
@@ -300,6 +304,7 @@ mod tests {
     use crate::onchain::OnchainTrade;
     use crate::schwab::execution::SchwabExecution;
     use crate::test_utils::setup_test_db;
+    use crate::tokenized_symbol;
     use alloy::primitives::fixed_bytes;
     use chrono::Utc;
 
@@ -314,7 +319,7 @@ mod tests {
                 "0x1111111111111111111111111111111111111111111111111111111111111111"
             ),
             log_index: 1,
-            symbol: "AAPL0x".to_string(),
+            symbol: tokenized_symbol!("AAPL0x"),
             amount: 1.5,
             direction: Direction::Sell,
             price_usdc: 150.0,
@@ -372,7 +377,7 @@ mod tests {
                     "0x2222222222222222222222222222222222222222222222222222222222222222"
                 ),
                 log_index: 1,
-                symbol: "MSFT0x".to_string(),
+                symbol: tokenized_symbol!("MSFT0x"),
                 amount: 0.5,
                 direction: Direction::Buy,
                 price_usdc: 300.0,
@@ -384,7 +389,7 @@ mod tests {
                     "0x3333333333333333333333333333333333333333333333333333333333333333"
                 ),
                 log_index: 2,
-                symbol: "MSFT0x".to_string(),
+                symbol: tokenized_symbol!("MSFT0x"),
                 amount: 0.8,
                 direction: Direction::Buy,
                 price_usdc: 305.0,
@@ -424,7 +429,8 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Test audit trail
-        let audit_trail = TradeExecutionLink::get_symbol_audit_trail(&pool, "MSFT0x")
+        let tokenized_symbol = tokenized_symbol!("MSFT0x");
+        let audit_trail = TradeExecutionLink::get_symbol_audit_trail(&pool, &tokenized_symbol)
             .await
             .unwrap();
         assert_eq!(audit_trail.len(), 2);
@@ -459,7 +465,7 @@ mod tests {
                     "0x4444444444444444444444444444444444444444444444444444444444444444"
                 ),
                 log_index,
-                symbol: "AAPL0x".to_string(),
+                symbol: tokenized_symbol!("AAPL0x"),
                 amount,
                 direction: Direction::Sell,
                 price_usdc: 150.0,
@@ -511,7 +517,7 @@ mod tests {
                 "0x5555555555555555555555555555555555555555555555555555555555555555"
             ),
             log_index: 1,
-            symbol: "AAPL0x".to_string(),
+            symbol: tokenized_symbol!("AAPL0x"),
             amount: 1.0,
             direction: Direction::Buy,
             price_usdc: 150.0,
