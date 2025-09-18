@@ -38,7 +38,6 @@
           buildInputs = with pkgs;
             [
               bacon
-              doctl
               sqlx-cli
               cargo-tarpaulin
               cargo-chef
