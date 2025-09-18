@@ -181,7 +181,6 @@ async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
                     RERUN_DELAY_SECS
                 );
                 tokio::time::sleep(std::time::Duration::from_secs(RERUN_DELAY_SECS)).await;
-                continue;
             }
             Err(e) => {
                 error!("Bot failed: {e}");
