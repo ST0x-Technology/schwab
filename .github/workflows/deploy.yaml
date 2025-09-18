@@ -1,24 +1,20 @@
 name: Build and deploy
-
 on:
-  push:
-    branches: [master, "feat/cd"]  # TODO: remove once done testing
+  # TODO: uncomment once the merged version catches up with the deployed version
+  # push:
+  #   branches: [master]
   workflow_dispatch:
-
 concurrency:
   group: ${{ github.ref }}-deploy
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
-
 permissions:
   contents: read
-
 env:
   DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
   ORDERBOOK: "0xf6fdcb30fd027c73cbacd54e22f02987e3116ebc"
   ORDER_OWNER: "0x73a41A704aB12aF7E4b0716D07ff3DfF7C350f41"
   DEPLOYMENT_BLOCK: 34844164
   REGISTRY_NAME: stox
-
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -27,15 +23,12 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
-
       - name: Install doctl
         uses: digitalocean/action-doctl@v2
         with:
           token: ${{ env.DIGITALOCEAN_ACCESS_TOKEN }}
-
       - name: Log in to DO Container Registry
         run: doctl registry login --expiry-seconds 1200
-
       - name: Build Docker image
         run: |
           SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
@@ -44,12 +37,10 @@ jobs:
           docker build \
             -t registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:$SHORT_SHA \
             -t registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:latest .
-
       - name: Push image to DO Registry
         run: |
           docker push registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:${{ env.SHORT_SHA }}
           docker push registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:latest
-
       - name: Deploy to Droplet
         uses: appleboy/ssh-action@v1.0.3
         with:
