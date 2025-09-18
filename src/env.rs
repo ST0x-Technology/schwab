@@ -51,14 +51,16 @@ pub struct Env {
     pub schwab_auth: SchwabAuthEnv,
     #[clap(flatten)]
     pub evm_env: EvmEnv,
-    /// Interval in seconds between order status polling checks
     #[clap(long, env, default_value = "15")]
     pub order_polling_interval: u64,
-    /// Maximum jitter in seconds for order polling to prevent thundering herd
     #[clap(long, env, default_value = "5")]
     pub order_polling_max_jitter: u64,
     #[clap(long, env, default_value = "false")]
     pub dry_run: bool,
+    #[clap(long, env)]
+    pub otel_metrics_exporter_endpoint: Option<String>,
+    #[clap(long, env)]
+    pub otel_metrics_exporter_basic_auth_token: Option<String>,
 }
 
 impl Env {
@@ -121,6 +123,8 @@ pub mod tests {
             order_polling_interval: 15,
             order_polling_max_jitter: 5,
             dry_run: false,
+            otel_metrics_exporter_endpoint: None,
+            otel_metrics_exporter_basic_auth_token: None,
         }
     }
 

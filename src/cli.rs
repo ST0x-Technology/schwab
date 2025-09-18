@@ -103,6 +103,8 @@ impl CliEnv {
             order_polling_interval: 15,
             order_polling_max_jitter: 5,
             dry_run: false,
+            otel_metrics_exporter_endpoint: None,
+            otel_metrics_exporter_basic_auth_token: None,
         };
 
         Ok((env, cli_env.command))
@@ -963,6 +965,8 @@ mod tests {
             order_polling_interval: 15,
             order_polling_max_jitter: 5,
             dry_run: false,
+            otel_metrics_exporter_endpoint: None,
+            otel_metrics_exporter_basic_auth_token: None,
         }
     }
 

@@ -55,12 +55,11 @@ Use the existing `dry_run` flag to determine deployment environment:
 
 ### Task 2. Update Environment Configuration
 
-- [ ] Add optional OTLP fields to `src/env.rs`:
-  - `otel_exporter_otlp_endpoint: Option<String>`
-  - `otel_exporter_otlp_basic_auth_token: Option<String>`
-- [ ] Add clap attributes with `env` flag for environment variable support
-- [ ] Update test helpers to handle optional metrics fields
-- [ ] Add method to check if metrics are configured
+- [x] Add optional OTLP fields to `src/env.rs`:
+  - `otel_metrics_exporter_endpoint: Option<String>`
+  - `otel_metrics_exporter_basic_auth_token: Option<String>`
+- [x] Add clap attributes with `env` flag for environment variable support
+- [x] Update test helpers to handle optional metrics fields
 
 ### Task 3. Adapt Metrics Module
 
