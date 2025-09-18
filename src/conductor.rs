@@ -160,7 +160,7 @@ fn spawn_position_checker(
     broker: DynBroker,
     env: &Env,
     pool: &SqlitePool,
-    _metrics: Arc<Option<metrics::Metrics>>,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> JoinHandle<()> {
     info!("Starting periodic accumulated position checker");
 
@@ -172,6 +172,7 @@ fn spawn_position_checker(
         env.clone(),
         pool.clone(),
         shutdown_rx,
+        metrics,
     ))
 }
 
@@ -251,6 +252,7 @@ async fn periodic_accumulated_position_check(
     env: Env,
     pool: SqlitePool,
     mut shutdown_rx: watch::Receiver<bool>,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) {
     const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -261,7 +263,7 @@ async fn periodic_accumulated_position_check(
         tokio::select! {
             _ = interval.tick() => {
                 debug!("Running periodic accumulated position check");
-                if let Err(e) = check_and_execute_accumulated_positions(&broker, &env, &pool).await {
+                if let Err(e) = check_and_execute_accumulated_positions(&broker, &env, &pool, metrics.clone()).await {
                     error!("Periodic accumulated position check failed: {e}");
                 }
             }
@@ -545,8 +547,14 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
                 }
 
                 if let Some(exec_id) = execution.id {
-                    if let Err(e) =
-                        execute_pending_schwab_execution(broker, env, pool, exec_id).await
+                    if let Err(e) = execute_pending_schwab_execution(
+                        broker,
+                        env,
+                        pool,
+                        exec_id,
+                        metrics.clone(),
+                    )
+                    .await
                     {
                         error!("Failed to execute Schwab order {exec_id}: {e}");
                     }
@@ -811,6 +819,7 @@ async fn check_and_execute_accumulated_positions(
     broker: &DynBroker,
     env: &Env,
     pool: &SqlitePool,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> Result<(), EventProcessingError> {
     let executions = check_all_accumulated_positions(pool).await?;
 
@@ -838,12 +847,14 @@ async fn check_and_execute_accumulated_positions(
         let env_clone = env.clone();
         let pool_clone = pool.clone();
         let broker_clone = broker.clone();
+        let metrics_clone = metrics.clone();
         tokio::spawn(async move {
             if let Err(e) = execute_pending_schwab_execution(
                 &broker_clone,
                 &env_clone,
                 &pool_clone,
                 execution_id,
+                metrics_clone,
             )
             .await
             {
@@ -869,6 +880,7 @@ async fn execute_pending_schwab_execution(
     env: &Env,
     pool: &SqlitePool,
     execution_id: i64,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> Result<(), EventProcessingError> {
     let execution = find_execution_by_id(pool, execution_id)
         .await?
@@ -879,7 +891,7 @@ async fn execute_pending_schwab_execution(
         })?;
 
     info!("Executing Schwab order: {execution:?}");
-    broker.execute_order(env, pool, execution).await?;
+    broker.execute_order(env, pool, execution, metrics).await?;
 
     Ok(())
 }
@@ -1681,7 +1693,14 @@ mod tests {
         let broker = env.get_broker();
 
         // Try to execute non-existent execution
-        let result = execute_pending_schwab_execution(&broker, &env, &pool, 99999).await;
+        let result = execute_pending_schwab_execution(
+            &broker,
+            &env,
+            &pool,
+            99999,
+            std::sync::Arc::new(None),
+        )
+        .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -1699,7 +1718,16 @@ mod tests {
         let take_stream = stream::empty();
 
         // Get BackgroundTasks by calling run_live
-        let background_tasks = run_live(&env, &pool, cache, provider, clear_stream, take_stream);
+        let metrics = Arc::new(None);
+        let background_tasks = run_live(
+            &env,
+            &pool,
+            cache,
+            provider,
+            clear_stream,
+            take_stream,
+            metrics,
+        );
 
         // Verify all tasks are initially running (not aborted)
         assert!(!background_tasks.token_refresher.is_finished());
@@ -1731,7 +1759,16 @@ mod tests {
         let take_stream = stream::empty();
 
         // Get BackgroundTasks by calling run_live
-        let background_tasks = run_live(&env, &pool, cache, provider, clear_stream, take_stream);
+        let metrics = Arc::new(None);
+        let background_tasks = run_live(
+            &env,
+            &pool,
+            cache,
+            provider,
+            clear_stream,
+            take_stream,
+            metrics,
+        );
 
         // Test that individual JoinHandles can be aborted
         let token_handle = background_tasks.token_refresher;
@@ -1780,7 +1817,16 @@ mod tests {
         let start_time = std::time::Instant::now();
 
         // run_live should return immediately with BackgroundTasks
-        let background_tasks = run_live(&env, &pool, cache, provider, clear_stream, take_stream);
+        let metrics = Arc::new(None);
+        let background_tasks = run_live(
+            &env,
+            &pool,
+            cache,
+            provider,
+            clear_stream,
+            take_stream,
+            metrics,
+        );
 
         let elapsed = start_time.elapsed();
 

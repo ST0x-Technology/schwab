@@ -453,7 +453,7 @@ async fn process_found_trade<W: Write>(
         writeln!(stdout, "🔄 Executing Schwab order...")?;
         let broker = env.get_broker();
         broker
-            .execute_order(env, pool, execution)
+            .execute_order(env, pool, execution, std::sync::Arc::new(None))
             .await
             .map_err(anyhow::Error::from)?;
         writeln!(stdout, "🎯 Trade processing completed!")?;

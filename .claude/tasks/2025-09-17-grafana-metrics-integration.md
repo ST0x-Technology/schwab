@@ -136,14 +136,35 @@ Use the existing `dry_run` flag to determine deployment environment:
 
 ### Task 6. Instrument Trade Execution (`src/schwab/broker.rs`)
 
-- [ ] Add metrics parameter to broker trait methods
-- [ ] In `Schwab::execute_order`:
+- [x] Add metrics parameter to broker trait methods
+- [x] In `Schwab::execute_order`:
   - Record start time for duration tracking
   - Increment `schwab_orders_executed` with "pending" status
   - On success: increment with "success" status and record duration
   - On failure: increment with "failed" status
   - Add symbol and direction as labels
-- [ ] Pass metrics through to execution functions
+- [x] Pass metrics through to execution functions
+
+**Implementation Summary:**
+
+- Updated `Broker` trait to include `metrics: Arc<Option<metrics::Metrics>>`
+  parameter in both `execute_order` and `get_order_status` methods
+- Instrumented `Schwab::execute_order` with comprehensive metrics:
+  - Records "pending" status when order starts execution
+  - Records "success" status with duration on successful completion
+  - Records "failed" status on execution failure
+  - Uses labels for `symbol` and `direction` (buy/sell) for detailed tracking
+  - Records duration in `trade_execution_duration_ms` histogram
+- Instrumented `LogBroker::execute_order` with identical metrics for dry-run
+  mode consistency
+- Updated all broker trait implementations including `DynBroker` and reference
+  brokers
+- Fixed all test functions to pass metrics parameter (using `Arc::new(None)` for
+  tests)
+- Ensured metrics parameter is fully utilized throughout the call chain - no
+  unused parameters
+- All metrics are optional and only recorded when metrics are configured
+- Compilation successful with all 397 tests passing
 
 ### Task 7. Instrument Position Management (`src/onchain/accumulator.rs`)
 

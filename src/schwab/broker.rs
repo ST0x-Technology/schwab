@@ -1,10 +1,12 @@
 use backon::{ExponentialBuilder, Retryable};
+use opentelemetry::KeyValue;
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use sqlx::SqlitePool;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
+use std::time::Instant;
 use tracing::{error, warn};
 
 /// Type alias for a dynamic broker trait object wrapped in Arc
@@ -18,6 +20,7 @@ use super::{
     tokens::SchwabTokens,
 };
 use crate::env::Env;
+use crate::metrics;
 
 /// Trait for order execution abstraction supporting both real and mock brokers
 pub(crate) trait Broker: Send + Sync + std::fmt::Debug {
@@ -26,6 +29,7 @@ pub(crate) trait Broker: Send + Sync + std::fmt::Debug {
         env: &'a Env,
         pool: &'a SqlitePool,
         execution: SchwabExecution,
+        metrics: Arc<Option<metrics::Metrics>>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SchwabError>> + Send + 'a>>;
 
     fn get_order_status<'a>(
@@ -50,9 +54,32 @@ impl Broker for Schwab {
         env: &'a Env,
         pool: &'a SqlitePool,
         execution: SchwabExecution,
+        metrics: Arc<Option<metrics::Metrics>>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SchwabError>> + Send + 'a>>
     {
         Box::pin(async move {
+            // Record start time for duration tracking
+            let start_time = Instant::now();
+
+            // Prepare metrics labels
+            let symbol = execution.symbol.clone();
+            let direction = match execution.direction {
+                SchwabInstruction::Buy => "buy",
+                SchwabInstruction::Sell => "sell",
+            };
+
+            // Increment schwab_orders_executed with "pending" status
+            if let Some(ref m) = *metrics {
+                m.schwab_orders_executed.add(
+                    1,
+                    &[
+                        KeyValue::new("status", "pending"),
+                        KeyValue::new("symbol", symbol.clone()),
+                        KeyValue::new("direction", direction),
+                    ],
+                );
+            }
+
             let schwab_instruction = match execution.direction {
                 SchwabInstruction::Buy => Instruction::Buy,
                 SchwabInstruction::Sell => Instruction::Sell,
@@ -80,8 +107,39 @@ impl Broker for Schwab {
             match result {
                 Ok(response) => {
                     handle_execution_success(pool, execution_id, response.order_id).await?;
+
+                    // Record success metrics with duration
+                    let duration_ms = start_time.elapsed().as_millis() as f64;
+                    if let Some(ref m) = *metrics {
+                        m.schwab_orders_executed.add(
+                            1,
+                            &[
+                                KeyValue::new("status", "success"),
+                                KeyValue::new("symbol", symbol.clone()),
+                                KeyValue::new("direction", direction),
+                            ],
+                        );
+                        m.trade_execution_duration_ms.record(
+                            duration_ms,
+                            &[KeyValue::new("operation", "schwab_order_execution")],
+                        );
+                    }
                 }
-                Err(e) => handle_execution_failure(pool, execution_id, e).await?,
+                Err(e) => {
+                    handle_execution_failure(pool, execution_id, e).await?;
+
+                    // Record failure metrics
+                    if let Some(ref m) = *metrics {
+                        m.schwab_orders_executed.add(
+                            1,
+                            &[
+                                KeyValue::new("status", "failed"),
+                                KeyValue::new("symbol", symbol),
+                                KeyValue::new("direction", direction),
+                            ],
+                        );
+                    }
+                }
             }
 
             Ok(())
@@ -193,9 +251,32 @@ impl Broker for LogBroker {
         _env: &'a Env,
         pool: &'a SqlitePool,
         execution: SchwabExecution,
+        metrics: Arc<Option<metrics::Metrics>>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SchwabError>> + Send + 'a>>
     {
         Box::pin(async move {
+            // Record start time for duration tracking
+            let start_time = Instant::now();
+
+            // Prepare metrics labels
+            let symbol = execution.symbol.clone();
+            let direction = match execution.direction {
+                SchwabInstruction::Buy => "buy",
+                SchwabInstruction::Sell => "sell",
+            };
+
+            // Increment schwab_orders_executed with "pending" status
+            if let Some(ref m) = *metrics {
+                m.schwab_orders_executed.add(
+                    1,
+                    &[
+                        KeyValue::new("status", "pending"),
+                        KeyValue::new("symbol", symbol.clone()),
+                        KeyValue::new("direction", direction),
+                    ],
+                );
+            }
+
             let order_id = self.generate_order_id();
 
             warn!(
@@ -218,7 +299,26 @@ impl Broker for LogBroker {
             warn!("[DRY-RUN] Generated mock order ID: {order_id}");
 
             // Simulate successful order placement by updating status to Submitted
-            handle_execution_success(pool, execution_id, order_id).await
+            handle_execution_success(pool, execution_id, order_id).await?;
+
+            // Record success metrics with duration
+            let duration_ms = start_time.elapsed().as_millis() as f64;
+            if let Some(ref m) = *metrics {
+                m.schwab_orders_executed.add(
+                    1,
+                    &[
+                        KeyValue::new("status", "success"),
+                        KeyValue::new("symbol", symbol),
+                        KeyValue::new("direction", direction),
+                    ],
+                );
+                m.trade_execution_duration_ms.record(
+                    duration_ms,
+                    &[KeyValue::new("operation", "schwab_order_execution")],
+                );
+            }
+
+            Ok(())
         })
     }
 
@@ -268,9 +368,10 @@ impl Broker for DynBroker {
         env: &'a Env,
         pool: &'a SqlitePool,
         execution: SchwabExecution,
+        metrics: Arc<Option<metrics::Metrics>>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SchwabError>> + Send + 'a>>
     {
-        (**self).execute_order(env, pool, execution)
+        (**self).execute_order(env, pool, execution, metrics)
     }
 
     fn get_order_status<'a>(
@@ -292,9 +393,10 @@ impl<B: Broker> Broker for &B {
         env: &'a Env,
         pool: &'a SqlitePool,
         execution: SchwabExecution,
+        metrics: Arc<Option<metrics::Metrics>>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SchwabError>> + Send + 'a>>
     {
-        (**self).execute_order(env, pool, execution)
+        (**self).execute_order(env, pool, execution, metrics)
     }
 
     fn get_order_status<'a>(

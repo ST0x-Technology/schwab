@@ -259,7 +259,8 @@ mod tests {
         let mut env = create_test_env();
         let pool = create_test_pool().await;
         env.evm_env.ws_rpc_url = "ws://invalid.nonexistent.url:8545".parse().unwrap();
-        run(env, pool).await.unwrap_err();
+        let metrics = Arc::new(None);
+        run(env, pool, metrics).await.unwrap_err();
     }
 
     #[tokio::test]
@@ -268,7 +269,8 @@ mod tests {
         let pool = create_test_pool().await;
         env.evm_env.orderbook = alloy::primitives::Address::ZERO;
         env.evm_env.ws_rpc_url = "ws://localhost:8545".parse().unwrap();
-        run(env, pool).await.unwrap_err();
+        let metrics = Arc::new(None);
+        run(env, pool, metrics).await.unwrap_err();
     }
 
     #[tokio::test]
@@ -276,7 +278,8 @@ mod tests {
         let mut env = create_test_env();
         env.database_url = "invalid://database/url".to_string();
         let pool = create_test_pool().await;
-        run(env, pool).await.unwrap_err();
+        let metrics = Arc::new(None);
+        run(env, pool, metrics).await.unwrap_err();
     }
 
     #[tokio::test]
@@ -298,8 +301,16 @@ mod tests {
         let take_stream = stream::empty();
 
         // Simulate getting BackgroundTasks from run_live
-        let mut background_tasks =
-            conductor::run_live(&env, &pool, cache, provider, clear_stream, take_stream);
+        let metrics = Arc::new(None);
+        let mut background_tasks = conductor::run_live(
+            &env,
+            &pool,
+            cache,
+            provider,
+            clear_stream,
+            take_stream,
+            metrics,
+        );
 
         // Simulate market close timeout scenario
         let timeout_duration = Duration::from_millis(50); // Very short for testing
@@ -340,8 +351,16 @@ mod tests {
         let clear_stream = stream::empty();
         let take_stream = stream::empty();
 
-        let mut background_tasks =
-            conductor::run_live(&env, &pool, cache, provider, clear_stream, take_stream);
+        let metrics = Arc::new(None);
+        let mut background_tasks = conductor::run_live(
+            &env,
+            &pool,
+            cache,
+            provider,
+            clear_stream,
+            take_stream,
+            metrics,
+        );
 
         // Test the race condition between wait_for_completion and abort
         // This simulates what happens when market closes during normal operation
