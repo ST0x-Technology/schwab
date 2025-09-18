@@ -1,6 +1,7 @@
 use alloy::providers::Provider;
 use alloy::rpc::types::{Filter, Log};
 use alloy::sol_types::SolEvent;
+use tracing::{debug, info};
 
 use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
 use crate::error::{OnChainError, TradeValidationError};
@@ -34,10 +35,25 @@ impl OnchainTrade {
             ..
         } = clear_config;
 
-        let alice_owner_matches = alice_order.owner == env.order_owner;
-        let bob_owner_matches = bob_order.owner == env.order_owner;
+        let alice_owner = alice_order.owner;
+        let bob_owner = bob_order.owner;
+        let alice_owner_matches = alice_owner == env.order_owner;
+        let bob_owner_matches = bob_owner == env.order_owner;
+
+        debug!(
+            "ClearV2 owner comparison: alice.owner={:?}, bob.owner={:?}, env.order_owner={:?}, alice_matches={}, bob_matches={}",
+            alice_owner, bob_owner, env.order_owner, alice_owner_matches, bob_owner_matches
+        );
 
         if !(alice_owner_matches || bob_owner_matches) {
+            info!(
+                "ClearV2 event filtered (no owner match): tx_hash={:?}, log_index={}, alice.owner={:?}, bob.owner={:?}, target={:?}",
+                log.transaction_hash,
+                log.log_index.unwrap_or(0),
+                alice_owner,
+                bob_owner,
+                env.order_owner
+            );
             return Ok(None);
         }
 
@@ -72,7 +88,7 @@ impl OnchainTrade {
             bobInput,
         } = after_clear.data().clearStateChange;
 
-        if alice_owner_matches {
+        let result = if alice_owner_matches {
             let input_index = usize::try_from(aliceInputIOIndex)?;
             let output_index = usize::try_from(aliceOutputIOIndex)?;
 
@@ -96,7 +112,24 @@ impl OnchainTrade {
             };
 
             Self::try_from_order_and_fill_details(cache, provider, bob_order, fill, log).await
+        };
+
+        if let Ok(Some(ref trade)) = result {
+            info!(
+                "ClearV2 trade created successfully: tx_hash={:?}, log_index={}, symbol={}, amount={}, owner={:?}",
+                trade.tx_hash,
+                trade.log_index,
+                trade.symbol,
+                trade.amount,
+                if alice_owner_matches {
+                    alice_owner
+                } else {
+                    bob_owner
+                }
+            );
         }
+
+        result
     }
 }
 

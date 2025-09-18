@@ -3,7 +3,7 @@ use chrono_tz::US::Eastern;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::debug;
 
 use super::market_hours::{MarketHours, MarketStatus, fetch_market_hours};
 use super::{SchwabAuthEnv, SchwabError};
@@ -134,68 +134,6 @@ impl MarketHoursCache {
 
         // No upcoming transition found in the next day
         Ok(None)
-    }
-
-    /// Refresh the cache by clearing stale entries and pre-fetching today and tomorrow's hours.
-    ///
-    /// This should be called periodically (e.g., at midnight) to keep the cache fresh
-    /// and prevent it from growing too large.
-    pub(crate) async fn refresh_cache(
-        &self,
-        market_id: &str,
-        env: &SchwabAuthEnv,
-        pool: &SqlitePool,
-    ) -> Result<(), SchwabError> {
-        info!("Refreshing market hours cache for market {}", market_id);
-
-        // Clear stale entries first
-        self.clear_stale_entries().await;
-
-        let today = Eastern
-            .from_utc_datetime(&Utc::now().naive_utc())
-            .date_naive();
-        let tomorrow = today.succ_opt().ok_or_else(|| SchwabError::RequestFailed {
-            action: "calculate tomorrow's date".to_string(),
-            status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-            body: "Date overflow calculating tomorrow".to_string(),
-        })?;
-
-        // Pre-fetch today and tomorrow's hours
-        self.get_or_fetch(market_id, today, env, pool).await?;
-        self.get_or_fetch(market_id, tomorrow, env, pool).await?;
-
-        info!("Market hours cache refreshed successfully");
-        Ok(())
-    }
-
-    /// Clear entries older than yesterday to prevent memory leaks.
-    ///
-    /// This method removes all cache entries for dates before yesterday,
-    /// keeping only relevant data.
-    pub(crate) async fn clear_stale_entries(&self) {
-        let today = Eastern
-            .from_utc_datetime(&Utc::now().naive_utc())
-            .date_naive();
-        let yesterday = today.pred_opt().unwrap_or(today);
-
-        let (initial_size, final_size) = {
-            let mut cache_guard = self.cache.write().await;
-            let initial_size = cache_guard.len();
-
-            cache_guard.retain(|(_, date), _| *date >= yesterday);
-
-            let final_size = cache_guard.len();
-            drop(cache_guard);
-            (initial_size, final_size)
-        };
-
-        if initial_size > final_size {
-            debug!(
-                "Cleared {} stale cache entries, {} entries remaining",
-                initial_size - final_size,
-                final_size
-            );
-        }
     }
 
     /// Get the number of entries currently in the cache.
@@ -410,52 +348,6 @@ mod tests {
 
         mock.assert();
         assert_eq!(status, MarketStatus::Closed);
-    }
-
-    #[tokio::test]
-    async fn test_clear_stale_entries() {
-        let cache = MarketHoursCache::new();
-
-        let today = Eastern
-            .from_utc_datetime(&Utc::now().naive_utc())
-            .date_naive();
-        let yesterday = today.pred_opt().unwrap_or(today);
-        let two_days_ago = yesterday.pred_opt().unwrap_or(yesterday);
-        let tomorrow = today.succ_opt().unwrap_or(today);
-
-        let market_hours = MarketHours {
-            date: today,
-            session_type: MarketSession::Regular,
-            start: None,
-            end: None,
-            is_open: false,
-        };
-
-        // Insert entries for various dates
-        {
-            let mut cache_guard = cache.cache.write().await;
-            cache_guard.insert(("equity".to_string(), two_days_ago), market_hours.clone());
-            cache_guard.insert(("equity".to_string(), yesterday), market_hours.clone());
-            cache_guard.insert(("equity".to_string(), today), market_hours.clone());
-            cache_guard.insert(("equity".to_string(), tomorrow), market_hours.clone());
-            drop(cache_guard);
-        }
-
-        assert_eq!(cache.cache_size().await, 4);
-
-        cache.clear_stale_entries().await;
-
-        // Should keep yesterday, today, and tomorrow; remove two_days_ago
-        assert_eq!(cache.cache_size().await, 3);
-
-        {
-            let cache_guard = cache.cache.read().await;
-            assert!(!cache_guard.contains_key(&("equity".to_string(), two_days_ago)));
-            assert!(cache_guard.contains_key(&("equity".to_string(), yesterday)));
-            assert!(cache_guard.contains_key(&("equity".to_string(), today)));
-            assert!(cache_guard.contains_key(&("equity".to_string(), tomorrow)));
-            drop(cache_guard);
-        }
     }
 
     #[tokio::test]
