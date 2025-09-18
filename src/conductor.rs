@@ -494,22 +494,8 @@ async fn convert_event_to_trade<P: Provider + Clone>(
         }
     };
 
-    // If the event was filtered, mark as processed and return None
-    let Some(trade) = onchain_trade else {
-        info!(
-            "Event filtered out (no matching owner): event_type={:?}, tx_hash={:?}, log_index={}",
-            match &queued_event.event {
-                TradeEvent::ClearV2(_) => "ClearV2",
-                TradeEvent::TakeOrderV2(_) => "TakeOrderV2",
-            },
-            queued_event.tx_hash,
-            queued_event.log_index
-        );
-        mark_event_processed(pool, event_id)
-            .await
-            .map_err(EventProcessingError::Queue)?;
-        return Ok(None);
-    };
+    Ok(onchain_trade)
+}
 
 async fn handle_filtered_event(
     pool: &SqlitePool,

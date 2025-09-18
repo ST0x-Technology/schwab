@@ -1,9 +1,9 @@
 #[cfg(test)]
 use crate::error::OnChainError;
 #[cfg(test)]
-use crate::schwab::TradeStatus;
-#[cfg(test)]
 use crate::onchain::io::TokenizedEquitySymbol;
+#[cfg(test)]
+use crate::schwab::TradeStatus;
 #[cfg(test)]
 use crate::schwab::shares_from_db_i64;
 use crate::schwab::{Direction, TradeState};
