@@ -123,6 +123,14 @@ pub enum SchwabError {
     },
     #[error("Invalid configuration: {0}")]
     InvalidConfiguration(String),
+    #[error(
+        "Failed to parse API response: {action}, response: {response_text}, error: {parse_error}"
+    )]
+    ApiResponseParse {
+        action: String,
+        response_text: String,
+        parse_error: String,
+    },
 }
 
 pub async fn run_oauth_flow(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<(), SchwabError> {
