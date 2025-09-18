@@ -1,7 +1,11 @@
 use crate::Env;
 use crate::bindings::IOrderBookV4::{EvaluableV3, IO, OrderV3};
+use crate::onchain::OnchainTrade;
+use crate::schwab::{Direction, TradeState, execution::SchwabExecution};
 use alloy::primitives::{LogData, U256, address, bytes, fixed_bytes};
 use alloy::rpc::types::Log;
+use clap::Parser;
+use sqlx::SqlitePool;
 
 /// Returns a test `OrderV3` instance that is shared across multiple
 /// unit-tests. The exact values are not important – only that the
@@ -69,9 +73,6 @@ pub(crate) fn get_test_log() -> Log {
     create_log(293)
 }
 
-use clap::Parser;
-use sqlx::SqlitePool;
-
 /// Centralized test database setup to eliminate duplication across test files.
 /// Creates an in-memory SQLite database with all migrations applied.
 pub(crate) async fn setup_test_db() -> SqlitePool {
@@ -111,10 +112,6 @@ pub(crate) fn setup_test_env() -> Env {
 
     Env::try_parse_from(args).expect("Failed to parse test environment")
 }
-
-use crate::onchain::OnchainTrade;
-use crate::schwab::TradeState;
-use crate::schwab::{Direction, execution::SchwabExecution};
 
 /// Builder for creating OnchainTrade test instances with sensible defaults.
 /// Reduces duplication in test data setup.

@@ -50,8 +50,6 @@ pub(crate) enum PersistenceError {
     InvalidShareQuantity(i64),
     #[error("Invalid price cents in database: {0}")]
     InvalidPriceCents(i64),
-    #[error("Failed to acquire symbol map lock")]
-    SymbolMapLock,
     #[error("Execution missing ID after database save")]
     MissingExecutionId,
 }
