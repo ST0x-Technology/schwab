@@ -1,6 +1,6 @@
 use clap::Parser;
-use rain_schwab::env::{Env, setup_tracing};
-use rain_schwab::launch;
+use st0x_arbot::env::{Env, setup_tracing};
+use st0x_arbot::launch;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
