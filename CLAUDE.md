@@ -262,8 +262,8 @@ Environment variables (can be set via `.env` file):
     aren't language primitives, they don't scale because they mix unrelated
     domain concepts (broker errors with onchain errors, user models with trade
     models, etc.)
-  - ✅ **Domain-based modules**: `src/broker/mod.rs` (contains broker trait,
-    domain types, errors, and mock implementation), `src/onchain/mod.rs`
+  - ✅ **Domain-based modules**: `crates/broker/src/lib.rs` (contains broker
+    trait, domain types, errors, and implementations), `src/onchain/mod.rs`
     (contains blockchain event handling logic), `src/conductor.rs` (contains
     trade orchestration logic)
 

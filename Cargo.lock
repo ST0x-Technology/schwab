@@ -5035,7 +5035,9 @@ name = "st0x-broker"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "sqlx",
+ "thiserror 2.0.12",
 ]
 
 [[package]]
