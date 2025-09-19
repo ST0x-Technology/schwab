@@ -247,6 +247,25 @@ Environment variables (can be set via `.env` file):
   better dead code detection by the compiler and tooling. This makes the
   codebase easier to navigate and understand by making the relevance scope
   explicit
+- **Module Organization**: Organize modules by business domain, not by
+  implementation artifacts or language primitives. Avoid modules that become
+  dumping grounds for unrelated code that happens to use the same language
+  feature. Instead, group code by the business logic it implements. Common
+  anti-patterns to avoid:
+  - ❌ **Language primitive modules**: `types.rs`, `impls.rs`, `trait.rs`,
+    `traits.rs` - these group code by what language feature it uses rather than
+    what business problem it solves
+  - ❌ **Catch-all modules**: `utils.rs`, `helpers.rs`, `common.rs` - these
+    become dumping grounds for unrelated utility functions that don't belong
+    together
+  - ❌ **Cross-cutting concern modules**: `errors.rs`, `models.rs` - while these
+    aren't language primitives, they don't scale because they mix unrelated
+    domain concepts (broker errors with onchain errors, user models with trade
+    models, etc.)
+  - ✅ **Domain-based modules**: `src/broker/mod.rs` (contains broker trait,
+    domain types, errors, and mock implementation), `src/onchain/mod.rs`
+    (contains blockchain event handling logic), `src/conductor.rs` (contains
+    trade orchestration logic)
 
 ### Testing Strategy
 
