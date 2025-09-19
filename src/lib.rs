@@ -37,7 +37,7 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
     sqlx::migrate!().run(&pool).await?;
 
     // Initialize metrics (optional - returns None if not configured)
-    let metrics = Arc::new(metrics::setup(&env));
+    let metrics = Arc::new(metrics::setup(&env).await);
     if metrics.is_some() {
         info!("Metrics initialized successfully");
     } else {
