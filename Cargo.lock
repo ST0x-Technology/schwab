@@ -5003,6 +5003,7 @@ version = "0.1.0"
 dependencies = [
  "alloy",
  "anyhow",
+ "async-trait",
  "backon",
  "base64 0.22.1",
  "chrono",
@@ -5020,6 +5021,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "sqlx",
+ "st0x-broker",
  "thiserror 2.0.12",
  "tokio",
  "tracing",
@@ -5031,6 +5033,10 @@ dependencies = [
 [[package]]
 name = "st0x-broker"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "sqlx",
+]
 
 [[package]]
 name = "stable-pattern"
