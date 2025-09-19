@@ -7,9 +7,8 @@ code in this repository.
 
 ### Before starting work
 
-- Write a comprehensive step-by-step plan to
-  .claude/tasks/YYYY-MM-DD-TASK_NAME.md with each task having a corresponding
-  section and a list of subtasks as checkboxes inside of it
+- Write a comprehensive step-by-step plan to PLAN.md with each task having a
+  corresponding section and a list of subtasks as checkboxes inside of it
 - The plan should be a detailed implementation plan and the reasoning behind the
   design decisions
 - Do not include timelines in the plan as they tend to be inaccurate
