@@ -1,11 +1,11 @@
 use backon::{ExponentialBuilder, Retryable};
 use clap::Parser;
 use httpmock::{Mock, MockServer};
-use rain_schwab::env::Env;
-use rain_schwab::launch;
 use reqwest::Client;
 use serde_json::json;
 use serial_test::serial;
+use st0x_arbot::env::Env;
+use st0x_arbot::launch;
 use std::time::Duration;
 
 /// Creates a test environment with proper mock server configuration
