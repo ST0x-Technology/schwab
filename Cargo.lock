@@ -4044,6 +4044,7 @@ dependencies = [
  "itertools 0.14.0",
  "lazy_static",
  "opentelemetry",
+ "opentelemetry-http",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "reqwest",

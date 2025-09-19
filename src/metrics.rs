@@ -1,13 +1,10 @@
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as b64;
 use opentelemetry::{
     KeyValue, global,
     metrics::{Counter, Gauge, Histogram},
 };
-use opentelemetry_otlp::{WithExportConfig, WithHttpConfig};
-use opentelemetry_sdk::{
-    Resource,
-    metrics::{PeriodicReader, SdkMeterProvider},
-};
+use opentelemetry_sdk::{Resource, metrics::SdkMeterProvider};
 use serde_json::json;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,18 +25,24 @@ fn create_manual_fallback(
         let mut interval = tokio::time::interval(Duration::from_secs(export_interval_secs));
         interval.tick().await;
 
-        let service_start_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
+        let get_timestamp = || -> Result<u64, std::time::SystemTimeError> {
+            Ok(std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos() as u64)
+        };
+
+        let service_start_time = get_timestamp().unwrap_or_else(|_| {
+            error!("System time is before UNIX epoch, using 0");
+            0
+        });
 
         loop {
             interval.tick().await;
 
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos() as u64;
+            let Ok(now) = get_timestamp() else {
+                error!("System time is before UNIX epoch, skipping export");
+                continue;
+            };
 
             let retry_count = token_retry_counter.load(Ordering::Relaxed);
 
@@ -98,42 +101,6 @@ fn create_manual_fallback(
                                 }],
                                 "aggregation_temporality": 2,
                                 "is_monotonic": true
-                            }
-                        }, {
-                            "name": "onchain_events_received",
-                            "description": "Number of onchain events received",
-                            "unit": "1",
-                            "sum": {
-                                "data_points": [{
-                                    "start_time_unix_nano": service_start_time,
-                                    "time_unix_nano": now,
-                                    "as_int": 0
-                                }],
-                                "aggregation_temporality": 2,
-                                "is_monotonic": true
-                            }
-                        }, {
-                            "name": "schwab_orders_executed",
-                            "description": "Number of Schwab orders executed",
-                            "unit": "1",
-                            "sum": {
-                                "data_points": [{
-                                    "start_time_unix_nano": service_start_time,
-                                    "time_unix_nano": now,
-                                    "as_int": 0
-                                }],
-                                "aggregation_temporality": 2,
-                                "is_monotonic": true
-                            }
-                        }, {
-                            "name": "queue_depth",
-                            "description": "Current queue depth",
-                            "unit": "1",
-                            "gauge": {
-                                "data_points": [{
-                                    "time_unix_nano": now,
-                                    "as_int": 0
-                                }]
                             }
                         }]
                     }]
@@ -201,17 +168,17 @@ pub(crate) async fn setup(env: &Env) -> Option<Metrics> {
 
     let deployment_environment = if env.dry_run { "dev" } else { "prod" };
 
-    debug!(
-        "Setting up metrics with custom HTTP export to: {}",
-        endpoint
-    );
+    info!("Setting up OTLP metrics export to: {endpoint}");
 
-    // Configuration
-    let export_interval_secs = 30; // Shorter for testing
-    let metrics_endpoint = format!("{}/v1/metrics", endpoint);
+    // Configuration - shorter interval for testing
+    let export_interval_secs = 10;
+    let metrics_endpoint = format!("{endpoint}/v1/metrics");
 
-    // Create provider for metric collection (without PeriodicReader)
-    let provider = SdkMeterProvider::builder()
+    // Create auth header for fallback
+    let auth_header = format!("Basic {}", b64.encode(format!("{instance_id}:{api_key}")));
+
+    // Create provider for metric collection (without PeriodicReader initially)
+    let fallback_provider = SdkMeterProvider::builder()
         .with_resource(
             Resource::builder()
                 .with_service_name("schwarbot")
@@ -223,9 +190,22 @@ pub(crate) async fn setup(env: &Env) -> Option<Metrics> {
         )
         .build();
 
-    let meter = global::meter("schwarbot");
+    // Create shared counter for token retries
+    let token_retry_counter = Arc::new(AtomicU64::new(0));
 
-    // Create all metric instruments
+    // Use manual HTTP export (OTLP has runtime issues with PeriodicReader)
+    info!("Using manual HTTP export to Grafana Cloud");
+    let (provider, flush_task) = create_manual_fallback(
+        fallback_provider,
+        metrics_endpoint,
+        auth_header,
+        export_interval_secs,
+        token_retry_counter.clone(),
+    );
+
+    // Now create metrics AFTER the provider is set up
+    debug!("Creating metrics using global meter");
+    let meter = global::meter("schwarbot");
     let onchain_events_received = meter.u64_counter("onchain_events_received").build();
     let schwab_orders_executed = meter.u64_counter("schwab_orders_executed").build();
     let token_refreshes = meter.u64_counter("token_refreshes").build();
@@ -236,27 +216,8 @@ pub(crate) async fn setup(env: &Env) -> Option<Metrics> {
 
     // Record startup metric
     let startup_counter = meter.u64_counter("system_startup").build();
+    debug!("Recording startup metric");
     startup_counter.add(1, &[KeyValue::new("status", "initialized")]);
-
-    // Create auth header for Basic authentication
-    let auth_header = format!(
-        "Basic {}",
-        base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", instance_id, api_key))
-    );
-
-    // Create shared counter for token retries
-    let token_retry_counter = Arc::new(AtomicU64::new(0));
-
-    // Use manual HTTP export directly (working version)
-    info!("Using manual HTTP export to Grafana Cloud");
-
-    let (provider, flush_task) = create_manual_fallback(
-        provider,
-        metrics_endpoint,
-        auth_header,
-        export_interval_secs,
-        token_retry_counter.clone(),
-    );
 
     Some(Metrics {
         onchain_events_received,

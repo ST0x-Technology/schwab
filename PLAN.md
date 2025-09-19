@@ -6,103 +6,134 @@
 - ✅ Metrics appearing in Grafana: heartbeat_counter_total=1,
   token_retry_attempts_total=3, system_startup_total=1
 - ✅ Clean baseline with no compilation warnings
-- ✅ 30-second export interval with successful HTTP 200 responses
+- ✅ 10-second export interval with successful HTTP 200 responses
+- ✅ Improved error handling using `?` operator and `let-else` patterns
 
-## Phase 2: Incremental OTLP Migration Plan
+## Phase 2: Initial OTLP Migration Attempt (COMPLETED WITH LEARNINGS)
 
-### Step 1: Add OTLP Dependencies & Runtime Fix Preparation
+### Task 1: Add OTLP Dependencies & Runtime Fix Preparation
 
-**Goal**: Set up OTLP dependencies while keeping manual export working
+- [x] Add back OTLP imports: `WithExportConfig`, `WithHttpConfig`,
+      `PeriodicReader`
+- [x] Keep manual export as primary (no changes to setup flow)
+- [x] Test: Run server, verify metrics still appear in Grafana
+- [x] **Checkpoint**: Confirmed with user that metrics still work
 
-**Actions**:
+### Task 2: Implement Spawn Blocking OTLP Setup
 
-1. Add back OTLP imports:
-   - `use opentelemetry_otlp::{WithExportConfig, WithHttpConfig};`
-   - `use opentelemetry_sdk::metrics::PeriodicReader;`
-2. Keep manual export as primary (no changes to setup flow)
-3. Test: Run server, verify metrics still appear in Grafana
-4. **Checkpoint**: Confirm with user that metrics still work
+- [x] Add spawn_blocking OTLP setup in `setup()` function
+- [x] Keep manual export as primary for testing
+- [x] Log whether OTLP setup succeeded or failed
+- [x] Test: Run server, verify no runtime panic initially
+- [x] **Checkpoint**: Confirmed metrics still appear in Grafana
 
-### Step 2: Implement Spawn Blocking OTLP Setup
+### Task 3: Try OTLP First with Manual Fallback
 
-**Goal**: Add OTLP setup in spawn_blocking to avoid runtime panic
+- [x] Modify logic to try OTLP setup first via spawn_blocking
+- [x] Set global meter provider when OTLP succeeds
+- [x] Add clear logging for which method is active
+- [x] Test: Run server, check logs for which method is used
+- [x] **Issue Discovered**: OTLP setup succeeded but metrics not reaching
+      Grafana
 
-**Actions**:
+### Task 4: Verify OTLP is Actually Working
 
-1. In `setup()` function, add spawn_blocking OTLP setup:
-   ```rust
-   let otlp_result = tokio::task::spawn_blocking({
-       // Move OTLP setup here with proper error handling
-   }).await;
-   ```
-2. Keep manual export as primary for now
-3. Log whether OTLP setup succeeded or failed
-4. Test: Run server, verify no runtime panic
-5. **Checkpoint**: Confirm metrics still appear in Grafana
+- [x] Increase export frequency to 10 seconds
+- [x] Add debug logging in OTLP path
+- [x] Run for 2+ minutes testing
+- [x] **Critical Finding**: OTLP PeriodicReader still causes runtime panic "no
+      reactor running"
+- [x] **User Verification**: Confirmed metrics from OTLP attempt not appearing
+      in Grafana
 
-### Step 3: Try OTLP First with Manual Fallback
+### Task 5: Stabilize with Working Solution
 
-**Goal**: Use OTLP as primary, manual as fallback
+- [x] Revert to manual HTTP export due to OTLP runtime issues
+- [x] Keep 10-second interval (improvement over original 30 seconds)
+- [x] Clean up unused OTLP imports and dependencies
+- [x] Fix error handling with `?` operator and `let-else` patterns
+- [x] **Checkpoint**: Confirmed stable metrics appearing in Grafana with fresh
+      timestamps
 
-**Actions**:
+## Key Learnings from Phase 2
 
-1. Modify logic to:
-   - Try OTLP setup first via spawn_blocking
-   - If successful, use OTLP with PeriodicReader
-   - If failed, use manual HTTP export
-2. Add clear logging for which method is active
-3. Test: Run server, check logs for which method is used
-4. **Checkpoint**: Confirm metrics appear in Grafana
+### Issues Identified
 
-### Step 4: Verify OTLP is Actually Working
+- ❌ **Runtime Panic**: PeriodicReader creates background threads outside Tokio
+  context
+- ❌ **spawn_blocking Insufficient**: Does not fully resolve the reactor issue
+- ❌ **Silent Failure**: OTLP setup can succeed but fail to deliver metrics
+- ❌ **Incomplete Understanding**: Need deeper research into OpenTelemetry
+  architecture
 
-**Goal**: Ensure OTLP PeriodicReader is sending metrics
+### Successes
 
-**Actions**:
+- ✅ **Manual HTTP Export**: Reliable fallback that works perfectly
+- ✅ **OTLP Format**: Confirmed we can generate correct OTLP JSON
+- ✅ **10-second Exports**: Improved frequency from 30 seconds
+- ✅ **Verification Process**: Always check with user before claiming success
 
-1. Temporarily increase export frequency (10 seconds)
-2. Add debug logging in OTLP path
-3. Run for 2 minutes minimum
-4. **Checkpoint**: Verify continuous metric updates in Grafana
+## Phase 3: Deep Research & Proper OTLP Implementation
 
-### Step 5: Clean Up Manual Export
+### Task 6: Research OpenTelemetry Architecture
 
-**Goal**: Remove manual export once OTLP is proven stable
+- [ ] Study OpenTelemetry SDK documentation for runtime requirements
+- [ ] Research alternative to PeriodicReader (push vs pull exporters)
+- [ ] Investigate proper Tokio runtime integration patterns
+- [ ] Examine successful OTLP implementations in other Rust projects
+- [ ] **Goal**: Understand root cause of "no reactor running" issue
 
-**Actions**:
+### Task 7: Alternative OTLP Approaches
 
-1. Remove `create_manual_fallback` function
-2. Remove manual export logic from setup
-3. Keep OTLP as sole export method
-4. Test: Run for 5 minutes
-5. **Final Checkpoint**: Confirm stable metrics in Grafana
+- [ ] Research `opentelemetry_sdk::export::metrics::PushController`
+- [ ] Investigate manual metric export without PeriodicReader
+- [ ] Test `opentelemetry::global::meter_provider()` setup patterns
+- [ ] Explore different runtime configurations (Tokio vs blocking)
+- [ ] **Goal**: Find OTLP approach that works with our Tokio setup
 
-## Critical Success Criteria
+### Task 8: Protocol-Level Investigation
+
+- [ ] Compare our manual OTLP JSON with library-generated OTLP
+- [ ] Test library's HTTP client configuration options
+- [ ] Investigate different OTLP transport options (HTTP vs gRPC)
+- [ ] Research Grafana Cloud OTLP endpoint requirements
+- [ ] **Goal**: Ensure library can generate compatible OTLP format
+
+### Task 9: Runtime Environment Analysis
+
+- [ ] Profile our Tokio runtime setup in `src/lib.rs`
+- [ ] Test OTLP in isolated minimal examples
+- [ ] Compare with official OpenTelemetry Rust examples
+- [ ] Investigate if our async context is missing something
+- [ ] **Goal**: Identify what our runtime needs for OTLP compatibility
+
+### Task 10: Implementation & Integration
+
+- [ ] Implement researched OTLP solution
+- [ ] Add comprehensive error handling and logging
+- [ ] Test with manual export as verified fallback
+- [ ] Gradual rollout with user verification at each step
+- [ ] **Goal**: Working OTLP implementation using the library properly
+
+## Success Criteria
 
 - ✅ No runtime panics ("no reactor running")
-- ✅ Metrics appear consistently in Grafana
+- ✅ Metrics appear consistently in Grafana using OTLP library
 - ✅ Clean code with no warnings
-- ✅ OTLP PeriodicReader working properly
-- ✅ Each step verified before proceeding
+- ✅ Proper OpenTelemetry SDK usage following best practices
+- ✅ Each step verified with user confirmation
+- ✅ Maintain manual export as fallback during transition
 
-## Rollback Plan
+## Research Resources
 
-At any step, if metrics stop appearing:
-
-1. Revert to previous working state immediately
-2. Debug the specific failure
-3. Only proceed when issue is resolved and metrics confirmed
-
-## Verification Process
-
-After each step:
-
-1. Run `cargo run --bin server -- --dry-run` for 60+ seconds
-2. Check logs for successful metric export
-3. Confirm with user that metrics appear in Grafana UI
-4. Only proceed to next step when confirmed working
+- OpenTelemetry Rust SDK documentation
+- GitHub examples and successful implementations
+- Grafana Cloud OTLP documentation
+- Tokio runtime integration guides
+- Community discussions on similar issues
 
 ---
 
-_This plan ensures we maintain working metrics throughout the migration to
-proper OTLP implementation._
+_Phase 3 focuses on proper research and understanding before implementation,
+ensuring we leverage the OpenTelemetry library correctly rather than working
+around its limitations._
