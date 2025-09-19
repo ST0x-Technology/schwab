@@ -6,3 +6,5 @@ edition = "2024"
 [dependencies]
 async-trait.workspace = true
 sqlx.workspace = true
+chrono = { version = "0.4.38", features = ["serde"] }
+thiserror = "2.0.12"
