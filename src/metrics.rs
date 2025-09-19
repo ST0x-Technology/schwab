@@ -1,4 +1,4 @@
-use base64::{Engine as _, engine::general_purpose};
+use base64::Engine;
 use opentelemetry::{
     KeyValue, global,
     metrics::{Counter, Gauge, Histogram},
@@ -7,6 +7,7 @@ use opentelemetry_sdk::{Resource, metrics::SdkMeterProvider};
 use serde_json::json;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
@@ -19,7 +20,8 @@ pub(crate) struct Metrics {
     pub(crate) queue_depth: Gauge<u64>,
     pub(crate) accumulated_positions: Gauge<f64>,
     pub(crate) trade_execution_duration_ms: Histogram<f64>,
-    pub(crate) token_retry_counter: Arc<AtomicU64>,
+    pub(crate) token_retry_attempts: Counter<u64>,
+    token_retry_counter: Arc<AtomicU64>,
     provider: SdkMeterProvider,
     flush_task: JoinHandle<()>,
 }
@@ -31,8 +33,16 @@ pub(crate) fn setup(env: &Env) -> Option<Metrics> {
 
     let deployment_environment = if env.dry_run { "dev" } else { "prod" };
 
-    // Create provider for metric collection (export handled by custom HTTP task)
+    debug!(
+        "Setting up metrics with custom HTTP export to: {}",
+        endpoint
+    );
 
+    // Configuration
+    let export_interval_secs = 30; // Shorter for testing
+    let metrics_endpoint = format!("{}/v1/metrics", endpoint);
+
+    // Create provider for metric collection (without PeriodicReader)
     let provider = SdkMeterProvider::builder()
         .with_resource(
             Resource::builder()
@@ -48,30 +58,29 @@ pub(crate) fn setup(env: &Env) -> Option<Metrics> {
     global::set_meter_provider(provider.clone());
     let meter = global::meter("schwarbot");
 
+    // Create all metric instruments
     let onchain_events_received = meter.u64_counter("onchain_events_received").build();
     let schwab_orders_executed = meter.u64_counter("schwab_orders_executed").build();
     let token_refreshes = meter.u64_counter("token_refreshes").build();
     let queue_depth = meter.u64_gauge("queue_depth").build();
     let accumulated_positions = meter.f64_gauge("accumulated_positions").build();
     let trade_execution_duration_ms = meter.f64_histogram("trade_execution_duration_ms").build();
+    let token_retry_attempts = meter.u64_counter("token_retry_attempts").build();
 
-    info!("Successfully set up custom metrics with HTTP export to Grafana");
-
-    // Record a startup metric for testing
+    // Record startup metric
     let startup_counter = meter.u64_counter("system_startup").build();
     startup_counter.add(1, &[KeyValue::new("status", "initialized")]);
-    info!("Recorded startup metric for testing");
 
     // Create shared counter for token retries
     let token_retry_counter = Arc::new(AtomicU64::new(0));
 
     // Create custom background export task using our proven HTTP approach
-    let endpoint_clone = endpoint.clone();
+    let metrics_endpoint_clone = metrics_endpoint.clone();
     let api_key_clone = api_key.clone();
     let instance_id_clone = instance_id.clone();
     let retry_counter_clone = token_retry_counter.clone();
     let flush_task = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
+        let mut interval = tokio::time::interval(Duration::from_secs(export_interval_secs));
         interval.tick().await; // Skip first immediate tick
 
         // Track when we started to use as a consistent start_time for all metrics
@@ -85,7 +94,7 @@ pub(crate) fn setup(env: &Env) -> Option<Metrics> {
 
             // Create auth header using proven format
             let auth_string = format!("{}:{}", instance_id_clone, api_key_clone);
-            let encoded_auth = general_purpose::STANDARD.encode(&auth_string);
+            let encoded_auth = base64::engine::general_purpose::STANDARD.encode(&auth_string);
 
             // Create current timestamp
             let now = std::time::SystemTime::now()
@@ -96,7 +105,7 @@ pub(crate) fn setup(env: &Env) -> Option<Metrics> {
             // Get current retry count (cumulative)
             let retry_count = retry_counter_clone.load(Ordering::Relaxed);
 
-            // Create metrics payload using proven JSON format (exact match to working test)
+            // Create metrics payload using proven JSON format
             let metrics_payload = json!({
                 "resource_metrics": [{
                     "resource": {
@@ -143,7 +152,7 @@ pub(crate) fn setup(env: &Env) -> Option<Metrics> {
             // Send HTTP request using proven approach
             let client = reqwest::Client::new();
             match client
-                .post(format!("{}/v1/metrics", endpoint_clone))
+                .post(&metrics_endpoint_clone)
                 .header("Authorization", format!("Basic {}", encoded_auth))
                 .header("Content-Type", "application/json")
                 .json(&metrics_payload)
@@ -152,24 +161,19 @@ pub(crate) fn setup(env: &Env) -> Option<Metrics> {
             {
                 Ok(response) => {
                     let status = response.status();
-                    let headers = response.headers().clone();
-
                     match response.text().await {
                         Ok(body) => {
                             if status.is_success() {
                                 debug!(
-                                    "Successfully exported metrics to Grafana - Status: {}, Body: {}",
-                                    status, body
+                                    "Successfully exported metrics to Grafana - Status: {}",
+                                    status
                                 );
                             } else if status == 429 {
-                                warn!(
-                                    "Rate limited by Grafana (429) - Status: {}, Body: {}. Will retry next interval.",
-                                    status, body
-                                );
+                                warn!("Rate limited by Grafana (429), will retry next interval");
                             } else {
                                 error!(
-                                    "Failed to export metrics - Status: {}, Headers: {:?}, Body: {}",
-                                    status, headers, body
+                                    "Failed to export metrics - Status: {}, Body: {}",
+                                    status, body
                                 );
                             }
                         }
@@ -185,7 +189,9 @@ pub(crate) fn setup(env: &Env) -> Option<Metrics> {
         }
     });
 
-    debug!("Metrics setup complete with custom HTTP export task");
+    info!("Successfully set up custom metrics export to Grafana Cloud");
+    debug!("Metrics endpoint: {}", metrics_endpoint);
+    debug!("Export interval: {} seconds", export_interval_secs);
 
     Some(Metrics {
         onchain_events_received,
@@ -194,6 +200,7 @@ pub(crate) fn setup(env: &Env) -> Option<Metrics> {
         queue_depth,
         accumulated_positions,
         trade_execution_duration_ms,
+        token_retry_attempts,
         token_retry_counter,
         provider,
         flush_task,
@@ -203,8 +210,7 @@ pub(crate) fn setup(env: &Env) -> Option<Metrics> {
 impl Metrics {
     /// Increment the token retry counter
     pub(crate) fn increment_token_retry(&self) {
-        self.token_retry_counter
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.token_retry_counter.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -215,14 +221,6 @@ impl Drop for Metrics {
         // Cancel the background flush task
         self.flush_task.abort();
 
-        // Do a final flush
-        if let Err(e) = self.provider.force_flush() {
-            error!("Failed to do final metrics flush: {}", e);
-        } else {
-            debug!("Final metrics flush completed");
-        }
-
-        // Note: Don't call provider.shutdown() here as it can cause Tokio runtime panics
-        // The provider will be properly cleaned up when dropped
+        debug!("Metrics shutdown complete");
     }
 }
