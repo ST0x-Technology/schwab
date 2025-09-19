@@ -140,7 +140,7 @@ pub trait Broker: Send + Sync + 'static {
     ) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error>;
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct MockBroker {
     pub should_fail: bool,
     pub failure_message: String,

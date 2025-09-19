@@ -9,6 +9,8 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tracing::{debug, error, info, trace};
 
+use st0x_broker::{Broker, Direction, MarketOrder, OrderState, OrderStatus, Shares, Symbol};
+
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
 use crate::env::Env;
 use crate::error::EventProcessingError;
@@ -24,20 +26,24 @@ use crate::schwab::{
 use crate::symbol::cache::SymbolCache;
 use crate::symbol::lock::get_symbol_lock;
 
-pub(crate) struct BackgroundTasksBuilder<P> {
+pub(crate) struct BackgroundTasksBuilder<P, B> {
     env: Env,
     pool: SqlitePool,
     cache: SymbolCache,
     provider: P,
+    broker: B,
     shutdown_rx: watch::Receiver<bool>,
 }
 
-impl<P: Provider + Clone + Send + 'static> BackgroundTasksBuilder<P> {
+impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
+    BackgroundTasksBuilder<P, B>
+{
     pub(crate) fn new(
         env: Env,
         pool: SqlitePool,
         cache: SymbolCache,
         provider: P,
+        broker: B,
         shutdown_rx: watch::Receiver<bool>,
     ) -> Self {
         Self {
@@ -45,6 +51,7 @@ impl<P: Provider + Clone + Send + 'static> BackgroundTasksBuilder<P> {
             pool,
             cache,
             provider,
+            broker,
             shutdown_rx,
         }
     }
@@ -81,7 +88,7 @@ impl<P: Provider + Clone + Send + 'static> BackgroundTasksBuilder<P> {
             &self.pool,
             &self.cache,
             self.provider,
-            &self.shutdown_rx,
+            self.broker,
         );
 
         BackgroundTasks {
@@ -324,16 +331,18 @@ where
     Ok(block_number)
 }
 
-pub(crate) async fn run_live<P, S1, S2>(
+pub(crate) async fn run_live<P, B, S1, S2>(
     env: Env,
     pool: SqlitePool,
     cache: SymbolCache,
     provider: P,
+    broker: B,
     clear_stream: S1,
     take_stream: S2,
 ) -> anyhow::Result<()>
 where
     P: Provider + Clone + Send + 'static,
+    B: Broker + Clone + Send + 'static,
     S1: Stream<Item = Result<(ClearV2, Log), sol_types::Error>> + Unpin + Send + 'static,
     S2: Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin + Send + 'static,
 {
@@ -346,6 +355,7 @@ where
         pool.clone(),
         cache.clone(),
         provider,
+        broker,
         shutdown_rx.clone(),
     )
     .spawn(event_sender, clear_stream, take_stream);
@@ -403,13 +413,12 @@ async fn process_live_event(
 
 /// Dedicated queue processor service that continuously processes events from the queue.
 /// This provides a unified processing path for both live and backfilled events.
-pub(crate) async fn run_queue_processor<P: Provider + Clone>(
-    broker: &DynBroker,
+pub(crate) async fn run_queue_processor<P: Provider + Clone, B: Broker + Clone>(
     env: &Env,
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: P,
-    mut shutdown_rx: watch::Receiver<bool>,
+    broker: B,
 ) -> Result<(), EventProcessingError> {
     info!("Starting queue processor service");
 
@@ -428,13 +437,7 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
     }
 
     loop {
-        // Check for shutdown signal
-        if *shutdown_rx.borrow_and_update() {
-            info!("Queue processor received shutdown signal, exiting");
-            break;
-        }
-
-        match process_next_queued_event(env, pool, cache, &provider).await {
+        match process_next_queued_event(env, pool, cache, &provider, &broker).await {
             Ok(Some(execution)) => {
                 if let Some(exec_id) = execution.id {
                     if let Err(e) =
@@ -459,15 +462,20 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
 
 /// Processes the next unprocessed event from the queue.
 /// Returns an optional SchwabExecution if one was triggered.
-async fn process_next_queued_event<P: Provider + Clone>(
+async fn process_next_queued_event<P: Provider + Clone, B: Broker + Clone>(
     env: &Env,
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: &P,
-) -> Result<Option<SchwabExecution>, EventProcessingError> {
-    let queued_event = get_next_queued_event(pool).await?;
-    let Some(queued_event) = queued_event else {
-        return Ok(None);
+    broker: &B,
+) -> Result<Option<crate::schwab::execution::SchwabExecution>, EventProcessingError> {
+    let queued_event = match get_next_unprocessed_event(pool).await {
+        Ok(Some(event)) => event,
+        Ok(None) => return Ok(None),
+        Err(e) => {
+            error!("Failed to get next unprocessed event: {e}");
+            return Err(EventProcessingError::Queue(e));
+        }
     };
 
     let event_id = extract_event_id(&queued_event)?;
@@ -1535,7 +1543,8 @@ mod tests {
         assert_eq!(count, 1);
 
         // Process the event - should filter it out without error
-        let result = process_next_queued_event(&env, &pool, &cache, &provider).await;
+        let broker = st0x_broker::MockBroker::new();
+        let result = process_next_queued_event(&env, &pool, &cache, &provider, &broker).await;
 
         // Should return Ok(None) indicating filtered event
         assert!(result.is_ok());
