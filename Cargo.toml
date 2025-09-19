@@ -1,5 +1,9 @@
+[workspace]
+members = [".", "crates/broker"]
+resolver = "2"
+
 [package]
-name = "rain_schwab"
+name = "st0x-arbot"
 version = "0.1.0"
 edition = "2024"
 

@@ -3902,37 +3902,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 
 [[package]]
-name = "rain_schwab"
-version = "0.1.0"
-dependencies = [
- "alloy",
- "anyhow",
- "backon",
- "base64 0.22.1",
- "chrono",
- "clap",
- "dotenvy",
- "flate2",
- "futures-util",
- "httpmock",
- "itertools 0.14.0",
- "lazy_static",
- "rand 0.8.5",
- "reqwest",
- "rocket",
- "serde",
- "serde_json",
- "serial_test",
- "sqlx",
- "thiserror 2.0.12",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "url",
- "urlencoding",
-]
-
-[[package]]
 name = "rand"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5027,6 +4996,41 @@ dependencies = [
  "tracing",
  "url",
 ]
+
+[[package]]
+name = "st0x-arbot"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "anyhow",
+ "backon",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "dotenvy",
+ "flate2",
+ "futures-util",
+ "httpmock",
+ "itertools 0.14.0",
+ "lazy_static",
+ "rand 0.8.5",
+ "reqwest",
+ "rocket",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "sqlx",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "urlencoding",
+]
+
+[[package]]
+name = "st0x-broker"
+version = "0.1.0"
 
 [[package]]
 name = "stable-pattern"

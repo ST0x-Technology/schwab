@@ -1,5 +1,5 @@
-use rain_schwab::cli;
-use rain_schwab::env::setup_tracing;
+use st0x_arbot::cli;
+use st0x_arbot::env::setup_tracing;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
