@@ -14,6 +14,7 @@ use super::{
     order_status::OrderStatusResponse,
 };
 use crate::env::Env;
+use crate::schwab::TradeState;
 
 /// Response from Schwab order placement API.
 /// According to Schwab OpenAPI spec, successful order placement (201) returns
@@ -109,80 +110,6 @@ impl Order {
         let order_id = extract_order_id_from_location_header(&response)?;
 
         Ok(OrderPlacementResponse { order_id })
-    }
-
-    /// Get the status of a specific order from Schwab API.
-    /// Returns the order status response containing fill information and execution details.
-    pub async fn get_order_status(
-        order_id: &str,
-        env: &SchwabAuthEnv,
-        pool: &SqlitePool,
-    ) -> Result<OrderStatusResponse, SchwabError> {
-        let access_token = SchwabTokens::get_valid_access_token(pool, env).await?;
-        let account_hash = env.get_account_hash(pool).await?;
-
-        let headers = [
-            (
-                header::AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {access_token}"))?,
-            ),
-            (header::ACCEPT, HeaderValue::from_str("application/json")?),
-        ]
-        .into_iter()
-        .collect::<HeaderMap>();
-
-        let client = reqwest::Client::new();
-        let response = (|| async {
-            client
-                .get(format!(
-                    "{}/trader/v1/accounts/{}/orders/{}",
-                    env.base_url, account_hash, order_id
-                ))
-                .headers(headers.clone())
-                .send()
-                .await
-        })
-        .retry(ExponentialBuilder::default())
-        .await?;
-
-        let status = response.status();
-        if status == reqwest::StatusCode::NOT_FOUND {
-            return Err(SchwabError::RequestFailed {
-                action: "get order status".to_string(),
-                status,
-                body: format!("Order ID {order_id} not found"),
-            });
-        }
-
-        if !response.status().is_success() {
-            let error_body = response.text().await.unwrap_or_default();
-            return Err(SchwabError::RequestFailed {
-                action: "get order status".to_string(),
-                status,
-                body: error_body,
-            });
-        }
-
-        // Capture response text for debugging parse errors
-        let response_text = response.text().await?;
-
-        // Log successful response in debug mode to understand API structure
-        tracing::debug!("Schwab order status response: {}", response_text);
-
-        match serde_json::from_str::<OrderStatusResponse>(&response_text) {
-            Ok(order_status) => Ok(order_status),
-            Err(parse_error) => {
-                error!(
-                    order_id = %order_id,
-                    response_text = %response_text,
-                    parse_error = %parse_error,
-                    "Failed to parse Schwab order status response"
-                );
-                Err(SchwabError::InvalidConfiguration(format!(
-                    "Failed to parse order status response: {parse_error}"
-                )))
-            }
-        }
     }
 }
 
@@ -318,48 +245,7 @@ pub(crate) struct Instrument {
     pub asset_type: AssetType,
 }
 
-const MAX_RETRIES: usize = 3;
-
-/// Execute a Schwab order using the unified system.
-/// Takes a SchwabExecution and places the corresponding order via Schwab API.
-pub(crate) async fn execute_schwab_order(
-    env: &Env,
-    pool: &SqlitePool,
-    execution: SchwabExecution,
-) -> Result<(), SchwabError> {
-    let schwab_instruction = match execution.direction {
-        Direction::Buy => Instruction::Buy,
-        Direction::Sell => Instruction::Sell,
-    };
-
-    let order = Order::new(
-        execution.symbol.clone(),
-        schwab_instruction,
-        execution.shares,
-    );
-
-    let result = (|| async { order.place(&env.schwab_auth, pool).await })
-        .retry(&ExponentialBuilder::default().with_max_times(MAX_RETRIES))
-        .await;
-
-    let execution_id = execution.id.ok_or_else(|| {
-        error!("SchwabExecution missing ID when executing: {execution:?}");
-        SchwabError::RequestFailed {
-            action: "execute order".to_string(),
-            status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-            body: "Execution missing database ID".to_string(),
-        }
-    })?;
-
-    match result {
-        Ok(response) => handle_execution_success(pool, execution_id, response.order_id).await?,
-        Err(e) => handle_execution_failure(pool, execution_id, e).await?,
-    }
-
-    Ok(())
-}
-
-async fn handle_execution_success(
+pub(crate) async fn handle_execution_success(
     pool: &SqlitePool,
     execution_id: i64,
     order_id: String,
@@ -390,7 +276,7 @@ async fn handle_execution_success(
     Ok(())
 }
 
-async fn handle_execution_failure(
+pub(crate) async fn handle_execution_failure(
     pool: &SqlitePool,
     execution_id: i64,
     error: SchwabError,
@@ -435,6 +321,7 @@ async fn handle_execution_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schwab::broker::{Broker, Schwab};
     use crate::test_utils::setup_test_db;
     use chrono::Utc;
     use serde_json::json;
@@ -1109,7 +996,8 @@ mod tests {
                 }));
         });
 
-        let result = Order::get_order_status("1004055538123", &env, &pool).await;
+        let broker = Schwab;
+        let result = broker.get_order_status("1004055538123", &env, &pool).await;
 
         account_mock.assert();
         order_status_mock.assert();
@@ -1158,7 +1046,8 @@ mod tests {
                 }));
         });
 
-        let result = Order::get_order_status("1004055538456", &env, &pool).await;
+        let broker = Schwab;
+        let result = broker.get_order_status("1004055538456", &env, &pool).await;
 
         account_mock.assert();
         order_status_mock.assert();
@@ -1222,7 +1111,8 @@ mod tests {
                 }));
         });
 
-        let result = Order::get_order_status("1004055538789", &env, &pool).await;
+        let broker = Schwab;
+        let result = broker.get_order_status("1004055538789", &env, &pool).await;
 
         account_mock.assert();
         order_status_mock.assert();
@@ -1265,7 +1155,8 @@ mod tests {
                 .json_body(json!({"error": "Order not found"}));
         });
 
-        let result = Order::get_order_status("NONEXISTENT", &env, &pool).await;
+        let broker = Schwab;
+        let result = broker.get_order_status("NONEXISTENT", &env, &pool).await;
 
         account_mock.assert();
         order_status_mock.assert();
@@ -1305,7 +1196,8 @@ mod tests {
                 .json_body(json!({"error": "Unauthorized"}));
         });
 
-        let result = Order::get_order_status("1004055538123", &env, &pool).await;
+        let broker = Schwab;
+        let result = broker.get_order_status("1004055538123", &env, &pool).await;
 
         account_mock.assert();
         order_status_mock.assert();
@@ -1343,7 +1235,8 @@ mod tests {
                 .json_body(json!({"error": "Internal server error"}));
         });
 
-        let result = Order::get_order_status("1004055538123", &env, &pool).await;
+        let broker = Schwab;
+        let result = broker.get_order_status("1004055538123", &env, &pool).await;
 
         account_mock.assert();
         order_status_mock.assert();
@@ -1381,7 +1274,8 @@ mod tests {
                 .body("invalid json response");
         });
 
-        let result = Order::get_order_status("1004055538123", &env, &pool).await;
+        let broker = Schwab;
+        let result = broker.get_order_status("1004055538123", &env, &pool).await;
 
         account_mock.assert();
         order_status_mock.assert();
@@ -1416,7 +1310,8 @@ mod tests {
                 .json_body(json!({"error": "Bad Gateway"}));
         });
 
-        let result = Order::get_order_status("1004055538123", &env, &pool).await;
+        let broker = Schwab;
+        let result = broker.get_order_status("1004055538123", &env, &pool).await;
 
         account_mock.assert();
         // Should have made at least one request (retry logic is handled by backon)
