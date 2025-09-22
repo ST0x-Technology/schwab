@@ -11,9 +11,7 @@ use super::execution::{
     find_execution_by_id, find_executions_by_symbol_and_status,
     update_execution_status_within_transaction,
 };
-use super::order::Order;
 use super::{SchwabAuthEnv, SchwabError, TradeState};
-use super::{SchwabAuthEnv, SchwabError, TradeState, TradeStatus};
 use crate::lock::{clear_execution_lease, clear_pending_execution_id};
 
 #[derive(Debug, Clone)]
@@ -160,7 +158,8 @@ impl<B: Broker> OrderStatusPoller<B> {
             self.handle_filled_order(execution_id, &order_status)
                 .await?;
         } else if order_status.is_terminal_failure() {
-            self.handle_failed_order(execution, &order_status).await?;
+            self.handle_failed_order(execution_id, &order_status)
+                .await?;
         } else {
             debug!(
                 "Order {order_id} (execution {execution_id}) still pending with state: {:?}",

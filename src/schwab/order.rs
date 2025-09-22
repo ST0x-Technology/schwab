@@ -10,12 +10,9 @@ use chrono::Utc;
 #[cfg(test)]
 use super::execution::find_execution_by_id;
 use super::{
-    Direction, SchwabAuthEnv, SchwabError, SchwabTokens, TradeState,
-    execution::{SchwabExecution, update_execution_status_within_transaction},
-    order_status::OrderStatusResponse,
+    SchwabAuthEnv, SchwabError, SchwabTokens, TradeState,
+    execution::update_execution_status_within_transaction,
 };
-use crate::env::Env;
-use crate::schwab::TradeState;
 
 /// Response from Schwab order placement API.
 /// According to Schwab OpenAPI spec, successful order placement (201) returns

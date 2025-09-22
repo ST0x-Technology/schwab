@@ -20,8 +20,6 @@ use crate::schwab::broker::{Broker, DynBroker};
 use crate::schwab::{
     OrderStatusPoller,
     execution::{SchwabExecution, find_execution_by_id},
-    order::execute_schwab_order,
-    tokens::SchwabTokens,
 };
 use crate::symbol::cache::SymbolCache;
 use crate::symbol::lock::get_symbol_lock;
@@ -77,8 +75,14 @@ impl<P: Provider + Clone + Send + 'static> BackgroundTasksBuilder<P> {
         let event_receiver = spawn_onchain_event_receiver(event_sender, clear_stream, take_stream);
         let position_checker =
             spawn_position_checker(broker.clone(), &self.env, &self.pool, &self.shutdown_rx);
-        let queue_processor =
-            spawn_queue_processor(broker, &self.env, &self.pool, &self.cache, self.provider);
+        let queue_processor = spawn_queue_processor(
+            broker,
+            &self.env,
+            &self.pool,
+            &self.cache,
+            self.provider,
+            &self.shutdown_rx,
+        );
 
         BackgroundTasks {
             token_refresher,
@@ -162,15 +166,24 @@ fn spawn_queue_processor<P: Provider + Clone + Send + 'static>(
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: P,
+    shutdown_rx: &watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     info!("Starting queue processor service");
     let env_clone = env.clone();
     let pool_clone = pool.clone();
     let cache_clone = cache.clone();
+    let shutdown_rx_clone = shutdown_rx.clone();
 
     tokio::spawn(async move {
-        if let Err(e) =
-            run_queue_processor(&broker, &env_clone, &pool_clone, &cache_clone, provider).await
+        if let Err(e) = run_queue_processor(
+            &broker,
+            &env_clone,
+            &pool_clone,
+            &cache_clone,
+            provider,
+            shutdown_rx_clone,
+        )
+        .await
         {
             error!("Queue processor service failed: {e}");
         }

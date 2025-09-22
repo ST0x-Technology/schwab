@@ -11,7 +11,7 @@ use tracing::{error, warn};
 pub(crate) type DynBroker = Arc<dyn Broker + Send + Sync>;
 
 use super::{
-    SchwabAuthEnv, SchwabError, SchwabInstruction,
+    Direction, SchwabAuthEnv, SchwabError,
     execution::SchwabExecution,
     order::{Instruction, Order, handle_execution_failure, handle_execution_success},
     order_status::{ExecutionLeg, OrderActivity, OrderStatus, OrderStatusResponse},
@@ -54,8 +54,8 @@ impl Broker for Schwab {
     {
         Box::pin(async move {
             let schwab_instruction = match execution.direction {
-                SchwabInstruction::Buy => Instruction::Buy,
-                SchwabInstruction::Sell => Instruction::Sell,
+                Direction::Buy => Instruction::Buy,
+                Direction::Sell => Instruction::Sell,
             };
 
             let order = Order::new(
