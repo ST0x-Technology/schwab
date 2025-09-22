@@ -1,5 +1,3 @@
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as b64;
 use opentelemetry::{
     KeyValue, global,
     metrics::{Counter, Gauge, Histogram},
@@ -17,7 +15,6 @@ use crate::env::Env;
 fn create_manual_fallback(
     provider: SdkMeterProvider,
     metrics_endpoint: String,
-    auth_header: String,
     export_interval_secs: u64,
     token_retry_counter: Arc<AtomicU64>,
 ) -> (SdkMeterProvider, JoinHandle<()>) {
@@ -110,7 +107,6 @@ fn create_manual_fallback(
             let client = reqwest::Client::new();
             match client
                 .post(&metrics_endpoint)
-                .header("Authorization", auth_header.clone())
                 .header("Content-Type", "application/json")
                 .json(&metrics_payload)
                 .send()
@@ -163,8 +159,6 @@ pub(crate) struct Metrics {
 
 pub(crate) async fn setup(env: &Env) -> Option<Metrics> {
     let endpoint = env.otel_metrics_exporter_endpoint.as_ref()?;
-    let api_key = env.otel_metrics_exporter_basic_auth_token.as_ref()?;
-    let instance_id = env.otel_metrics_exporter_instance_id.as_ref()?;
 
     let deployment_environment = if env.dry_run { "dev" } else { "prod" };
 
@@ -173,9 +167,6 @@ pub(crate) async fn setup(env: &Env) -> Option<Metrics> {
     // Configuration - shorter interval for testing
     let export_interval_secs = 10;
     let metrics_endpoint = format!("{endpoint}/v1/metrics");
-
-    // Create auth header for fallback
-    let auth_header = format!("Basic {}", b64.encode(format!("{instance_id}:{api_key}")));
 
     // Create provider for metric collection (without PeriodicReader initially)
     let fallback_provider = SdkMeterProvider::builder()
@@ -194,11 +185,10 @@ pub(crate) async fn setup(env: &Env) -> Option<Metrics> {
     let token_retry_counter = Arc::new(AtomicU64::new(0));
 
     // Use manual HTTP export (OTLP has runtime issues with PeriodicReader)
-    info!("Using manual HTTP export to Grafana Cloud");
+    info!("Using manual HTTP export to self-hosted Grafana");
     let (provider, flush_task) = create_manual_fallback(
         fallback_provider,
         metrics_endpoint,
-        auth_header,
         export_interval_secs,
         token_retry_counter.clone(),
     );

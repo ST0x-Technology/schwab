@@ -1,0 +1,27 @@
+services:
+  schwarbot:
+    build: .
+    container_name: schwarbot
+    environment:
+      - DATABASE_URL=sqlite:///app/data/schwab.db
+      - OTEL_METRICS_EXPORTER_ENDPOINT=http://grafana:4318
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - grafana
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/otel-lgtm
+    container_name: grafana-otel
+    ports:
+      - "3000:3000"  # Grafana UI
+      - "4318:4318"  # OTLP HTTP receiver
+    volumes:
+      - grafana-data:/data
+    restart: unless-stopped
+
+volumes:
+  grafana-data:
