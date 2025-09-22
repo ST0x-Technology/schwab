@@ -277,7 +277,7 @@ async fn create_trade_execution_linkages(
 
     let trade_rows = sqlx::query!(
         r#"
-        SELECT 
+        SELECT
             ot.id as trade_id,
             ot.amount as trade_amount,
             COALESCE(SUM(tel.contributed_shares), 0.0) as "already_allocated: f64"
@@ -373,9 +373,9 @@ async fn clean_up_stale_executions(
     let stale_executions = sqlx::query!(
         r#"
         SELECT se.id, se.symbol
-        FROM schwab_executions se
+        FROM offchain_trades se
         JOIN trade_accumulators ta ON ta.pending_execution_id = se.id
-        WHERE ta.symbol = ?1 
+        WHERE ta.symbol = ?1
           AND se.status = 'SUBMITTED'
           AND ta.last_updated < datetime('now', ?2)
         "#,
@@ -442,13 +442,13 @@ pub async fn check_all_accumulated_positions(
     // and no pending execution
     let ready_symbols = sqlx::query!(
         r#"
-        SELECT 
+        SELECT
             symbol,
             net_position,
             accumulated_long,
             accumulated_short,
             pending_execution_id
-        FROM trade_accumulators_with_net 
+        FROM trade_accumulators
         WHERE pending_execution_id IS NULL
           AND ABS(net_position) >= 1.0
         ORDER BY last_updated ASC
@@ -886,7 +886,7 @@ mod tests {
         assert_eq!(trade_count, 2);
 
         // Verify exactly one execution was created
-        let execution_count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+        let execution_count = sqlx::query!("SELECT COUNT(*) as count FROM offchain_trades")
             .fetch_one(&pool)
             .await
             .unwrap()
@@ -985,7 +985,7 @@ mod tests {
         let trade_count = super::OnchainTrade::db_count(&pool).await.unwrap();
         assert_eq!(trade_count, 2, "Expected 2 trades to be saved");
 
-        let execution_count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+        let execution_count = sqlx::query!("SELECT COUNT(*) as count FROM offchain_trades")
             .fetch_one(&pool)
             .await
             .unwrap()

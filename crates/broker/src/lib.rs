@@ -2,9 +2,14 @@ use async_trait::async_trait;
 use sqlx::SqlitePool;
 use std::fmt::{Debug, Display};
 
+pub mod error;
 pub mod order_state;
+pub mod schwab;
 
+pub use error::{OnChainError, PersistenceError};
 pub use order_state::OrderState;
+pub use schwab::auth::SchwabAuthEnv;
+pub use schwab::broker::SchwabBroker;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Symbol(pub String);

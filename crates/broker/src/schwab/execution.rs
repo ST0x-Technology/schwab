@@ -178,12 +178,14 @@ impl SchwabExecution {
                 symbol,
                 shares,
                 direction,
+                broker_type,
+                broker_order_id,
                 order_id,
                 price_cents,
                 status,
                 executed_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            VALUES (?1, ?2, ?3, 'schwab', ?4, ?4, ?5, ?6, ?7)
             "#,
             self.symbol,
             shares_i64,
@@ -582,10 +584,11 @@ mod tests {
 
         // Try to insert execution with invalid direction - should be prevented by CHECK constraint
         let result = sqlx::query!(
-            "INSERT INTO offchain_trades (symbol, shares, direction, order_id, price_cents, status) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO offchain_trades (symbol, shares, direction, broker_type, broker_order_id, order_id, price_cents, status) VALUES (?, ?, ?, 'schwab', ?, ?, ?, ?)",
             "TEST",
             100i64,
             "INVALID_DIRECTION", // This should be rejected by CHECK constraint
+            None::<String>,
             None::<String>,
             None::<i64>,
             "PENDING"
@@ -602,10 +605,11 @@ mod tests {
 
         // Try to insert with invalid status - should also be prevented
         let result = sqlx::query!(
-            "INSERT INTO offchain_trades (symbol, shares, direction, order_id, price_cents, status) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO offchain_trades (symbol, shares, direction, broker_type, broker_order_id, order_id, price_cents, status) VALUES (?, ?, ?, 'schwab', ?, ?, ?, ?)",
             "TEST",
             100i64,
             "BUY",
+            None::<String>,
             None::<String>,
             None::<i64>,
             "INVALID_STATUS" // This should be rejected by CHECK constraint
@@ -1021,11 +1025,12 @@ mod tests {
 
         // Test that database constraint prevents FILLED status with NULL price_cents
         let result = sqlx::query!(
-            "INSERT INTO offchain_trades (symbol, shares, direction, order_id, price_cents, status, executed_at) 
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO offchain_trades (symbol, shares, direction, broker_type, broker_order_id, order_id, price_cents, status, executed_at) 
+             VALUES (?, ?, ?, 'schwab', ?, ?, ?, ?, ?)",
             "TEST",
             100i64,
             "BUY",
+            order_id_1.clone(),
             order_id_1,
             None::<i64>, // NULL price_cents with FILLED status should be rejected
             "FILLED",
@@ -1041,11 +1046,12 @@ mod tests {
 
         // Verify valid FILLED execution with price_cents succeeds
         let result = sqlx::query!(
-            "INSERT INTO offchain_trades (symbol, shares, direction, order_id, price_cents, status, executed_at) 
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO offchain_trades (symbol, shares, direction, broker_type, broker_order_id, order_id, price_cents, status, executed_at) 
+             VALUES (?, ?, ?, 'schwab', ?, ?, ?, ?, ?)",
             "TEST2",
             100i64,
             "BUY", 
+            order_id_2.clone(),
             order_id_2,
             Some(15025i64), // Valid price_cents for FILLED status
             "FILLED",

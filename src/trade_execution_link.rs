@@ -76,7 +76,7 @@ impl TradeExecutionLink {
                 se.price_cents,
                 se.executed_at
             FROM trade_execution_links tel
-            JOIN schwab_executions se ON tel.execution_id = se.id
+            JOIN offchain_trades se ON tel.execution_id = se.id
             WHERE tel.trade_id = ?1
             ORDER BY tel.created_at ASC
             "#,
@@ -103,7 +103,7 @@ impl TradeExecutionLink {
                 )?;
 
                 Ok(ExecutionContribution {
-                    link_id: row.id,
+                    link_id: row.id.unwrap(),
                     execution_id: row.execution_id,
                     contributed_shares: row.contributed_shares,
                     execution_symbol: row.symbol,
@@ -148,7 +148,7 @@ impl TradeExecutionLink {
         rows.into_iter()
             .map(|row| {
                 Ok(TradeContribution {
-                    link_id: row.id,
+                    link_id: row.id.unwrap(),
                     trade_id: row.trade_id,
                     contributed_shares: row.contributed_shares,
                     trade_tx_hash: row.tx_hash,
@@ -194,7 +194,7 @@ impl TradeExecutionLink {
                 se.executed_at
             FROM trade_execution_links tel
             JOIN onchain_trades ot ON tel.trade_id = ot.id
-            JOIN schwab_executions se ON tel.execution_id = se.id
+            JOIN offchain_trades se ON tel.execution_id = se.id
             WHERE ot.symbol = ?1 OR se.symbol = ?2
             ORDER BY tel.created_at ASC
             "#,

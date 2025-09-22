@@ -1684,7 +1684,7 @@ mod tests {
         // Verify order_id was stored in database
         let execution_id = executions[0].id.unwrap();
         let row = sqlx::query!(
-            "SELECT order_id FROM schwab_executions WHERE id = ?1",
+            "SELECT order_id FROM offchain_trades WHERE id = ?1",
             execution_id
         )
         .fetch_one(&pool)

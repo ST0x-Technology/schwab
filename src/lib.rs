@@ -20,7 +20,7 @@ mod trading_hours_controller;
 #[cfg(test)]
 pub mod test_utils;
 
-use st0x_broker::MockBroker;
+use st0x_broker::SchwabBroker;
 
 use crate::conductor::get_cutoff_block;
 use crate::env::Env;
@@ -128,7 +128,14 @@ async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
                 .await?;
 
                 // Start all services through unified background tasks management
-                let broker = MockBroker::new();
+                let broker_auth = st0x_broker::SchwabAuthEnv {
+                    app_key: env.schwab_auth.app_key.clone(),
+                    app_secret: env.schwab_auth.app_secret.clone(),
+                    redirect_uri: env.schwab_auth.redirect_uri.clone(),
+                    base_url: env.schwab_auth.base_url.clone(),
+                    account_index: env.schwab_auth.account_index,
+                };
+                let broker = SchwabBroker::new(broker_auth);
                 conductor::run_live(
                     env,
                     pool,

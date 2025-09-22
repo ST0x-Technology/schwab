@@ -33,6 +33,7 @@ exploiting price discrepancies.
 - `sqlx db create` - Create the database
 - `sqlx migrate run` - Apply database migrations
 - `sqlx migrate revert` - Revert last migration
+- `sqlx migrate reset -y` - Drop the database and re-run all migrations
 - Database URL configured via `DATABASE_URL` environment variable
 
 ### Development Tools
@@ -112,7 +113,7 @@ exploiting price discrepancies.
   - `created_at`: Timestamp (default CURRENT_TIMESTAMP)
   - Unique constraint: `(tx_hash, log_index)`
 
-- `schwab_executions`: Schwab order execution tracking
+- `offchain_trades`: Offchain broker order execution tracking
 
   - `id`: Primary key (auto-increment)
   - `symbol`: Asset symbol (non-empty string)
@@ -137,7 +138,7 @@ exploiting price discrepancies.
 
   - `id`: Primary key (auto-increment)
   - `trade_id`: Foreign key to onchain_trades
-  - `execution_id`: Foreign key to schwab_executions
+  - `execution_id`: Foreign key to offchain_trades
   - `contributed_shares`: Fractional shares contributed (positive)
   - `created_at`: Link creation timestamp
   - Unique constraint: `(trade_id, execution_id)`
