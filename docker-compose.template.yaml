@@ -14,7 +14,7 @@ services:
 
   grafana:
     image: grafana/otel-lgtm
-    container_name: grafana-otel
+    container_name: grafana
     ports:
       - "3000:3000"  # Grafana UI
       - "4318:4318"  # OTLP HTTP receiver

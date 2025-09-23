@@ -125,23 +125,30 @@ jobs:
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting services with docker-compose" | tee -a "${DEPLOY_LOG}"
             docker compose up -d 2>&1 | tee -a "${DEPLOY_LOG}"
 
-            # Wait for container to start
-            echo "$(date '+%Y-%m-%d %H:%M:%S') - Waiting for container to start..." | tee -a "${DEPLOY_LOG}"
-            sleep 10
+            # Wait for containers to fully start
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Waiting for containers to start..." | tee -a "${DEPLOY_LOG}"
+            sleep 15
 
-            # Check if services are running and capture logs
-            if ! docker compose ps --status running | grep -q "schwarbot"; then
-              echo "$(date '+%Y-%m-%d %H:%M:%S') - Schwarbot service failed to start" | tee -a "${DEPLOY_LOG}" >&2
+            # Check if services are running - use docker ps as primary check
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Checking container status..." | tee -a "${DEPLOY_LOG}"
+
+            # Debug: show what containers are actually running
+            docker ps --format "table {{.Names}}\t{{.Status}}" | tee -a "${DEPLOY_LOG}"
+
+            if ! docker ps --format "{{.Names}}" | grep -q "^schwarbot$"; then
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - Schwarbot container not found in docker ps" | tee -a "${DEPLOY_LOG}" >&2
               docker compose logs schwarbot 2>&1 | tee "${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}"
               echo "Full container logs saved to: ${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}" >&2
               exit 1
             fi
 
-            if ! docker compose ps --status running | grep -q "grafana-otel"; then
-              echo "$(date '+%Y-%m-%d %H:%M:%S') - Grafana service failed to start" | tee -a "${DEPLOY_LOG}" >&2
+            if ! docker ps --format "{{.Names}}" | grep -q "^grafana$"; then
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - Grafana container not found in docker ps" | tee -a "${DEPLOY_LOG}" >&2
               docker compose logs grafana 2>&1 | tee -a "${DEPLOY_LOG}"
               exit 1
             fi
+
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Both containers confirmed running" | tee -a "${DEPLOY_LOG}"
 
             # Capture initial container logs
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Services started successfully, capturing logs..." | tee -a "${DEPLOY_LOG}"
