@@ -1,14 +1,13 @@
 services:
   schwarbot:
-    build: .
+    image: registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}
     container_name: schwarbot
     environment:
-      - DATABASE_URL=sqlite:///app/data/schwab.db
       - OTEL_METRICS_EXPORTER_ENDPOINT=http://grafana:4318
     env_file:
       - .env
     volumes:
-      - ./data:/app/data
+      - ${DATA_VOLUME_PATH}:/data
     depends_on:
       - grafana
     restart: unless-stopped
