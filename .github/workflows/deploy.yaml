@@ -57,7 +57,7 @@ jobs:
           cat .env.example >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
-      - name: Read docker-compose template
+      - name: Read docker compose template
         run: |
           echo "DOCKER_COMPOSE_TEMPLATE<<EOF" >> $GITHUB_ENV
           cat docker-compose.template.yaml >> $GITHUB_ENV
@@ -103,8 +103,8 @@ jobs:
 
             # Pull images and stop existing services
             cd /mnt/volume_nyc3_01
-            log_exec docker-compose pull
-            log_exec docker-compose down || true
+            log_exec docker compose pull
+            log_exec docker compose down || true
 
             # Ensure database directory exists and has proper permissions
             log_exec chmod 755 /mnt/volume_nyc3_01
@@ -123,34 +123,34 @@ jobs:
 
             # Start services with docker-compose
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting services with docker-compose" | tee -a "${DEPLOY_LOG}"
-            docker-compose up -d 2>&1 | tee -a "${DEPLOY_LOG}"
+            docker compose up -d 2>&1 | tee -a "${DEPLOY_LOG}"
 
             # Wait for container to start
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Waiting for container to start..." | tee -a "${DEPLOY_LOG}"
             sleep 10
 
             # Check if services are running and capture logs
-            if ! docker-compose ps | grep -q "schwarbot.*Up"; then
+            if ! docker compose ps | grep -q "schwarbot.*Up"; then
               echo "$(date '+%Y-%m-%d %H:%M:%S') - Schwarbot service failed to start" | tee -a "${DEPLOY_LOG}" >&2
-              docker-compose logs schwarbot 2>&1 | tee "${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}"
+              docker compose logs schwarbot 2>&1 | tee "${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}"
               echo "Full container logs saved to: ${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}" >&2
               exit 1
             fi
 
-            if ! docker-compose ps | grep -q "grafana-otel.*Up"; then
+            if ! docker compose ps | grep -q "grafana-otel.*Up"; then
               echo "$(date '+%Y-%m-%d %H:%M:%S') - Grafana service failed to start" | tee -a "${DEPLOY_LOG}" >&2
-              docker-compose logs grafana 2>&1 | tee -a "${DEPLOY_LOG}"
+              docker compose logs grafana 2>&1 | tee -a "${DEPLOY_LOG}"
               exit 1
             fi
 
             # Capture initial container logs
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Services started successfully, capturing logs..." | tee -a "${DEPLOY_LOG}"
-            docker-compose logs schwarbot 2>&1 | tee "${DOCKER_LOG}"
+            docker compose logs schwarbot 2>&1 | tee "${DOCKER_LOG}"
 
             # Check for errors in schwarbot logs
-            if docker-compose logs schwarbot 2>&1 | grep -q "error\|panic\|failed"; then
+            if docker compose logs schwarbot 2>&1 | grep -q "error\|panic\|failed"; then
               echo "$(date '+%Y-%m-%d %H:%M:%S') - Application errors detected in logs" | tee -a "${DEPLOY_LOG}" >&2
-              docker-compose logs --tail 20 schwarbot 2>&1 | tee -a "${DEPLOY_LOG}"
+              docker compose logs --tail 20 schwarbot 2>&1 | tee -a "${DEPLOY_LOG}"
               echo "Full container logs saved to: ${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}" >&2
               exit 1
             fi
