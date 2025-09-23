@@ -130,14 +130,14 @@ jobs:
             sleep 10
 
             # Check if services are running and capture logs
-            if ! docker compose ps | grep -q "schwarbot.*Up"; then
+            if ! docker compose ps --status running | grep -q "schwarbot"; then
               echo "$(date '+%Y-%m-%d %H:%M:%S') - Schwarbot service failed to start" | tee -a "${DEPLOY_LOG}" >&2
               docker compose logs schwarbot 2>&1 | tee "${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}"
               echo "Full container logs saved to: ${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}" >&2
               exit 1
             fi
 
-            if ! docker compose ps | grep -q "grafana-otel.*Up"; then
+            if ! docker compose ps --status running | grep -q "grafana-otel"; then
               echo "$(date '+%Y-%m-%d %H:%M:%S') - Grafana service failed to start" | tee -a "${DEPLOY_LOG}" >&2
               docker compose logs grafana 2>&1 | tee -a "${DEPLOY_LOG}"
               exit 1
