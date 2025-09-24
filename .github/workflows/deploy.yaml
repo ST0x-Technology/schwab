@@ -63,13 +63,25 @@ jobs:
           cat docker-compose.template.yaml >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
+      - name: Read Grafana Dockerfile
+        run: |
+          echo "GRAFANA_DOCKERFILE<<EOF" >> $GITHUB_ENV
+          cat Dockerfile.grafana >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Read Grafana datasource config
+        run: |
+          echo "GRAFANA_DATASOURCE_YAML<<EOF" >> $GITHUB_ENV
+          cat grafana-datasource.yaml >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
       - name: Deploy to Droplet
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.DROPLET_HOST }}
           username: root
           key: ${{ secrets.DROPLET_SSH_KEY }}
-          envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_OWNER,DEPLOYMENT_BLOCK,APP_KEY,APP_SECRET,ENV_TEMPLATE,DOCKER_COMPOSE_TEMPLATE
+          envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_OWNER,DEPLOYMENT_BLOCK,APP_KEY,APP_SECRET,ENV_TEMPLATE,DOCKER_COMPOSE_TEMPLATE,GRAFANA_DOCKERFILE,GRAFANA_DATASOURCE_YAML
           script: |
             set -euo pipefail
 
@@ -100,6 +112,11 @@ jobs:
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating docker-compose.yaml from template" | tee -a "${DEPLOY_LOG}"
             export DATA_VOLUME_PATH="/mnt/volume_nyc3_01"
             echo "$DOCKER_COMPOSE_TEMPLATE" | envsubst > /mnt/volume_nyc3_01/docker-compose.yaml
+
+            # Create Grafana files needed for custom image build
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating Grafana configuration files" | tee -a "${DEPLOY_LOG}"
+            echo "$GRAFANA_DOCKERFILE" > /mnt/volume_nyc3_01/Dockerfile.grafana
+            echo "$GRAFANA_DATASOURCE_YAML" > /mnt/volume_nyc3_01/grafana-datasource.yaml
 
             # Pull images and stop existing services
             cd /mnt/volume_nyc3_01
@@ -185,3 +202,5 @@ jobs:
           APP_SECRET: ${{ secrets.APP_SECRET }}
           ENV_TEMPLATE: ${{ env.ENV_TEMPLATE }}
           DOCKER_COMPOSE_TEMPLATE: ${{ env.DOCKER_COMPOSE_TEMPLATE }}
+          GRAFANA_DOCKERFILE: ${{ env.GRAFANA_DOCKERFILE }}
+          GRAFANA_DATASOURCE_YAML: ${{ env.GRAFANA_DATASOURCE_YAML }}
