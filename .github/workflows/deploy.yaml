@@ -65,15 +65,15 @@ jobs:
 
       - name: Read Grafana Dockerfile
         run: |
-          echo "GRAFANA_DOCKERFILE<<GRAFANA_DOCKERFILE_EOF" >> $GITHUB_ENV
+          echo "GRAFANA_DOCKERFILE<<GRAFANA_EOF" >> $GITHUB_ENV
           cat Dockerfile.grafana >> $GITHUB_ENV
-          echo "GRAFANA_DOCKERFILE_EOF" >> $GITHUB_ENV
+          echo "GRAFANA_EOF" >> $GITHUB_ENV
 
       - name: Read Grafana datasource config
         run: |
-          echo "GRAFANA_DATASOURCE_YAML<<GRAFANA_DATASOURCE_EOF" >> $GITHUB_ENV
+          echo "GRAFANA_DATASOURCE_YAML<<DATASOURCE_EOF" >> $GITHUB_ENV
           cat grafana-datasource.yaml >> $GITHUB_ENV
-          echo "GRAFANA_DATASOURCE_EOF" >> $GITHUB_ENV
+          echo "DATASOURCE_EOF" >> $GITHUB_ENV
 
       - name: Deploy to Droplet
         uses: appleboy/ssh-action@v1.0.3
