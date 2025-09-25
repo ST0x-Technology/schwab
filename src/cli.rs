@@ -2028,6 +2028,7 @@ mod tests {
             amount: 2.5,
             direction: Direction::Buy,
             price_usdc: 20000.0,
+            block_timestamp: None,
             created_at: None,
         };
 

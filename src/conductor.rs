@@ -932,6 +932,7 @@ mod tests {
             amount: 5.0,
             direction: Direction::Sell,
             price_usdc: 20000.0,
+            block_timestamp: None,
             created_at: None,
         };
         let mut sql_tx = pool.begin().await.unwrap();
