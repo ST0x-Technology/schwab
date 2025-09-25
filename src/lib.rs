@@ -1,6 +1,7 @@
 use alloy::providers::{ProviderBuilder, WsConnect};
 use rocket::Config;
 use sqlx::SqlitePool;
+use std::sync::Arc;
 use tracing::{debug, error, info, trace, warn};
 
 pub mod api;
@@ -10,6 +11,7 @@ mod conductor;
 pub mod env;
 mod error;
 mod lock;
+mod metrics;
 mod onchain;
 mod queue;
 pub mod schwab;
@@ -34,6 +36,14 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
     // Run database migrations to ensure all tables exist
     sqlx::migrate!().run(&pool).await?;
 
+    // Initialize metrics (optional - returns None if not configured)
+    let metrics = Arc::new(metrics::setup(&env).await);
+    if metrics.is_some() {
+        info!("Metrics initialized successfully");
+    } else {
+        info!("Metrics not configured - running without telemetry");
+    }
+
     let config = Config::figment()
         .merge(("port", 8080))
         .merge(("address", "0.0.0.0"));
@@ -46,15 +56,35 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
     let server_task = tokio::spawn(rocket.launch());
 
     let bot_pool = pool.clone();
+    let bot_metrics = metrics.clone();
     let bot_task = tokio::spawn(async move {
-        if let Err(e) = run(env, bot_pool).await {
-            error!("Bot failed: {e}");
+        loop {
+            if let Err(e) = run(env.clone(), bot_pool.clone(), bot_metrics.clone()).await {
+                if e.to_string().contains("Refresh token has expired") {
+                    warn!("Bot failed due to expired token, retrying in 10 seconds...");
+
+                    // Record a retry metric to help debug Grafana connectivity
+                    if let Some(ref m) = *bot_metrics {
+                        m.increment_token_retry();
+                    }
+
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    continue;
+                } else {
+                    error!("Bot failed with non-recoverable error: {e}");
+                    break;
+                }
+            }
+            // If run() succeeds, it means the bot completed normally (market closed, etc.)
+            // Continue the loop to restart for next market session
+            info!("Bot completed successfully, restarting for next session...");
         }
     });
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             info!("Received shutdown signal, shutting down gracefully...");
+            // Metrics will be flushed and shutdown automatically when the Arc is dropped
         }
 
         result = server_task => {
@@ -80,17 +110,25 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
 fn create_bot_runner(
     env: Env,
     pool: SqlitePool,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> impl Fn() -> std::pin::Pin<
     Box<dyn std::future::Future<Output = anyhow::Result<conductor::BackgroundTasks>> + Send>,
 > + Send {
     move || {
         let env = env.clone();
         let pool = pool.clone();
+        let metrics = metrics.clone();
         Box::pin(async move {
             debug!("Validating Schwab tokens...");
-            match schwab::tokens::SchwabTokens::refresh_if_needed(&pool, &env.schwab_auth).await {
+            match schwab::tokens::SchwabTokens::refresh_if_needed(
+                &pool,
+                &env.schwab_auth,
+                metrics.clone(),
+            )
+            .await
+            {
                 Err(SchwabError::RefreshTokenExpired) => {
-                    warn!("Refresh token expired, waiting for manual authentication via API");
+                    warn!("Refresh token expired, will retry after tokens are refreshed via API");
                     return Err(anyhow::anyhow!("RefreshTokenExpired"));
                 }
                 Err(e) => return Err(anyhow::anyhow!("Token validation failed: {}", e)),
@@ -107,6 +145,7 @@ fn create_bot_runner(
             schwab::tokens::SchwabTokens::spawn_automatic_token_refresh(
                 pool.clone(),
                 env.schwab_auth.clone(),
+                metrics.clone(),
             );
 
             let mut clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
@@ -126,6 +165,7 @@ fn create_bot_runner(
                 provider,
                 clear_stream,
                 take_stream,
+                metrics,
             ))
         })
     }
@@ -206,8 +246,12 @@ async fn run_market_hours_loop(
     }
 }
 
-async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
-    let run_bot = create_bot_runner(env.clone(), pool.clone());
+async fn run(
+    env: Env,
+    pool: SqlitePool,
+    metrics: Arc<Option<metrics::Metrics>>,
+) -> anyhow::Result<()> {
+    let run_bot = create_bot_runner(env.clone(), pool.clone(), metrics.clone());
 
     // Initialize market hours controller
     let market_hours_cache = std::sync::Arc::new(MarketHoursCache::new());
@@ -236,7 +280,8 @@ mod tests {
         let mut env = create_test_env();
         let pool = create_test_pool().await;
         env.evm_env.ws_rpc_url = "ws://invalid.nonexistent.url:8545".parse().unwrap();
-        run(env, pool).await.unwrap_err();
+        let metrics = Arc::new(None);
+        run(env, pool, metrics).await.unwrap_err();
     }
 
     #[tokio::test]
@@ -245,7 +290,8 @@ mod tests {
         let pool = create_test_pool().await;
         env.evm_env.orderbook = alloy::primitives::Address::ZERO;
         env.evm_env.ws_rpc_url = "ws://localhost:8545".parse().unwrap();
-        run(env, pool).await.unwrap_err();
+        let metrics = Arc::new(None);
+        run(env, pool, metrics).await.unwrap_err();
     }
 
     #[tokio::test]
@@ -253,7 +299,8 @@ mod tests {
         let mut env = create_test_env();
         env.database_url = "invalid://database/url".to_string();
         let pool = create_test_pool().await;
-        run(env, pool).await.unwrap_err();
+        let metrics = Arc::new(None);
+        run(env, pool, metrics).await.unwrap_err();
     }
 
     #[tokio::test]
@@ -275,8 +322,16 @@ mod tests {
         let take_stream = stream::empty();
 
         // Simulate getting BackgroundTasks from run_live
-        let mut background_tasks =
-            conductor::run_live(&env, &pool, cache, provider, clear_stream, take_stream);
+        let metrics = Arc::new(None);
+        let mut background_tasks = conductor::run_live(
+            &env,
+            &pool,
+            cache,
+            provider,
+            clear_stream,
+            take_stream,
+            metrics,
+        );
 
         // Simulate market close timeout scenario
         let timeout_duration = Duration::from_millis(50); // Very short for testing
@@ -317,8 +372,16 @@ mod tests {
         let clear_stream = stream::empty();
         let take_stream = stream::empty();
 
-        let mut background_tasks =
-            conductor::run_live(&env, &pool, cache, provider, clear_stream, take_stream);
+        let metrics = Arc::new(None);
+        let mut background_tasks = conductor::run_live(
+            &env,
+            &pool,
+            cache,
+            provider,
+            clear_stream,
+            take_stream,
+            metrics,
+        );
 
         // Test the race condition between wait_for_completion and abort
         // This simulates what happens when market closes during normal operation

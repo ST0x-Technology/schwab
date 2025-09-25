@@ -346,6 +346,7 @@ mod tests {
     use httpmock::Mock;
     use httpmock::prelude::*;
     use serde_json::json;
+    use std::sync::Arc;
     use tokio::sync::watch;
 
     #[tokio::test]
@@ -799,6 +800,7 @@ mod tests {
             &"TSLA".parse().unwrap(),
             &calculator,
             Some(execution_id),
+            Arc::new(None),
         )
         .await
         .unwrap();

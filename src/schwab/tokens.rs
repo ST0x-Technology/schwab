@@ -1,10 +1,13 @@
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 use sqlx::SqlitePool;
+use std::sync::Arc;
 use tokio::time::{Duration as TokioDuration, interval};
 use tracing::{error, info, warn};
 
 use super::{SchwabError, auth::SchwabAuthEnv};
+use crate::metrics;
+use opentelemetry::KeyValue;
 
 const ACCESS_TOKEN_DURATION_MINUTES: i64 = 30;
 const REFRESH_TOKEN_DURATION_DAYS: i64 = 7;
@@ -105,9 +108,10 @@ impl SchwabTokens {
         expires_at - now
     }
 
-    pub async fn get_valid_access_token(
+    pub(crate) async fn get_valid_access_token(
         pool: &SqlitePool,
         env: &SchwabAuthEnv,
+        metrics: Arc<Option<metrics::Metrics>>,
     ) -> Result<String, SchwabError> {
         let tokens = Self::load(pool).await?;
 
@@ -116,12 +120,33 @@ impl SchwabTokens {
         }
 
         if tokens.is_refresh_token_expired() {
+            // Track expired refresh token
+            if let Some(ref m) = *metrics {
+                m.token_refreshes
+                    .add(1, &[KeyValue::new("result", "expired")]);
+            }
             return Err(SchwabError::RefreshTokenExpired);
         }
 
-        let new_tokens = env.refresh_tokens(&tokens.refresh_token).await?;
-        new_tokens.store(pool).await?;
-        Ok(new_tokens.access_token)
+        // Track successful token refresh
+        match env.refresh_tokens(&tokens.refresh_token).await {
+            Ok(new_tokens) => {
+                new_tokens.store(pool).await?;
+                if let Some(ref m) = *metrics {
+                    m.token_refreshes
+                        .add(1, &[KeyValue::new("result", "success")]);
+                }
+                Ok(new_tokens.access_token)
+            }
+            Err(e) => {
+                // Track failed token refresh
+                if let Some(ref m) = *metrics {
+                    m.token_refreshes
+                        .add(1, &[KeyValue::new("result", "failed")]);
+                }
+                Err(e)
+            }
+        }
     }
 
     pub async fn db_count(pool: &SqlitePool) -> Result<i64, SchwabError> {
@@ -134,9 +159,10 @@ impl SchwabTokens {
     pub(crate) fn spawn_automatic_token_refresh(
         pool: SqlitePool,
         env: SchwabAuthEnv,
+        metrics: Arc<Option<metrics::Metrics>>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            if let Err(e) = Self::start_automatic_token_refresh_loop(pool, env).await {
+            if let Err(e) = Self::start_automatic_token_refresh_loop(pool, env, metrics).await {
                 error!("Token refresh task failed: {e:?}");
             }
         })
@@ -145,6 +171,7 @@ impl SchwabTokens {
     async fn start_automatic_token_refresh_loop(
         pool: SqlitePool,
         env: SchwabAuthEnv,
+        metrics: Arc<Option<metrics::Metrics>>,
     ) -> Result<(), SchwabError> {
         let refresh_interval_secs = (ACCESS_TOKEN_DURATION_MINUTES - 1) * 60;
         let refresh_interval_u64 = refresh_interval_secs.try_into().map_err(|_| {
@@ -155,15 +182,16 @@ impl SchwabTokens {
         loop {
             interval_timer.tick().await;
 
-            Self::handle_token_refresh(&pool, &env).await?;
+            Self::handle_token_refresh(&pool, &env, metrics.clone()).await?;
         }
     }
 
     async fn handle_token_refresh(
         pool: &SqlitePool,
         env: &SchwabAuthEnv,
+        metrics: Arc<Option<metrics::Metrics>>,
     ) -> Result<(), SchwabError> {
-        match Self::refresh_if_needed(pool, env).await {
+        match Self::refresh_if_needed(pool, env, metrics).await {
             Ok(refreshed) if refreshed => {
                 info!("Access token refreshed successfully");
                 Ok(())
@@ -180,22 +208,49 @@ impl SchwabTokens {
         }
     }
 
-    pub async fn refresh_if_needed(
+    pub(crate) async fn refresh_if_needed(
         pool: &SqlitePool,
         env: &SchwabAuthEnv,
+        metrics: Arc<Option<metrics::Metrics>>,
     ) -> Result<bool, SchwabError> {
         let tokens = Self::load(pool).await?;
 
         if tokens.is_refresh_token_expired() {
+            // Track expired refresh token
+            if let Some(ref m) = *metrics {
+                m.token_refreshes
+                    .add(1, &[KeyValue::new("result", "expired")]);
+            }
             return Err(SchwabError::RefreshTokenExpired);
         }
 
         if tokens.is_access_token_expired()
             || tokens.access_token_expires_in() <= Duration::minutes(1)
         {
-            let new_tokens = env.refresh_tokens(&tokens.refresh_token).await?;
-            new_tokens.store(pool).await?;
-            Ok(true)
+            // Track proactive token refresh
+            let label = if tokens.is_access_token_expired() {
+                "success"
+            } else {
+                "proactive"
+            };
+
+            match env.refresh_tokens(&tokens.refresh_token).await {
+                Ok(new_tokens) => {
+                    new_tokens.store(pool).await?;
+                    if let Some(ref m) = *metrics {
+                        m.token_refreshes.add(1, &[KeyValue::new("result", label)]);
+                    }
+                    Ok(true)
+                }
+                Err(e) => {
+                    // Track failed token refresh
+                    if let Some(ref m) = *metrics {
+                        m.token_refreshes
+                            .add(1, &[KeyValue::new("result", "failed")]);
+                    }
+                    Err(e)
+                }
+            }
         } else {
             Ok(false)
         }
@@ -434,7 +489,7 @@ mod tests {
         tokens.store(&pool).await.unwrap();
 
         assert_eq!(
-            SchwabTokens::get_valid_access_token(&pool, &env)
+            SchwabTokens::get_valid_access_token(&pool, &env, Arc::new(None))
                 .await
                 .unwrap(),
             "valid_access_token"
@@ -456,7 +511,7 @@ mod tests {
 
         tokens.store(&pool).await.unwrap();
 
-        let result = SchwabTokens::get_valid_access_token(&pool, &env).await;
+        let result = SchwabTokens::get_valid_access_token(&pool, &env, Arc::new(None)).await;
 
         assert!(matches!(
             result.unwrap_err(),
@@ -495,7 +550,7 @@ mod tests {
                 .json_body(mock_response);
         });
 
-        let result = SchwabTokens::get_valid_access_token(&pool, &env).await;
+        let result = SchwabTokens::get_valid_access_token(&pool, &env, Arc::new(None)).await;
 
         mock.assert();
         assert_eq!(result.unwrap(), "refreshed_access_token");
@@ -528,7 +583,7 @@ mod tests {
                 .json_body(json!({"error": "invalid_grant"}));
         });
 
-        let result = SchwabTokens::get_valid_access_token(&pool, &env).await;
+        let result = SchwabTokens::get_valid_access_token(&pool, &env, Arc::new(None)).await;
 
         mock.assert();
         assert!(matches!(
@@ -542,7 +597,7 @@ mod tests {
         let pool = setup_test_db().await;
         let env = create_test_env();
 
-        let result = SchwabTokens::get_valid_access_token(&pool, &env).await;
+        let result = SchwabTokens::get_valid_access_token(&pool, &env, Arc::new(None)).await;
 
         assert!(matches!(result.unwrap_err(), SchwabError::Sqlx(_)));
     }
@@ -583,7 +638,7 @@ mod tests {
                 .json_body(mock_response);
         });
 
-        let result = SchwabTokens::refresh_if_needed(&pool, &env).await;
+        let result = SchwabTokens::refresh_if_needed(&pool, &env, Arc::new(None)).await;
 
         mock.assert();
         assert!(result.unwrap());
@@ -609,7 +664,7 @@ mod tests {
 
         tokens.store(&pool).await.unwrap();
 
-        let result = SchwabTokens::refresh_if_needed(&pool, &env).await;
+        let result = SchwabTokens::refresh_if_needed(&pool, &env, Arc::new(None)).await;
 
         assert!(matches!(
             result.unwrap_err(),
@@ -633,7 +688,7 @@ mod tests {
 
         tokens.store(&pool).await.unwrap();
 
-        let result = SchwabTokens::refresh_if_needed(&pool, &env).await;
+        let result = SchwabTokens::refresh_if_needed(&pool, &env, Arc::new(None)).await;
 
         assert!(!result.unwrap());
 
@@ -677,7 +732,7 @@ mod tests {
                 .json_body(mock_response);
         });
 
-        let result = SchwabTokens::refresh_if_needed(&pool, &env).await;
+        let result = SchwabTokens::refresh_if_needed(&pool, &env, Arc::new(None)).await;
 
         mock.assert();
         assert!(result.unwrap());
@@ -734,7 +789,11 @@ mod tests {
             rt.block_on(async {
                 tokio::time::timeout(
                     TokioDuration::from_secs(5),
-                    SchwabTokens::start_automatic_token_refresh_loop(pool_clone, env_clone),
+                    SchwabTokens::start_automatic_token_refresh_loop(
+                        pool_clone,
+                        env_clone,
+                        Arc::new(None),
+                    ),
                 )
                 .await
             })

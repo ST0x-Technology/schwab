@@ -1,0 +1,4 @@
+FROM grafana/otel-lgtm
+
+# Install SQLite datasource plugin using environment variable
+ENV GF_INSTALL_PLUGINS=frser-sqlite-datasource

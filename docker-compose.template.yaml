@@ -1,0 +1,37 @@
+services:
+  schwarbot:
+    image: registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}
+    container_name: schwarbot
+    environment:
+      - OTEL_METRICS_EXPORTER_ENDPOINT=http://grafana:4318
+    env_file:
+      - .env
+    volumes:
+      - ${DATA_VOLUME_PATH}:/data
+    depends_on:
+      - grafana
+    restart: unless-stopped
+
+  grafana:
+    build:
+      context: .
+      dockerfile: Dockerfile.grafana
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_USERS_ALLOW_ORG_CREATE=false
+      - GF_AUTH_DISABLE_SIGNOUT_MENU=true
+    ports:
+      - "3000:3000"  # Grafana UI
+      - "4318:4318"  # OTLP HTTP receiver
+    volumes:
+      - grafana-data:/data
+      - ./schwab.db:/data/schwab.db:ro
+      - ./grafana-datasource.yaml:/otel-lgtm/grafana/conf/provisioning/datasources/sqlite.yaml:ro
+    restart: unless-stopped
+
+volumes:
+  grafana-data:

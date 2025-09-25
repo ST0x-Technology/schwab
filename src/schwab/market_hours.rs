@@ -4,6 +4,7 @@ use chrono_tz::{Tz, US::Eastern};
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use serde::Deserialize;
 use sqlx::SqlitePool;
+use std::sync::Arc;
 use tracing::debug;
 
 use super::{SchwabAuthEnv, SchwabError, SchwabTokens};
@@ -164,7 +165,7 @@ pub(crate) async fn fetch_market_hours(
     pool: &SqlitePool,
     date: Option<&str>,
 ) -> Result<MarketHours, SchwabError> {
-    let access_token = SchwabTokens::get_valid_access_token(pool, env).await?;
+    let access_token = SchwabTokens::get_valid_access_token(pool, env, Arc::new(None)).await?;
 
     let headers = [
         (

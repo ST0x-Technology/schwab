@@ -2,8 +2,10 @@ use alloy::providers::Provider;
 use alloy::rpc::types::Log;
 use alloy::sol_types;
 use futures_util::{Stream, StreamExt};
+use opentelemetry::KeyValue;
 use sqlx::SqlitePool;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc::UnboundedSender, watch};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
@@ -12,6 +14,7 @@ use tracing::{debug, error, info, trace};
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
 use crate::env::Env;
 use crate::error::EventProcessingError;
+use crate::metrics;
 use crate::onchain::accumulator::check_all_accumulated_positions;
 use crate::onchain::trade::TradeEvent;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
@@ -30,15 +33,23 @@ pub(crate) struct BackgroundTasksBuilder<P> {
     pool: SqlitePool,
     cache: SymbolCache,
     provider: P,
+    metrics: Arc<Option<metrics::Metrics>>,
 }
 
 impl<P: Provider + Clone + Send + 'static> BackgroundTasksBuilder<P> {
-    pub(crate) fn new(env: Env, pool: SqlitePool, cache: SymbolCache, provider: P) -> Self {
+    pub(crate) fn new(
+        env: Env,
+        pool: SqlitePool,
+        cache: SymbolCache,
+        provider: P,
+        metrics: Arc<Option<metrics::Metrics>>,
+    ) -> Self {
         Self {
             env,
             pool,
             cache,
             provider,
+            metrics,
         }
     }
 
@@ -54,13 +65,25 @@ impl<P: Provider + Clone + Send + 'static> BackgroundTasksBuilder<P> {
         + Send
         + 'static,
     ) -> BackgroundTasks {
-        let token_refresher = spawn_token_refresher(&self.env, &self.pool);
+        let token_refresher = spawn_token_refresher(&self.env, &self.pool, self.metrics.clone());
         let broker = self.env.get_broker();
         let order_poller = spawn_order_poller(&self.env, &self.pool, broker.clone());
-        let event_processor = spawn_onchain_event_receiver(event_sender, clear_stream, take_stream);
-        let position_checker = spawn_position_checker(broker.clone(), &self.env, &self.pool);
-        let queue_processor =
-            spawn_queue_processor(broker, &self.env, &self.pool, &self.cache, self.provider);
+        let event_processor = spawn_onchain_event_receiver(
+            event_sender,
+            clear_stream,
+            take_stream,
+            self.metrics.clone(),
+        );
+        let position_checker =
+            spawn_position_checker(broker.clone(), &self.env, &self.pool, self.metrics.clone());
+        let queue_processor = spawn_queue_processor(
+            broker,
+            &self.env,
+            &self.pool,
+            &self.cache,
+            self.provider,
+            self.metrics.clone(),
+        );
 
         BackgroundTasks {
             token_refresher,
@@ -80,9 +103,13 @@ pub(crate) struct BackgroundTasks {
     pub(crate) queue_processor: JoinHandle<()>,
 }
 
-fn spawn_token_refresher(env: &Env, pool: &SqlitePool) -> JoinHandle<()> {
+fn spawn_token_refresher(
+    env: &Env,
+    pool: &SqlitePool,
+    metrics: Arc<Option<metrics::Metrics>>,
+) -> JoinHandle<()> {
     info!("Starting token refresh service");
-    SchwabTokens::spawn_automatic_token_refresh(pool.clone(), env.schwab_auth.clone())
+    SchwabTokens::spawn_automatic_token_refresh(pool.clone(), env.schwab_auth.clone(), metrics)
 }
 
 fn spawn_order_poller(env: &Env, pool: &SqlitePool, broker: DynBroker) -> JoinHandle<()> {
@@ -118,16 +145,23 @@ fn spawn_onchain_event_receiver(
     + Unpin
     + Send
     + 'static,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> JoinHandle<()> {
     info!("Starting blockchain event receiver");
     tokio::spawn(receive_blockchain_events(
         clear_stream,
         take_stream,
         event_sender,
+        metrics,
     ))
 }
 
-fn spawn_position_checker(broker: DynBroker, env: &Env, pool: &SqlitePool) -> JoinHandle<()> {
+fn spawn_position_checker(
+    broker: DynBroker,
+    env: &Env,
+    pool: &SqlitePool,
+    metrics: Arc<Option<metrics::Metrics>>,
+) -> JoinHandle<()> {
     info!("Starting periodic accumulated position checker");
 
     // Create a dummy shutdown receiver since we now use abort mechanism instead
@@ -138,6 +172,7 @@ fn spawn_position_checker(broker: DynBroker, env: &Env, pool: &SqlitePool) -> Jo
         env.clone(),
         pool.clone(),
         shutdown_rx,
+        metrics,
     ))
 }
 
@@ -147,6 +182,7 @@ fn spawn_queue_processor<P: Provider + Clone + Send + 'static>(
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: P,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> JoinHandle<()> {
     info!("Starting queue processor service");
     let env_clone = env.clone();
@@ -154,8 +190,15 @@ fn spawn_queue_processor<P: Provider + Clone + Send + 'static>(
     let cache_clone = cache.clone();
 
     tokio::spawn(async move {
-        if let Err(e) =
-            run_queue_processor(&broker, &env_clone, &pool_clone, &cache_clone, provider).await
+        if let Err(e) = run_queue_processor(
+            &broker,
+            &env_clone,
+            &pool_clone,
+            &cache_clone,
+            provider,
+            metrics,
+        )
+        .await
         {
             error!("Queue processor service failed: {e}");
         }
@@ -209,6 +252,7 @@ async fn periodic_accumulated_position_check(
     env: Env,
     pool: SqlitePool,
     mut shutdown_rx: watch::Receiver<bool>,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) {
     const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -219,7 +263,17 @@ async fn periodic_accumulated_position_check(
         tokio::select! {
             _ = interval.tick() => {
                 debug!("Running periodic accumulated position check");
-                if let Err(e) = check_and_execute_accumulated_positions(&broker, &env, &pool).await {
+
+                // Heartbeat metric - update queue depth to show system is alive
+                if let Some(ref m) = *metrics {
+                    if let Ok(count) = crate::queue::count_unprocessed(&pool).await {
+                        #[allow(clippy::cast_sign_loss)]
+                        let count_u64 = count.max(0) as u64;
+                        m.queue_depth.record(count_u64, &[]);
+                    }
+                }
+
+                if let Err(e) = check_and_execute_accumulated_positions(&broker, &env, &pool, metrics.clone()).await {
                     error!("Periodic accumulated position check failed: {e}");
                 }
             }
@@ -237,6 +291,7 @@ async fn receive_blockchain_events<S1, S2>(
     mut clear_stream: S1,
     mut take_stream: S2,
     event_sender: UnboundedSender<(TradeEvent, Log)>,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) where
     S1: Stream<Item = Result<(ClearV2, Log), sol_types::Error>> + Unpin,
     S2: Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin,
@@ -262,11 +317,23 @@ async fn receive_blockchain_events<S1, S2>(
         let event_result = tokio::select! {
             Some(result) = clear_stream.next() => {
                 trace!("WebSocket receiver got ClearV2 result");
-                result.map(|(event, log)| (TradeEvent::ClearV2(Box::new(event)), log))
+                let mapped = result.map(|(event, log)| (TradeEvent::ClearV2(Box::new(event)), log));
+                if mapped.is_ok() {
+                    if let Some(ref m) = *metrics {
+                        m.onchain_events_received.add(1, &[KeyValue::new("event_type", "ClearV2")]);
+                    }
+                }
+                mapped
             }
             Some(result) = take_stream.next() => {
                 trace!("WebSocket receiver got TakeOrderV2 result");
-                result.map(|(event, log)| (TradeEvent::TakeOrderV2(Box::new(event)), log))
+                let mapped = result.map(|(event, log)| (TradeEvent::TakeOrderV2(Box::new(event)), log));
+                if mapped.is_ok() {
+                    if let Some(ref m) = *metrics {
+                        m.onchain_events_received.add(1, &[KeyValue::new("event_type", "TakeOrderV2")]);
+                    }
+                }
+                mapped
             }
             () = tokio::time::sleep(Duration::from_millis(50)) => {
                 // Rate-limit the polling to prevent CPU spinning when no events are available
@@ -362,6 +429,7 @@ pub(crate) fn run_live<P, S1, S2>(
     provider: P,
     clear_stream: S1,
     take_stream: S2,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> BackgroundTasks
 where
     P: Provider + Clone + Send + 'static,
@@ -371,8 +439,12 @@ where
     let (event_sender, mut event_receiver) =
         tokio::sync::mpsc::unbounded_channel::<(TradeEvent, Log)>();
 
-    let background_tasks = BackgroundTasksBuilder::new(env.clone(), pool.clone(), cache, provider)
-        .spawn(event_sender, clear_stream, take_stream);
+    let background_tasks =
+        BackgroundTasksBuilder::new(env.clone(), pool.clone(), cache, provider, metrics).spawn(
+            event_sender,
+            clear_stream,
+            take_stream,
+        );
 
     // Spawn the event processing loop as a background task
     let pool_clone = pool.clone();
@@ -436,6 +508,7 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: P,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> Result<(), EventProcessingError> {
     info!("Starting queue processor service");
 
@@ -451,6 +524,13 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
         info!("No unprocessed events found, starting fresh");
     }
 
+    // Initialize queue depth metric
+    if let Some(ref m) = *metrics {
+        #[allow(clippy::cast_sign_loss)]
+        let count_u64 = unprocessed_count.max(0) as u64;
+        m.queue_depth.record(count_u64, &[]);
+    }
+
     let mut empty_polls = 0u32;
     let mut total_polls = 0u32;
     let mut successful_polls = 0u32;
@@ -458,14 +538,38 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
     loop {
         total_polls += 1;
 
-        match process_next_queued_event(env, pool, cache, &provider).await {
+        // Track event processing duration
+        let start_time = Instant::now();
+        match process_next_queued_event(env, pool, cache, &provider, metrics.clone()).await {
             Ok(Some(execution)) => {
                 empty_polls = 0;
                 successful_polls += 1;
 
+                // Record event processing duration
+                #[allow(clippy::cast_precision_loss)]
+                let duration_ms = start_time.elapsed().as_millis() as f64;
+                if let Some(ref m) = *metrics {
+                    m.trade_execution_duration_ms.record(duration_ms, &[]);
+                }
+
+                // Update queue depth metric after processing an event
+                if let Some(ref m) = *metrics {
+                    if let Ok(current_count) = crate::queue::count_unprocessed(pool).await {
+                        #[allow(clippy::cast_sign_loss)]
+                        let count_u64 = current_count.max(0) as u64;
+                        m.queue_depth.record(count_u64, &[]);
+                    }
+                }
+
                 if let Some(exec_id) = execution.id {
-                    if let Err(e) =
-                        execute_pending_schwab_execution(broker, env, pool, exec_id).await
+                    if let Err(e) = execute_pending_schwab_execution(
+                        broker,
+                        env,
+                        pool,
+                        exec_id,
+                        metrics.clone(),
+                    )
+                    .await
                     {
                         error!("Failed to execute Schwab order {exec_id}: {e}");
                     }
@@ -511,6 +615,7 @@ async fn process_next_queued_event<P: Provider + Clone>(
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: &P,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> Result<Option<SchwabExecution>, EventProcessingError> {
     let queued_event = get_next_queued_event(pool).await?;
     let Some(queued_event) = queued_event else {
@@ -526,7 +631,7 @@ async fn process_next_queued_event<P: Provider + Clone>(
         return handle_filtered_event(pool, &queued_event, event_id).await;
     };
 
-    process_valid_trade(pool, &queued_event, event_id, trade).await
+    process_valid_trade(pool, &queued_event, event_id, trade, metrics).await
 }
 
 async fn get_next_queued_event(
@@ -622,6 +727,7 @@ async fn process_valid_trade(
     queued_event: &QueuedEvent,
     event_id: i64,
     trade: OnchainTrade,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> Result<Option<SchwabExecution>, EventProcessingError> {
     info!(
         "Event successfully converted to trade: event_type={:?}, tx_hash={:?}, log_index={}, symbol={}, amount={}",
@@ -643,7 +749,7 @@ async fn process_valid_trade(
         trade.symbol, trade.amount, trade.direction, trade.tx_hash, trade.log_index
     );
 
-    process_trade_within_transaction(pool, queued_event, event_id, trade).await
+    process_trade_within_transaction(pool, queued_event, event_id, trade, metrics).await
 }
 
 async fn process_trade_within_transaction(
@@ -651,6 +757,7 @@ async fn process_trade_within_transaction(
     queued_event: &QueuedEvent,
     event_id: i64,
     trade: OnchainTrade,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> Result<Option<SchwabExecution>, EventProcessingError> {
     let mut sql_tx = pool.begin().await.map_err(|e| {
         error!("Failed to begin transaction for event processing: {e}");
@@ -662,7 +769,7 @@ async fn process_trade_within_transaction(
         event_id, queued_event.tx_hash, queued_event.log_index
     );
 
-    let execution = accumulator::process_onchain_trade(&mut sql_tx, trade)
+    let execution = accumulator::process_onchain_trade(&mut sql_tx, trade, metrics.clone())
         .await
         .map_err(|e| {
             error!(
@@ -730,8 +837,9 @@ async fn check_and_execute_accumulated_positions(
     broker: &DynBroker,
     env: &Env,
     pool: &SqlitePool,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> Result<(), EventProcessingError> {
-    let executions = check_all_accumulated_positions(pool).await?;
+    let executions = check_all_accumulated_positions(pool, metrics.clone()).await?;
 
     if executions.is_empty() {
         debug!("No accumulated positions ready for execution");
@@ -757,12 +865,14 @@ async fn check_and_execute_accumulated_positions(
         let env_clone = env.clone();
         let pool_clone = pool.clone();
         let broker_clone = broker.clone();
+        let metrics_clone = metrics.clone();
         tokio::spawn(async move {
             if let Err(e) = execute_pending_schwab_execution(
                 &broker_clone,
                 &env_clone,
                 &pool_clone,
                 execution_id,
+                metrics_clone,
             )
             .await
             {
@@ -788,6 +898,7 @@ async fn execute_pending_schwab_execution(
     env: &Env,
     pool: &SqlitePool,
     execution_id: i64,
+    metrics: Arc<Option<metrics::Metrics>>,
 ) -> Result<(), EventProcessingError> {
     let execution = find_execution_by_id(pool, execution_id)
         .await?
@@ -798,7 +909,7 @@ async fn execute_pending_schwab_execution(
         })?;
 
     info!("Executing Schwab order: {execution:?}");
-    broker.execute_order(env, pool, execution).await?;
+    broker.execute_order(env, pool, execution, metrics).await?;
 
     Ok(())
 }
@@ -1058,7 +1169,7 @@ mod tests {
             {
                 // Step 5: Process the trade through accumulation
                 let mut sql_tx = pool.begin().await.unwrap();
-                accumulator::process_onchain_trade(&mut sql_tx, trade)
+                accumulator::process_onchain_trade(&mut sql_tx, trade, Arc::new(None))
                     .await
                     .unwrap();
                 sql_tx.commit().await.unwrap();
@@ -1582,7 +1693,8 @@ mod tests {
         assert_eq!(count, 1);
 
         // Process the event - should filter it out without error
-        let result = process_next_queued_event(&env, &pool, &cache, &provider).await;
+        let result =
+            process_next_queued_event(&env, &pool, &cache, &provider, Arc::new(None)).await;
 
         // Should return Ok(None) indicating filtered event
         assert!(result.is_ok());
@@ -1600,7 +1712,14 @@ mod tests {
         let broker = env.get_broker();
 
         // Try to execute non-existent execution
-        let result = execute_pending_schwab_execution(&broker, &env, &pool, 99999).await;
+        let result = execute_pending_schwab_execution(
+            &broker,
+            &env,
+            &pool,
+            99999,
+            std::sync::Arc::new(None),
+        )
+        .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -1618,7 +1737,16 @@ mod tests {
         let take_stream = stream::empty();
 
         // Get BackgroundTasks by calling run_live
-        let background_tasks = run_live(&env, &pool, cache, provider, clear_stream, take_stream);
+        let metrics = Arc::new(None);
+        let background_tasks = run_live(
+            &env,
+            &pool,
+            cache,
+            provider,
+            clear_stream,
+            take_stream,
+            metrics,
+        );
 
         // Verify all tasks are initially running (not aborted)
         assert!(!background_tasks.token_refresher.is_finished());
@@ -1650,7 +1778,16 @@ mod tests {
         let take_stream = stream::empty();
 
         // Get BackgroundTasks by calling run_live
-        let background_tasks = run_live(&env, &pool, cache, provider, clear_stream, take_stream);
+        let metrics = Arc::new(None);
+        let background_tasks = run_live(
+            &env,
+            &pool,
+            cache,
+            provider,
+            clear_stream,
+            take_stream,
+            metrics,
+        );
 
         // Test that individual JoinHandles can be aborted
         let token_handle = background_tasks.token_refresher;
@@ -1699,7 +1836,16 @@ mod tests {
         let start_time = std::time::Instant::now();
 
         // run_live should return immediately with BackgroundTasks
-        let background_tasks = run_live(&env, &pool, cache, provider, clear_stream, take_stream);
+        let metrics = Arc::new(None);
+        let background_tasks = run_live(
+            &env,
+            &pool,
+            cache,
+            provider,
+            clear_stream,
+            take_stream,
+            metrics,
+        );
 
         let elapsed = start_time.elapsed();
 
