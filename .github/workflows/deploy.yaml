@@ -34,6 +34,15 @@ jobs:
         with:
           token: ${{ env.DIGITALOCEAN_ACCESS_TOKEN }}
 
+      - name: Build Docker image
+        run: |
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          echo "SHORT_SHA=$SHORT_SHA" >> $GITHUB_ENV
+
+          docker build \
+            -t registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:$SHORT_SHA \
+            -t registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:latest .
+
       - name: Log in to DO Container Registry
         run: doctl registry login --expiry-seconds 1200
 
@@ -49,15 +58,6 @@ jobs:
           echo "DOCKER_COMPOSE_TEMPLATE=$(base64 -w 0 docker-compose.template.yaml)" >> $GITHUB_ENV
           echo "GRAFANA_DOCKERFILE=$(base64 -w 0 Dockerfile.grafana)" >> $GITHUB_ENV
           echo "GRAFANA_DATASOURCE_YAML=$(base64 -w 0 grafana-datasource.yaml)" >> $GITHUB_ENV
-
-      - name: Build Docker image
-        run: |
-          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
-          echo "SHORT_SHA=$SHORT_SHA" >> $GITHUB_ENV
-
-          docker build \
-            -t registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:$SHORT_SHA \
-            -t registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:latest .
 
       - name: Push image to DO Registry
         run: |
