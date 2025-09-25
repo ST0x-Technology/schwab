@@ -37,20 +37,6 @@ jobs:
       - name: Log in to DO Container Registry
         run: doctl registry login --expiry-seconds 1200
 
-      - name: Build Docker image
-        run: |
-          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
-          echo "SHORT_SHA=$SHORT_SHA" >> $GITHUB_ENV
-
-          docker build \
-            -t registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:$SHORT_SHA \
-            -t registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:latest .
-
-      - name: Push image to DO Registry
-        run: |
-          docker push registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:${{ env.SHORT_SHA }}
-          docker push registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:latest
-
       - name: Read env template
         run: |
           echo "ENV_TEMPLATE<<EOF" >> $GITHUB_ENV
@@ -74,6 +60,20 @@ jobs:
           echo "GRAFANA_DATASOURCE_YAML<<EOF" >> $GITHUB_ENV
           cat grafana-datasource.yaml >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
+
+      - name: Build Docker image
+        run: |
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          echo "SHORT_SHA=$SHORT_SHA" >> $GITHUB_ENV
+
+          docker build \
+            -t registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:$SHORT_SHA \
+            -t registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:latest .
+
+      - name: Push image to DO Registry
+        run: |
+          docker push registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:${{ env.SHORT_SHA }}
+          docker push registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:latest
 
       - name: Deploy to Droplet
         uses: appleboy/ssh-action@v1.0.3
