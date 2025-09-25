@@ -43,37 +43,12 @@ jobs:
           ls -la .env.example docker-compose.template.yaml Dockerfile.grafana grafana-datasource.yaml
           echo "File verification complete"
 
-      - name: Read env template
+      - name: Encode file contents
         run: |
-          echo "ENV_TEMPLATE<<ENV_END" >> $GITHUB_ENV
-          cat .env.example >> $GITHUB_ENV
-          echo "ENV_END" >> $GITHUB_ENV
-
-      - name: Read docker compose template
-        run: |
-          echo "DOCKER_COMPOSE_TEMPLATE<<COMPOSE_END" >> $GITHUB_ENV
-          cat docker-compose.template.yaml >> $GITHUB_ENV
-          echo "COMPOSE_END" >> $GITHUB_ENV
-
-      - name: Read Grafana Dockerfile
-        run: |
-          if [ ! -f "Dockerfile.grafana" ]; then
-            echo "Error: Dockerfile.grafana not found"
-            exit 1
-          fi
-          echo "GRAFANA_DOCKERFILE<<DOCKERFILE_END" >> $GITHUB_ENV
-          cat Dockerfile.grafana >> $GITHUB_ENV
-          echo "DOCKERFILE_END" >> $GITHUB_ENV
-
-      - name: Read Grafana datasource config
-        run: |
-          if [ ! -f "grafana-datasource.yaml" ]; then
-            echo "Error: grafana-datasource.yaml not found"
-            exit 1
-          fi
-          echo "GRAFANA_DATASOURCE_YAML<<DATASOURCE_END" >> $GITHUB_ENV
-          cat grafana-datasource.yaml >> $GITHUB_ENV
-          echo "DATASOURCE_END" >> $GITHUB_ENV
+          echo "ENV_TEMPLATE=$(base64 -w 0 .env.example)" >> $GITHUB_ENV
+          echo "DOCKER_COMPOSE_TEMPLATE=$(base64 -w 0 docker-compose.template.yaml)" >> $GITHUB_ENV
+          echo "GRAFANA_DOCKERFILE=$(base64 -w 0 Dockerfile.grafana)" >> $GITHUB_ENV
+          echo "GRAFANA_DATASOURCE_YAML=$(base64 -w 0 grafana-datasource.yaml)" >> $GITHUB_ENV
 
       - name: Build Docker image
         run: |
@@ -122,15 +97,16 @@ jobs:
             echo "${DIGITALOCEAN_ACCESS_TOKEN}" | \
               docker login registry.digitalocean.com -u unused --password-stdin 2>&1 | tee -a "${DEPLOY_LOG}"
 
+            # Decode and create files from base64-encoded content
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating configuration files from templates" | tee -a "${DEPLOY_LOG}"
+
             # Create docker-compose.yaml from template using envsubst
-            echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating docker-compose.yaml from template" | tee -a "${DEPLOY_LOG}"
             export DATA_VOLUME_PATH="/mnt/volume_nyc3_01"
-            echo "$DOCKER_COMPOSE_TEMPLATE" | envsubst > /mnt/volume_nyc3_01/docker-compose.yaml
+            echo "$DOCKER_COMPOSE_TEMPLATE" | base64 -d | envsubst > /mnt/volume_nyc3_01/docker-compose.yaml
 
             # Create Grafana files needed for custom image build
-            echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating Grafana configuration files" | tee -a "${DEPLOY_LOG}"
-            echo "$GRAFANA_DOCKERFILE" > /mnt/volume_nyc3_01/Dockerfile.grafana
-            echo "$GRAFANA_DATASOURCE_YAML" > /mnt/volume_nyc3_01/grafana-datasource.yaml
+            echo "$GRAFANA_DOCKERFILE" | base64 -d > /mnt/volume_nyc3_01/Dockerfile.grafana
+            echo "$GRAFANA_DATASOURCE_YAML" | base64 -d > /mnt/volume_nyc3_01/grafana-datasource.yaml
 
             # Pull images and stop existing services
             cd /mnt/volume_nyc3_01
@@ -149,7 +125,7 @@ jobs:
             export OTEL_METRICS_EXPORTER_ENDPOINT="http://grafana:4318"
 
             # Create .env file using template with envsubst
-            echo "$ENV_TEMPLATE" | envsubst > /mnt/volume_nyc3_01/.env
+            echo "$ENV_TEMPLATE" | base64 -d | envsubst > /mnt/volume_nyc3_01/.env
             chmod 600 /mnt/volume_nyc3_01/.env
 
             # Start services with docker-compose
