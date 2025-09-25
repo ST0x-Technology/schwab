@@ -37,29 +37,43 @@ jobs:
       - name: Log in to DO Container Registry
         run: doctl registry login --expiry-seconds 1200
 
+      - name: Verify required files exist
+        run: |
+          echo "Checking for required files..."
+          ls -la .env.example docker-compose.template.yaml Dockerfile.grafana grafana-datasource.yaml
+          echo "File verification complete"
+
       - name: Read env template
         run: |
-          echo "ENV_TEMPLATE<<EOF" >> $GITHUB_ENV
+          echo "ENV_TEMPLATE<<ENV_END" >> $GITHUB_ENV
           cat .env.example >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          echo "ENV_END" >> $GITHUB_ENV
 
       - name: Read docker compose template
         run: |
-          echo "DOCKER_COMPOSE_TEMPLATE<<EOF" >> $GITHUB_ENV
+          echo "DOCKER_COMPOSE_TEMPLATE<<COMPOSE_END" >> $GITHUB_ENV
           cat docker-compose.template.yaml >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          echo "COMPOSE_END" >> $GITHUB_ENV
 
       - name: Read Grafana Dockerfile
         run: |
-          echo "GRAFANA_DOCKERFILE<<EOF" >> $GITHUB_ENV
+          if [ ! -f "Dockerfile.grafana" ]; then
+            echo "Error: Dockerfile.grafana not found"
+            exit 1
+          fi
+          echo "GRAFANA_DOCKERFILE<<DOCKERFILE_END" >> $GITHUB_ENV
           cat Dockerfile.grafana >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          echo "DOCKERFILE_END" >> $GITHUB_ENV
 
       - name: Read Grafana datasource config
         run: |
-          echo "GRAFANA_DATASOURCE_YAML<<EOF" >> $GITHUB_ENV
+          if [ ! -f "grafana-datasource.yaml" ]; then
+            echo "Error: grafana-datasource.yaml not found"
+            exit 1
+          fi
+          echo "GRAFANA_DATASOURCE_YAML<<DATASOURCE_END" >> $GITHUB_ENV
           cat grafana-datasource.yaml >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          echo "DATASOURCE_END" >> $GITHUB_ENV
 
       - name: Build Docker image
         run: |
