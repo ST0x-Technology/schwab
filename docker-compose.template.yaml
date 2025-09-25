@@ -17,6 +17,13 @@ services:
       context: .
       dockerfile: Dockerfile.grafana
     container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_USERS_ALLOW_ORG_CREATE=false
+      - GF_AUTH_DISABLE_SIGNOUT_MENU=true
     ports:
       - "3000:3000"  # Grafana UI
       - "4318:4318"  # OTLP HTTP receiver
