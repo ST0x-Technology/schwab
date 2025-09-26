@@ -112,8 +112,8 @@ exploiting price discrepancies.
 **Trade Conversion Logic ([`Trade` struct and methods in `src/trade/mod.rs`])**
 
 - Parses onchain events into actionable trade data with strict validation
-- Expects symbol pairs of USDC + tokenized equity with "s1" suffix (e.g.,
-  "AAPLs1")
+- Expects symbol pairs of USDC + tokenized equity with "0x" suffix (e.g.,
+  "AAPL0x")
 - Determines Schwab trade direction: buying tokenized equity onchain → selling
   on Schwab
 - Calculates prices in cents and maintains onchain/offchain trade ratios
@@ -224,7 +224,7 @@ Environment variables (can be set via `.env` file):
 - `DATABASE_URL`: SQLite database path
 - `WS_RPC_URL`: WebSocket RPC endpoint for blockchain monitoring
 - `ORDERBOOK`: Raindex orderbook contract address
-- `ORDER_HASH`: Target order hash to monitor for trades
+- `ORDER_OWNER`: Owner address of orders to monitor for trades
 - `APP_KEY`, `APP_SECRET`: Charles Schwab API credentials
 - `REDIRECT_URI`: OAuth redirect URI (default: https://127.0.0.1)
 - `BASE_URL`: Schwab API base URL (default: https://api.schwabapi.com)
@@ -244,7 +244,7 @@ Environment variables (can be set via `.env` file):
   maximum throughput
 - **SQLite Persistence**: Embedded database for trade tracking and
   authentication tokens
-- **Symbol Suffix Convention**: Tokenized equities use "s1" suffix to
+- **Symbol Suffix Convention**: Tokenized equities use "0x" suffix to
   distinguish from base assets
 - **Price Direction Logic**: Onchain buy = offchain sell (and vice versa) to
   maintain market-neutral positions
@@ -361,6 +361,60 @@ expected bounds.
   - Deny warnings when running clippy
   - Always run `cargo fmt` last to ensure clean code formatting
 
+#### CRITICAL: Lint Policy
+
+**NEVER add `#[allow(clippy::*)]` attributes or disable any lints without
+explicit permission.** This is strictly forbidden. When clippy reports issues,
+you MUST fix the underlying code problems, not suppress the warnings.
+
+**Required approach for clippy issues:**
+
+1. **Refactor the code** to address the root cause of the lint violation
+2. **Break down large functions** into smaller, more focused functions
+3. **Improve code structure** to meet clippy's standards
+4. **Use proper error handling** instead of suppressing warnings
+
+**Examples of FORBIDDEN practices:**
+
+```rust
+// ❌ NEVER DO THIS - Suppressing lints is forbidden
+#[allow(clippy::too_many_lines)]
+fn large_function() { /* ... */ }
+
+#[allow(clippy::needless_continue)]
+// ❌ NEVER DO THIS - Fix the code structure instead
+```
+
+**Required approach:**
+
+```rust
+// ✅ CORRECT - Refactor to address the issue
+fn process_data() -> Result<(), Error> {
+    let data = get_data()?;
+    validate_data(&data)?;
+    save_data(&data)?;
+    Ok(())
+}
+
+fn validate_data(data: &Data) -> Result<(), Error> {
+    // Extracted validation logic
+}
+
+fn save_data(data: &Data) -> Result<(), Error> {
+    // Extracted saving logic
+}
+```
+
+**If you encounter a clippy issue:**
+
+1. Understand WHY clippy is flagging the code
+2. Refactor the code to address the underlying problem
+3. If you believe a lint is incorrect, ask for permission before suppressing it
+4. Document your reasoning if given permission to suppress a specific lint
+
+This policy ensures code quality remains high and prevents technical debt
+accumulation through lint suppression.
+
 ### Commenting Guidelines
 
 Code should be primarily self-documenting through clear naming, structure, and
@@ -393,12 +447,12 @@ that cannot be expressed through code structure alone.
 #### Good Comment Examples
 
 ```rust
-// If the on-chain order has USDC as input and an s1 tokenized stock as
-// output then it means the order received USDC and gave away an s1  
+// If the on-chain order has USDC as input and an 0x tokenized stock as
+// output then it means the order received USDC and gave away an 0x  
 // tokenized stock, i.e. sold, which means that to take the opposite
 // trade in schwab we need to buy and vice versa.
 let (schwab_ticker, schwab_instruction) = 
-    if onchain_input_symbol == "USDC" && onchain_output_symbol.ends_with("s1") {
+    if onchain_input_symbol == "USDC" && onchain_output_symbol.ends_with("0x") {
         // ... complex mapping logic
     }
 
@@ -777,6 +831,57 @@ fn process_data(data: Option<&str>) -> Result<String, Error> {
 }
 ```
 
+##### Use let-else pattern for guard clauses:
+
+The let-else pattern (available since Rust 1.65) is excellent for reducing
+nesting when you need to extract a value or return early:
+
+Instead of
+
+```rust
+fn process_event(event: &QueuedEvent) -> Result<Trade, Error> {
+    if let Some(trade_data) = convert_event_to_trade(event) {
+        if trade_data.is_valid() {
+            if let Some(symbol) = trade_data.extract_symbol() {
+                Ok(Trade::new(symbol, trade_data))
+            } else {
+                Err(Error::NoSymbol)
+            }
+        } else {
+            Err(Error::InvalidTrade)
+        }
+    } else {
+        Err(Error::ConversionFailed)
+    }
+}
+```
+
+Write
+
+```rust
+fn process_event(event: &QueuedEvent) -> Result<Trade, Error> {
+    let Some(trade_data) = convert_event_to_trade(event) else {
+        return Err(Error::ConversionFailed);
+    };
+    
+    if !trade_data.is_valid() {
+        return Err(Error::InvalidTrade);
+    }
+    
+    let Some(symbol) = trade_data.extract_symbol() else {
+        return Err(Error::NoSymbol);
+    };
+    
+    Ok(Trade::new(symbol, trade_data))
+}
+```
+
+This pattern is particularly useful for:
+
+- Extracting required values from Options
+- Handling pattern matching that should cause early returns
+- Reducing rightward drift in functions with multiple validation steps
+
 ##### Extract functions for complex logic:
 
 Instead of
@@ -789,8 +894,8 @@ fn process_blockchain_event(event: &Event, db: &Database) -> Result<(), Processi
                 for trade in &trade_data.trades {
                     if trade.token_pair.len() == 2 {
                         if let (Some(token_a), Some(token_b)) = (&trade.token_pair[0], &trade.token_pair[1]) {
-                            if token_a.symbol.ends_with("s1") || token_b.symbol.ends_with("s1") {
-                                let (equity_token, usdc_token) = if token_a.symbol.ends_with("s1") {
+                            if token_a.symbol.ends_with("0x") || token_b.symbol.ends_with("0x") {
+                                let (equity_token, usdc_token) = if token_a.symbol.ends_with("0x") {
                                     (token_a, token_b)
                                 } else {
                                     (token_b, token_a)
@@ -871,9 +976,9 @@ fn extract_valid_token_pair(trade: &TradeInfo) -> Result<Option<(&Token, &Token)
     }
     
     let (token_a, token_b) = (&trade.token_pair[0], &trade.token_pair[1]);
-    let (equity_token, usdc_token) = if token_a.symbol.ends_with("s1") {
+    let (equity_token, usdc_token) = if token_a.symbol.ends_with("0x") {
         (token_a, token_b)
-    } else if token_b.symbol.ends_with("s1") {
+    } else if token_b.symbol.ends_with("0x") {
         (token_b, token_a)
     } else {
         return Ok(None);

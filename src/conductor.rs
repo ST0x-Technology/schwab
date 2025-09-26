@@ -3,35 +3,55 @@ use alloy::rpc::types::Log;
 use alloy::sol_types;
 use futures_util::{Stream, StreamExt};
 use sqlx::SqlitePool;
+use std::time::Duration;
 use tokio::sync::{mpsc::UnboundedSender, watch};
 use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tokio::time::sleep;
+use tracing::{debug, error, info, trace};
 
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
 use crate::env::Env;
-use crate::error::{OnChainError, PersistenceError};
+use crate::error::EventProcessingError;
+use crate::onchain::accumulator::check_all_accumulated_positions;
 use crate::onchain::trade::TradeEvent;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
-use crate::queue::{enqueue, get_all_unprocessed_events, mark_event_processed};
+use crate::queue::{QueuedEvent, enqueue, get_next_unprocessed_event, mark_event_processed};
 use crate::schwab::{
-    OrderStatusPoller, execution::find_execution_by_id, order::execute_schwab_order,
-    tokens::SchwabTokens,
+    OrderStatusPoller,
+    execution::{SchwabExecution, find_execution_by_id},
+    order::execute_schwab_order,
 };
 use crate::symbol::cache::SymbolCache;
 use crate::symbol::lock::get_symbol_lock;
 
-pub(crate) struct BackgroundTasks {
-    pub(crate) token_refresher: JoinHandle<()>,
-    pub(crate) order_poller: JoinHandle<()>,
-    pub(crate) event_receiver: JoinHandle<()>,
+pub(crate) struct BackgroundTasksBuilder<P> {
+    env: Env,
+    pool: SqlitePool,
+    cache: SymbolCache,
+    provider: P,
+    shutdown_rx: watch::Receiver<bool>,
 }
 
-impl BackgroundTasks {
-    pub(crate) fn spawn(
-        env: &Env,
-        pool: &SqlitePool,
-        event_sender: UnboundedSender<(TradeEvent, Log)>,
+impl<P: Provider + Clone + Send + 'static> BackgroundTasksBuilder<P> {
+    pub(crate) fn new(
+        env: Env,
+        pool: SqlitePool,
+        cache: SymbolCache,
+        provider: P,
         shutdown_rx: watch::Receiver<bool>,
+    ) -> Self {
+        Self {
+            env,
+            pool,
+            cache,
+            provider,
+            shutdown_rx,
+        }
+    }
+
+    pub(crate) fn spawn(
+        self,
+        event_sender: UnboundedSender<(TradeEvent, Log)>,
         clear_stream: impl Stream<Item = Result<(ClearV2, Log), sol_types::Error>>
         + Unpin
         + Send
@@ -40,43 +60,135 @@ impl BackgroundTasks {
         + Unpin
         + Send
         + 'static,
-    ) -> Self {
-        info!("Starting token refresh service");
-        let token_refresher =
-            SchwabTokens::spawn_automatic_token_refresh(pool.clone(), env.schwab_auth.clone());
-
-        let config = env.get_order_poller_config();
-        info!(
-            "Starting order status poller with interval: {:?}, max jitter: {:?}",
-            config.polling_interval, config.max_jitter
+    ) -> BackgroundTasks {
+        let token_refresher = {
+            info!("Starting token refresh service");
+            crate::schwab::tokens::spawn_automatic_token_refresh(
+                self.pool.clone(),
+                self.env.schwab_auth.clone(),
+                self.shutdown_rx.clone(),
+            )
+        };
+        let order_poller = spawn_order_poller(&self.env, &self.pool, &self.shutdown_rx);
+        let event_receiver = spawn_onchain_event_receiver(event_sender, clear_stream, take_stream);
+        let position_checker = spawn_position_checker(&self.env, &self.pool, &self.shutdown_rx);
+        let queue_processor = spawn_queue_processor(
+            &self.env,
+            &self.pool,
+            &self.cache,
+            self.provider,
+            &self.shutdown_rx,
         );
-        let poller =
-            OrderStatusPoller::new(config, env.schwab_auth.clone(), pool.clone(), shutdown_rx);
-        let order_poller = tokio::spawn(async move {
-            if let Err(e) = poller.run().await {
-                error!("Order poller failed: {e}");
-            } else {
-                info!("Order poller completed successfully");
-            }
-        });
 
-        info!("Starting blockchain event receiver");
-        let event_receiver = tokio::spawn(receive_blockchain_events(
-            clear_stream,
-            take_stream,
-            event_sender,
-        ));
-
-        Self {
+        BackgroundTasks {
             token_refresher,
             order_poller,
             event_receiver,
+            position_checker,
+            queue_processor,
         }
     }
+}
 
+pub(crate) struct BackgroundTasks {
+    pub(crate) token_refresher: JoinHandle<()>,
+    pub(crate) order_poller: JoinHandle<()>,
+    pub(crate) event_receiver: JoinHandle<()>,
+    pub(crate) position_checker: JoinHandle<()>,
+    pub(crate) queue_processor: JoinHandle<()>,
+}
+
+fn spawn_order_poller(
+    env: &Env,
+    pool: &SqlitePool,
+    shutdown_rx: &watch::Receiver<bool>,
+) -> JoinHandle<()> {
+    let config = env.get_order_poller_config();
+    info!(
+        "Starting order status poller with interval: {:?}, max jitter: {:?}",
+        config.polling_interval, config.max_jitter
+    );
+    let poller = OrderStatusPoller::new(
+        config,
+        env.schwab_auth.clone(),
+        pool.clone(),
+        shutdown_rx.clone(),
+    );
+    tokio::spawn(async move {
+        if let Err(e) = poller.run().await {
+            error!("Order poller failed: {e}");
+        } else {
+            info!("Order poller completed successfully");
+        }
+    })
+}
+
+fn spawn_onchain_event_receiver(
+    event_sender: UnboundedSender<(TradeEvent, Log)>,
+    clear_stream: impl Stream<Item = Result<(ClearV2, Log), sol_types::Error>> + Unpin + Send + 'static,
+    take_stream: impl Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>>
+    + Unpin
+    + Send
+    + 'static,
+) -> JoinHandle<()> {
+    info!("Starting blockchain event receiver");
+    tokio::spawn(receive_blockchain_events(
+        clear_stream,
+        take_stream,
+        event_sender,
+    ))
+}
+
+fn spawn_position_checker(
+    env: &Env,
+    pool: &SqlitePool,
+    shutdown_rx: &watch::Receiver<bool>,
+) -> JoinHandle<()> {
+    info!("Starting periodic accumulated position checker");
+    tokio::spawn(periodic_accumulated_position_check(
+        env.clone(),
+        pool.clone(),
+        shutdown_rx.clone(),
+    ))
+}
+
+fn spawn_queue_processor<P: Provider + Clone + Send + 'static>(
+    env: &Env,
+    pool: &SqlitePool,
+    cache: &SymbolCache,
+    provider: P,
+    shutdown_rx: &watch::Receiver<bool>,
+) -> JoinHandle<()> {
+    info!("Starting queue processor service");
+    let env_clone = env.clone();
+    let pool_clone = pool.clone();
+    let cache_clone = cache.clone();
+    let shutdown_rx_clone = shutdown_rx.clone();
+
+    tokio::spawn(async move {
+        if let Err(e) = run_queue_processor(
+            &env_clone,
+            &pool_clone,
+            &cache_clone,
+            provider,
+            shutdown_rx_clone,
+        )
+        .await
+        {
+            error!("Queue processor service failed: {e}");
+        }
+    })
+}
+
+impl BackgroundTasks {
     pub(crate) async fn wait_for_completion(self) -> Result<(), anyhow::Error> {
-        let (token_result, poller_result, receiver_result) =
-            tokio::join!(self.token_refresher, self.order_poller, self.event_receiver);
+        let (token_result, poller_result, receiver_result, position_result, queue_result) = tokio::join!(
+            self.token_refresher,
+            self.order_poller,
+            self.event_receiver,
+            self.position_checker,
+            self.queue_processor
+        );
 
         if let Err(e) = token_result {
             error!("Token refresher task panicked: {e}");
@@ -87,8 +199,42 @@ impl BackgroundTasks {
         if let Err(e) = receiver_result {
             error!("Event receiver task panicked: {e}");
         }
+        if let Err(e) = position_result {
+            error!("Position checker task panicked: {e}");
+        }
+        if let Err(e) = queue_result {
+            error!("Queue processor task panicked: {e}");
+        }
 
         Ok(())
+    }
+}
+
+async fn periodic_accumulated_position_check(
+    env: Env,
+    pool: SqlitePool,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+    let mut interval = tokio::time::interval(CHECK_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                debug!("Running periodic accumulated position check");
+                if let Err(e) = check_and_execute_accumulated_positions(&env, &pool).await {
+                    error!("Periodic accumulated position check failed: {e}");
+                }
+            }
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("Shutting down periodic accumulated position checker");
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -115,8 +261,12 @@ async fn receive_blockchain_events<S1, S2>(
         };
 
         match event_result {
-            Ok(event_with_log) => {
-                if event_sender.send(event_with_log).is_err() {
+            Ok((event, log)) => {
+                trace!(
+                    "Received blockchain event: tx_hash={:?}, log_index={:?}, block_number={:?}",
+                    log.transaction_hash, log.log_index, log.block_number
+                );
+                if event_sender.send((event, log)).is_err() {
                     error!("Event receiver dropped, shutting down");
                     break;
                 }
@@ -144,7 +294,7 @@ where
     let first_event_result = wait_for_first_event_with_timeout(
         clear_stream,
         take_stream,
-        std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs(5),
     )
     .await;
 
@@ -163,7 +313,7 @@ where
     Ok(block_number)
 }
 
-pub(crate) async fn run_live<S1, S2, P>(
+pub(crate) async fn run_live<P, S1, S2>(
     env: Env,
     pool: SqlitePool,
     cache: SymbolCache,
@@ -172,25 +322,29 @@ pub(crate) async fn run_live<S1, S2, P>(
     take_stream: S2,
 ) -> anyhow::Result<()>
 where
+    P: Provider + Clone + Send + 'static,
     S1: Stream<Item = Result<(ClearV2, Log), sol_types::Error>> + Unpin + Send + 'static,
     S2: Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin + Send + 'static,
-    P: Provider + Clone,
 {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let (event_sender, mut event_receiver) =
         tokio::sync::mpsc::unbounded_channel::<(TradeEvent, Log)>();
 
-    let background_tasks = BackgroundTasks::spawn(
-        &env,
-        &pool,
-        event_sender,
-        shutdown_rx,
-        clear_stream,
-        take_stream,
-    );
+    let background_tasks = BackgroundTasksBuilder::new(
+        env.clone(),
+        pool.clone(),
+        cache.clone(),
+        provider,
+        shutdown_rx.clone(),
+    )
+    .spawn(event_sender, clear_stream, take_stream);
 
     while let Some((event, log)) = event_receiver.recv().await {
-        if let Err(e) = process_live_event(&env, &pool, &cache, &provider, event, log).await {
+        trace!(
+            "Processing live event: tx_hash={:?}, log_index={:?}",
+            log.transaction_hash, log.log_index
+        );
+        if let Err(e) = process_live_event(&pool, event, log).await {
             error!("Failed to process live event: {e}");
         }
     }
@@ -205,281 +359,281 @@ where
     Ok(())
 }
 
-async fn process_live_event<P: Provider + Clone>(
+async fn process_live_event(
+    pool: &SqlitePool,
+    event: TradeEvent,
+    log: Log,
+) -> Result<(), EventProcessingError> {
+    match &event {
+        TradeEvent::ClearV2(clear_event) => {
+            info!(
+                "Enqueuing ClearV2 event: tx_hash={:?}, log_index={:?}",
+                log.transaction_hash, log.log_index
+            );
+
+            enqueue(pool, clear_event.as_ref(), &log)
+                .await
+                .map_err(EventProcessingError::EnqueueClearV2)?;
+        }
+        TradeEvent::TakeOrderV2(take_event) => {
+            info!(
+                "Enqueuing TakeOrderV2 event: tx_hash={:?}, log_index={:?}",
+                log.transaction_hash, log.log_index
+            );
+
+            enqueue(pool, take_event.as_ref(), &log)
+                .await
+                .map_err(EventProcessingError::EnqueueTakeOrderV2)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Dedicated queue processor service that continuously processes events from the queue.
+/// This provides a unified processing path for both live and backfilled events.
+pub(crate) async fn run_queue_processor<P: Provider + Clone>(
+    env: &Env,
+    pool: &SqlitePool,
+    cache: &SymbolCache,
+    provider: P,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> Result<(), EventProcessingError> {
+    info!("Starting queue processor service");
+
+    // Log initial unprocessed event count
+    let unprocessed_count = crate::queue::count_unprocessed(pool)
+        .await
+        .map_err(EventProcessingError::Queue)?;
+
+    if unprocessed_count > 0 {
+        info!(
+            "Found {} unprocessed events from previous sessions to process",
+            unprocessed_count
+        );
+    } else {
+        info!("No unprocessed events found, starting fresh");
+    }
+
+    loop {
+        // Check for shutdown signal
+        if *shutdown_rx.borrow_and_update() {
+            info!("Queue processor received shutdown signal, exiting");
+            break;
+        }
+
+        match process_next_queued_event(env, pool, cache, &provider).await {
+            Ok(Some(execution)) => {
+                if let Some(exec_id) = execution.id {
+                    if let Err(e) = execute_pending_schwab_execution(env, pool, exec_id).await {
+                        error!("Failed to execute Schwab order {exec_id}: {e}");
+                    }
+                }
+            }
+            Ok(None) => {
+                sleep(Duration::from_millis(100)).await;
+            }
+            Err(e) => {
+                error!("Error processing queued event: {e}");
+                sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Processes the next unprocessed event from the queue.
+/// Returns an optional SchwabExecution if one was triggered.
+async fn process_next_queued_event<P: Provider + Clone>(
     env: &Env,
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: &P,
-    event: TradeEvent,
-    log: Log,
-) -> anyhow::Result<()> {
-    match &event {
-        TradeEvent::ClearV2(clear_event) => {
-            enqueue(pool, clear_event.as_ref(), &log)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to enqueue ClearV2 event: {e}"))?;
-
-            if let Some(trade) = OnchainTrade::try_from_clear_v2(
-                &env.evm_env,
-                cache,
-                provider,
-                (**clear_event).clone(),
-                log,
-            )
-            .await?
-            {
-                process_trade(env, pool, trade).await?;
-            }
-        }
-        TradeEvent::TakeOrderV2(take_event) => {
-            enqueue(pool, take_event.as_ref(), &log)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to enqueue TakeOrderV2 event: {e}"))?;
-
-            if let Some(trade) = OnchainTrade::try_from_take_order_if_target_order(
-                cache,
-                provider,
-                (**take_event).clone(),
-                log,
-                env.evm_env.order_hash,
-            )
-            .await?
-            {
-                process_trade(env, pool, trade).await?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-async fn process_trade(
-    env: &Env,
-    pool: &SqlitePool,
-    onchain_trade: OnchainTrade,
-) -> anyhow::Result<()> {
-    let symbol_lock = get_symbol_lock(&onchain_trade.symbol).await;
-    let _guard = symbol_lock.lock().await;
-
-    // Save values for logging before the trade is moved
-    let tx_hash = onchain_trade.tx_hash;
-    let log_index = onchain_trade.log_index;
-
-    let execution = accumulator::add_trade(pool, onchain_trade).await?;
-    let execution_id = execution.and_then(|exec| exec.id);
-
-    if let Some(exec_id) = execution_id {
-        info!("Trade triggered Schwab execution with ID: {}", exec_id);
-
-        let env_clone = env.clone();
-        let pool_clone = pool.clone();
-        tokio::spawn(async move {
-            if let Err(e) = execute_pending_schwab_execution(&env_clone, &pool_clone, exec_id).await
-            {
-                error!("Failed to execute Schwab order: {}", e);
-            }
-        });
-    } else {
-        info!(
-            "Trade accumulated but did not trigger execution: tx_hash={:?}, log_index={}",
-            tx_hash, log_index
-        );
-    }
-
-    Ok(())
-}
-
-/// Processes any unprocessed events from the queue at startup by deserializing them
-/// and running them through the full trade processing pipeline for true idempotency.
-pub(crate) async fn process_queue<P: Provider + Clone>(
-    env: &Env,
-    evm_env: &EvmEnv,
-    pool: &SqlitePool,
-    symbol_cache: &SymbolCache,
-    provider: P,
-) -> anyhow::Result<()> {
-    info!("Processing any unprocessed events from previous sessions...");
-
-    // Collect all unprocessed events in a single query to avoid race conditions
-    let unprocessed_events = get_all_unprocessed_events(pool).await?;
-
-    if unprocessed_events.is_empty() {
-        info!("No unprocessed events found");
-        return Ok(());
-    }
-
-    info!(
-        "Found {} unprocessed events to reprocess",
-        unprocessed_events.len()
-    );
-
-    // Process events sequentially to respect symbol locks and ensure proper error handling
-    let mut successful_count = 0;
-    let mut failed_count = 0;
-
-    for queued_event in unprocessed_events {
-        match process_queued_event_with_retry(
-            env,
-            evm_env,
-            pool,
-            symbol_cache,
-            provider.clone(),
-            queued_event,
-        )
-        .await
-        {
-            Ok(()) => {
-                successful_count += 1;
-            }
-            Err(e) => {
-                failed_count += 1;
-                error!("Failed to reprocess event after retries: {e}");
-                // Continue processing other events even if one fails
-            }
-        }
-    }
-
-    info!(
-        "Successfully reprocessed {} events, {} failures",
-        successful_count, failed_count
-    );
-
-    Ok(())
-}
-
-/// Processes a single queued event with retry logic and proper error handling
-async fn process_queued_event_with_retry<P: Provider + Clone>(
-    env: &Env,
-    evm_env: &EvmEnv,
-    pool: &SqlitePool,
-    symbol_cache: &SymbolCache,
-    provider: P,
-    queued_event: crate::queue::QueuedEvent,
-) -> anyhow::Result<()> {
-    use backon::{ExponentialBuilder, Retryable};
-
-    const MAX_RETRIES: usize = 3;
-    const INITIAL_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
-    const MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
-
-    let retry_strategy = ExponentialBuilder::default()
-        .with_max_times(MAX_RETRIES)
-        .with_min_delay(INITIAL_DELAY)
-        .with_max_delay(MAX_DELAY);
-
-    let process_event = || async {
-        process_queued_event_atomic(
-            env,
-            evm_env,
-            pool,
-            symbol_cache,
-            provider.clone(),
-            &queued_event,
-        )
-        .await
+) -> Result<Option<SchwabExecution>, EventProcessingError> {
+    let queued_event = get_next_queued_event(pool).await?;
+    let Some(queued_event) = queued_event else {
+        return Ok(None);
     };
 
-    process_event.retry(&retry_strategy).await
+    let event_id = extract_event_id(&queued_event)?;
+
+    let onchain_trade = convert_event_to_trade(env, cache, provider, &queued_event).await?;
+
+    // If the event was filtered, mark as processed and return None
+    let Some(trade) = onchain_trade else {
+        return handle_filtered_event(pool, &queued_event, event_id).await;
+    };
+
+    process_valid_trade(pool, &queued_event, event_id, trade).await
 }
 
-/// Processes a single queued event atomically within a database transaction
-async fn process_queued_event_atomic<P: Provider + Clone>(
-    env: &Env,
-    evm_env: &EvmEnv,
+async fn get_next_queued_event(
     pool: &SqlitePool,
-    symbol_cache: &SymbolCache,
-    provider: P,
-    queued_event: &crate::queue::QueuedEvent,
-) -> anyhow::Result<()> {
-    let event_id = queued_event
-        .id
-        .ok_or_else(|| anyhow::anyhow!("Queued event missing ID - database inconsistency"))?;
+) -> Result<Option<QueuedEvent>, EventProcessingError> {
+    match get_next_unprocessed_event(pool).await {
+        Ok(event) => Ok(event),
+        Err(e) => {
+            error!("Failed to get next unprocessed event: {e}");
+            Err(EventProcessingError::Queue(e))
+        }
+    }
+}
 
-    // Reconstruct Log from queued event data with proper event data
-    let log = reconstruct_log_from_queued_event(evm_env, queued_event);
+fn extract_event_id(queued_event: &QueuedEvent) -> Result<i64, EventProcessingError> {
+    queued_event.id.ok_or_else(|| {
+        EventProcessingError::Queue(crate::error::EventQueueError::Processing(
+            "Queued event missing ID".to_string(),
+        ))
+    })
+}
 
-    // Deserialize and convert event to OnchainTrade
+async fn convert_event_to_trade<P: Provider + Clone>(
+    env: &Env,
+    cache: &SymbolCache,
+    provider: &P,
+    queued_event: &QueuedEvent,
+) -> Result<Option<OnchainTrade>, EventProcessingError> {
+    let reconstructed_log = reconstruct_log_from_queued_event(&env.evm_env, queued_event);
+
     let onchain_trade = match &queued_event.event {
         TradeEvent::ClearV2(clear_event) => {
             OnchainTrade::try_from_clear_v2(
-                evm_env,
-                symbol_cache,
-                &provider,
-                (**clear_event).clone(),
-                log,
+                &env.evm_env,
+                cache,
+                provider,
+                *clear_event.clone(),
+                reconstructed_log,
             )
             .await?
         }
         TradeEvent::TakeOrderV2(take_event) => {
-            OnchainTrade::try_from_take_order_if_target_order(
-                symbol_cache,
-                &provider,
-                (**take_event).clone(),
-                log,
-                evm_env.order_hash,
+            OnchainTrade::try_from_take_order_if_target_owner(
+                cache,
+                provider,
+                *take_event.clone(),
+                reconstructed_log,
+                env.evm_env.order_owner,
             )
             .await?
         }
     };
 
-    // Only process if event converts to a valid trade
-    if let Some(trade) = onchain_trade {
-        let symbol_lock = get_symbol_lock(&trade.symbol).await;
-        let _guard = symbol_lock.lock().await;
+    Ok(onchain_trade)
+}
 
-        // Begin atomic transaction to ensure both trade saving and event marking happen together
-        let mut tx = pool.begin().await?;
+async fn handle_filtered_event(
+    pool: &SqlitePool,
+    queued_event: &QueuedEvent,
+    event_id: i64,
+) -> Result<Option<SchwabExecution>, EventProcessingError> {
+    info!(
+        "Event filtered out (no matching owner): event_type={:?}, tx_hash={:?}, log_index={}",
+        match &queued_event.event {
+            TradeEvent::ClearV2(_) => "ClearV2",
+            TradeEvent::TakeOrderV2(_) => "TakeOrderV2",
+        },
+        queued_event.tx_hash,
+        queued_event.log_index
+    );
 
-        // Save the trade within the transaction
-        trade.save_within_transaction(&mut tx).await?;
+    let mut sql_tx = pool.begin().await.map_err(|e| {
+        error!("Failed to begin transaction for filtered event: {e}");
+        EventProcessingError::Queue(crate::error::EventQueueError::Processing(format!(
+            "Failed to begin transaction: {e}"
+        )))
+    })?;
 
-        // Mark as processed within the same transaction
-        sqlx::query!(
-            "UPDATE event_queue SET processed = 1, processed_at = CURRENT_TIMESTAMP WHERE id = ?",
-            event_id
-        )
-        .execute(&mut *tx)
-        .await?;
+    mark_event_processed(&mut sql_tx, event_id).await?;
 
-        // Commit the transaction
-        tx.commit().await?;
+    sql_tx.commit().await.map_err(|e| {
+        error!("Failed to commit transaction for filtered event: {e}");
+        EventProcessingError::Queue(crate::error::EventQueueError::Processing(format!(
+            "Failed to commit transaction: {e}"
+        )))
+    })?;
 
-        // After successful commit, process accumulation outside transaction
-        // (accumulator handles its own database operations)
-        let pending_execution_id = accumulator::add_trade(pool, trade).await?;
+    Ok(None)
+}
 
-        if let Some(execution) = pending_execution_id {
-            if let Some(execution_id) = execution.id {
-                info!(
-                    "Trade accumulation triggered Schwab execution with ID: {}",
-                    execution_id
-                );
+async fn process_valid_trade(
+    pool: &SqlitePool,
+    queued_event: &QueuedEvent,
+    event_id: i64,
+    trade: OnchainTrade,
+) -> Result<Option<SchwabExecution>, EventProcessingError> {
+    info!(
+        "Event successfully converted to trade: event_type={:?}, tx_hash={:?}, log_index={}, symbol={}, amount={}",
+        match &queued_event.event {
+            TradeEvent::ClearV2(_) => "ClearV2",
+            TradeEvent::TakeOrderV2(_) => "TakeOrderV2",
+        },
+        trade.tx_hash,
+        trade.log_index,
+        trade.symbol,
+        trade.amount
+    );
 
-                // Execute the Schwab order
-                let env_clone = env.clone();
-                let pool_clone = pool.clone();
-                tokio::spawn(async move {
-                    if let Err(e) =
-                        execute_pending_schwab_execution(&env_clone, &pool_clone, execution_id)
-                            .await
-                    {
-                        error!(
-                            "Failed to execute pending Schwab execution {}: {e}",
-                            execution_id
-                        );
-                    }
-                });
-            } else {
-                error!("Execution returned from add_trade has None ID, which should not happen");
-                return Err(OnChainError::Persistence(PersistenceError::MissingExecutionId).into());
-            }
-        }
-    } else {
-        // Even if no trade was created, mark the event as processed to avoid reprocessing
-        mark_event_processed(pool, event_id).await?;
-    }
+    let symbol_lock = get_symbol_lock(trade.symbol.base()).await;
+    let _guard = symbol_lock.lock().await;
 
-    Ok(())
+    info!(
+        "Processing queued trade: symbol={}, amount={}, direction={:?}, tx_hash={:?}, log_index={}",
+        trade.symbol, trade.amount, trade.direction, trade.tx_hash, trade.log_index
+    );
+
+    process_trade_within_transaction(pool, queued_event, event_id, trade).await
+}
+
+async fn process_trade_within_transaction(
+    pool: &SqlitePool,
+    queued_event: &QueuedEvent,
+    event_id: i64,
+    trade: OnchainTrade,
+) -> Result<Option<SchwabExecution>, EventProcessingError> {
+    let mut sql_tx = pool.begin().await.map_err(|e| {
+        error!("Failed to begin transaction for event processing: {e}");
+        EventProcessingError::AccumulatorProcessing(format!("Failed to begin transaction: {e}"))
+    })?;
+
+    info!(
+        "Started transaction for atomic event processing: event_id={}, tx_hash={:?}, log_index={}",
+        event_id, queued_event.tx_hash, queued_event.log_index
+    );
+
+    let execution = accumulator::process_onchain_trade(&mut sql_tx, trade)
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to process trade through accumulator: {e}, tx_hash={:?}, log_index={}",
+                queued_event.tx_hash, queued_event.log_index
+            );
+            EventProcessingError::AccumulatorProcessing(format!(
+                "Failed to process trade through accumulator: {e}"
+            ))
+        })?;
+
+    mark_event_processed(&mut sql_tx, event_id)
+        .await
+        .map_err(|e| {
+            error!("Failed to mark event {event_id} as processed: {e}");
+            EventProcessingError::Queue(e)
+        })?;
+
+    sql_tx.commit().await.map_err(|e| {
+        error!(
+            "Failed to commit transaction for event processing: {e}, event_id={}, tx_hash={:?}",
+            event_id, queued_event.tx_hash
+        );
+        EventProcessingError::AccumulatorProcessing(format!("Failed to commit transaction: {e}"))
+    })?;
+
+    info!(
+        "Successfully committed atomic event processing: event_id={}, tx_hash={:?}, log_index={}",
+        event_id, queued_event.tx_hash, queued_event.log_index
+    );
+
+    Ok(execution)
 }
 
 /// Reconstructs a Log with proper event data from a queued event
@@ -510,22 +664,75 @@ fn reconstruct_log_from_queued_event(
     }
 }
 
+/// Checks for accumulated positions ready for execution and spawns tasks to execute them.
+async fn check_and_execute_accumulated_positions(
+    env: &Env,
+    pool: &SqlitePool,
+) -> Result<(), EventProcessingError> {
+    let executions = check_all_accumulated_positions(pool).await?;
+
+    if executions.is_empty() {
+        debug!("No accumulated positions ready for execution");
+        return Ok(());
+    }
+
+    info!(
+        "Found {} accumulated positions ready for execution",
+        executions.len()
+    );
+
+    for execution in executions {
+        let Some(execution_id) = execution.id else {
+            error!("Execution returned from check_all_accumulated_positions has None ID");
+            continue;
+        };
+
+        info!(
+            "Executing accumulated position for symbol={}, shares={}, direction={:?}, execution_id={}",
+            execution.symbol, execution.shares, execution.direction, execution_id
+        );
+
+        let env_clone = env.clone();
+        let pool_clone = pool.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                execute_pending_schwab_execution(&env_clone, &pool_clone, execution_id).await
+            {
+                error!(
+                    "Failed to execute accumulated position for execution_id {}: {e}",
+                    execution_id
+                );
+            } else {
+                info!(
+                    "Successfully executed accumulated position for execution_id {}",
+                    execution_id
+                );
+            }
+        });
+    }
+
+    Ok(())
+}
+
 /// Execute a pending Schwab execution by fetching it from the database and placing the order.
 async fn execute_pending_schwab_execution(
     env: &Env,
     pool: &SqlitePool,
     execution_id: i64,
-) -> anyhow::Result<()> {
+) -> Result<(), EventProcessingError> {
     let execution = find_execution_by_id(pool, execution_id)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Execution with ID {execution_id} not found"))?;
+        .ok_or_else(|| {
+            EventProcessingError::AccumulatorProcessing(format!(
+                "Execution with ID {execution_id} not found"
+            ))
+        })?;
 
     info!("Executing Schwab order: {execution:?}");
 
     // Use the unified execute_schwab_order function with retry logic
-    execute_schwab_order(env, pool, execution)
-        .await
-        .map_err(anyhow::Error::from)
+    execute_schwab_order(env, pool, execution).await?;
+    Ok(())
 }
 
 /// Waits for the first event from either stream with a timeout, returning any events received
@@ -619,6 +826,7 @@ mod tests {
     use crate::onchain::trade::OnchainTrade;
     use crate::schwab::Direction;
     use crate::test_utils::{OnchainTradeBuilder, setup_test_db};
+    use crate::tokenized_symbol;
     use alloy::primitives::{IntoLogData, address, fixed_bytes};
     use alloy::providers::ProviderBuilder;
     use alloy::providers::mock::Asserter;
@@ -668,7 +876,7 @@ mod tests {
                 "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             ))
             .with_log_index(293)
-            .with_symbol("AAPLs1")
+            .with_symbol("AAPL0x")
             .with_amount(5.0)
             .with_price(20000.0)
             .build();
@@ -699,7 +907,7 @@ mod tests {
                 "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             ),
             log_index: 293,
-            symbol: "AAPLs1".to_string(),
+            symbol: tokenized_symbol!("AAPL0x"),
             amount: 5.0,
             direction: Direction::Sell,
             price_usdc: 20000.0,
@@ -781,7 +989,11 @@ mod tests {
             .await
             {
                 // Step 5: Process the trade through accumulation
-                process_trade(&env, &pool, trade).await.unwrap();
+                let mut sql_tx = pool.begin().await.unwrap();
+                accumulator::process_onchain_trade(&mut sql_tx, trade)
+                    .await
+                    .unwrap();
+                sql_tx.commit().await.unwrap();
             } else {
                 // Event doesn't result in a trade or expected test environment error
                 // The important thing is we tested the flow structure
@@ -789,9 +1001,11 @@ mod tests {
         }
 
         // Step 6: Mark event as processed
-        crate::queue::mark_event_processed(&pool, queued_event.id.unwrap())
+        let mut sql_tx = pool.begin().await.unwrap();
+        crate::queue::mark_event_processed(&mut sql_tx, queued_event.id.unwrap())
             .await
             .unwrap();
+        sql_tx.commit().await.unwrap();
 
         // Step 7: Verify event was marked processed
         let remaining_count = crate::queue::count_unprocessed(&pool).await.unwrap();
@@ -832,9 +1046,11 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        crate::queue::mark_event_processed(&pool, queued_event.id.unwrap())
+        let mut sql_tx = pool.begin().await.unwrap();
+        crate::queue::mark_event_processed(&mut sql_tx, queued_event.id.unwrap())
             .await
             .unwrap();
+        sql_tx.commit().await.unwrap();
         assert_eq!(crate::queue::count_unprocessed(&pool).await.unwrap(), 0);
 
         // Scenario 2: Process same event again - should be deduplicated
@@ -853,9 +1069,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(next_event.log_index, 2); // Should get log_index 2
-        crate::queue::mark_event_processed(&pool, next_event.id.unwrap())
+        let mut sql_tx = pool.begin().await.unwrap();
+        crate::queue::mark_event_processed(&mut sql_tx, next_event.id.unwrap())
             .await
             .unwrap();
+        sql_tx.commit().await.unwrap();
     }
 
     #[tokio::test]
@@ -916,9 +1134,11 @@ mod tests {
                 .unwrap();
             assert_eq!(event.block_number, expected_block);
             assert_eq!(event.log_index, expected_log_idx);
-            crate::queue::mark_event_processed(&pool, event.id.unwrap())
+            let mut sql_tx = pool.begin().await.unwrap();
+            crate::queue::mark_event_processed(&mut sql_tx, event.id.unwrap())
                 .await
                 .unwrap();
+            sql_tx.commit().await.unwrap();
         }
 
         // Verify no more events
@@ -972,9 +1192,11 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            crate::queue::mark_event_processed(&pool, event.id.unwrap())
+            let mut sql_tx = pool.begin().await.unwrap();
+            crate::queue::mark_event_processed(&mut sql_tx, event.id.unwrap())
                 .await
                 .unwrap();
+            sql_tx.commit().await.unwrap();
         }
 
         // Verify 3 events remain unprocessed
@@ -986,9 +1208,11 @@ mod tests {
             .await
             .unwrap()
         {
-            crate::queue::mark_event_processed(&pool, event.id.unwrap())
+            let mut sql_tx = pool.begin().await.unwrap();
+            crate::queue::mark_event_processed(&mut sql_tx, event.id.unwrap())
                 .await
                 .unwrap();
+            sql_tx.commit().await.unwrap();
             processed_count += 1;
         }
 
@@ -1002,42 +1226,6 @@ mod tests {
         }
 
         assert_eq!(crate::queue::count_unprocessed(&pool).await.unwrap(), 0); // No new unprocessed events
-    }
-
-    #[tokio::test]
-    async fn test_process_trade_creates_and_accumulates() {
-        let pool = setup_test_db().await;
-        let env = create_test_env();
-
-        let trade = OnchainTradeBuilder::new()
-            .with_tx_hash(fixed_bytes!(
-                "0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-            ))
-            .with_log_index(1)
-            .with_symbol("AAPLs1")
-            .with_amount(9.0)
-            .with_price(11.111)
-            .build();
-
-        // Process the trade
-        process_trade(&env, &pool, trade).await.unwrap();
-
-        // Give async tasks time to complete
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-
-        // Verify trade was saved
-        let count = OnchainTrade::db_count(&pool).await.unwrap();
-        assert_eq!(count, 1);
-
-        let saved_trade = OnchainTrade::find_by_tx_hash_and_log_index(
-            &pool,
-            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
-            1,
-        )
-        .await
-        .unwrap();
-        assert_eq!(saved_trade.symbol, "AAPLs1");
-        assert!((saved_trade.amount - 9.0).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
@@ -1097,9 +1285,11 @@ mod tests {
         assert_eq!(reconstructed_log.inner.data, original_log_data);
 
         // Clean up
-        crate::queue::mark_event_processed(&pool, queued_event.id.unwrap())
+        let mut sql_tx = pool.begin().await.unwrap();
+        crate::queue::mark_event_processed(&mut sql_tx, queued_event.id.unwrap())
             .await
             .unwrap();
+        sql_tx.commit().await.unwrap();
         assert_eq!(crate::queue::count_unprocessed(&pool).await.unwrap(), 0);
     }
 
@@ -1255,10 +1445,6 @@ mod tests {
     #[tokio::test]
     async fn test_process_live_event_clear_v2() {
         let pool = setup_test_db().await;
-        let env = create_test_env();
-        let cache = SymbolCache::default();
-        let asserter = Asserter::new();
-        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
         let clear_event = ClearV2 {
             sender: address!("0x1111111111111111111111111111111111111111"),
@@ -1276,15 +1462,8 @@ mod tests {
         let log = crate::test_utils::get_test_log();
 
         // Process the live event
-        let result = process_live_event(
-            &env,
-            &pool,
-            &cache,
-            &provider,
-            TradeEvent::ClearV2(Box::new(clear_event)),
-            log,
-        )
-        .await;
+        let result =
+            process_live_event(&pool, TradeEvent::ClearV2(Box::new(clear_event)), log).await;
 
         // Should succeed in enqueuing even if trade conversion fails
         assert!(result.is_ok());
@@ -1295,16 +1474,55 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_process_queue_empty() {
+    async fn test_clear_v2_event_filtering_without_errors() {
         let pool = setup_test_db().await;
         let env = create_test_env();
         let cache = SymbolCache::default();
         let asserter = Asserter::new();
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
-        process_queue(&env, &env.evm_env, &pool, &cache, provider)
+        // Create a ClearV2 event with owners that don't match the configured order owner
+        let mut alice_order = crate::test_utils::get_test_order();
+        let mut bob_order = crate::test_utils::get_test_order();
+
+        // Set both owners to addresses different from the configured order owner
+        alice_order.owner = address!("0x1111111111111111111111111111111111111111");
+        bob_order.owner = address!("0x2222222222222222222222222222222222222222");
+
+        let clear_event = ClearV2 {
+            sender: address!("0x3333333333333333333333333333333333333333"),
+            alice: alice_order,
+            bob: bob_order,
+            clearConfig: ClearConfig {
+                aliceInputIOIndex: alloy::primitives::U256::from(0),
+                aliceOutputIOIndex: alloy::primitives::U256::from(1),
+                bobInputIOIndex: alloy::primitives::U256::from(1),
+                bobOutputIOIndex: alloy::primitives::U256::from(0),
+                aliceBountyVaultId: alloy::primitives::U256::ZERO,
+                bobBountyVaultId: alloy::primitives::U256::ZERO,
+            },
+        };
+        let log = crate::test_utils::get_test_log();
+
+        // Enqueue the event
+        crate::queue::enqueue(&pool, &clear_event, &log)
             .await
             .unwrap();
+
+        // Verify event was enqueued
+        let count = crate::queue::count_unprocessed(&pool).await.unwrap();
+        assert_eq!(count, 1);
+
+        // Process the event - should filter it out without error
+        let result = process_next_queued_event(&env, &pool, &cache, &provider).await;
+
+        // Should return Ok(None) indicating filtered event
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+
+        // Verify event was marked as processed (no more unprocessed events)
+        let remaining_count = crate::queue::count_unprocessed(&pool).await.unwrap();
+        assert_eq!(remaining_count, 0);
     }
 
     #[tokio::test]
@@ -1316,50 +1534,5 @@ mod tests {
         let result = execute_pending_schwab_execution(&env, &pool, 99999).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
-    }
-
-    #[tokio::test]
-    async fn test_process_queued_event_atomic_missing_id() {
-        let pool = setup_test_db().await;
-        let env = create_test_env();
-        let cache = SymbolCache::default();
-        let asserter = Asserter::new();
-        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
-
-        let clear_event = ClearV2 {
-            sender: address!("0x1111111111111111111111111111111111111111"),
-            alice: crate::test_utils::get_test_order(),
-            bob: crate::test_utils::get_test_order(),
-            clearConfig: ClearConfig {
-                aliceInputIOIndex: alloy::primitives::U256::from(0),
-                aliceOutputIOIndex: alloy::primitives::U256::from(1),
-                bobInputIOIndex: alloy::primitives::U256::from(1),
-                bobOutputIOIndex: alloy::primitives::U256::from(0),
-                aliceBountyVaultId: alloy::primitives::U256::ZERO,
-                bobBountyVaultId: alloy::primitives::U256::ZERO,
-            },
-        };
-
-        // Create queued event without ID (simulating database inconsistency)
-        let queued_event = crate::queue::QueuedEvent {
-            id: None, // Missing ID
-            tx_hash: fixed_bytes!(
-                "0x1111111111111111111111111111111111111111111111111111111111111111"
-            ),
-            log_index: 1,
-            block_number: 100,
-            event: crate::onchain::trade::TradeEvent::ClearV2(Box::new(clear_event)),
-            processed: false,
-            created_at: Some(chrono::Utc::now()),
-            processed_at: None,
-        };
-
-        let result =
-            process_queued_event_atomic(&env, &env.evm_env, &pool, &cache, provider, &queued_event)
-                .await;
-
-        // Should fail due to missing ID
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("missing ID"));
     }
 }

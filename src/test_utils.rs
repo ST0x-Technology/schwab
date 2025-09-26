@@ -1,13 +1,17 @@
 use crate::bindings::IOrderBookV4::{EvaluableV3, IO, OrderV3};
+use crate::onchain::OnchainTrade;
+use crate::onchain::io::TokenizedEquitySymbol;
+use crate::schwab::{Direction, TradeState, execution::SchwabExecution};
 use alloy::primitives::{LogData, U256, address, bytes, fixed_bytes};
 use alloy::rpc::types::Log;
+use sqlx::SqlitePool;
 
 /// Returns a test `OrderV3` instance that is shared across multiple
 /// unit-tests. The exact values are not important – only that the
 /// structure is valid and deterministic.
 pub(crate) fn get_test_order() -> OrderV3 {
     OrderV3 {
-        owner: address!("0x1111111111111111111111111111111111111111"),
+        owner: address!("0xdddddddddddddddddddddddddddddddddddddddd"),
         evaluable: EvaluableV3 {
             interpreter: address!("0x2222222222222222222222222222222222222222"),
             store: address!("0x3333333333333333333333333333333333333333"),
@@ -68,8 +72,6 @@ pub(crate) fn get_test_log() -> Log {
     create_log(293)
 }
 
-use sqlx::SqlitePool;
-
 /// Centralized test database setup to eliminate duplication across test files.
 /// Creates an in-memory SQLite database with all migrations applied.
 pub(crate) async fn setup_test_db() -> SqlitePool {
@@ -77,10 +79,6 @@ pub(crate) async fn setup_test_db() -> SqlitePool {
     sqlx::migrate!().run(&pool).await.unwrap();
     pool
 }
-
-use crate::onchain::OnchainTrade;
-use crate::schwab::TradeState;
-use crate::schwab::{Direction, execution::SchwabExecution};
 
 /// Builder for creating OnchainTrade test instances with sensible defaults.
 /// Reduces duplication in test data setup.
@@ -103,7 +101,7 @@ impl OnchainTradeBuilder {
                     "0x1111111111111111111111111111111111111111111111111111111111111111"
                 ),
                 log_index: 1,
-                symbol: "AAPLs1".to_string(),
+                symbol: "AAPL0x".parse::<TokenizedEquitySymbol>().unwrap(),
                 amount: 1.0,
                 direction: Direction::Buy,
                 price_usdc: 150.0,
@@ -113,8 +111,8 @@ impl OnchainTradeBuilder {
     }
 
     #[must_use]
-    pub(crate) fn with_symbol(mut self, symbol: impl Into<String>) -> Self {
-        self.trade.symbol = symbol.into();
+    pub(crate) fn with_symbol(mut self, symbol: &str) -> Self {
+        self.trade.symbol = symbol.parse::<TokenizedEquitySymbol>().unwrap();
         self
     }
 
