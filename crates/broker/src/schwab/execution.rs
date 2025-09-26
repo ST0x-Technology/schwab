@@ -1,6 +1,7 @@
 use sqlx::SqlitePool;
 
-use super::{Direction, HasTradeStatus, TradeState, shares_from_db_i64};
+use super::{HasTradeStatus, TradeState, shares_from_db_i64};
+use crate::Direction;
 use crate::error::{OnChainError, PersistenceError};
 
 /// Converts database row data to a SchwabExecution instance.
@@ -16,9 +17,7 @@ fn row_to_execution(
     status: &str,
     executed_at: Option<chrono::NaiveDateTime>,
 ) -> Result<SchwabExecution, OnChainError> {
-    let parsed_direction = direction.parse().map_err(|err: String| {
-        OnChainError::Persistence(PersistenceError::InvalidDirection(err))
-    })?;
+    let parsed_direction = direction.parse()?;
     let status_enum = status.parse().map_err(|err: String| {
         OnChainError::Persistence(PersistenceError::InvalidTradeStatus(err))
     })?;
@@ -49,7 +48,7 @@ const fn shares_to_db_i64(shares: u64) -> Result<i64, crate::error::PersistenceE
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SchwabExecution {
+pub struct SchwabExecution {
     pub(crate) id: Option<i64>,
     pub(crate) symbol: String,
     pub(crate) shares: u64,
@@ -137,7 +136,7 @@ pub(crate) async fn find_executions_by_symbol_and_status<S: HasTradeStatus>(
     }
 }
 
-pub(crate) async fn find_execution_by_id(
+pub async fn find_execution_by_id(
     pool: &SqlitePool,
     execution_id: i64,
 ) -> Result<Option<SchwabExecution>, OnChainError> {
@@ -168,7 +167,7 @@ impl SchwabExecution {
         sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     ) -> Result<i64, crate::error::PersistenceError> {
         let shares_i64 = shares_to_db_i64(self.shares)?;
-        let direction_str = self.direction.as_str();
+        let direction_str = &self.direction.to_string();
         let status_str = self.state.status().as_str();
         let db_fields = self.state.to_db_fields()?;
 

@@ -1,7 +1,8 @@
 use sqlx::SqlitePool;
 
-use super::{Direction, HasTradeStatus, TradeState, shares_from_db_i64};
+use super::{HasTradeStatus, TradeState, shares_from_db_i64};
 use crate::error::{OnChainError, PersistenceError};
+use st0x_broker::Direction;
 
 /// Converts database row data to a SchwabExecution instance.
 /// Centralizes the conversion logic and casting operations.

@@ -12,17 +12,14 @@ use tracing::{debug, error, info, trace};
 use st0x_broker::{Broker, Direction, MarketOrder, OrderState, OrderStatus, Shares, Symbol};
 
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
-use crate::env::DynBroker;
 use crate::env::Env;
 use crate::error::EventProcessingError;
 use crate::onchain::accumulator::check_all_accumulated_positions;
 use crate::onchain::trade::TradeEvent;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
 use crate::queue::{QueuedEvent, enqueue, get_next_unprocessed_event, mark_event_processed};
-use crate::schwab::{
-    OrderStatusPoller,
-    execution::{SchwabExecution, find_execution_by_id},
-};
+use crate::schwab::OrderStatusPoller;
+use crate::schwab::execution::{SchwabExecution, find_execution_by_id};
 use crate::symbol::cache::SymbolCache;
 use crate::symbol::lock::get_symbol_lock;
 
@@ -109,12 +106,15 @@ pub(crate) struct BackgroundTasks {
     pub(crate) queue_processor: JoinHandle<()>,
 }
 
-fn spawn_order_poller(
+fn spawn_order_poller<B: Broker + Clone + Send + 'static>(
     env: &Env,
     pool: &SqlitePool,
     shutdown_rx: &watch::Receiver<bool>,
-    broker: DynBroker,
-) -> JoinHandle<()> {
+    broker: B,
+) -> JoinHandle<()>
+where
+    B::Config: Clone + Send + 'static,
+{
     let config = env.get_order_poller_config();
     info!(
         "Starting order status poller with interval: {:?}, max jitter: {:?}",
@@ -152,12 +152,15 @@ fn spawn_onchain_event_receiver(
     ))
 }
 
-fn spawn_position_checker(
-    broker: DynBroker,
+fn spawn_position_checker<B: Broker + Clone + Send + 'static>(
+    broker: B,
     env: &Env,
     pool: &SqlitePool,
     shutdown_rx: &watch::Receiver<bool>,
-) -> JoinHandle<()> {
+) -> JoinHandle<()>
+where
+    B::Config: Clone + Send + 'static,
+{
     info!("Starting periodic accumulated position checker");
     tokio::spawn(periodic_accumulated_position_check(
         broker,
@@ -167,14 +170,17 @@ fn spawn_position_checker(
     ))
 }
 
-fn spawn_queue_processor<P: Provider + Clone + Send + 'static>(
-    broker: DynBroker,
+fn spawn_queue_processor<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>(
+    broker: B,
     env: &Env,
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: P,
     shutdown_rx: &watch::Receiver<bool>,
-) -> JoinHandle<()> {
+) -> JoinHandle<()>
+where
+    B::Config: Clone + Send + 'static,
+{
     info!("Starting queue processor service");
     let env_clone = env.clone();
     let pool_clone = pool.clone();
@@ -227,8 +233,8 @@ impl BackgroundTasks {
     }
 }
 
-async fn periodic_accumulated_position_check(
-    broker: DynBroker,
+async fn periodic_accumulated_position_check<B: Broker + Clone + Send + 'static>(
+    broker: B,
     env: Env,
     pool: SqlitePool,
     mut shutdown_rx: watch::Receiver<bool>,
@@ -687,8 +693,8 @@ fn reconstruct_log_from_queued_event(
 }
 
 /// Checks for accumulated positions ready for execution and spawns tasks to execute them.
-async fn check_and_execute_accumulated_positions(
-    broker: &DynBroker,
+async fn check_and_execute_accumulated_positions<B: Broker + Clone + Send + 'static>(
+    broker: &B,
     env: &Env,
     pool: &SqlitePool,
 ) -> Result<(), EventProcessingError> {
@@ -744,8 +750,8 @@ async fn check_and_execute_accumulated_positions(
 }
 
 /// Execute a pending Schwab execution by fetching it from the database and placing the order.
-async fn execute_pending_schwab_execution(
-    broker: &DynBroker,
+async fn execute_pending_schwab_execution<B: Broker + Clone + Send + 'static>(
+    broker: &B,
     env: &Env,
     pool: &SqlitePool,
     execution_id: i64,
@@ -759,7 +765,30 @@ async fn execute_pending_schwab_execution(
         })?;
 
     info!("Executing Schwab order: {execution:?}");
-    broker.execute_order(env, pool, execution).await?;
+
+    // Convert SchwabExecution to broker trait types
+    let market_order = MarketOrder {
+        symbol: Symbol(execution.symbol.clone()),
+        shares: Shares(execution.shares as u32),
+        direction: execution.direction,
+    };
+
+    // Get broker config based on environment
+    let config = if env.dry_run { &() } else { &env.schwab_auth };
+
+    // Execute via broker trait
+    broker.ensure_ready(config, pool).await.map_err(|e| {
+        EventProcessingError::AccumulatorProcessing(format!("Broker not ready: {}", e))
+    })?;
+
+    let placement = broker
+        .place_market_order(config, market_order, pool)
+        .await
+        .map_err(|e| {
+            EventProcessingError::AccumulatorProcessing(format!("Order placement failed: {}", e))
+        })?;
+
+    info!("Order placed with ID: {}", placement.order_id);
 
     Ok(())
 }
@@ -853,7 +882,6 @@ mod tests {
     use crate::bindings::IOrderBookV4::{ClearConfig, ClearV2};
     use crate::env::tests::create_test_env;
     use crate::onchain::trade::OnchainTrade;
-    use crate::schwab::Direction;
     use crate::test_utils::{OnchainTradeBuilder, setup_test_db};
     use crate::tokenized_symbol;
     use alloy::primitives::{IntoLogData, address, fixed_bytes};
@@ -861,6 +889,7 @@ mod tests {
     use alloy::providers::mock::Asserter;
     use alloy::sol_types;
     use futures_util::stream;
+    use st0x_broker::Direction;
 
     #[tokio::test]
     async fn test_event_enqueued_when_trade_conversion_returns_none() {

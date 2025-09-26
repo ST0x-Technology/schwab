@@ -6,13 +6,12 @@ use tracing::{error, info};
 
 use chrono::Utc;
 
-#[cfg(test)]
-use super::execution::find_execution_by_id;
 use super::{
-    Direction, SchwabAuthEnv, SchwabError, SchwabTokens, TradeState,
+    SchwabAuthEnv, SchwabError, SchwabTokens, TradeState,
     execution::{SchwabExecution, update_execution_status_within_transaction},
     order_status::OrderStatusResponse,
 };
+use crate::Direction;
 // Removed dependency on crate::env::Env - will be passed as parameter
 
 /// Response from Schwab order placement API.
@@ -434,7 +433,9 @@ async fn handle_execution_failure(
 
 #[cfg(test)]
 mod tests {
+    use super::super::execution::{SchwabExecution, find_execution_by_id};
     use super::*;
+    use crate::Direction;
     use crate::test_utils::setup_test_db;
     use chrono::Utc;
     use serde_json::json;
@@ -955,10 +956,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_execution_success_handling() {
-        use super::super::execution::SchwabExecution;
-        use crate::schwab::Direction;
-        use crate::schwab::TradeState;
-
         let pool = setup_test_db().await;
 
         // Create a test execution using a transaction
@@ -997,10 +994,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_execution_failure_handling() {
-        use super::super::execution::SchwabExecution;
-        use crate::schwab::TradeState;
-        use crate::schwab::{Direction, SchwabError};
-
         let pool = setup_test_db().await;
 
         // Create a test execution using a transaction

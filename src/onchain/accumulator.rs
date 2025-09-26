@@ -7,9 +7,10 @@ use crate::lock::{clear_execution_lease, set_pending_execution_id, try_acquire_e
 use crate::onchain::io::EquitySymbol;
 use crate::onchain::position_calculator::{AccumulationBucket, PositionCalculator};
 use crate::schwab::TradeState;
+use crate::schwab::execution::SchwabExecution;
 use crate::schwab::execution::update_execution_status_within_transaction;
-use crate::schwab::{Direction, execution::SchwabExecution};
 use crate::trade_execution_link::TradeExecutionLink;
+use st0x_broker::Direction;
 
 /// Processes an onchain trade through the accumulation system with duplicate detection.
 ///

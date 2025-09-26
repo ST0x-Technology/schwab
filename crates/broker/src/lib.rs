@@ -31,6 +31,17 @@ impl Display for Shares {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidDirectionError(String);
+
+impl std::fmt::Display for InvalidDirectionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Invalid direction: {}", self.0)
+    }
+}
+
+impl std::error::Error for InvalidDirectionError {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     Buy,
@@ -42,6 +53,18 @@ impl Display for Direction {
         match self {
             Direction::Buy => write!(f, "BUY"),
             Direction::Sell => write!(f, "SELL"),
+        }
+    }
+}
+
+impl std::str::FromStr for Direction {
+    type Err = InvalidDirectionError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "BUY" => Ok(Self::Buy),
+            "SELL" => Ok(Self::Sell),
+            _ => Err(InvalidDirectionError(s.to_string())),
         }
     }
 }
@@ -178,8 +201,13 @@ impl MockBroker {
 impl Broker for MockBroker {
     type Error = BrokerError;
     type OrderId = String;
+    type Config = ();
 
-    async fn ensure_ready(&self, _pool: &SqlitePool) -> Result<(), Self::Error> {
+    async fn ensure_ready(
+        &self,
+        _config: &Self::Config,
+        _pool: &SqlitePool,
+    ) -> Result<(), Self::Error> {
         if self.should_fail {
             Err(BrokerError::Unavailable {
                 message: self.failure_message.clone(),
@@ -191,6 +219,7 @@ impl Broker for MockBroker {
 
     async fn place_market_order(
         &self,
+        _config: &Self::Config,
         order: MarketOrder,
         _pool: &SqlitePool,
     ) -> Result<OrderPlacement<Self::OrderId>, Self::Error> {
@@ -210,6 +239,7 @@ impl Broker for MockBroker {
 
     async fn get_order_status(
         &self,
+        _config: &Self::Config,
         order_id: &Self::OrderId,
         _pool: &SqlitePool,
     ) -> Result<OrderStatus, Self::Error> {
@@ -224,6 +254,7 @@ impl Broker for MockBroker {
 
     async fn poll_pending_orders(
         &self,
+        _config: &Self::Config,
         _pool: &SqlitePool,
     ) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error> {
         if self.should_fail {

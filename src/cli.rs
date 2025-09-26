@@ -452,11 +452,46 @@ async fn process_found_trade<W: Write>(
         )?;
         ensure_authentication(pool, &env.schwab_auth, stdout).await?;
         writeln!(stdout, "🔄 Executing Schwab order...")?;
-        let broker = env.get_broker();
-        broker
-            .execute_order(env, pool, execution)
-            .await
-            .map_err(anyhow::Error::from)?;
+        // Convert SchwabExecution to broker trait types
+        let market_order = st0x_broker::MarketOrder {
+            symbol: st0x_broker::Symbol(execution.symbol.clone()),
+            shares: st0x_broker::Shares(execution.shares as u32),
+            direction: execution.direction,
+        };
+
+        if env.dry_run {
+            let broker = env.get_dry_run_broker();
+            let config = &();
+            broker
+                .ensure_ready(config, pool)
+                .await
+                .map_err(anyhow::Error::from)?;
+            let placement = broker
+                .place_market_order(config, market_order, pool)
+                .await
+                .map_err(anyhow::Error::from)?;
+            writeln!(
+                stdout,
+                "✅ Dry-run order placed with ID: {}",
+                placement.order_id
+            )?;
+        } else {
+            let broker = env.get_schwab_broker();
+            let config = &env.schwab_auth;
+            broker
+                .ensure_ready(config, pool)
+                .await
+                .map_err(anyhow::Error::from)?;
+            let placement = broker
+                .place_market_order(config, market_order, pool)
+                .await
+                .map_err(anyhow::Error::from)?;
+            writeln!(
+                stdout,
+                "✅ Schwab order placed with ID: {}",
+                placement.order_id
+            )?;
+        }
         writeln!(stdout, "🎯 Trade processing completed!")?;
     } else {
         writeln!(
@@ -503,7 +538,6 @@ mod tests {
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
     use crate::env::LogLevel;
     use crate::onchain::trade::OnchainTrade;
-    use crate::schwab::Direction;
     use crate::schwab::TradeStatus;
     use crate::schwab::execution::find_executions_by_symbol_and_status;
     use crate::test_utils::get_test_order;
@@ -518,6 +552,7 @@ mod tests {
     use clap::CommandFactory;
     use httpmock::MockServer;
     use serde_json::json;
+    use st0x_broker::Direction;
     use std::str::FromStr;
 
     #[tokio::test]

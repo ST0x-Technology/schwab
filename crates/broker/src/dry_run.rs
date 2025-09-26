@@ -37,14 +37,20 @@ impl Default for DryRunBroker {
 impl Broker for DryRunBroker {
     type Error = BrokerError;
     type OrderId = String;
+    type Config = ();
 
-    async fn ensure_ready(&self, _pool: &SqlitePool) -> Result<(), Self::Error> {
+    async fn ensure_ready(
+        &self,
+        _config: &Self::Config,
+        _pool: &SqlitePool,
+    ) -> Result<(), Self::Error> {
         warn!("[DRY-RUN] Broker readiness check - always ready in dry-run mode");
         Ok(())
     }
 
     async fn place_market_order(
         &self,
+        _config: &Self::Config,
         order: MarketOrder,
         _pool: &SqlitePool,
     ) -> Result<OrderPlacement<Self::OrderId>, Self::Error> {
@@ -66,6 +72,7 @@ impl Broker for DryRunBroker {
 
     async fn get_order_status(
         &self,
+        _config: &Self::Config,
         order_id: &Self::OrderId,
         _pool: &SqlitePool,
     ) -> Result<OrderStatus, Self::Error> {
@@ -78,6 +85,7 @@ impl Broker for DryRunBroker {
 
     async fn poll_pending_orders(
         &self,
+        _config: &Self::Config,
         _pool: &SqlitePool,
     ) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error> {
         warn!("[DRY-RUN] Polling pending orders - no pending orders in dry-run mode");

@@ -12,10 +12,10 @@ use crate::error::PersistenceError;
 use crate::error::{OnChainError, TradeValidationError};
 use crate::onchain::EvmEnv;
 use crate::onchain::io::{TokenizedEquitySymbol, TradeDetails};
-use crate::schwab::Direction;
 use crate::symbol::cache::SymbolCache;
 #[cfg(test)]
 use sqlx::SqlitePool;
+use st0x_broker::Direction;
 
 /// Union of all trade events
 #[derive(Debug, Clone, Serialize, Deserialize)]

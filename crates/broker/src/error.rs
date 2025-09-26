@@ -6,7 +6,7 @@ pub enum PersistenceError {
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
     #[error("Invalid direction in database: {0}")]
-    InvalidDirection(String),
+    InvalidDirection(#[from] crate::InvalidDirectionError),
     #[error("Invalid trade status in database: {0}")]
     InvalidTradeStatus(String),
     #[error("Invalid share quantity in database: {0}")]
@@ -29,5 +29,11 @@ pub enum OnChainError {
 impl From<sqlx::Error> for OnChainError {
     fn from(err: sqlx::Error) -> Self {
         Self::Persistence(PersistenceError::Database(err))
+    }
+}
+
+impl From<crate::InvalidDirectionError> for OnChainError {
+    fn from(err: crate::InvalidDirectionError) -> Self {
+        Self::Persistence(PersistenceError::InvalidDirection(err))
     }
 }

@@ -2,14 +2,15 @@
 use crate::error::OnChainError;
 #[cfg(test)]
 use crate::onchain::io::TokenizedEquitySymbol;
+use crate::schwab::TradeState;
 #[cfg(test)]
 use crate::schwab::TradeStatus;
 #[cfg(test)]
 use crate::schwab::shares_from_db_i64;
-use crate::schwab::{Direction, TradeState};
 use chrono::{DateTime, Utc};
 #[cfg(test)]
 use sqlx::SqlitePool;
+use st0x_broker::Direction;
 
 /// Links individual onchain trades to their contributing Schwab executions.
 ///

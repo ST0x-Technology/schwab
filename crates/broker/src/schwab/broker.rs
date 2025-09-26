@@ -3,9 +3,7 @@ use sqlx::SqlitePool;
 use tracing::{error, info};
 
 use super::auth::SchwabAuthEnv;
-use crate::{
-    Broker, BrokerError, Direction, MarketOrder, OrderPlacement, OrderStatus, OrderUpdate,
-};
+use crate::{Broker, BrokerError, MarketOrder, OrderPlacement, OrderStatus, OrderUpdate};
 
 /// Schwab broker implementation
 #[derive(Debug, Clone)]
@@ -30,8 +28,13 @@ impl SchwabBroker {
 impl Broker for SchwabBroker {
     type Error = BrokerError;
     type OrderId = String;
+    type Config = SchwabAuthEnv;
 
-    async fn ensure_ready(&self, pool: &SqlitePool) -> Result<(), Self::Error> {
+    async fn ensure_ready(
+        &self,
+        config: &Self::Config,
+        pool: &SqlitePool,
+    ) -> Result<(), Self::Error> {
         // Check if we can get a valid access token (validates token state)
         match self.validate_token_access(pool).await {
             Ok(_) => {
@@ -50,6 +53,7 @@ impl Broker for SchwabBroker {
 
     async fn place_market_order(
         &self,
+        config: &Self::Config,
         order: MarketOrder,
         pool: &SqlitePool,
     ) -> Result<OrderPlacement<Self::OrderId>, Self::Error> {
@@ -74,6 +78,7 @@ impl Broker for SchwabBroker {
 
     async fn get_order_status(
         &self,
+        config: &Self::Config,
         order_id: &Self::OrderId,
         _pool: &SqlitePool,
     ) -> Result<OrderStatus, Self::Error> {
@@ -86,6 +91,7 @@ impl Broker for SchwabBroker {
 
     async fn poll_pending_orders(
         &self,
+        config: &Self::Config,
         _pool: &SqlitePool,
     ) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error> {
         info!("Polling pending orders");

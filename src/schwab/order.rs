@@ -340,10 +340,10 @@ pub(crate) async fn handle_execution_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schwab::broker::{Broker, Schwab};
     use crate::test_utils::setup_test_db;
     use chrono::Utc;
     use serde_json::json;
+    use st0x_broker::{Broker, SchwabBroker};
 
     #[test]
     fn test_new_buy() {

@@ -6,7 +6,7 @@ use thiserror::Error;
 
 pub(crate) mod auth;
 pub mod broker;
-pub(crate) mod execution;
+pub mod execution;
 pub(crate) mod order;
 pub(crate) mod order_poller;
 pub(crate) mod order_status;
@@ -14,7 +14,6 @@ pub(crate) mod tokens;
 pub(crate) mod trade_state;
 
 pub(crate) use auth::SchwabAuthEnv;
-pub(crate) use order_poller::{OrderPollerConfig, OrderStatusPoller};
 pub(crate) use tokens::SchwabTokens;
 pub(crate) use trade_state::{HasTradeStatus, TradeState};
 
@@ -48,42 +47,6 @@ impl std::str::FromStr for TradeStatus {
             "FAILED" => Ok(Self::Failed),
             _ => Err(format!("Invalid trade status: {s}")),
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Direction {
-    Buy,
-    Sell,
-}
-
-impl Direction {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Buy => "BUY",
-            Self::Sell => "SELL",
-        }
-    }
-}
-
-impl std::str::FromStr for Direction {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "BUY" => Ok(Self::Buy),
-            "SELL" => Ok(Self::Sell),
-            _ => Err(format!("Invalid direction: {s}")),
-        }
-    }
-}
-
-impl serde::Serialize for Direction {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(self.as_str())
     }
 }
 
@@ -346,30 +309,5 @@ mod tests {
         ));
 
         mock.assert();
-    }
-
-    #[test]
-    fn test_schwab_instruction_as_str() {
-        assert_eq!(Direction::Buy.as_str(), "BUY");
-        assert_eq!(Direction::Sell.as_str(), "SELL");
-    }
-
-    #[test]
-    fn test_schwab_instruction_from_str() {
-        assert_eq!("BUY".parse::<Direction>().unwrap(), Direction::Buy);
-        assert_eq!("SELL".parse::<Direction>().unwrap(), Direction::Sell);
-
-        let result = "INVALID".parse::<Direction>();
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Invalid direction: INVALID");
-    }
-
-    #[test]
-    fn test_schwab_instruction_serialize() {
-        let buy_json = serde_json::to_string(&Direction::Buy).unwrap();
-        assert_eq!(buy_json, "\"BUY\"");
-
-        let sell_json = serde_json::to_string(&Direction::Sell).unwrap();
-        assert_eq!(sell_json, "\"SELL\"");
     }
 }

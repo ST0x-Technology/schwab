@@ -42,26 +42,34 @@ clean broker interface with generics for polymorphism.
 - [x] Add MockBroker temporarily for compilation
 - [x] Ensure all tests compile and pass
 
-## Task 4: Reconcile Conflicting Broker Traits (CURRENT)
+## Task 4: Reconcile Conflicting Broker Traits and Remove Duplicates (CURRENT)
 
 After rebasing on the dry-run feature branch, we have two conflicting broker
-traits that need to be reconciled:
+traits and duplicate types that need to be reconciled:
 
 - New trait: `crates/broker/src/lib.rs` (the abstraction we're building)
 - Old trait: `src/schwab/broker.rs` (added for dry-run mode with `Schwab` and
   `LogBroker`)
+- Duplicate types: `Direction` enum exists in both `src/schwab/mod.rs` and
+  `crates/broker/src/lib.rs`
 
 - [x] Remove the old broker trait from `src/schwab/broker.rs`
 - [x] Port `LogBroker` dry-run implementation to new trait as `DryRunBroker` in
       `crates/broker/`
 - [x] Update `src/env.rs` to use the new broker trait from `st0x_broker` crate
-- [ ] Remove `DynBroker` type alias and use generics instead of trait objects
+- [x] Remove `DynBroker` type alias and use generics instead of trait objects
 - [x] Fix import conflict in `src/conductor.rs` line 21 (both traits imported)
-- [ ] Update all conductor functions to use generic `B: Broker` parameter
+- [x] Update all conductor functions to use generic `B: Broker` parameter
 - [x] Migrate existing `Schwab` implementation to implement the new `Broker`
       trait
-- [ ] Add `execute_order` method to `Broker` trait for compatibility
-- [ ] Update `env.rs` to return concrete broker types or use enum dispatch
+- [ ] Remove duplicate `Direction` enum from `src/schwab/mod.rs`
+- [ ] Move ALL remaining schwab module code to broker crate (execution,
+      order_poller, etc.)
+- [ ] Update all imports to use `st0x_broker::Direction` instead of
+      `crate::schwab::Direction`
+- [ ] Create adapter functions for SchwabExecution conversion instead of adding
+      to trait
+- [x] Update `env.rs` to return concrete broker types
 - [ ] Ensure dry-run mode works with `--dry-run` flag using new trait
 - [ ] Verify real Schwab execution path is preserved
 - [ ] Run tests to ensure nothing breaks

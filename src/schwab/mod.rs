@@ -52,42 +52,6 @@ impl std::str::FromStr for TradeStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Direction {
-    Buy,
-    Sell,
-}
-
-impl Direction {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Buy => "BUY",
-            Self::Sell => "SELL",
-        }
-    }
-}
-
-impl std::str::FromStr for Direction {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "BUY" => Ok(Self::Buy),
-            "SELL" => Ok(Self::Sell),
-            _ => Err(format!("Invalid direction: {s}")),
-        }
-    }
-}
-
-impl serde::Serialize for Direction {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
 #[derive(Error, Debug)]
 pub(crate) enum SchwabError {
     #[error("Failed to create header value: {0}")]

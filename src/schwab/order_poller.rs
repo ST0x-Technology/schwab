@@ -6,13 +6,13 @@ use tokio::sync::watch;
 use tokio::time::{Interval, interval};
 use tracing::{debug, error, info};
 
-use super::broker::Broker;
 use super::execution::{
     find_execution_by_id, find_executions_by_symbol_and_status,
     update_execution_status_within_transaction,
 };
 use super::{SchwabAuthEnv, SchwabError, TradeState};
 use crate::lock::{clear_execution_lease, clear_pending_execution_id};
+use st0x_broker::Broker;
 
 #[derive(Debug, Clone)]
 pub struct OrderPollerConfig {
@@ -339,12 +339,12 @@ mod tests {
     use super::*;
     use crate::schwab::Direction;
     use crate::schwab::TradeStatus;
-    use crate::schwab::broker::Schwab;
     use crate::schwab::execution::SchwabExecution;
     use crate::test_utils::setup_test_db;
     use httpmock::Mock;
     use httpmock::prelude::*;
     use serde_json::json;
+    use st0x_broker::SchwabBroker;
     use tokio::sync::watch;
 
     #[tokio::test]
