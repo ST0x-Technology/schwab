@@ -40,22 +40,6 @@ pub struct OnchainTrade {
 }
 
 impl OnchainTrade {
-    /// Calculate total gas fee in ETH from stored values
-    pub fn gas_fee_eth(&self) -> Option<f64> {
-        match (self.gas_used, self.effective_gas_price) {
-            (Some(gas), Some(price)) => {
-                // Use safe conversion for gas fee calculation
-                // Gas values are typically much smaller than the precision limits
-                #[allow(clippy::cast_precision_loss)]
-                let gas_f64 = gas as f64;
-                #[allow(clippy::cast_precision_loss)]
-                let price_f64 = price as f64;
-                Some((gas_f64 * price_f64) / 1e18)
-            }
-            _ => None,
-        }
-    }
-
     pub async fn save_within_transaction(
         &self,
         sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -629,66 +613,5 @@ mod tests {
 
         let count = OnchainTrade::db_count(&pool).await.unwrap();
         assert_eq!(count, 5);
-    }
-
-    #[test]
-    fn test_gas_fee_eth_calculation() {
-        // Test with gas values present
-        let trade_with_gas = OnchainTrade {
-            id: None,
-            tx_hash: fixed_bytes!(
-                "0x1234567890123456789012345678901234567890123456789012345678901234"
-            ),
-            log_index: 1,
-            symbol: "AAPL0x".parse::<TokenizedEquitySymbol>().unwrap(),
-            amount: 1.0,
-            direction: Direction::Buy,
-            price_usdc: 150.0,
-            block_timestamp: None,
-            created_at: None,
-            gas_used: Some(21000),                    // Standard transfer gas
-            effective_gas_price: Some(2_000_000_000), // 2 gwei in wei
-        };
-
-        let expected_fee = 21000.0 * 2_000_000_000.0 / 1e18; // 0.000042 ETH
-        assert!((trade_with_gas.gas_fee_eth().unwrap() - expected_fee).abs() < f64::EPSILON);
-
-        // Test with no gas values
-        let trade_without_gas = OnchainTrade {
-            id: None,
-            tx_hash: fixed_bytes!(
-                "0x1234567890123456789012345678901234567890123456789012345678901234"
-            ),
-            log_index: 1,
-            symbol: "AAPL0x".parse::<TokenizedEquitySymbol>().unwrap(),
-            amount: 1.0,
-            direction: Direction::Buy,
-            price_usdc: 150.0,
-            block_timestamp: None,
-            created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
-        };
-
-        assert!(trade_without_gas.gas_fee_eth().is_none());
-
-        // Test with only one gas value (should return None)
-        let trade_partial_gas = OnchainTrade {
-            id: None,
-            tx_hash: fixed_bytes!(
-                "0x1234567890123456789012345678901234567890123456789012345678901234"
-            ),
-            log_index: 1,
-            symbol: "AAPL0x".parse::<TokenizedEquitySymbol>().unwrap(),
-            amount: 1.0,
-            direction: Direction::Buy,
-            price_usdc: 150.0,
-            block_timestamp: None,
-            created_at: None,
-            gas_used: Some(21000),
-            effective_gas_price: None,
-        };
-
-        assert!(trade_partial_gas.gas_fee_eth().is_none());
     }
 }
