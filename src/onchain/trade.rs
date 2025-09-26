@@ -33,6 +33,7 @@ pub struct OnchainTrade {
     pub amount: f64,
     pub direction: Direction,
     pub price_usdc: f64,
+    pub block_timestamp: Option<DateTime<Utc>>,
     pub created_at: Option<DateTime<Utc>>,
 }
 
@@ -47,17 +48,19 @@ impl OnchainTrade {
 
         let direction_str = self.direction.as_str();
         let symbol_str = self.symbol.to_string();
+        let block_timestamp_naive = self.block_timestamp.map(|dt| dt.naive_utc());
         let result = sqlx::query!(
             r#"
-            INSERT INTO onchain_trades (tx_hash, log_index, symbol, amount, direction, price_usdc)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            INSERT INTO onchain_trades (tx_hash, log_index, symbol, amount, direction, price_usdc, block_timestamp)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
             "#,
             tx_hash_str,
             log_index_i64,
             symbol_str,
             self.amount,
             direction_str,
-            self.price_usdc
+            self.price_usdc,
+            block_timestamp_naive
         )
         .execute(&mut **sql_tx)
         .await?;
@@ -75,7 +78,7 @@ impl OnchainTrade {
         #[allow(clippy::cast_possible_wrap)]
         let log_index_i64 = log_index as i64;
         let row = sqlx::query!(
-            "SELECT id, tx_hash, log_index, symbol, amount, direction, price_usdc, created_at FROM onchain_trades WHERE tx_hash = ?1 AND log_index = ?2",
+            "SELECT id, tx_hash, log_index, symbol, amount, direction, price_usdc, block_timestamp, created_at FROM onchain_trades WHERE tx_hash = ?1 AND log_index = ?2",
             tx_hash_str,
             log_index_i64
         )
@@ -105,6 +108,9 @@ impl OnchainTrade {
             amount: row.amount,
             direction,
             price_usdc: row.price_usdc,
+            block_timestamp: row
+                .block_timestamp
+                .map(|naive_dt| DateTime::from_naive_utc_and_offset(naive_dt, Utc)),
             created_at: row
                 .created_at
                 .map(|naive_dt| DateTime::from_naive_utc_and_offset(naive_dt, Utc)),
@@ -182,6 +188,10 @@ impl OnchainTrade {
             amount: trade_details.equity_amount().value(),
             direction: trade_details.direction(),
             price_usdc: price_per_share_usdc,
+            #[allow(clippy::cast_possible_wrap)]
+            block_timestamp: log
+                .block_timestamp
+                .and_then(|ts| DateTime::from_timestamp(ts as i64, 0)),
             created_at: None,
         };
 
@@ -326,6 +336,7 @@ mod tests {
             amount: 10.0,
             direction: Direction::Sell,
             price_usdc: 150.25,
+            block_timestamp: DateTime::from_timestamp(1_672_531_200, 0), // Jan 1, 2023 00:00:00 UTC
             created_at: None,
         };
 
@@ -345,6 +356,7 @@ mod tests {
         assert!((found.amount - trade.amount).abs() < f64::EPSILON);
         assert_eq!(found.direction, trade.direction);
         assert!((found.price_usdc - trade.price_usdc).abs() < f64::EPSILON);
+        assert_eq!(found.block_timestamp, trade.block_timestamp);
         assert!(found.id.is_some());
         assert!(found.created_at.is_some());
     }
@@ -408,6 +420,7 @@ mod tests {
             amount: 10.0,
             direction: Direction::Buy,
             price_usdc: 150.0,
+            block_timestamp: DateTime::from_timestamp(1_672_531_800, 0), // Jan 1, 2023 00:10:00 UTC
             created_at: None,
         };
 
@@ -442,6 +455,7 @@ mod tests {
             amount: 10.0,
             direction: Direction::Buy,
             price_usdc: 150.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -554,6 +568,7 @@ mod tests {
                 amount: 10.0,
                 direction: Direction::Buy,
                 price_usdc: 150.0,
+                block_timestamp: None,
                 created_at: None,
             };
 

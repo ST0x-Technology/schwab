@@ -587,6 +587,7 @@ mod tests {
             amount: 0.5,
             direction: Direction::Sell,
             price_usdc: 150.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -616,6 +617,7 @@ mod tests {
             amount: 1.5,
             direction: Direction::Sell,
             price_usdc: 300.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -647,6 +649,7 @@ mod tests {
             amount: 0.3,
             direction: Direction::Sell,
             price_usdc: 150.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -663,6 +666,7 @@ mod tests {
             amount: 0.4,
             direction: Direction::Sell,
             price_usdc: 150.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -679,6 +683,7 @@ mod tests {
             amount: 0.4,
             direction: Direction::Sell,
             price_usdc: 150.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -711,6 +716,7 @@ mod tests {
             amount: 1.0,
             direction: Direction::Buy,
             price_usdc: 100.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -733,6 +739,7 @@ mod tests {
             amount: 1.5,
             direction: Direction::Sell,
             price_usdc: 150.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -757,6 +764,7 @@ mod tests {
             amount: 1.5,
             direction: Direction::Buy,
             price_usdc: 300.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -797,6 +805,7 @@ mod tests {
             amount: 1.5,
             direction: Direction::Sell,
             price_usdc: 150.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -845,6 +854,7 @@ mod tests {
             amount: 0.8,
             direction: Direction::Sell,
             price_usdc: 150.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -858,6 +868,7 @@ mod tests {
             amount: 0.3,
             direction: Direction::Sell,
             price_usdc: 150.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -910,6 +921,7 @@ mod tests {
             amount: 0.8,
             direction: Direction::Sell,
             price_usdc: 15000.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -923,6 +935,7 @@ mod tests {
             amount: 0.8,
             direction: Direction::Sell,
             price_usdc: 15000.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -1027,6 +1040,7 @@ mod tests {
             amount: 1.5,
             direction: Direction::Sell,
             price_usdc: 150.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -1064,6 +1078,7 @@ mod tests {
                 amount: 0.3,
                 direction: Direction::Buy,
                 price_usdc: 300.0,
+                block_timestamp: None,
                 created_at: None,
             },
             OnchainTrade {
@@ -1076,6 +1091,7 @@ mod tests {
                 amount: 0.4,
                 direction: Direction::Buy,
                 price_usdc: 305.0,
+                block_timestamp: None,
                 created_at: None,
             },
             OnchainTrade {
@@ -1088,6 +1104,7 @@ mod tests {
                 amount: 0.5,
                 direction: Direction::Buy,
                 price_usdc: 310.0,
+                block_timestamp: None,
                 created_at: None,
             },
         ];
@@ -1149,6 +1166,7 @@ mod tests {
                 amount: 0.4, // Below threshold
                 direction: Direction::Sell,
                 price_usdc: 150.0,
+                block_timestamp: None,
                 created_at: None,
             },
             OnchainTrade {
@@ -1161,6 +1179,7 @@ mod tests {
                 amount: 0.8, // Combined: 0.4 + 0.8 = 1.2, triggers execution of 1 share
                 direction: Direction::Sell,
                 price_usdc: 155.0,
+                block_timestamp: None,
                 created_at: None,
             },
         ];
@@ -1222,6 +1241,7 @@ mod tests {
             amount: 1.2,
             direction: Direction::Buy,
             price_usdc: 800.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -1264,6 +1284,7 @@ mod tests {
             amount: 1.5,
             direction: Direction::Buy,
             price_usdc: 150.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -1277,6 +1298,7 @@ mod tests {
             amount: 1.5,
             direction: Direction::Sell,
             price_usdc: 155.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -1363,6 +1385,7 @@ mod tests {
             amount: 1.5,
             direction: Direction::Sell,
             price_usdc: 150.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -1570,6 +1593,7 @@ mod tests {
             amount: 0.8,
             direction: Direction::Sell,
             price_usdc: 150.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -1670,6 +1694,7 @@ mod tests {
             amount: 0.6,
             direction: Direction::Sell,
             price_usdc: 120.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -1683,6 +1708,7 @@ mod tests {
             amount: 0.5,
             direction: Direction::Sell,
             price_usdc: 100.0,
+            block_timestamp: None,
             created_at: None,
         };
 

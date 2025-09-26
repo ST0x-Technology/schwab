@@ -105,6 +105,7 @@ impl OnchainTradeBuilder {
                 amount: 1.0,
                 direction: Direction::Buy,
                 price_usdc: 150.0,
+                block_timestamp: None,
                 created_at: None,
             },
         }

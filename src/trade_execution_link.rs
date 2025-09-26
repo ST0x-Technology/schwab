@@ -323,6 +323,7 @@ mod tests {
             amount: 1.5,
             direction: Direction::Sell,
             price_usdc: 150.0,
+            block_timestamp: None,
             created_at: None,
         };
 
@@ -381,6 +382,7 @@ mod tests {
                 amount: 0.5,
                 direction: Direction::Buy,
                 price_usdc: 300.0,
+                block_timestamp: None,
                 created_at: None,
             },
             OnchainTrade {
@@ -393,6 +395,7 @@ mod tests {
                 amount: 0.8,
                 direction: Direction::Buy,
                 price_usdc: 305.0,
+                block_timestamp: None,
                 created_at: None,
             },
         ];
@@ -469,6 +472,7 @@ mod tests {
                 amount,
                 direction: Direction::Sell,
                 price_usdc: 150.0,
+                block_timestamp: None,
                 created_at: None,
             };
             let trade_id = trade.save_within_transaction(&mut sql_tx).await.unwrap();
@@ -521,6 +525,7 @@ mod tests {
             amount: 1.0,
             direction: Direction::Buy,
             price_usdc: 150.0,
+            block_timestamp: None,
             created_at: None,
         };
 
