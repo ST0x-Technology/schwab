@@ -6,7 +6,11 @@ use tracing::Level;
 use crate::onchain::EvmEnv;
 use crate::schwab::OrderPollerConfig;
 use crate::schwab::SchwabAuthEnv;
-use crate::schwab::broker::{DynBroker, LogBroker, Schwab};
+use st0x_broker::{Broker, DryRunBroker, SchwabBroker};
+
+/// Type alias for a dynamic broker trait object wrapped in Arc
+pub(crate) type DynBroker =
+    Arc<dyn Broker<Error = st0x_broker::BrokerError, OrderId = String> + Send + Sync>;
 
 #[derive(clap::ValueEnum, Debug, Clone)]
 pub enum LogLevel {
@@ -77,9 +81,9 @@ impl Env {
 
     pub(crate) fn get_broker(&self) -> DynBroker {
         if self.dry_run {
-            Arc::new(LogBroker::new())
+            Arc::new(DryRunBroker::new())
         } else {
-            Arc::new(Schwab)
+            Arc::new(SchwabBroker::new(self.schwab_auth.clone()))
         }
     }
 }
@@ -167,12 +171,12 @@ pub mod tests {
         let mut env = create_test_env();
         env.dry_run = false;
         let broker = env.get_broker();
-        assert_eq!(format!("{broker:?}"), "Schwab");
+        assert!(format!("{broker:?}").contains("SchwabBroker"));
 
-        // Test dry_run = true (should return LogBroker)
+        // Test dry_run = true (should return DryRunBroker)
         env.dry_run = true;
         let broker = env.get_broker();
-        assert!(format!("{broker:?}").contains("LogBroker"));
+        assert!(format!("{broker:?}").contains("DryRunBroker"));
     }
 
     #[test]

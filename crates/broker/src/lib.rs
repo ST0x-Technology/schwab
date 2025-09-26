@@ -2,10 +2,12 @@ use async_trait::async_trait;
 use sqlx::SqlitePool;
 use std::fmt::{Debug, Display};
 
+pub mod dry_run;
 pub mod error;
 pub mod order_state;
 pub mod schwab;
 
+pub use dry_run::DryRunBroker;
 pub use error::{OnChainError, PersistenceError};
 pub use order_state::OrderState;
 pub use schwab::auth::SchwabAuthEnv;
@@ -127,20 +129,28 @@ pub enum BrokerError {
 pub trait Broker: Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
     type OrderId: Display + Debug + Send + Sync + Clone;
+    type Config: Send + Sync + 'static;
 
-    async fn ensure_ready(&self, pool: &SqlitePool) -> Result<(), Self::Error>;
+    async fn ensure_ready(
+        &self,
+        config: &Self::Config,
+        pool: &SqlitePool,
+    ) -> Result<(), Self::Error>;
     async fn place_market_order(
         &self,
+        config: &Self::Config,
         order: MarketOrder,
         pool: &SqlitePool,
     ) -> Result<OrderPlacement<Self::OrderId>, Self::Error>;
     async fn get_order_status(
         &self,
+        config: &Self::Config,
         order_id: &Self::OrderId,
         pool: &SqlitePool,
     ) -> Result<OrderStatus, Self::Error>;
     async fn poll_pending_orders(
         &self,
+        config: &Self::Config,
         pool: &SqlitePool,
     ) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error>;
 }
