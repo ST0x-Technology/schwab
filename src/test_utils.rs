@@ -107,6 +107,8 @@ impl OnchainTradeBuilder {
                 price_usdc: 150.0,
                 block_timestamp: None,
                 created_at: None,
+                gas_used: None,
+                effective_gas_price: None,
             },
         }
     }

@@ -1074,8 +1074,11 @@ mod tests {
         output_symbol: &str,
     ) -> impl Provider + Clone {
         let asserter = Asserter::new();
+        // Add mock transaction receipt for gas tracking - first call from try_from_tx_hash
         asserter.push_success(&mock_data.receipt_json);
         asserter.push_success(&json!([mock_data.after_clear_log]));
+        // Add mock transaction receipt for gas tracking - second call from try_from_order_and_fill_details
+        asserter.push_success(&mock_data.receipt_json);
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &input_symbol.to_string(),
         ));
@@ -1752,8 +1755,11 @@ mod tests {
 
         // Set up the mock provider for first call
         let asserter1 = Asserter::new();
+        // Add mock transaction receipt for gas tracking - first call from try_from_tx_hash
         asserter1.push_success(&mock_data.receipt_json);
         asserter1.push_success(&json!([mock_data.after_clear_log]));
+        // Add mock transaction receipt for gas tracking - second call from try_from_order_and_fill_details
+        asserter1.push_success(&mock_data.receipt_json);
         asserter1.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
         ));
@@ -1786,8 +1792,11 @@ mod tests {
         // Note: We still need to mock the provider responses because the function will still
         // fetch the transaction data, but it should detect the duplicate in the database
         let asserter2 = Asserter::new();
+        // Add mock transaction receipt for gas tracking - first call from try_from_tx_hash
         asserter2.push_success(&mock_data.receipt_json);
         asserter2.push_success(&json!([mock_data.after_clear_log]));
+        // Add mock transaction receipt for gas tracking - second call from try_from_order_and_fill_details
+        asserter2.push_success(&mock_data.receipt_json);
         asserter2.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
         ));
@@ -2030,6 +2039,8 @@ mod tests {
             price_usdc: 20000.0,
             block_timestamp: None,
             created_at: None,
+            gas_used: None,
+            effective_gas_price: None,
         };
 
         let trade2 = trade1.clone();

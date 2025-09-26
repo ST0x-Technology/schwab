@@ -934,6 +934,8 @@ mod tests {
             price_usdc: 20000.0,
             block_timestamp: None,
             created_at: None,
+            gas_used: None,
+            effective_gas_price: None,
         };
         let mut sql_tx = pool.begin().await.unwrap();
         existing_trade
