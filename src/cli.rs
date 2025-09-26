@@ -8,12 +8,15 @@ use crate::env::{Env, LogLevel};
 use crate::error::OnChainError;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
 use crate::schwab::SchwabAuthEnv;
+use crate::schwab::market_hours::{MarketStatus as MarketStatusEnum, fetch_market_hours};
 use crate::schwab::order::{Instruction, Order, execute_schwab_order};
 use crate::schwab::run_oauth_flow;
 use crate::schwab::tokens::SchwabTokens;
 use crate::symbol::cache::SymbolCache;
 use alloy::primitives::B256;
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
+use chrono::Utc;
+use chrono_tz::US::Eastern;
 
 #[derive(Debug, Error)]
 pub enum CliError {
@@ -62,6 +65,12 @@ pub enum Commands {
     },
     /// Perform Charles Schwab OAuth authentication flow
     Auth,
+    /// Check current market status and hours
+    MarketStatus {
+        /// Date to check market hours for (format: YYYY-MM-DD, defaults to current day)
+        #[arg(long = "date")]
+        date: Option<String>,
+    },
 }
 
 #[derive(Debug, Parser)]
@@ -206,9 +215,86 @@ async fn run_command_with_writers<W: Write>(
                 }
             }
         }
+        Commands::MarketStatus { date } => {
+            info!(
+                "Checking market status for date: {:?}",
+                date.as_deref().unwrap_or("today")
+            );
+            ensure_authentication(pool, &env.schwab_auth, stdout).await?;
+            display_market_status(&env, pool, date.as_deref(), stdout).await?;
+        }
     }
 
     info!("CLI operation completed successfully");
+    Ok(())
+}
+
+async fn display_market_status<W: Write>(
+    env: &Env,
+    pool: &SqlitePool,
+    date: Option<&str>,
+    stdout: &mut W,
+) -> anyhow::Result<()> {
+    match fetch_market_hours(&env.schwab_auth, pool, date).await {
+        Ok(market_hours) => {
+            let status = market_hours.current_status();
+            let date_display = market_hours.date.format("%A, %B %d, %Y");
+
+            writeln!(stdout, "Market Status: {}", status.as_str())?;
+
+            if market_hours.is_open {
+                if let (Some(start), Some(end)) = (market_hours.start, market_hours.end) {
+                    let start_et = start.format("%I:%M %p ET");
+                    let end_et = end.format("%I:%M %p ET");
+
+                    writeln!(
+                        stdout,
+                        "{date_display}: Regular Hours: {start_et} - {end_et}"
+                    )?;
+
+                    let now = Utc::now().with_timezone(&Eastern);
+                    if status == MarketStatusEnum::Open {
+                        if now < end {
+                            let time_until_close = end.signed_duration_since(now);
+                            let hours = time_until_close.num_hours();
+                            let minutes = time_until_close.num_minutes() % 60;
+
+                            if hours > 0 {
+                                writeln!(stdout, "Market closes in {hours}h {minutes}m")?;
+                            } else {
+                                writeln!(stdout, "Market closes in {minutes}m")?;
+                            }
+                        }
+                    } else if now < start {
+                        let time_until_open = start.signed_duration_since(now);
+                        let days = time_until_open.num_days();
+                        let hours = time_until_open.num_hours() % 24;
+                        let minutes = time_until_open.num_minutes() % 60;
+
+                        if days > 0 {
+                            writeln!(stdout, "Market opens in {days}d {hours}h {minutes}m")?;
+                        } else if hours > 0 {
+                            writeln!(stdout, "Market opens in {hours}h {minutes}m")?;
+                        } else {
+                            writeln!(stdout, "Market opens in {minutes}m")?;
+                        }
+                    }
+                }
+            } else {
+                writeln!(stdout, "{date_display}: Market Closed")?;
+
+                if date.is_none() {
+                    writeln!(stdout, "Next trading day: Check weekday market hours")?;
+                }
+            }
+        }
+        Err(e) => {
+            error!("Failed to fetch market hours: {e:?}");
+            writeln!(stdout, "❌ Failed to fetch market hours: {e}")?;
+            return Err(e.into());
+        }
+    }
+
     Ok(())
 }
 
@@ -351,7 +437,9 @@ async fn process_found_trade<W: Write>(
 
     writeln!(stdout, "🔄 Processing trade with TradeAccumulator...")?;
 
-    let execution = accumulator::process_onchain_trade(pool, onchain_trade).await?;
+    let mut sql_tx = pool.begin().await?;
+    let execution = accumulator::process_onchain_trade(&mut sql_tx, onchain_trade).await?;
+    sql_tx.commit().await?;
 
     if let Some(execution) = execution {
         let execution_id = execution
@@ -385,10 +473,7 @@ fn display_trade_details<W: Write>(
     onchain_trade: &OnchainTrade,
     stdout: &mut W,
 ) -> anyhow::Result<()> {
-    let schwab_ticker = onchain_trade
-        .symbol
-        .strip_suffix("0x")
-        .unwrap_or(&onchain_trade.symbol);
+    let schwab_ticker = onchain_trade.symbol.extract_base();
 
     writeln!(stdout, "✅ Found opposite-side trade opportunity:")?;
     writeln!(stdout, "   Transaction: {}", onchain_trade.tx_hash)?;
@@ -420,6 +505,7 @@ mod tests {
     use crate::schwab::execution::find_executions_by_symbol_and_status;
     use crate::test_utils::get_test_order;
     use crate::test_utils::setup_test_db;
+    use crate::tokenized_symbol;
     use crate::{onchain::EvmEnv, schwab::SchwabAuthEnv};
     use alloy::hex;
     use alloy::primitives::{IntoLogData, U256, address, fixed_bytes};
@@ -1578,7 +1664,7 @@ mod tests {
         let trade = OnchainTrade::find_by_tx_hash_and_log_index(&pool, tx_hash, 0)
             .await
             .unwrap();
-        assert_eq!(trade.symbol, "AAPL0x"); // Tokenized symbol
+        assert_eq!(trade.symbol.to_string(), "AAPL0x"); // Tokenized symbol
         assert!((trade.amount - 9.0).abs() < f64::EPSILON); // Amount from the test data
 
         // Verify SchwabExecution was created (due to TradeAccumulator)
@@ -1685,7 +1771,7 @@ mod tests {
         let trade = OnchainTrade::find_by_tx_hash_and_log_index(&pool, tx_hash, 0)
             .await
             .unwrap();
-        assert_eq!(trade.symbol, "TSLA0x"); // Tokenized symbol
+        assert_eq!(trade.symbol.to_string(), "TSLA0x"); // Tokenized symbol
         assert!((trade.amount - 5.0).abs() < f64::EPSILON); // Amount from the test data
 
         // Verify stdout output for first call
@@ -1744,6 +1830,185 @@ mod tests {
         assert!(help_output.contains("authentication"));
     }
 
+    #[test]
+    fn test_market_status_command_cli_help_text() {
+        let mut cmd = Cli::command();
+
+        // Verify that the market-status command is properly defined in the CLI
+        let help_output = cmd.render_help().to_string();
+        assert!(help_output.contains("market-status"));
+        assert!(help_output.contains("Check current market status and hours"));
+
+        // Test specific subcommand help
+        let subcommand_help = cmd
+            .find_subcommand_mut("market-status")
+            .unwrap()
+            .render_help()
+            .to_string();
+        assert!(subcommand_help.contains("Date to check market hours for"));
+        assert!(subcommand_help.contains("YYYY-MM-DD"));
+        assert!(subcommand_help.contains("defaults to current day"));
+    }
+
+    #[tokio::test]
+    async fn test_market_status_command_open_market() {
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let mock_response = json!({
+            "equity": {
+                "EQ": {
+                    "date": "2025-01-03",
+                    "marketType": "EQUITY",
+                    "exchange": "NYSE",
+                    "category": "EQUITY",
+                    "product": "EQ",
+                    "productName": "Equity",
+                    "isOpen": true,
+                    "sessionHours": {
+                        "regularMarket": [{
+                            "start": "2025-01-03T09:30:00-05:00",
+                            "end": "2025-01-03T16:00:00-05:00"
+                        }]
+                    }
+                }
+            }
+        });
+
+        let mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/marketdata/v1/markets/equity")
+                .header("authorization", "Bearer test_access_token")
+                .header("accept", "application/json");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(mock_response);
+        });
+
+        let mut stdout = Vec::new();
+        let market_status_command = Commands::MarketStatus { date: None };
+
+        let result = run_command_with_writers(env, market_status_command, &pool, &mut stdout).await;
+
+        assert!(
+            result.is_ok(),
+            "Market status command should succeed: {result:?}"
+        );
+        mock.assert();
+
+        let stdout_str = String::from_utf8(stdout).unwrap();
+        assert!(stdout_str.contains("Market Status:"));
+        assert!(stdout_str.contains("Friday, January 03, 2025: Regular Hours:"));
+        assert!(stdout_str.contains("09:30 AM ET - 04:00 PM ET"));
+    }
+
+    #[tokio::test]
+    async fn test_market_status_command_closed_market() {
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let mock_response = json!({
+            "equity": {
+                "EQ": {
+                    "date": "2025-01-04",
+                    "marketType": "EQUITY",
+                    "exchange": "NYSE",
+                    "category": "EQUITY",
+                    "product": "EQ",
+                    "productName": "Equity",
+                    "isOpen": false
+                }
+            }
+        });
+
+        let mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/marketdata/v1/markets/equity")
+                .query_param("date", "2025-01-04")
+                .header("authorization", "Bearer test_access_token")
+                .header("accept", "application/json");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(mock_response);
+        });
+
+        let mut stdout = Vec::new();
+        let market_status_command = Commands::MarketStatus {
+            date: Some("2025-01-04".to_string()),
+        };
+
+        let result = run_command_with_writers(env, market_status_command, &pool, &mut stdout).await;
+
+        assert!(
+            result.is_ok(),
+            "Market status command should succeed: {result:?}"
+        );
+        mock.assert();
+
+        let stdout_str = String::from_utf8(stdout).unwrap();
+        assert!(stdout_str.contains("Market Status: CLOSED"));
+        assert!(stdout_str.contains("Saturday, January 04, 2025: Market Closed"));
+    }
+
+    #[tokio::test]
+    async fn test_market_status_command_authentication_failure() {
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+        // Don't set up tokens - should fail authentication
+
+        let mut stdout = Vec::new();
+        let market_status_command = Commands::MarketStatus { date: None };
+
+        let result = run_command_with_writers(env, market_status_command, &pool, &mut stdout).await;
+
+        assert!(
+            result.is_err(),
+            "Market status command should fail without authentication"
+        );
+
+        let stdout_str = String::from_utf8(stdout).unwrap();
+        assert!(
+            stdout_str.contains("no rows returned")
+                || stdout_str.contains("Authentication failed")
+                || stdout_str.contains("refresh token")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_market_status_command_api_error() {
+        let server = MockServer::start();
+        let env = create_test_env_for_cli(&server);
+        let pool = setup_test_db().await;
+        setup_test_tokens(&pool).await;
+
+        let mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/marketdata/v1/markets/equity");
+            then.status(500)
+                .header("content-type", "application/json")
+                .json_body(json!({"error": "Internal server error"}));
+        });
+
+        let mut stdout = Vec::new();
+        let market_status_command = Commands::MarketStatus { date: None };
+
+        let result = run_command_with_writers(env, market_status_command, &pool, &mut stdout).await;
+
+        assert!(
+            result.is_err(),
+            "Market status command should fail on API error"
+        );
+        mock.assert();
+
+        let stdout_str = String::from_utf8(stdout).unwrap();
+        assert!(stdout_str.contains("❌ Failed to fetch market hours"));
+    }
+
     #[tokio::test]
     async fn test_onchain_trade_database_duplicate_detection() {
         let pool = setup_test_db().await;
@@ -1755,7 +2020,7 @@ mod tests {
             id: None,
             tx_hash,
             log_index: 42,
-            symbol: "GOOG0x".to_string(),
+            symbol: tokenized_symbol!("GOOG0x"),
             amount: 2.5,
             direction: Direction::Buy,
             price_usdc: 20000.0,
@@ -1785,7 +2050,7 @@ mod tests {
 
         assert_eq!(trade.tx_hash, tx_hash);
         assert_eq!(trade.log_index, 42);
-        assert_eq!(trade.symbol, "GOOG0x");
+        assert_eq!(trade.symbol.to_string(), "GOOG0x");
         assert!((trade.amount - 2.5).abs() < f64::EPSILON);
         assert!((trade.price_usdc - 20000.0).abs() < f64::EPSILON);
     }

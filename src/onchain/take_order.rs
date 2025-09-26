@@ -47,6 +47,7 @@ mod tests {
     use crate::bindings::IOrderBookV4::{SignedContextV1, TakeOrderConfigV3, TakeOrderV2};
     use crate::symbol::cache::SymbolCache;
     use crate::test_utils::{get_test_log, get_test_order};
+    use crate::tokenized_symbol;
     use alloy::primitives::{U256, address, fixed_bytes};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
     use alloy::sol_types::SolCall;
@@ -101,7 +102,7 @@ mod tests {
         .unwrap();
 
         let trade = result.unwrap();
-        assert_eq!(trade.symbol, "AAPL0x");
+        assert_eq!(trade.symbol, tokenized_symbol!("AAPL0x"));
         assert!((trade.amount - 9.0).abs() < f64::EPSILON);
         assert_eq!(
             trade.tx_hash,
@@ -181,7 +182,7 @@ mod tests {
         .unwrap();
 
         let trade = result.unwrap();
-        assert_eq!(trade.symbol, "AAPL0x");
+        assert_eq!(trade.symbol, tokenized_symbol!("AAPL0x"));
         assert!((trade.amount - 5.0).abs() < f64::EPSILON);
     }
 
@@ -229,7 +230,7 @@ mod tests {
         .unwrap();
 
         let trade = result.unwrap();
-        assert_eq!(trade.symbol, "AAPL0x");
+        assert_eq!(trade.symbol, tokenized_symbol!("AAPL0x"));
         assert!((trade.amount - 15.0).abs() < f64::EPSILON);
         // Price should be 200 USDC / 15 shares = 13.333... USDC per share
         assert!((trade.price_usdc - 13.333_333_333_333_334).abs() < 0.001);

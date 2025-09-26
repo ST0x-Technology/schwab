@@ -6,6 +6,8 @@ use thiserror::Error;
 
 pub(crate) mod auth;
 pub(crate) mod execution;
+pub(crate) mod market_hours;
+pub(crate) mod market_hours_cache;
 pub(crate) mod order;
 pub(crate) mod order_poller;
 pub(crate) mod order_status;
