@@ -83,12 +83,33 @@ mod tests {
         let log = get_test_log();
 
         let asserter = Asserter::new();
+
+        // Add mock transaction receipt for gas tracking (must be first)
+        let tx_hash =
+            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        let receipt_json = serde_json::json!({
+            "transactionHash": format!("{:#x}", tx_hash),
+            "transactionIndex": "0x1",
+            "blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234",
+            "blockNumber": "0x1",
+            "from": "0x1234567890123456789012345678901234567890",
+            "to": "0x5678901234567890123456789012345678901234",
+            "gasUsed": "0x5208", // 21000 gas units
+            "effectiveGasPrice": "0x77359400", // 2 gwei in wei
+            "cumulativeGasUsed": "0x5208",
+            "status": "0x1",
+            "type": "0x2", // EIP-1559 transaction
+            "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+            "logs": []
+        });
+        asserter.push_success(&receipt_json);
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"AAPL0x".to_string(),
         ));
+
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
         let result = OnchainTrade::try_from_take_order_if_target_owner(
@@ -163,12 +184,33 @@ mod tests {
         let log = get_test_log();
 
         let asserter = Asserter::new();
+
+        // Add mock transaction receipt for gas tracking (must be first)
+        let tx_hash =
+            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        let receipt_json = serde_json::json!({
+            "transactionHash": format!("{:#x}", tx_hash),
+            "transactionIndex": "0x1",
+            "blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234",
+            "blockNumber": "0x1",
+            "from": "0x1234567890123456789012345678901234567890",
+            "to": "0x5678901234567890123456789012345678901234",
+            "gasUsed": "0x5208", // 21000 gas units
+            "effectiveGasPrice": "0x77359400", // 2 gwei in wei
+            "cumulativeGasUsed": "0x5208",
+            "status": "0x1",
+            "type": "0x2", // EIP-1559 transaction
+            "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+            "logs": []
+        });
+        asserter.push_success(&receipt_json);
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"AAPL0x".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
         ));
+
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
         let result = OnchainTrade::try_from_take_order_if_target_owner(
@@ -211,12 +253,33 @@ mod tests {
         let log = get_test_log();
 
         let asserter = Asserter::new();
+
+        // Add mock transaction receipt for gas tracking (must be first)
+        let tx_hash =
+            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        let receipt_json = serde_json::json!({
+            "transactionHash": format!("{:#x}", tx_hash),
+            "transactionIndex": "0x1",
+            "blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234",
+            "blockNumber": "0x1",
+            "from": "0x1234567890123456789012345678901234567890",
+            "to": "0x5678901234567890123456789012345678901234",
+            "gasUsed": "0x5208", // 21000 gas units
+            "effectiveGasPrice": "0x77359400", // 2 gwei in wei
+            "cumulativeGasUsed": "0x5208",
+            "status": "0x1",
+            "type": "0x2", // EIP-1559 transaction
+            "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+            "logs": []
+        });
+        asserter.push_success(&receipt_json);
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"AAPL0x".to_string(),
         ));
+
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
         let result = OnchainTrade::try_from_take_order_if_target_owner(
@@ -261,12 +324,33 @@ mod tests {
         let log = get_test_log();
 
         let asserter = Asserter::new();
+
+        // Add mock transaction receipt for gas tracking (must be first)
+        let tx_hash =
+            fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        let receipt_json = serde_json::json!({
+            "transactionHash": format!("{:#x}", tx_hash),
+            "transactionIndex": "0x1",
+            "blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234",
+            "blockNumber": "0x1",
+            "from": "0x1234567890123456789012345678901234567890",
+            "to": "0x5678901234567890123456789012345678901234",
+            "gasUsed": "0x5208", // 21000 gas units
+            "effectiveGasPrice": "0x77359400", // 2 gwei in wei
+            "cumulativeGasUsed": "0x5208",
+            "status": "0x1",
+            "type": "0x2", // EIP-1559 transaction
+            "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+            "logs": []
+        });
+        asserter.push_success(&receipt_json);
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
         ));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"AAPL0x".to_string(),
         ));
+
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
         let result = OnchainTrade::try_from_take_order_if_target_owner(
