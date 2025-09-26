@@ -2,11 +2,11 @@
 use crate::error::OnChainError;
 #[cfg(test)]
 use crate::onchain::io::TokenizedEquitySymbol;
-use crate::schwab::TradeState;
-#[cfg(test)]
-use crate::schwab::TradeStatus;
 #[cfg(test)]
 use crate::schwab::shares_from_db_i64;
+use crate::trade_state::TradeState;
+#[cfg(test)]
+use crate::trade_state::TradeStatus;
 use chrono::{DateTime, Utc};
 #[cfg(test)]
 use sqlx::SqlitePool;
@@ -303,7 +303,7 @@ pub struct AuditTrailEntry {
 mod tests {
     use super::*;
     use crate::onchain::OnchainTrade;
-    use crate::schwab::execution::SchwabExecution;
+    use crate::schwab::execution::OffchainExecution;
     use crate::test_utils::setup_test_db;
     use crate::tokenized_symbol;
     use alloy::primitives::fixed_bytes;
@@ -327,7 +327,7 @@ mod tests {
             created_at: None,
         };
 
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 1,
@@ -398,7 +398,7 @@ mod tests {
             },
         ];
 
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
             symbol: "MSFT".to_string(),
             shares: 1,
@@ -448,7 +448,7 @@ mod tests {
         // Simulate multiple small trades that together trigger one execution
         let trades = vec![(0.3, 1u64), (0.4, 2u64), (0.5, 3u64)];
 
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 1,
@@ -525,7 +525,7 @@ mod tests {
             created_at: None,
         };
 
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 1,

@@ -10,9 +10,9 @@ use chrono::Utc;
 #[cfg(test)]
 use super::execution::find_execution_by_id;
 use super::{
-    SchwabAuthEnv, SchwabError, SchwabTokens, TradeState,
-    execution::update_execution_status_within_transaction,
+    SchwabAuthEnv, SchwabError, SchwabTokens, execution::update_execution_status_within_transaction,
 };
+use crate::trade_state::TradeState;
 
 /// Response from Schwab order placement API.
 /// According to Schwab OpenAPI spec, successful order placement (201) returns
@@ -865,7 +865,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execution_success_handling() {
-        use super::super::execution::SchwabExecution;
+        use super::super::execution::OffchainExecution;
         use crate::schwab::Direction;
         use crate::schwab::TradeState;
 
@@ -873,7 +873,7 @@ mod tests {
 
         // Create a test execution using a transaction
         let mut sql_tx = pool.begin().await.unwrap();
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 100,
@@ -907,7 +907,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execution_failure_handling() {
-        use super::super::execution::SchwabExecution;
+        use super::super::execution::OffchainExecution;
         use crate::schwab::TradeState;
         use crate::schwab::{Direction, SchwabError};
 
@@ -915,7 +915,7 @@ mod tests {
 
         // Create a test execution using a transaction
         let mut sql_tx = pool.begin().await.unwrap();
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
             symbol: "TSLA".to_string(),
             shares: 50,

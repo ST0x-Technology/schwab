@@ -108,7 +108,7 @@ mod tests {
     use super::*;
     use crate::onchain::accumulator::save_within_transaction;
     use crate::onchain::position_calculator::PositionCalculator;
-    use crate::schwab::{Direction, TradeState, execution::SchwabExecution};
+    use crate::schwab::{Direction, TradeState, execution::OffchainExecution};
     use crate::test_utils::setup_test_db;
 
     #[tokio::test]
@@ -199,7 +199,7 @@ mod tests {
         let pool = setup_test_db().await;
 
         let symbol = EquitySymbol::new("AAPL").unwrap();
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
             symbol: symbol.to_string(),
             shares: 100,
@@ -327,7 +327,7 @@ mod tests {
         let pool = setup_test_db().await;
 
         let symbol = EquitySymbol::new("TSLA").unwrap();
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
             symbol: symbol.to_string(),
             shares: 100,

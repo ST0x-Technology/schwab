@@ -15,6 +15,7 @@ mod queue;
 pub mod schwab;
 mod symbol;
 mod trade_execution_link;
+mod trade_state;
 mod trading_hours_controller;
 
 #[cfg(test)]

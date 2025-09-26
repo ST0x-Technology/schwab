@@ -128,7 +128,7 @@ impl<B: Broker> OrderStatusPoller<B> {
 
     async fn poll_execution_status(
         &self,
-        execution: &crate::schwab::execution::SchwabExecution,
+        execution: &crate::schwab::execution::OffchainExecution,
     ) -> Result<(), SchwabError> {
         let Some(execution_id) = execution.id else {
             error!("Execution missing ID: {execution:?}");
@@ -339,7 +339,7 @@ mod tests {
     use super::*;
     use crate::schwab::Direction;
     use crate::schwab::TradeStatus;
-    use crate::schwab::execution::SchwabExecution;
+    use crate::schwab::execution::OffchainExecution;
     use crate::test_utils::setup_test_db;
     use httpmock::Mock;
     use httpmock::prelude::*;
@@ -404,7 +404,7 @@ mod tests {
         let pool = setup_test_db().await;
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 100,
@@ -462,9 +462,9 @@ mod tests {
                 }]));
         });
 
-        // Step 1: Create a SchwabExecution directly (simulating the result of onchain trade processing)
+        // Step 1: Create a OffchainExecution directly (simulating the result of onchain trade processing)
         // This reflects the real architecture where executions are created from onchain trades
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 100,
@@ -649,7 +649,7 @@ mod tests {
         let mut execution_ids = Vec::new();
 
         for i in 0..num_orders {
-            let execution = SchwabExecution {
+            let execution = OffchainExecution {
                 id: None,
                 symbol: format!("TEST{i}"), // Unique symbol for each execution
                 shares: 100 + (i * 10) as u64, // Varying share amounts
@@ -786,7 +786,7 @@ mod tests {
         };
         tokens.store(&pool).await.unwrap();
 
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
             symbol: "TSLA".to_string(),
             shares: 100,

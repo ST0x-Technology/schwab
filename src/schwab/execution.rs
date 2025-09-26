@@ -1,35 +1,57 @@
 use sqlx::SqlitePool;
 
-use super::{HasTradeStatus, TradeState, shares_from_db_i64};
 use crate::error::{OnChainError, PersistenceError};
-use st0x_broker::Direction;
+use crate::trade_state::{HasTradeStatus, TradeState, shares_from_db_i64};
+use st0x_broker::{Direction, SupportedBroker};
 
-/// Converts database row data to a SchwabExecution instance.
-/// Centralizes the conversion logic and casting operations.
-#[allow(clippy::too_many_arguments)]
-fn row_to_execution(
+struct ExecutionRow {
     id: i64,
     symbol: String,
     shares: i64,
-    direction: &str,
+    direction: String,
+    broker: String,
     order_id: Option<String>,
     price_cents: Option<i64>,
-    status: &str,
+    status: String,
     executed_at: Option<chrono::NaiveDateTime>,
-) -> Result<SchwabExecution, OnChainError> {
-    let parsed_direction = direction.parse().map_err(|err: String| {
-        OnChainError::Persistence(PersistenceError::InvalidDirection(err))
-    })?;
+}
+
+/// Converts database row data to an OffchainExecution instance.
+/// Centralizes the conversion logic and casting operations.
+fn row_to_execution(
+    ExecutionRow {
+        id,
+        symbol,
+        shares,
+        direction,
+        broker,
+        order_id,
+        price_cents,
+        status,
+        executed_at,
+    }: ExecutionRow,
+) -> Result<OffchainExecution, OnChainError> {
+    let parsed_direction = direction.parse()?;
+    let parsed_broker = match broker.as_str() {
+        "schwab" => SupportedBroker::Schwab,
+        "dry_run" => SupportedBroker::DryRun,
+        _ => {
+            return Err(OnChainError::Persistence(
+                PersistenceError::InvalidTradeStatus(format!("Unknown broker type: {}", broker)),
+            ));
+        }
+    };
     let status_enum = status.parse().map_err(|err: String| {
         OnChainError::Persistence(PersistenceError::InvalidTradeStatus(err))
     })?;
     let parsed_state = TradeState::from_db_row(status_enum, order_id, price_cents, executed_at)?;
 
-    Ok(SchwabExecution {
+    Ok(OffchainExecution {
         id: Some(id),
         symbol,
         shares: shares_from_db_i64(shares)?,
         direction: parsed_direction,
+        broker: parsed_broker,
         state: parsed_state,
     })
 }
@@ -50,11 +72,12 @@ const fn shares_to_db_i64(shares: u64) -> Result<i64, crate::error::PersistenceE
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SchwabExecution {
+pub(crate) struct OffchainExecution {
     pub(crate) id: Option<i64>,
     pub(crate) symbol: String,
     pub(crate) shares: u64,
     pub(crate) direction: Direction,
+    pub(crate) broker: SupportedBroker,
     pub(crate) state: TradeState,
 }
 
@@ -88,7 +111,7 @@ pub(crate) async fn find_executions_by_symbol_and_status<S: HasTradeStatus>(
     pool: &SqlitePool,
     symbol: &str,
     status: S,
-) -> Result<Vec<SchwabExecution>, OnChainError> {
+) -> Result<Vec<OffchainExecution>, OnChainError> {
     let status_str = status.status_str();
     if symbol.is_empty() {
         let rows = sqlx::query!(
@@ -100,16 +123,17 @@ pub(crate) async fn find_executions_by_symbol_and_status<S: HasTradeStatus>(
 
         rows.into_iter()
             .map(|row| {
-                row_to_execution(
-                    row.id.unwrap(),
-                    row.symbol,
-                    row.shares,
-                    &row.direction,
-                    row.order_id,
-                    row.price_cents,
-                    &row.status,
-                    row.executed_at,
-                )
+                row_to_execution(ExecutionRow {
+                    id: row.id.unwrap(),
+                    symbol: row.symbol,
+                    shares: row.shares,
+                    direction: row.direction,
+                    broker: row.broker,
+                    order_id: row.order_id,
+                    price_cents: row.price_cents,
+                    status: row.status,
+                    executed_at: row.executed_at,
+                })
             })
             .collect()
     } else {
@@ -123,16 +147,17 @@ pub(crate) async fn find_executions_by_symbol_and_status<S: HasTradeStatus>(
 
         rows.into_iter()
             .map(|row| {
-                row_to_execution(
-                    row.id.unwrap(),
-                    row.symbol,
-                    row.shares,
-                    &row.direction,
-                    row.order_id,
-                    row.price_cents,
-                    &row.status,
-                    row.executed_at,
-                )
+                row_to_execution(ExecutionRow {
+                    id: row.id.unwrap(),
+                    symbol: row.symbol,
+                    shares: row.shares,
+                    direction: row.direction,
+                    broker: row.broker,
+                    order_id: row.order_id,
+                    price_cents: row.price_cents,
+                    status: row.status,
+                    executed_at: row.executed_at,
+                })
             })
             .collect()
     }
@@ -141,29 +166,30 @@ pub(crate) async fn find_executions_by_symbol_and_status<S: HasTradeStatus>(
 pub(crate) async fn find_execution_by_id(
     pool: &SqlitePool,
     execution_id: i64,
-) -> Result<Option<SchwabExecution>, OnChainError> {
+) -> Result<Option<OffchainExecution>, OnChainError> {
     let row = sqlx::query!("SELECT * FROM offchain_trades WHERE id = ?1", execution_id)
         .fetch_optional(pool)
         .await?;
 
     if let Some(row) = row {
-        row_to_execution(
-            row.id,
-            row.symbol,
-            row.shares,
-            &row.direction,
-            row.order_id,
-            row.price_cents,
-            &row.status,
-            row.executed_at,
-        )
+        row_to_execution(ExecutionRow {
+            id: row.id,
+            symbol: row.symbol,
+            shares: row.shares,
+            direction: row.direction,
+            broker: row.broker,
+            order_id: row.order_id,
+            price_cents: row.price_cents,
+            status: row.status,
+            executed_at: row.executed_at,
+        })
         .map(Some)
     } else {
         Ok(None)
     }
 }
 
-impl SchwabExecution {
+impl OffchainExecution {
     pub(crate) async fn save_within_transaction(
         &self,
         sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -205,14 +231,14 @@ impl SchwabExecution {
 mod tests {
     use super::super::TradeState;
     use super::*;
-    use crate::test_utils::{SchwabExecutionBuilder, setup_test_db};
+    use crate::test_utils::{OffchainExecutionBuilder, setup_test_db};
     use chrono::Utc;
 
     #[tokio::test]
     async fn test_schwab_execution_save_and_find() {
         let pool = setup_test_db().await;
 
-        let execution = SchwabExecutionBuilder::new().build();
+        let execution = OffchainExecutionBuilder::new().build();
 
         let mut sql_tx = pool.begin().await.unwrap();
         let id = execution
@@ -235,7 +261,7 @@ mod tests {
     async fn test_find_by_symbol_and_status() {
         let pool = setup_test_db().await;
 
-        let execution1 = SchwabExecution {
+        let execution1 = OffchainExecution {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 50,
@@ -243,7 +269,7 @@ mod tests {
             state: TradeState::Pending,
         };
 
-        let execution2 = SchwabExecution {
+        let execution2 = OffchainExecution {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 25,
@@ -255,7 +281,7 @@ mod tests {
             },
         };
 
-        let execution3 = SchwabExecution {
+        let execution3 = OffchainExecution {
             id: None,
             symbol: "MSFT".to_string(),
             shares: 10,
@@ -325,7 +351,7 @@ mod tests {
     async fn test_find_by_symbol_and_status_nonexistent_matches() {
         let pool = setup_test_db().await;
 
-        let execution = SchwabExecutionBuilder::new().build();
+        let execution = OffchainExecutionBuilder::new().build();
 
         let mut sql_tx = pool.begin().await.unwrap();
         execution
@@ -351,21 +377,21 @@ mod tests {
 
         // Add executions with different symbols and statuses
         let executions = vec![
-            SchwabExecution {
+            OffchainExecution {
                 id: None,
                 symbol: "AAPL".to_string(),
                 shares: 100,
                 direction: Direction::Buy,
                 state: TradeState::Pending,
             },
-            SchwabExecution {
+            OffchainExecution {
                 id: None,
                 symbol: "MSFT".to_string(),
                 shares: 50,
                 direction: Direction::Sell,
                 state: TradeState::Pending,
             },
-            SchwabExecution {
+            OffchainExecution {
                 id: None,
                 symbol: "AAPL".to_string(),
                 shares: 200,
@@ -411,21 +437,21 @@ mod tests {
         // Add executions for different symbols to test ordering by id
         // (Multiple pending executions per symbol would violate business constraints)
         let executions = vec![
-            SchwabExecution {
+            OffchainExecution {
                 id: None,
                 symbol: "AAPL".to_string(),
                 shares: 100,
                 direction: Direction::Buy,
                 state: TradeState::Pending,
             },
-            SchwabExecution {
+            OffchainExecution {
                 id: None,
                 symbol: "TSLA".to_string(),
                 shares: 200,
                 direction: Direction::Sell,
                 state: TradeState::Pending,
             },
-            SchwabExecution {
+            OffchainExecution {
                 id: None,
                 symbol: "MSFT".to_string(),
                 shares: 300,
@@ -467,7 +493,7 @@ mod tests {
     async fn test_find_by_symbol_and_status_case_sensitivity() {
         let pool = setup_test_db().await;
 
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
             symbol: "AAPL".to_string(), // Uppercase
             shares: 100,
@@ -507,7 +533,7 @@ mod tests {
 
         let mut sql_tx = pool.begin().await.unwrap();
         for symbol in symbols {
-            let execution = SchwabExecution {
+            let execution = OffchainExecution {
                 id: None,
                 symbol: symbol.to_string(),
                 shares: 100,
@@ -536,7 +562,7 @@ mod tests {
     async fn test_find_by_symbol_and_status_data_integrity() {
         let pool = setup_test_db().await;
 
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
             symbol: "TEST".to_string(),
             shares: 12345,
@@ -630,7 +656,7 @@ mod tests {
     async fn test_update_status_within_transaction() {
         let pool = setup_test_db().await;
 
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
             symbol: "TSLA".to_string(),
             shares: 15,
@@ -684,7 +710,7 @@ mod tests {
             .count;
         assert_eq!(count, 0);
 
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
             symbol: "NVDA".to_string(),
             shares: 5,
@@ -712,7 +738,7 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Create first pending execution for AAPL
-        let execution1 = SchwabExecution {
+        let execution1 = OffchainExecution {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 100,
@@ -728,7 +754,7 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Try to create second pending execution for same symbol - should fail
-        let execution2 = SchwabExecution {
+        let execution2 = OffchainExecution {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 200,
@@ -757,7 +783,7 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Create pending execution for AAPL
-        let execution1 = SchwabExecution {
+        let execution1 = OffchainExecution {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 100,
@@ -772,7 +798,7 @@ mod tests {
         sql_tx1.commit().await.unwrap();
 
         // Create completed execution for same symbol - should succeed
-        let execution2 = SchwabExecution {
+        let execution2 = OffchainExecution {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 200,
@@ -921,7 +947,7 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Create failed execution (simulating previous auth failure)
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
             symbol: "MSFT".to_string(),
             shares: 50,
@@ -976,7 +1002,7 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Create execution with valid data first
-        let execution1 = SchwabExecution {
+        let execution1 = OffchainExecution {
             id: None,
             symbol: "TSLA".to_string(),
             shares: 100,
@@ -992,7 +1018,7 @@ mod tests {
         sql_tx1.commit().await.unwrap();
 
         // Try to create another pending execution for same symbol
-        let execution2 = SchwabExecution {
+        let execution2 = OffchainExecution {
             id: None,
             symbol: "TSLA".to_string(),
             shares: 200,
@@ -1062,7 +1088,7 @@ mod tests {
     async fn test_update_execution_status_transaction_rollback() {
         let pool = setup_test_db().await;
 
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
             symbol: "GOOG".to_string(),
             shares: 25,

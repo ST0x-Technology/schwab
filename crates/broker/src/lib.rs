@@ -43,6 +43,21 @@ impl std::fmt::Display for InvalidDirectionError {
 impl std::error::Error for InvalidDirectionError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupportedBroker {
+    Schwab,
+    DryRun,
+}
+
+impl std::fmt::Display for SupportedBroker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SupportedBroker::Schwab => write!(f, "schwab"),
+            SupportedBroker::DryRun => write!(f, "dry_run"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     Buy,
     Sell,
@@ -159,23 +174,28 @@ pub trait Broker: Send + Sync + 'static {
         config: &Self::Config,
         pool: &SqlitePool,
     ) -> Result<(), Self::Error>;
+
     async fn place_market_order(
         &self,
         config: &Self::Config,
         order: MarketOrder,
         pool: &SqlitePool,
     ) -> Result<OrderPlacement<Self::OrderId>, Self::Error>;
+
     async fn get_order_status(
         &self,
         config: &Self::Config,
         order_id: &Self::OrderId,
         pool: &SqlitePool,
     ) -> Result<OrderStatus, Self::Error>;
+
     async fn poll_pending_orders(
         &self,
         config: &Self::Config,
         pool: &SqlitePool,
     ) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error>;
+
+    fn to_supported_broker(&self) -> SupportedBroker;
 }
 
 #[derive(Debug, Default, Clone)]
@@ -262,5 +282,9 @@ impl Broker for MockBroker {
         }
 
         Ok(Vec::new())
+    }
+
+    fn to_supported_broker(&self) -> SupportedBroker {
+        SupportedBroker::DryRun
     }
 }

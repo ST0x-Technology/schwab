@@ -52,6 +52,7 @@ traits and duplicate types that need to be reconciled:
   `LogBroker`)
 - Duplicate types: `Direction` enum exists in both `src/schwab/mod.rs` and
   `crates/broker/src/lib.rs`
+- `SchwabExecution` is not broker-agnostic and should be renamed
 
 - [x] Remove the old broker trait from `src/schwab/broker.rs`
 - [x] Port `LogBroker` dry-run implementation to new trait as `DryRunBroker` in
@@ -62,13 +63,16 @@ traits and duplicate types that need to be reconciled:
 - [x] Update all conductor functions to use generic `B: Broker` parameter
 - [x] Migrate existing `Schwab` implementation to implement the new `Broker`
       trait
-- [ ] Remove duplicate `Direction` enum from `src/schwab/mod.rs`
-- [ ] Move ALL remaining schwab module code to broker crate (execution,
-      order_poller, etc.)
-- [ ] Update all imports to use `st0x_broker::Direction` instead of
-      `crate::schwab::Direction`
-- [ ] Create adapter functions for SchwabExecution conversion instead of adding
-      to trait
+- [x] Remove duplicate `Direction` enum from `src/schwab/mod.rs`
+- [ ] Create `SupportedBroker` enum in broker crate (Schwab, DryRun)
+- [ ] Add `to_supported_broker()` method to Broker trait
+- [ ] Rename `SchwabExecution` → `OffchainExecution`
+- [ ] Add `broker: SupportedBroker` field to `OffchainExecution`
+- [ ] Delete entire `src/schwab/` module - distribute code as follows:
+  - Schwab-specific → `crates/broker/src/schwab/` (implementation detail)
+  - Generic database/execution → main crate root or appropriate module
+  - Generic types (TradeState, etc.) → main crate or broker crate as needed
+- [ ] Update all imports to use `st0x_broker::Direction`
 - [x] Update `env.rs` to return concrete broker types
 - [ ] Ensure dry-run mode works with `--dry-run` flag using new trait
 - [ ] Verify real Schwab execution path is preserved

@@ -12,12 +12,10 @@ pub(crate) mod order;
 pub(crate) mod order_poller;
 pub(crate) mod order_status;
 pub(crate) mod tokens;
-pub(crate) mod trade_state;
 
 pub(crate) use auth::SchwabAuthEnv;
 pub(crate) use order_poller::{OrderPollerConfig, OrderStatusPoller};
 pub(crate) use tokens::SchwabTokens;
-pub(crate) use trade_state::{HasTradeStatus, TradeState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TradeStatus {

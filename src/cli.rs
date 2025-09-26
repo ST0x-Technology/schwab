@@ -445,14 +445,14 @@ async fn process_found_trade<W: Write>(
     if let Some(execution) = execution {
         let execution_id = execution
             .id
-            .ok_or_else(|| anyhow::anyhow!("SchwabExecution missing ID after accumulation"))?;
+            .ok_or_else(|| anyhow::anyhow!("OffchainExecution missing ID after accumulation"))?;
         writeln!(
             stdout,
             "✅ Trade triggered Schwab execution (ID: {execution_id})"
         )?;
         ensure_authentication(pool, &env.schwab_auth, stdout).await?;
         writeln!(stdout, "🔄 Executing Schwab order...")?;
-        // Convert SchwabExecution to broker trait types
+        // Convert OffchainExecution to broker trait types
         let market_order = st0x_broker::MarketOrder {
             symbol: st0x_broker::Symbol(execution.symbol.clone()),
             shares: st0x_broker::Shares(execution.shares as u32),
@@ -1706,7 +1706,7 @@ mod tests {
         assert_eq!(trade.symbol.to_string(), "AAPL0x"); // Tokenized symbol
         assert!((trade.amount - 9.0).abs() < f64::EPSILON); // Amount from the test data
 
-        // Verify SchwabExecution was created (due to TradeAccumulator)
+        // Verify OffchainExecution was created (due to TradeAccumulator)
         // Executions are now in SUBMITTED status with order_id stored for order status polling
         let executions =
             find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Submitted)

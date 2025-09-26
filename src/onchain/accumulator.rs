@@ -6,10 +6,10 @@ use crate::error::{OnChainError, TradeValidationError};
 use crate::lock::{clear_execution_lease, set_pending_execution_id, try_acquire_execution_lease};
 use crate::onchain::io::EquitySymbol;
 use crate::onchain::position_calculator::{AccumulationBucket, PositionCalculator};
-use crate::schwab::TradeState;
-use crate::schwab::execution::SchwabExecution;
+use crate::schwab::execution::OffchainExecution;
 use crate::schwab::execution::update_execution_status_within_transaction;
 use crate::trade_execution_link::TradeExecutionLink;
+use crate::trade_state::TradeState;
 use st0x_broker::Direction;
 
 /// Processes an onchain trade through the accumulation system with duplicate detection.
@@ -20,14 +20,14 @@ use st0x_broker::Direction;
 /// 3. Updates the position accumulator for the symbol
 /// 4. Attempts to create a Schwab execution if position thresholds are met
 ///
-/// Returns `Some(SchwabExecution)` if a Schwab order was created, `None` if the trade
+/// Returns `Some(OffchainExecution)` if a Schwab order was created, `None` if the trade
 /// was accumulated but didn't trigger an execution (or was a duplicate).
 ///
 /// The transaction must be committed by the caller.
 pub async fn process_onchain_trade(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     trade: OnchainTrade,
-) -> Result<Option<SchwabExecution>, OnChainError> {
+) -> Result<Option<OffchainExecution>, OnChainError> {
     // Check if trade already exists to handle duplicates gracefully
     let tx_hash_str = trade.tx_hash.to_string();
     #[allow(clippy::cast_possible_wrap)]
@@ -198,7 +198,7 @@ async fn try_create_execution_if_ready(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     base_symbol: &EquitySymbol,
     calculator: &mut PositionCalculator,
-) -> Result<Option<SchwabExecution>, OnChainError> {
+) -> Result<Option<OffchainExecution>, OnChainError> {
     let Some(execution_type) = calculator.determine_execution_type() else {
         return Ok(None);
     };
@@ -211,7 +211,7 @@ async fn execute_position(
     base_symbol: &EquitySymbol,
     calculator: &mut PositionCalculator,
     execution_type: AccumulationBucket,
-) -> Result<Option<SchwabExecution>, OnChainError> {
+) -> Result<Option<OffchainExecution>, OnChainError> {
     let shares = calculator.calculate_executable_shares();
 
     if shares == 0 {
@@ -345,8 +345,8 @@ async fn create_execution_within_transaction(
     symbol: &EquitySymbol,
     shares: u64,
     direction: Direction,
-) -> Result<SchwabExecution, OnChainError> {
-    let execution = SchwabExecution {
+) -> Result<OffchainExecution, OnChainError> {
+    let execution = OffchainExecution {
         id: None,
         symbol: symbol.to_string(),
         shares,
@@ -436,7 +436,7 @@ async fn clean_up_stale_executions(
 /// enough shares to execute but the triggering trade didn't push them over the threshold.
 pub async fn check_all_accumulated_positions(
     pool: &SqlitePool,
-) -> Result<Vec<SchwabExecution>, OnChainError> {
+) -> Result<Vec<OffchainExecution>, OnChainError> {
     info!("Checking all accumulated positions for ready executions");
 
     // Query all symbols with net position >= 1.0 shares absolute value
@@ -556,18 +556,18 @@ pub async fn check_all_accumulated_positions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schwab::TradeStatus;
     use crate::symbol;
     use crate::test_utils::setup_test_db;
     use crate::tokenized_symbol;
     use crate::trade_execution_link::TradeExecutionLink;
+    use crate::trade_state::TradeStatus;
     use alloy::primitives::fixed_bytes;
 
     // Helper function for tests to handle transaction management
     async fn process_trade_with_tx(
         pool: &SqlitePool,
         trade: OnchainTrade,
-    ) -> Result<Option<SchwabExecution>, OnChainError> {
+    ) -> Result<Option<OffchainExecution>, OnChainError> {
         let mut sql_tx = pool.begin().await?;
         let result = process_onchain_trade(&mut sql_tx, trade).await?;
         sql_tx.commit().await?;
@@ -773,7 +773,7 @@ mod tests {
         let pool = setup_test_db().await;
 
         // First, create a pending execution for AAPL to trigger the unique constraint
-        let blocking_execution = SchwabExecution {
+        let blocking_execution = OffchainExecution {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 50,
@@ -931,7 +931,7 @@ mod tests {
         async fn process_with_retry(
             pool: &SqlitePool,
             trade: OnchainTrade,
-        ) -> Result<Option<SchwabExecution>, OnChainError> {
+        ) -> Result<Option<OffchainExecution>, OnChainError> {
             for attempt in 0..3 {
                 match process_trade_with_tx(pool, trade.clone()).await {
                     Ok(result) => return Ok(result),
@@ -1315,7 +1315,7 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Create a submitted execution that is stale
-        let stale_execution = SchwabExecution {
+        let stale_execution = OffchainExecution {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 1,
@@ -1403,7 +1403,7 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Create executions at different ages
-        let recent_execution = SchwabExecution {
+        let recent_execution = OffchainExecution {
             id: None,
             symbol: "MSFT".to_string(),
             shares: 1,
@@ -1413,7 +1413,7 @@ mod tests {
             },
         };
 
-        let stale_execution = SchwabExecution {
+        let stale_execution = OffchainExecution {
             id: None,
             symbol: "TSLA".to_string(),
             shares: 1,
@@ -1503,7 +1503,7 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Create only recent executions (not stale)
-        let recent_execution = SchwabExecution {
+        let recent_execution = OffchainExecution {
             id: None,
             symbol: "NVDA".to_string(),
             shares: 2,
@@ -1614,7 +1614,7 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Create a pending execution first
-        let pending_execution = SchwabExecution {
+        let pending_execution = OffchainExecution {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 1,

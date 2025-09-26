@@ -19,7 +19,7 @@ use crate::onchain::trade::TradeEvent;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
 use crate::queue::{QueuedEvent, enqueue, get_next_unprocessed_event, mark_event_processed};
 use crate::schwab::OrderStatusPoller;
-use crate::schwab::execution::{SchwabExecution, find_execution_by_id};
+use crate::schwab::execution::{OffchainExecution, find_execution_by_id};
 use crate::symbol::cache::SymbolCache;
 use crate::symbol::lock::get_symbol_lock;
 
@@ -467,14 +467,14 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone, B: Broker + Clone>(
 }
 
 /// Processes the next unprocessed event from the queue.
-/// Returns an optional SchwabExecution if one was triggered.
+/// Returns an optional OffchainExecution if one was triggered.
 async fn process_next_queued_event<P: Provider + Clone, B: Broker + Clone>(
     env: &Env,
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: &P,
     broker: &B,
-) -> Result<Option<crate::schwab::execution::SchwabExecution>, EventProcessingError> {
+) -> Result<Option<crate::schwab::execution::OffchainExecution>, EventProcessingError> {
     let queued_event = match get_next_unprocessed_event(pool).await {
         Ok(Some(event)) => event,
         Ok(None) => return Ok(None),
@@ -554,7 +554,7 @@ async fn handle_filtered_event(
     pool: &SqlitePool,
     queued_event: &QueuedEvent,
     event_id: i64,
-) -> Result<Option<SchwabExecution>, EventProcessingError> {
+) -> Result<Option<OffchainExecution>, EventProcessingError> {
     info!(
         "Event filtered out (no matching owner): event_type={:?}, tx_hash={:?}, log_index={}",
         match &queued_event.event {
@@ -589,7 +589,7 @@ async fn process_valid_trade(
     queued_event: &QueuedEvent,
     event_id: i64,
     trade: OnchainTrade,
-) -> Result<Option<SchwabExecution>, EventProcessingError> {
+) -> Result<Option<OffchainExecution>, EventProcessingError> {
     info!(
         "Event successfully converted to trade: event_type={:?}, tx_hash={:?}, log_index={}, symbol={}, amount={}",
         match &queued_event.event {
@@ -618,7 +618,7 @@ async fn process_trade_within_transaction(
     queued_event: &QueuedEvent,
     event_id: i64,
     trade: OnchainTrade,
-) -> Result<Option<SchwabExecution>, EventProcessingError> {
+) -> Result<Option<OffchainExecution>, EventProcessingError> {
     let mut sql_tx = pool.begin().await.map_err(|e| {
         error!("Failed to begin transaction for event processing: {e}");
         EventProcessingError::AccumulatorProcessing(format!("Failed to begin transaction: {e}"))
@@ -766,7 +766,7 @@ async fn execute_pending_schwab_execution<B: Broker + Clone + Send + 'static>(
 
     info!("Executing Schwab order: {execution:?}");
 
-    // Convert SchwabExecution to broker trait types
+    // Convert OffchainExecution to broker trait types
     let market_order = MarketOrder {
         symbol: Symbol(execution.symbol.clone()),
         shares: Shares(execution.shares as u32),

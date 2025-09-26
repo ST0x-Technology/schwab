@@ -93,4 +93,8 @@ impl Broker for DryRunBroker {
         // Return empty list since dry-run orders are immediately "filled"
         Ok(Vec::new())
     }
+
+    fn to_supported_broker(&self) -> crate::SupportedBroker {
+        crate::SupportedBroker::DryRun
+    }
 }

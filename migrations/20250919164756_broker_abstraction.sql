@@ -7,7 +7,7 @@ CREATE TABLE offchain_trades (
   symbol TEXT NOT NULL CHECK (symbol != ''),  -- Trading symbol 
   shares INTEGER NOT NULL CHECK (shares > 0),  -- Must execute positive whole shares
   direction TEXT CHECK (direction IN ('BUY', 'SELL')) NOT NULL,
-  broker_type TEXT NOT NULL DEFAULT 'schwab' CHECK (broker_type != ''),  -- Broker identifier
+  broker TEXT NOT NULL DEFAULT 'schwab' CHECK (broker != ''),  -- Broker identifier
   broker_order_id TEXT CHECK (broker_order_id IS NULL OR broker_order_id != ''),  -- Broker-specific order ID
   order_id TEXT CHECK (order_id IS NULL OR order_id != ''),  -- Legacy order ID for backward compatibility
   price_cents INTEGER CHECK (price_cents IS NULL OR price_cents >= 0),  -- Price must be non-negative or NULL
@@ -23,7 +23,7 @@ CREATE TABLE offchain_trades (
 
 -- Step 2: Copy data from schwab_executions to offchain_trades
 INSERT INTO offchain_trades (
-  id, symbol, shares, direction, broker_type, broker_order_id, order_id, 
+  id, symbol, shares, direction, broker, broker_order_id, order_id, 
   price_cents, status, executed_at
 )
 SELECT 
@@ -81,7 +81,7 @@ DROP TABLE schwab_executions;
 -- Step 5: Create indexes on new table
 CREATE INDEX idx_offchain_trades_symbol ON offchain_trades(symbol);
 CREATE INDEX idx_offchain_trades_status ON offchain_trades(status);
-CREATE INDEX idx_offchain_trades_broker_type ON offchain_trades(broker_type);
+CREATE INDEX idx_offchain_trades_broker ON offchain_trades(broker);
 
 -- Recreate indexes for the updated tables
 CREATE INDEX idx_trade_execution_links_trade_id ON trade_execution_links(trade_id);

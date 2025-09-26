@@ -100,4 +100,8 @@ impl Broker for SchwabBroker {
         // This will be replaced with actual Schwab API polling
         Ok(Vec::new())
     }
+
+    fn to_supported_broker(&self) -> crate::SupportedBroker {
+        crate::SupportedBroker::Schwab
+    }
 }
