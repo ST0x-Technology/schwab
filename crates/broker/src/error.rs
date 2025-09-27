@@ -1,5 +1,3 @@
-use std::num::ParseFloatError;
-
 /// Database persistence and data corruption errors.
 #[derive(Debug, thiserror::Error)]
 pub enum PersistenceError {
@@ -17,23 +15,11 @@ pub enum PersistenceError {
     MissingExecutionId,
 }
 
-/// Simplified error type for broker operations
-#[derive(Debug, thiserror::Error)]
-pub enum OnChainError {
-    #[error("Database persistence error: {0}")]
-    Persistence(#[from] PersistenceError),
-    #[error("Failed to convert U256 to f64: {0}")]
-    U256ToF64(#[from] ParseFloatError),
-}
-
-impl From<sqlx::Error> for OnChainError {
-    fn from(err: sqlx::Error) -> Self {
-        Self::Persistence(PersistenceError::Database(err))
-    }
-}
-
-impl From<crate::InvalidDirectionError> for OnChainError {
-    fn from(err: crate::InvalidDirectionError) -> Self {
-        Self::Persistence(PersistenceError::InvalidDirection(err))
+impl From<crate::BrokerError> for PersistenceError {
+    fn from(err: crate::BrokerError) -> Self {
+        match err {
+            crate::BrokerError::Database(db_err) => Self::Database(db_err),
+            other => Self::InvalidTradeStatus(format!("BrokerError: {}", other)),
+        }
     }
 }

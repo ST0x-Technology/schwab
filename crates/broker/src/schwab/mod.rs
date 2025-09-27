@@ -1,4 +1,4 @@
-use crate::{OrderStatus, error};
+use crate::error;
 use reqwest::header::InvalidHeaderValue;
 use sqlx::SqlitePool;
 use std::io::{self, Write};

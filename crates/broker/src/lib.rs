@@ -1,14 +1,13 @@
 use async_trait::async_trait;
-use sqlx::SqlitePool;
 use std::fmt::{Debug, Display};
 
 pub mod error;
-pub mod order_state;
+pub mod order;
 pub mod schwab;
 pub mod test;
 
-pub use error::{OnChainError, PersistenceError};
-pub use order_state::OrderState;
+pub use error::PersistenceError;
+pub use order::{MarketOrder, OrderPlacement, OrderState, OrderStatus, OrderUpdate};
 pub use schwab::broker::SchwabBroker;
 pub use test::TestBroker;
 
@@ -87,59 +86,6 @@ impl std::str::FromStr for Direction {
             _ => Err(InvalidDirectionError(s.to_string())),
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct MarketOrder {
-    pub symbol: Symbol,
-    pub shares: Shares,
-    pub direction: Direction,
-}
-
-// Flat enum for database storage (matches CHECK constraint pattern)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OrderStatus {
-    Pending,
-    Submitted,
-    Filled,
-    Failed,
-}
-
-impl OrderStatus {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Pending => "PENDING",
-            Self::Submitted => "SUBMITTED",
-            Self::Filled => "FILLED",
-            Self::Failed => "FAILED",
-        }
-    }
-}
-
-impl std::fmt::Display for OrderStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-#[derive(Debug)]
-pub struct OrderPlacement<OrderId> {
-    pub order_id: OrderId,
-    pub symbol: Symbol,
-    pub shares: Shares,
-    pub direction: Direction,
-    pub placed_at: chrono::DateTime<chrono::Utc>,
-}
-
-#[derive(Debug)]
-pub struct OrderUpdate<OrderId> {
-    pub order_id: OrderId,
-    pub symbol: Symbol,
-    pub shares: Shares,
-    pub direction: Direction,
-    pub status: OrderStatus,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
-    pub price_cents: Option<u64>,
 }
 
 #[derive(Debug, thiserror::Error)]
