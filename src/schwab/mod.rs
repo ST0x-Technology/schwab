@@ -4,93 +4,20 @@ use sqlx::SqlitePool;
 use std::io::{self, Write};
 use thiserror::Error;
 
-pub(crate) mod auth;
 pub(crate) mod execution;
 pub(crate) mod market_hours;
 pub(crate) mod market_hours_cache;
 pub(crate) mod order;
 pub(crate) mod order_poller;
 pub(crate) mod order_status;
-pub(crate) mod tokens;
 
-pub(crate) use auth::SchwabAuthEnv;
 pub(crate) use order_poller::{OrderPollerConfig, OrderStatusPoller};
-pub(crate) use tokens::SchwabTokens;
+pub(crate) use st0x_broker::Direction;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TradeStatus {
-    Pending,
-    Submitted,
-    Filled,
-    Failed,
-}
-
-impl TradeStatus {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Pending => "PENDING",
-            Self::Submitted => "SUBMITTED",
-            Self::Filled => "FILLED",
-            Self::Failed => "FAILED",
-        }
-    }
-}
-
-impl std::str::FromStr for TradeStatus {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "PENDING" => Ok(Self::Pending),
-            "SUBMITTED" => Ok(Self::Submitted),
-            "FILLED" => Ok(Self::Filled),
-            "FAILED" => Ok(Self::Failed),
-            _ => Err(format!("Invalid trade status: {s}")),
-        }
-    }
-}
-
-#[derive(Error, Debug)]
-pub(crate) enum SchwabError {
-    #[error("Failed to create header value: {0}")]
-    InvalidHeader(#[from] InvalidHeaderValue),
-    #[error("Request failed: {0}")]
-    Reqwest(#[from] reqwest::Error),
-    #[error("Database error: {0}")]
-    Sqlx(#[from] sqlx::Error),
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("URL parsing failed: {0}")]
-    Url(#[from] url::ParseError),
-    #[error("Missing authorization code parameter in URL: {url}")]
-    MissingAuthCode { url: String },
-    #[error("JSON serialization failed: {0}")]
-    JsonSerialization(#[from] serde_json::Error),
-    #[error("Refresh token has expired")]
-    RefreshTokenExpired,
-    #[error("No accounts found")]
-    NoAccountsFound,
-    #[error("Account index {index} out of bounds (found {count} accounts)")]
-    AccountIndexOutOfBounds { index: usize, count: usize },
-    #[error("{action} failed with status: {status}, body: {body}")]
-    RequestFailed {
-        action: String,
-        status: reqwest::StatusCode,
-        body: String,
-    },
-    #[error("Invalid configuration: {0}")]
-    InvalidConfiguration(String),
-    #[error("Execution persistence error: {0}")]
-    ExecutionPersistence(#[from] crate::error::PersistenceError),
-    #[error(
-        "Failed to parse API response: {action}, response: {response_text}, error: {parse_error}"
-    )]
-    ApiResponseParse {
-        action: String,
-        response_text: String,
-        parse_error: String,
-    },
-}
+use st0x_broker::schwab::SchwabError;
+use st0x_broker::schwab::auth::SchwabAuthEnv;
+use st0x_broker::schwab::extract_code_from_url;
+use st0x_broker::schwab::tokens::SchwabTokens;
 
 pub(crate) async fn run_oauth_flow(
     pool: &SqlitePool,
@@ -136,18 +63,6 @@ pub(crate) const fn price_cents_from_db_i64(db_value: i64) -> Result<u64, error:
         #[allow(clippy::cast_sign_loss)]
         Ok(db_value as u64)
     }
-}
-
-pub(crate) fn extract_code_from_url(url: &str) -> Result<String, SchwabError> {
-    let parsed_url = url::Url::parse(url)?;
-
-    parsed_url
-        .query_pairs()
-        .find(|(key, _)| key == "code")
-        .map(|(_, value)| value.into_owned())
-        .ok_or_else(|| SchwabError::MissingAuthCode {
-            url: url.to_string(),
-        })
 }
 
 #[cfg(test)]

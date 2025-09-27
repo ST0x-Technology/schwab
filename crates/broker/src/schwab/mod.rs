@@ -1,4 +1,4 @@
-use crate::error;
+use crate::{OrderStatus, error};
 use reqwest::header::InvalidHeaderValue;
 use sqlx::SqlitePool;
 use std::io::{self, Write};
@@ -11,47 +11,12 @@ pub(crate) mod order;
 pub(crate) mod order_poller;
 pub(crate) mod order_status;
 pub(crate) mod tokens;
-pub(crate) mod trade_state;
 
 pub(crate) use auth::SchwabAuthEnv;
 pub(crate) use tokens::SchwabTokens;
-pub(crate) use trade_state::{HasTradeStatus, TradeState};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TradeStatus {
-    Pending,
-    Submitted,
-    Filled,
-    Failed,
-}
-
-impl TradeStatus {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Pending => "PENDING",
-            Self::Submitted => "SUBMITTED",
-            Self::Filled => "FILLED",
-            Self::Failed => "FAILED",
-        }
-    }
-}
-
-impl std::str::FromStr for TradeStatus {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "PENDING" => Ok(Self::Pending),
-            "SUBMITTED" => Ok(Self::Submitted),
-            "FILLED" => Ok(Self::Filled),
-            "FAILED" => Ok(Self::Failed),
-            _ => Err(format!("Invalid trade status: {s}")),
-        }
-    }
-}
 
 #[derive(Error, Debug)]
-pub(crate) enum SchwabError {
+pub enum SchwabError {
     #[error("Failed to create header value: {0}")]
     InvalidHeader(#[from] InvalidHeaderValue),
     #[error("Request failed: {0}")]
@@ -82,6 +47,14 @@ pub(crate) enum SchwabError {
     InvalidConfiguration(String),
     #[error("Execution persistence error: {0}")]
     ExecutionPersistence(#[from] crate::error::PersistenceError),
+    #[error(
+        "Failed to parse API response: {action}, response: {response_text}, error: {parse_error}"
+    )]
+    ApiResponseParse {
+        action: String,
+        response_text: String,
+        parse_error: String,
+    },
 }
 
 pub(crate) async fn run_oauth_flow(
@@ -130,7 +103,7 @@ pub(crate) const fn price_cents_from_db_i64(db_value: i64) -> Result<u64, error:
     }
 }
 
-pub(crate) fn extract_code_from_url(url: &str) -> Result<String, SchwabError> {
+pub fn extract_code_from_url(url: &str) -> Result<String, SchwabError> {
     let parsed_url = url::Url::parse(url)?;
 
     parsed_url

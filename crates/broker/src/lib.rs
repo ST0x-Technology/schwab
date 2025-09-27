@@ -2,16 +2,15 @@ use async_trait::async_trait;
 use sqlx::SqlitePool;
 use std::fmt::{Debug, Display};
 
-pub mod dry_run;
 pub mod error;
 pub mod order_state;
 pub mod schwab;
+pub mod test;
 
-pub use dry_run::DryRunBroker;
 pub use error::{OnChainError, PersistenceError};
 pub use order_state::OrderState;
-pub use schwab::auth::SchwabAuthEnv;
 pub use schwab::broker::SchwabBroker;
+pub use test::TestBroker;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Symbol(pub String);
@@ -63,12 +62,18 @@ pub enum Direction {
     Sell,
 }
 
+impl Direction {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Buy => "BUY",
+            Self::Sell => "SELL",
+        }
+    }
+}
+
 impl Display for Direction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Direction::Buy => write!(f, "BUY"),
-            Direction::Sell => write!(f, "SELL"),
-        }
+        write!(f, "{}", self.as_str())
     }
 }
 
@@ -134,6 +139,7 @@ pub struct OrderUpdate<OrderId> {
     pub direction: Direction,
     pub status: OrderStatus,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub price_cents: Option<u64>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -167,124 +173,20 @@ pub enum BrokerError {
 pub trait Broker: Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
     type OrderId: Display + Debug + Send + Sync + Clone;
-    type Config: Send + Sync + 'static;
+    type Config: Send + Sync + Clone + 'static;
 
-    async fn ensure_ready(
-        &self,
-        config: &Self::Config,
-        pool: &SqlitePool,
-    ) -> Result<(), Self::Error>;
+    fn new(config: Self::Config) -> Self;
+
+    async fn ensure_ready(&self) -> Result<(), Self::Error>;
 
     async fn place_market_order(
         &self,
-        config: &Self::Config,
         order: MarketOrder,
-        pool: &SqlitePool,
     ) -> Result<OrderPlacement<Self::OrderId>, Self::Error>;
 
-    async fn get_order_status(
-        &self,
-        config: &Self::Config,
-        order_id: &Self::OrderId,
-        pool: &SqlitePool,
-    ) -> Result<OrderStatus, Self::Error>;
+    async fn get_order_status(&self, order_id: &Self::OrderId) -> Result<OrderState, Self::Error>;
 
-    async fn poll_pending_orders(
-        &self,
-        config: &Self::Config,
-        pool: &SqlitePool,
-    ) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error>;
+    async fn poll_pending_orders(&self) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error>;
 
     fn to_supported_broker(&self) -> SupportedBroker;
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct MockBroker {
-    pub should_fail: bool,
-    pub failure_message: String,
-}
-
-impl MockBroker {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_failure(message: impl Into<String>) -> Self {
-        Self {
-            should_fail: true,
-            failure_message: message.into(),
-        }
-    }
-}
-
-#[async_trait]
-impl Broker for MockBroker {
-    type Error = BrokerError;
-    type OrderId = String;
-    type Config = ();
-
-    async fn ensure_ready(
-        &self,
-        _config: &Self::Config,
-        _pool: &SqlitePool,
-    ) -> Result<(), Self::Error> {
-        if self.should_fail {
-            Err(BrokerError::Unavailable {
-                message: self.failure_message.clone(),
-            })
-        } else {
-            Ok(())
-        }
-    }
-
-    async fn place_market_order(
-        &self,
-        _config: &Self::Config,
-        order: MarketOrder,
-        _pool: &SqlitePool,
-    ) -> Result<OrderPlacement<Self::OrderId>, Self::Error> {
-        if self.should_fail {
-            return Err(BrokerError::OrderPlacement(self.failure_message.clone()));
-        }
-
-        let order_id = format!("MOCK_{}", chrono::Utc::now().timestamp_millis());
-        Ok(OrderPlacement {
-            order_id,
-            symbol: order.symbol,
-            shares: order.shares,
-            direction: order.direction,
-            placed_at: chrono::Utc::now(),
-        })
-    }
-
-    async fn get_order_status(
-        &self,
-        _config: &Self::Config,
-        order_id: &Self::OrderId,
-        _pool: &SqlitePool,
-    ) -> Result<OrderStatus, Self::Error> {
-        if self.should_fail {
-            return Err(BrokerError::OrderNotFound {
-                order_id: order_id.clone(),
-            });
-        }
-
-        Ok(OrderStatus::Filled)
-    }
-
-    async fn poll_pending_orders(
-        &self,
-        _config: &Self::Config,
-        _pool: &SqlitePool,
-    ) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error> {
-        if self.should_fail {
-            return Err(BrokerError::Network(self.failure_message.clone()));
-        }
-
-        Ok(Vec::new())
-    }
-
-    fn to_supported_broker(&self) -> SupportedBroker {
-        SupportedBroker::DryRun
-    }
 }

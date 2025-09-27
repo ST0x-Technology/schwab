@@ -73,7 +73,7 @@ impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
                 self.shutdown_rx.clone(),
             )
         };
-        let broker = self.env.get_broker();
+        let broker = self.broker.clone();
         let order_poller =
             spawn_order_poller(&self.env, &self.pool, &self.shutdown_rx, broker.clone());
         let event_receiver = spawn_onchain_event_receiver(event_sender, clear_stream, take_stream);

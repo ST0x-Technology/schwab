@@ -42,7 +42,7 @@ clean broker interface with generics for polymorphism.
 - [x] Add MockBroker temporarily for compilation
 - [x] Ensure all tests compile and pass
 
-## Task 4: Reconcile Conflicting Broker Traits and Remove Duplicates (CURRENT)
+## Task 4: Reconcile Conflicting Broker Traits and Remove Duplicates (COMPLETED)
 
 After rebasing on the dry-run feature branch, we have two conflicting broker
 traits and duplicate types that need to be reconciled:
@@ -64,19 +64,19 @@ traits and duplicate types that need to be reconciled:
 - [x] Migrate existing `Schwab` implementation to implement the new `Broker`
       trait
 - [x] Remove duplicate `Direction` enum from `src/schwab/mod.rs`
-- [ ] Create `SupportedBroker` enum in broker crate (Schwab, DryRun)
-- [ ] Add `to_supported_broker()` method to Broker trait
-- [ ] Rename `SchwabExecution` → `OffchainExecution`
-- [ ] Add `broker: SupportedBroker` field to `OffchainExecution`
-- [ ] Delete entire `src/schwab/` module - distribute code as follows:
-  - Schwab-specific → `crates/broker/src/schwab/` (implementation detail)
-  - Generic database/execution → main crate root or appropriate module
-  - Generic types (TradeState, etc.) → main crate or broker crate as needed
-- [ ] Update all imports to use `st0x_broker::Direction`
+- [x] Create `SupportedBroker` enum in broker crate (Schwab, DryRun)
+- [x] Add `to_supported_broker()` method to Broker trait
+- [x] Rename `SchwabExecution` → `OffchainExecution`
+- [x] Add `broker: SupportedBroker` field to `OffchainExecution`
+- [x] Update all imports to use `st0x_broker::Direction`
 - [x] Update `env.rs` to return concrete broker types
-- [ ] Ensure dry-run mode works with `--dry-run` flag using new trait
-- [ ] Verify real Schwab execution path is preserved
-- [ ] Run tests to ensure nothing breaks
+- [x] Unify SchwabAuthEnv types (delete duplicate)
+- [x] Fix method visibility issues
+- [x] Consolidate PersistenceError types
+- [x] Enhance broker trait to return OrderState from get_order_status
+- [x] Remove unnecessary config parameter from broker trait methods
+- [x] Create unified TestBroker (merge MockBroker and DryRunBroker)
+- [x] Add price_cents to OrderUpdate struct
 
 ## Task 5: Implement Schwab Broker
 
@@ -106,16 +106,56 @@ traits and duplicate types that need to be reconciled:
 - [ ] Fix failing tests related to database constraints
 - [ ] Remove duplicate schwab execution module from main crate (deferred)
 
-## Task 7: Update Main Application
+## Task 7: Complete src/schwab/ Directory Removal (CURRENT)
 
-- [ ] Create generic `launch_with_broker<B: Broker>()` function
-- [ ] Keep existing `launch()` function for backward compatibility
+The `src/schwab/` directory still exists with mixed generic and Schwab-specific
+code. Need to properly move all code and update the launch function to use the
+correct broker based on the --dry-run flag.
+
+### Analysis of Remaining Files:
+
+- **execution.rs** - Generic offchain execution handling (move to main crate)
+- **order_poller.rs** - Generic order polling that already uses Broker trait
+  (move to main crate)
+- **market_hours.rs** - Schwab-specific API calls (move to broker crate)
+- **market_hours_cache.rs** - Schwab-specific caching (move to broker crate)
+- **order.rs** - Schwab-specific order placement (move to broker crate)
+- **order_status.rs** - Schwab-specific order status checking (move to broker
+  crate)
+- **TradeStatus enum** in mod.rs - Generic status enum (move to main crate)
+- **shares_from_db_i64 utility** in mod.rs - Generic database utility (move to
+  main crate)
+
+### Required Tasks:
+
+- [ ] Create new modules in main crate for generic code:
+  - `src/offchain_execution.rs` (from execution.rs)
+  - `src/order_poller.rs` (from order_poller.rs)
+  - `src/trade_status.rs` (from TradeStatus enum)
+  - `src/db_utils.rs` (from shares_from_db_i64 utility)
+- [ ] Move Schwab-specific code to broker crate:
+  - `crates/broker/src/schwab/market_hours.rs`
+  - `crates/broker/src/schwab/market_hours_cache.rs`
+  - `crates/broker/src/schwab/order.rs` (complete migration)
+  - `crates/broker/src/schwab/order_status.rs`
+- [ ] Update launch() function to select broker based on --dry-run flag
+- [ ] Handle Schwab-specific services conditionally:
+  - Token refresh task: Only spawn for Schwab broker
+  - Trading hours controller: Make broker-agnostic or Schwab-conditional
+- [ ] Update all imports throughout codebase to use new locations
+- [ ] Test dry-run mode works with --dry-run flag using DryRunBroker
+- [ ] Test Schwab mode works correctly with SchwabBroker
+- [ ] Delete entire src/schwab/ directory
+- [ ] Run tests to ensure nothing breaks
+
+## Task 8: Update Main Application
+
 - [ ] Handle Schwab-specific background tasks (token refresh) with runtime type
       checking
 - [ ] Update imports to use broker crate types
 - [ ] Ensure main application works with both Schwab and mock brokers
 
-## Task 8: Update CLI and Testing
+## Task 9: Update CLI and Testing
 
 - [ ] Keep existing Schwab auth command
 - [ ] Add test mode command to run with mock broker
@@ -125,7 +165,7 @@ traits and duplicate types that need to be reconciled:
 - [ ] Add integration tests for both Schwab and mock brokers
 - [ ] Ensure all tests pass
 
-## Task 9: Documentation and Cleanup
+## Task 10: Documentation and Cleanup
 
 - [ ] Update CLAUDE.md with new workspace structure
 - [ ] Document broker abstraction architecture

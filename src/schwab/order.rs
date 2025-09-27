@@ -13,6 +13,7 @@ use super::{
     SchwabAuthEnv, SchwabError, SchwabTokens, execution::update_execution_status_within_transaction,
 };
 use crate::trade_state::TradeState;
+use st0x_broker::{Direction, SupportedBroker};
 
 /// Response from Schwab order placement API.
 /// According to Schwab OpenAPI spec, successful order placement (201) returns
@@ -878,6 +879,7 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 100,
             direction: Direction::Buy,
+            broker: SupportedBroker::Schwab,
             state: TradeState::Pending,
         };
 
@@ -920,6 +922,7 @@ mod tests {
             symbol: "TSLA".to_string(),
             shares: 50,
             direction: Direction::Sell,
+            broker: SupportedBroker::Schwab,
             state: TradeState::Pending,
         };
 

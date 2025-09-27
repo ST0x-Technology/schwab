@@ -11,7 +11,8 @@ use super::execution::{
     update_execution_status_within_transaction,
 };
 use super::order::Order;
-use super::{SchwabAuthEnv, SchwabError, TradeState};
+use super::{SchwabAuthEnv, SchwabError};
+use crate::OrderState;
 // Removed dependency on crate::lock - execution lease logic will be handled differently
 
 #[derive(Debug, Clone)]

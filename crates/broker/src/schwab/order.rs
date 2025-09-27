@@ -7,11 +7,12 @@ use tracing::{error, info};
 use chrono::Utc;
 
 use super::{
-    SchwabAuthEnv, SchwabError, SchwabTokens, TradeState,
+    SchwabAuthEnv, SchwabError, SchwabTokens,
     execution::{SchwabExecution, update_execution_status_within_transaction},
     order_status::OrderStatusResponse,
 };
 use crate::Direction;
+use crate::OrderState;
 // Removed dependency on crate::env::Env - will be passed as parameter
 
 /// Response from Schwab order placement API.

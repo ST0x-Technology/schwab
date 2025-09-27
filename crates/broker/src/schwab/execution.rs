@@ -1,8 +1,9 @@
 use sqlx::SqlitePool;
 
-use super::{HasTradeStatus, TradeState, shares_from_db_i64};
-use crate::Direction;
+use super::shares_from_db_i64;
 use crate::error::{OnChainError, PersistenceError};
+use crate::{Direction, SupportedBroker};
+use crate::{OrderState, OrderStatus};
 
 /// Converts database row data to a SchwabExecution instance.
 /// Centralizes the conversion logic and casting operations.
@@ -12,12 +13,25 @@ fn row_to_execution(
     symbol: String,
     shares: i64,
     direction: &str,
+    broker_name: &str,
     order_id: Option<String>,
     price_cents: Option<i64>,
     status: &str,
     executed_at: Option<chrono::NaiveDateTime>,
 ) -> Result<SchwabExecution, OnChainError> {
     let parsed_direction = direction.parse()?;
+    let broker = match broker_name {
+        "schwab" => SupportedBroker::Schwab,
+        "dry_run" => SupportedBroker::DryRun,
+        _ => {
+            return Err(OnChainError::Persistence(
+                PersistenceError::InvalidTradeStatus(format!(
+                    "Invalid broker type: {}",
+                    broker_name
+                )),
+            ));
+        }
+    };
     let status_enum = status.parse().map_err(|err: String| {
         OnChainError::Persistence(PersistenceError::InvalidTradeStatus(err))
     })?;
@@ -28,6 +42,7 @@ fn row_to_execution(
         symbol,
         shares: shares_from_db_i64(shares)?,
         direction: parsed_direction,
+        broker,
         state: parsed_state,
     })
 }
@@ -53,6 +68,7 @@ pub struct SchwabExecution {
     pub(crate) symbol: String,
     pub(crate) shares: u64,
     pub(crate) direction: Direction,
+    pub(crate) broker: SupportedBroker,
     pub(crate) state: TradeState,
 }
 
@@ -103,6 +119,7 @@ pub(crate) async fn find_executions_by_symbol_and_status<S: HasTradeStatus>(
                     row.symbol,
                     row.shares,
                     &row.direction,
+                    &row.broker,
                     row.order_id,
                     row.price_cents,
                     &row.status,
@@ -126,6 +143,7 @@ pub(crate) async fn find_executions_by_symbol_and_status<S: HasTradeStatus>(
                     row.symbol,
                     row.shares,
                     &row.direction,
+                    &row.broker,
                     row.order_id,
                     row.price_cents,
                     &row.status,
@@ -150,6 +168,7 @@ pub async fn find_execution_by_id(
             row.symbol,
             row.shares,
             &row.direction,
+            &row.broker,
             row.order_id,
             row.price_cents,
             &row.status,
@@ -168,6 +187,7 @@ impl SchwabExecution {
     ) -> Result<i64, crate::error::PersistenceError> {
         let shares_i64 = shares_to_db_i64(self.shares)?;
         let direction_str = &self.direction.to_string();
+        let broker_str = &self.broker.to_string();
         let status_str = self.state.status().as_str();
         let db_fields = self.state.to_db_fields()?;
 
@@ -177,18 +197,18 @@ impl SchwabExecution {
                 symbol,
                 shares,
                 direction,
-                broker_type,
-                broker_order_id,
+                broker,
                 order_id,
                 price_cents,
                 status,
                 executed_at
             )
-            VALUES (?1, ?2, ?3, 'schwab', ?4, ?4, ?5, ?6, ?7)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
             "#,
             self.symbol,
             shares_i64,
             direction_str,
+            broker_str,
             db_fields.order_id,
             db_fields.price_cents,
             status_str,
@@ -583,7 +603,7 @@ mod tests {
 
         // Try to insert execution with invalid direction - should be prevented by CHECK constraint
         let result = sqlx::query!(
-            "INSERT INTO offchain_trades (symbol, shares, direction, broker_type, broker_order_id, order_id, price_cents, status) VALUES (?, ?, ?, 'schwab', ?, ?, ?, ?)",
+            "INSERT INTO offchain_trades (symbol, shares, direction, broker, order_id, price_cents, status) VALUES (?, ?, ?, 'schwab', ?, ?, ?)",
             "TEST",
             100i64,
             "INVALID_DIRECTION", // This should be rejected by CHECK constraint
@@ -604,7 +624,7 @@ mod tests {
 
         // Try to insert with invalid status - should also be prevented
         let result = sqlx::query!(
-            "INSERT INTO offchain_trades (symbol, shares, direction, broker_type, broker_order_id, order_id, price_cents, status) VALUES (?, ?, ?, 'schwab', ?, ?, ?, ?)",
+            "INSERT INTO offchain_trades (symbol, shares, direction, broker, order_id, price_cents, status) VALUES (?, ?, ?, 'schwab', ?, ?, ?)",
             "TEST",
             100i64,
             "BUY",
@@ -810,6 +830,7 @@ mod tests {
             "AAPL".to_string(),
             100,
             "INVALID_DIRECTION",
+            "schwab",
             None,
             None,
             "PENDING",
@@ -829,6 +850,7 @@ mod tests {
             "AAPL".to_string(),
             100,
             "BUY",
+            "schwab",
             None, // Missing order_id for COMPLETED status
             Some(15000),
             "FILLED",
@@ -848,6 +870,7 @@ mod tests {
             "AAPL".to_string(),
             100,
             "BUY",
+            "schwab",
             Some("1004055538123".to_string()),
             None, // Missing price_cents for COMPLETED status
             "FILLED",
@@ -867,6 +890,7 @@ mod tests {
             "AAPL".to_string(),
             100,
             "BUY",
+            "schwab",
             Some("1004055538123".to_string()),
             Some(15000),
             "FILLED",
@@ -886,6 +910,7 @@ mod tests {
             "AAPL".to_string(),
             100,
             "BUY",
+            "schwab",
             None,
             None,
             "INVALID_STATUS",
@@ -906,6 +931,7 @@ mod tests {
             "AAPL".to_string(),
             -100, // Negative shares
             "BUY",
+            "schwab",
             None,
             None,
             "PENDING",
@@ -1024,8 +1050,8 @@ mod tests {
 
         // Test that database constraint prevents FILLED status with NULL price_cents
         let result = sqlx::query!(
-            "INSERT INTO offchain_trades (symbol, shares, direction, broker_type, broker_order_id, order_id, price_cents, status, executed_at) 
-             VALUES (?, ?, ?, 'schwab', ?, ?, ?, ?, ?)",
+            "INSERT INTO offchain_trades (symbol, shares, direction, broker, order_id, price_cents, status, executed_at) 
+             VALUES (?, ?, ?, 'schwab', ?, ?, ?, ?)",
             "TEST",
             100i64,
             "BUY",
@@ -1045,8 +1071,8 @@ mod tests {
 
         // Verify valid FILLED execution with price_cents succeeds
         let result = sqlx::query!(
-            "INSERT INTO offchain_trades (symbol, shares, direction, broker_type, broker_order_id, order_id, price_cents, status, executed_at) 
-             VALUES (?, ?, ?, 'schwab', ?, ?, ?, ?, ?)",
+            "INSERT INTO offchain_trades (symbol, shares, direction, broker, order_id, price_cents, status, executed_at) 
+             VALUES (?, ?, ?, 'schwab', ?, ?, ?, ?)",
             "TEST2",
             100i64,
             "BUY", 
@@ -1113,6 +1139,7 @@ mod tests {
             "AAPL".to_string(),
             100,
             "BUY",
+            "schwab",
             None,
             None,
             "FAILED",

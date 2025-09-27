@@ -2,25 +2,30 @@ use async_trait::async_trait;
 use sqlx::SqlitePool;
 use tracing::{error, info};
 
-use super::auth::SchwabAuthEnv;
-use crate::{Broker, BrokerError, MarketOrder, OrderPlacement, OrderStatus, OrderUpdate};
+use crate::schwab::auth::SchwabAuthEnv;
+use crate::schwab::tokens::SchwabTokens;
+use crate::{
+    Broker, BrokerError, MarketOrder, OrderPlacement, OrderState, OrderStatus, OrderUpdate,
+};
+
+/// Configuration for SchwabBroker containing auth environment and database pool
+pub type SchwabConfig = (SchwabAuthEnv, SqlitePool);
 
 /// Schwab broker implementation
 #[derive(Debug, Clone)]
 pub struct SchwabBroker {
-    pub auth: SchwabAuthEnv,
+    auth: SchwabAuthEnv,
+    pool: SqlitePool,
 }
 
 impl SchwabBroker {
-    pub fn new(auth: SchwabAuthEnv) -> Self {
-        Self { auth }
-    }
-
-    /// Validates token access - placeholder for actual token validation
-    async fn validate_token_access(&self, _pool: &SqlitePool) -> Result<(), String> {
-        // For now, always return success
-        // This should be replaced with actual token validation logic
-        Ok(())
+    /// Validates token access using stored pool and auth
+    async fn validate_token_access(&self) -> Result<(), String> {
+        // Use actual token validation logic
+        match SchwabTokens::get_valid_access_token(&self.pool, &self.auth).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(format!("Token validation failed: {}", e)),
+        }
     }
 }
 
@@ -28,15 +33,16 @@ impl SchwabBroker {
 impl Broker for SchwabBroker {
     type Error = BrokerError;
     type OrderId = String;
-    type Config = SchwabAuthEnv;
+    type Config = SchwabConfig;
 
-    async fn ensure_ready(
-        &self,
-        config: &Self::Config,
-        pool: &SqlitePool,
-    ) -> Result<(), Self::Error> {
+    fn new(config: Self::Config) -> Self {
+        let (auth, pool) = config;
+        Self { auth, pool }
+    }
+
+    async fn ensure_ready(&self) -> Result<(), Self::Error> {
         // Check if we can get a valid access token (validates token state)
-        match self.validate_token_access(pool).await {
+        match self.validate_token_access().await {
             Ok(_) => {
                 info!("Schwab broker is ready - tokens are valid");
                 Ok(())
@@ -53,9 +59,7 @@ impl Broker for SchwabBroker {
 
     async fn place_market_order(
         &self,
-        config: &Self::Config,
         order: MarketOrder,
-        pool: &SqlitePool,
     ) -> Result<OrderPlacement<Self::OrderId>, Self::Error> {
         info!(
             "Placing market order: {} {} shares of {}",
@@ -76,24 +80,19 @@ impl Broker for SchwabBroker {
         })
     }
 
-    async fn get_order_status(
-        &self,
-        config: &Self::Config,
-        order_id: &Self::OrderId,
-        _pool: &SqlitePool,
-    ) -> Result<OrderStatus, Self::Error> {
+    async fn get_order_status(&self, order_id: &Self::OrderId) -> Result<OrderState, Self::Error> {
         info!("Getting order status for: {}", order_id);
 
-        // For now, return filled status
+        // For now, return filled status with mock data
         // This will be replaced with actual Schwab API status checking
-        Ok(OrderStatus::Filled)
+        Ok(OrderState::Filled {
+            executed_at: chrono::Utc::now(),
+            order_id: order_id.clone(),
+            price_cents: 10000, // $100.00 mock price
+        })
     }
 
-    async fn poll_pending_orders(
-        &self,
-        config: &Self::Config,
-        _pool: &SqlitePool,
-    ) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error> {
+    async fn poll_pending_orders(&self) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error> {
         info!("Polling pending orders");
 
         // For now, return empty list

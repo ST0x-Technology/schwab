@@ -5,7 +5,7 @@ use tracing::Level;
 
 use crate::onchain::EvmEnv;
 use crate::schwab::OrderPollerConfig;
-use crate::schwab::SchwabAuthEnv;
+use st0x_broker::SchwabAuthEnv;
 use st0x_broker::{DryRunBroker, SchwabBroker};
 
 #[derive(clap::ValueEnum, Debug, Clone)]
