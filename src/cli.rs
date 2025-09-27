@@ -493,7 +493,7 @@ async fn process_found_trade<W: Write>(
             direction: execution.direction,
         };
 
-        if env.dry_run {
+        let placement = if env.dry_run {
             let broker = env.get_test_broker().await.map_err(anyhow::Error::from)?;
             let placement = broker
                 .place_market_order(market_order)
@@ -504,6 +504,7 @@ async fn process_found_trade<W: Write>(
                 "✅ Dry-run order placed with ID: {}",
                 placement.order_id
             )?;
+            placement
         } else {
             let broker = env
                 .get_schwab_broker(pool.clone())
@@ -518,7 +519,23 @@ async fn process_found_trade<W: Write>(
                 "✅ Schwab order placed with ID: {}",
                 placement.order_id
             )?;
-        }
+            placement
+        };
+
+        // Update execution with order_id and set status to Submitted
+        let submitted_state = st0x_broker::OrderState::Submitted {
+            order_id: placement.order_id.to_string(),
+        };
+
+        let mut sql_tx = pool.begin().await?;
+        crate::offchain::execution::update_execution_status_within_transaction(
+            &mut sql_tx,
+            execution_id,
+            &submitted_state,
+        )
+        .await
+        .map_err(anyhow::Error::from)?;
+        sql_tx.commit().await?;
         writeln!(stdout, "🎯 Trade processing completed!")?;
     } else {
         writeln!(
@@ -1398,12 +1415,10 @@ mod tests {
         );
         token_refresh_mock.assert();
 
-        let stdout_str = String::from_utf8(stdout).unwrap();
-        assert!(
-            stdout_str.contains("authentication")
-                || stdout_str.contains("refresh token")
-                || stdout_str.contains("expired")
-        );
+        // The function fails early when creating the broker, so no output is written
+        // The error should be related to authentication issues
+        let error_msg = format!("{}", result.unwrap_err());
+        assert!(error_msg.contains("Refresh token expired"));
     }
 
     #[tokio::test]
@@ -1503,12 +1518,11 @@ mod tests {
         .await;
 
         assert!(result.is_err(), "CLI should fail when no tokens are stored");
-        let stdout_str = String::from_utf8(stdout).unwrap();
-        assert!(
-            stdout_str.contains("no rows returned")
-                || stdout_str.contains("Database error")
-                || stdout_str.contains("Failed to place order")
-        );
+
+        // The function fails early when creating the broker, so no output is written
+        // The error should be related to missing authentication tokens
+        let error_msg = format!("{}", result.unwrap_err());
+        assert!(error_msg.contains("no rows returned"));
 
         // Now add tokens and verify database integration works
         setup_test_tokens(&pool).await;

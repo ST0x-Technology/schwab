@@ -168,11 +168,13 @@ pub mod tests {
     #[tokio::test]
     async fn test_get_broker_types() {
         let env = create_test_env();
-        let pool = env.get_sqlite_pool().await.unwrap();
+        let pool = crate::test_utils::setup_test_db().await;
 
-        let schwab_broker = env.get_schwab_broker(pool.clone()).await.unwrap();
-        assert!(format!("{schwab_broker:?}").contains("SchwabBroker"));
+        // SchwabBroker creation should fail without valid tokens
+        let schwab_result = env.get_schwab_broker(pool.clone()).await;
+        assert!(schwab_result.is_err());
 
+        // TestBroker should always work
         let test_broker = env.get_test_broker().await.unwrap();
         assert!(format!("{test_broker:?}").contains("TestBroker"));
     }

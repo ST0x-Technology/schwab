@@ -93,9 +93,7 @@ impl TradeExecutionLink {
                 })?;
 
                 let execution_status_enum = row.status.parse::<OrderStatus>().map_err(|e| {
-                    OnChainError::Persistence(st0x_broker::PersistenceError::InvalidTradeStatus(
-                        e.to_string(),
-                    ))
+                    OnChainError::Persistence(st0x_broker::PersistenceError::InvalidTradeStatus(e))
                 })?;
 
                 let execution_status = OrderState::from_db_row(

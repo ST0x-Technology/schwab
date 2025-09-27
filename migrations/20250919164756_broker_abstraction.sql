@@ -89,11 +89,13 @@ CREATE INDEX idx_trade_execution_links_execution_id ON trade_execution_links(exe
 CREATE INDEX idx_trade_execution_links_trade_exec ON trade_execution_links(trade_id, execution_id);
 
 -- Create trigger for last_updated timestamp on trade_accumulators
+-- Only update timestamp if it wasn't explicitly changed (allows manual timestamp setting for tests)
 CREATE TRIGGER update_trade_accumulators_last_updated
 AFTER UPDATE ON trade_accumulators
 FOR EACH ROW
+WHEN OLD.last_updated = NEW.last_updated
 BEGIN
-  UPDATE trade_accumulators SET last_updated = CURRENT_TIMESTAMP WHERE symbol = NEW.symbol;
+  UPDATE trade_accumulators SET last_updated = CURRENT_TIMESTAMP WHERE rowid = NEW.rowid;
 END;
 
 -- Create partial index for pending executions

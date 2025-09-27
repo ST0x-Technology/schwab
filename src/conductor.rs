@@ -25,20 +25,19 @@ use crate::symbol::lock::get_symbol_lock;
 
 /// Macro to add shutdown handling to tokio::select! blocks
 ///
-/// Usage with loop:
+/// Usage:
 /// ```
+/// use st0x_arbot::loop_with_shutdown;
+/// use tokio::sync::watch;
+/// use tracing::info;
+/// # async fn example() {
+/// # let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
 /// loop_with_shutdown!(shutdown_rx, "task name", {
-///     branch1 => { ... },
-///     branch2 => { ... },
-/// })
-/// ```
-///
-/// Usage without loop:
-/// ```
-/// select_with_shutdown!(shutdown_rx, "task name", {
-///     branch1 => { ... },
-///     branch2 => { ... },
-/// })
+///     _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+///         // Do work
+///     },
+/// });
+/// # }
 /// ```
 #[macro_export]
 macro_rules! loop_with_shutdown {

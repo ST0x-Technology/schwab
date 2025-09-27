@@ -39,7 +39,7 @@ fn row_to_execution(
         "dry_run" => SupportedBroker::DryRun,
         _ => {
             return Err(OnChainError::Persistence(
-                PersistenceError::InvalidTradeStatus(format!("Unknown broker type: {}", broker)),
+                PersistenceError::InvalidTradeStatus(format!("Unknown broker type: {broker}")),
             ));
         }
     };
@@ -50,7 +50,7 @@ fn row_to_execution(
         "FAILED" => OrderStatus::Failed,
         _ => {
             return Err(OnChainError::Persistence(
-                PersistenceError::InvalidTradeStatus(format!("Invalid order status: {}", status)),
+                PersistenceError::InvalidTradeStatus(format!("Invalid order status: {status}")),
             ));
         }
     };
@@ -150,10 +150,16 @@ pub async fn find_executions_by_symbol_and_status<S: HasTradeStatus>(
         .fetch_all(pool)
         .await?;
 
-        rows.into_iter()
+        Ok(rows
+            .into_iter()
             .map(|row| {
+                let id = row.id.ok_or_else(|| {
+                    OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
+                        "Database row missing required ID".to_string(),
+                    ))
+                })?;
                 row_to_execution(ExecutionRow {
-                    id: row.id.unwrap(),
+                    id,
                     symbol: row.symbol,
                     shares: row.shares,
                     direction: row.direction,
@@ -164,7 +170,7 @@ pub async fn find_executions_by_symbol_and_status<S: HasTradeStatus>(
                     executed_at: row.executed_at,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?)
     } else {
         let rows = sqlx::query!(
             "SELECT * FROM offchain_trades WHERE symbol = ?1 AND status = ?2 ORDER BY id ASC",
@@ -174,10 +180,16 @@ pub async fn find_executions_by_symbol_and_status<S: HasTradeStatus>(
         .fetch_all(pool)
         .await?;
 
-        rows.into_iter()
+        Ok(rows
+            .into_iter()
             .map(|row| {
+                let id = row.id.ok_or_else(|| {
+                    OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
+                        "Database row missing required ID".to_string(),
+                    ))
+                })?;
                 row_to_execution(ExecutionRow {
-                    id: row.id.unwrap(),
+                    id,
                     symbol: row.symbol,
                     shares: row.shares,
                     direction: row.direction,
@@ -188,7 +200,7 @@ pub async fn find_executions_by_symbol_and_status<S: HasTradeStatus>(
                     executed_at: row.executed_at,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?)
     }
 }
 
