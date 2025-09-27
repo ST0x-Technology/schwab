@@ -93,6 +93,9 @@ pub enum BrokerError {
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 
+    #[error("Schwab API error: {0}")]
+    Schwab(#[from] schwab::SchwabError),
+
     #[error("Authentication failed: {0}")]
     Authentication(String),
 

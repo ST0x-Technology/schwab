@@ -1,16 +1,6 @@
-#[cfg(test)]
-use crate::error::OnChainError;
-#[cfg(test)]
-use crate::onchain::io::TokenizedEquitySymbol;
-#[cfg(test)]
-use crate::schwab::shares_from_db_i64;
-use crate::trade_state::TradeState;
-#[cfg(test)]
-use crate::trade_state::TradeStatus;
 use chrono::{DateTime, Utc};
-#[cfg(test)]
-use sqlx::SqlitePool;
-use st0x_broker::Direction;
+use st0x_broker::OrderState;
+use st0x_broker::{Direction, SupportedBroker};
 
 /// Links individual onchain trades to their contributing Schwab executions.
 ///
@@ -89,14 +79,16 @@ impl TradeExecutionLink {
         rows.into_iter()
             .map(|row| {
                 let execution_direction = row.direction.parse::<Direction>().map_err(|e| {
-                    OnChainError::Persistence(crate::error::PersistenceError::InvalidDirection(e))
+                    OnChainError::Persistence(st0x_broker::PersistenceError::InvalidDirection(e))
                 })?;
 
-                let execution_status_enum = row.status.parse::<TradeStatus>().map_err(|e| {
-                    OnChainError::Persistence(crate::error::PersistenceError::InvalidTradeStatus(e))
+                let execution_status_enum = row.status.parse::<OrderStatus>().map_err(|e| {
+                    OnChainError::Persistence(st0x_broker::PersistenceError::InvalidTradeStatus(
+                        e.to_string(),
+                    ))
                 })?;
 
-                let execution_status = TradeState::from_db_row(
+                let execution_status = OrderState::from_db_row(
                     execution_status_enum,
                     row.order_id,
                     row.price_cents,
@@ -255,7 +247,7 @@ pub struct ExecutionContribution {
     pub execution_symbol: String,
     pub execution_total_shares: u64,
     pub execution_direction: Direction,
-    pub execution_status: TradeState,
+    pub execution_status: OrderState,
     pub created_at: Option<DateTime<Utc>>,
 }
 
@@ -302,12 +294,17 @@ pub struct AuditTrailEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db_utils::shares_from_db_i64;
+    use crate::error::OnChainError;
+    use crate::offchain::execution::OffchainExecution;
     use crate::onchain::OnchainTrade;
-    use crate::schwab::execution::OffchainExecution;
+    use crate::onchain::io::TokenizedEquitySymbol;
     use crate::test_utils::setup_test_db;
     use crate::tokenized_symbol;
     use alloy::primitives::fixed_bytes;
     use chrono::Utc;
+    use sqlx::SqlitePool;
+    use st0x_broker::OrderStatus;
 
     #[tokio::test]
     async fn test_trade_execution_link_save_and_find() {
@@ -332,7 +329,8 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 1,
             direction: Direction::Sell,
-            state: TradeState::Pending,
+            broker: SupportedBroker::Schwab,
+            state: OrderState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -403,7 +401,8 @@ mod tests {
             symbol: "MSFT".to_string(),
             shares: 1,
             direction: Direction::Buy,
-            state: TradeState::Filled {
+            broker: SupportedBroker::Schwab,
+            state: OrderState::Filled {
                 executed_at: Utc::now(),
                 order_id: "1004055538123".to_string(),
                 price_cents: 30250,
@@ -453,7 +452,8 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 1,
             direction: Direction::Sell,
-            state: TradeState::Pending,
+            broker: SupportedBroker::Schwab,
+            state: OrderState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -530,7 +530,8 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 1,
             direction: Direction::Buy,
-            state: TradeState::Pending,
+            broker: SupportedBroker::Schwab,
+            state: OrderState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();

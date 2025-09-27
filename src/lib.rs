@@ -81,140 +81,101 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
 }
 
 async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
-    let run_bot = {
-        let env = env.clone();
-        let pool = pool.clone();
-        move || {
-            let env = env.clone();
-            let pool = pool.clone();
-            async move {
-                let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
-                let provider = ProviderBuilder::new().connect_ws(ws).await?;
-                let cache = SymbolCache::default();
-                let orderbook = IOrderBookV4Instance::new(env.evm_env.orderbook, &provider);
-
-                let mut clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
-                let mut take_stream = orderbook.TakeOrderV2_filter().watch().await?.into_stream();
-
-                let cutoff_block =
-                    get_cutoff_block(&mut clear_stream, &mut take_stream, &provider, &pool).await?;
-
-                onchain::backfill::backfill_events(
-                    &pool,
-                    &provider,
-                    &env.evm_env,
-                    cutoff_block - 1,
-                )
-                .await?;
-
-                // Start all services through unified background tasks management
-                if env.dry_run {
-                    let broker = env.get_test_broker();
-                    conductor::run_live(
-                        env,
-                        pool,
-                        cache,
-                        provider,
-                        broker,
-                        clear_stream,
-                        take_stream,
-                    )
-                    .await
-                } else {
-                    debug!("Validating Schwab tokens...");
-                    match SchwabTokens::refresh_if_needed(&pool, &env.schwab_auth).await {
-                        Err(SchwabError::RefreshTokenExpired) => {
-                            warn!(
-                                "Refresh token expired, waiting for manual authentication via API"
-                            );
-                            return Err(anyhow::anyhow!("RefreshTokenExpired"));
-                        }
-                        Err(e) => return Err(anyhow::anyhow!("Token validation failed: {}", e)),
-                        Ok(_) => {
-                            info!("Token validation successful");
-                        }
-                    }
-
-                    let broker = env.get_schwab_broker(pool.clone());
-                    conductor::run_live(
-                        env,
-                        pool,
-                        cache,
-                        provider,
-                        broker,
-                        clear_stream,
-                        take_stream,
-                    )
-                    .await
-                }
-            }
-        }
-    };
-
     const RERUN_DELAY_SECS: u64 = 10;
 
-    if env.dry_run {
-        // For dry-run mode, run bot immediately without market hours control
-        info!("Running in dry-run mode, bypassing market hours control");
-        run_bot().await
-    } else {
-        // Initialize market hours controller for Schwab mode only
-        let market_hours_cache = Arc::new(MarketHoursCache::new());
-        let controller = TradingHoursController::new(
-            market_hours_cache,
-            env.schwab_auth.clone(),
-            Arc::new(pool.clone()),
-        );
+    loop {
+        let result = run_bot_session(&env, &pool).await;
 
-        // Main market hours control loop
-        loop {
-            // Wait until market opens
-            controller.wait_until_market_open().await?;
-
-            // Run bot until market closes or completes
-            let run_result =
-                if let Some(time_until_close) = controller.time_until_market_close().await? {
-                    let timeout_duration = time_until_close
-                        .to_std()
-                        .unwrap_or(std::time::Duration::from_secs(60 * 60)); // 1 hour fallback
-
-                    info!(
-                        "Market is open, starting bot (will timeout in {} minutes)",
-                        timeout_duration.as_secs() / 60
-                    );
-
-                    tokio::select! {
-                        result = run_bot() => result,
-                        () = tokio::time::sleep(timeout_duration) => {
-                            info!("Market closing, shutting down bot gracefully");
-                            continue; // Go back to wait for next market open
-                        }
-                    }
-                } else {
-                    // Market already closed, continue to wait
-                    warn!("Market already closed, waiting for next open");
-                    continue;
-                };
-
-            // Handle bot result - simple retry for token expired, otherwise fail
-            match run_result {
-                Ok(()) => {
-                    info!("Bot completed successfully, continuing to next market session");
-                }
-                Err(e) if e.to_string().contains("RefreshTokenExpired") => {
-                    warn!(
-                        "Refresh token expired, retrying in {} seconds",
-                        RERUN_DELAY_SECS
-                    );
-                    tokio::time::sleep(std::time::Duration::from_secs(RERUN_DELAY_SECS)).await;
-                }
-                Err(e) => {
-                    error!("Bot failed: {e}");
-                    return Err(e);
-                }
+        match result {
+            Ok(()) => {
+                info!("Bot session completed successfully");
+                break;
+            }
+            Err(e) if e.to_string().contains("RefreshTokenExpired") => {
+                warn!(
+                    "Refresh token expired, retrying in {} seconds",
+                    RERUN_DELAY_SECS
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(RERUN_DELAY_SECS)).await;
+            }
+            Err(e) => {
+                error!("Bot session failed: {e}");
+                return Err(e);
             }
         }
     }
+}
+
+async fn run_bot_session(env: &Env, pool: &SqlitePool) -> anyhow::Result<()> {
+    if env.dry_run {
+        info!("Initializing test broker for dry-run mode");
+        let broker = env.get_test_broker().await?;
+        run_with_broker(env, pool, broker).await
+    } else {
+        info!("Initializing Schwab broker");
+        let broker = env.get_schwab_broker(pool.clone()).await?;
+        run_with_broker(env, pool, broker).await
+    }
+}
+
+async fn run_with_broker<B: Broker>(env: &Env, pool: &SqlitePool, broker: B) -> anyhow::Result<()> {
+    if let Some(wait_duration) = broker
+        .wait_until_market_open()
+        .await
+        .map_err(|e| anyhow::anyhow!("Market hours check failed: {}", e))?
+    {
+        info!(
+            "Market is closed, waiting {} minutes until market opens",
+            wait_duration.as_secs() / 60
+        );
+        tokio::time::sleep(wait_duration).await;
+    }
+
+    info!("Market is open, starting bot session");
+
+    let (provider, cache, _orderbook, clear_stream, take_stream) =
+        initialize_event_streams(env).await?;
+
+    let cutoff_block = get_cutoff_block(
+        &mut clear_stream.clone(),
+        &mut take_stream.clone(),
+        &provider,
+        pool,
+    )
+    .await?;
+
+    onchain::backfill::backfill_events(pool, &provider, &env.evm_env, cutoff_block - 1).await?;
+
+    conductor::run_live(
+        env.clone(),
+        pool.clone(),
+        cache,
+        provider,
+        broker,
+        clear_stream,
+        take_stream,
+    )
+    .await
+}
+
+async fn initialize_event_streams(
+    env: &Env,
+) -> anyhow::Result<(
+    alloy::providers::WsProvider,
+    SymbolCache,
+    IOrderBookV4Instance<alloy::providers::WsProvider>,
+    alloy::providers::StreamEvent<bindings::IOrderBookV4::ClearV2Filter>,
+    alloy::providers::StreamEvent<bindings::IOrderBookV4::TakeOrderV2Filter>,
+)> {
+    let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
+    let provider = ProviderBuilder::new().connect_ws(ws).await?;
+    let cache = SymbolCache::default();
+    let orderbook = IOrderBookV4Instance::new(env.evm_env.orderbook, &provider);
+
+    let clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
+    let take_stream = orderbook.TakeOrderV2_filter().watch().await?.into_stream();
+
+    Ok((provider, cache, orderbook, clear_stream, take_stream))
 }
 
 #[cfg(test)]

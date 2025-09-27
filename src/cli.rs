@@ -154,7 +154,7 @@ async fn run_command_with_writers<W: Write>(
             execute_order_with_writers(
                 validated_ticker,
                 quantity,
-                Instruction::Buy,
+                Direction::Buy,
                 &env,
                 pool,
                 stdout,
@@ -171,7 +171,7 @@ async fn run_command_with_writers<W: Write>(
             execute_order_with_writers(
                 validated_ticker,
                 quantity,
-                Instruction::Sell,
+                Direction::Sell,
                 &env,
                 pool,
                 stdout,
@@ -374,30 +374,38 @@ async fn run_oauth_flow(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<(), Sc
 async fn execute_order_with_writers<W: Write>(
     ticker: String,
     quantity: u64,
-    instruction: Instruction,
+    direction: Direction,
     env: &Env,
     pool: &SqlitePool,
     stdout: &mut W,
 ) -> anyhow::Result<()> {
-    let order = Order::new(ticker.clone(), instruction.clone(), quantity);
+    // Create broker instance
+    let broker = env.get_schwab_broker(pool.clone()).await?;
 
-    info!("Created order: ticker={ticker}, instruction={instruction:?}, quantity={quantity}");
+    // Create generic market order
+    let market_order = MarketOrder {
+        symbol: Symbol::new(ticker.clone())?,
+        shares: Shares::new(quantity)?,
+        direction,
+    };
 
-    match order.place(&env.schwab_auth, pool).await {
-        Ok(response) => {
+    info!("Created order: ticker={ticker}, direction={direction:?}, quantity={quantity}");
+
+    match broker.place_market_order(market_order).await {
+        Ok(placement) => {
             info!(
-                "Order placed successfully: ticker={ticker}, instruction={instruction:?}, quantity={quantity}, order_id={}",
-                response.order_id
+                "Order placed successfully: ticker={ticker}, direction={direction:?}, quantity={quantity}, order_id={}",
+                placement.order_id
             );
             writeln!(stdout, "✅ Order placed successfully!")?;
             writeln!(stdout, "   Ticker: {ticker}")?;
-            writeln!(stdout, "   Action: {instruction:?}")?;
-            writeln!(stdout, "   Order ID: {}", response.order_id)?;
+            writeln!(stdout, "   Action: {direction:?}")?;
+            writeln!(stdout, "   Order ID: {}", placement.order_id)?;
             writeln!(stdout, "   Quantity: {quantity}")?;
         }
         Err(e) => {
             error!(
-                "Failed to place order: ticker={ticker}, instruction={instruction:?}, quantity={quantity}, error={e:?}"
+                "Failed to place order: ticker={ticker}, direction={direction:?}, quantity={quantity}, error={e:?}"
             );
             writeln!(stdout, "❌ Failed to place order: {e}")?;
             return Err(e.into());
@@ -600,7 +608,7 @@ mod tests {
         execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut std::io::sink(),
@@ -643,7 +651,7 @@ mod tests {
         execute_order_with_writers(
             "TSLA".to_string(),
             50,
-            Instruction::Sell,
+            Direction::Sell,
             &env,
             &pool,
             &mut std::io::sink(),
@@ -683,7 +691,7 @@ mod tests {
         let result = execute_order_with_writers(
             "INVALID".to_string(),
             100,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut std::io::sink(),
@@ -771,7 +779,7 @@ mod tests {
         execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut std::io::sink(),
@@ -817,7 +825,7 @@ mod tests {
         execute_order_with_writers(
             "TSLA".to_string(),
             50,
-            Instruction::Sell,
+            Direction::Sell,
             &env,
             &pool,
             &mut std::io::sink(),
@@ -862,7 +870,7 @@ mod tests {
         let result = execute_order_with_writers(
             "AAPL".to_string(),
             123,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut stdout_buffer,
@@ -911,7 +919,7 @@ mod tests {
         let result = execute_order_with_writers(
             "TSLA".to_string(),
             50,
-            Instruction::Sell,
+            Direction::Sell,
             &env,
             &pool,
             &mut stdout_buffer,
@@ -1371,7 +1379,7 @@ mod tests {
         let result = execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut stdout,
@@ -1448,7 +1456,7 @@ mod tests {
         let result = execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut stdout,
@@ -1481,7 +1489,7 @@ mod tests {
         let result = execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut stdout,
@@ -1522,7 +1530,7 @@ mod tests {
         let result2 = execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut stdout2,
@@ -1558,7 +1566,7 @@ mod tests {
         let result = execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut stdout,
@@ -1640,7 +1648,7 @@ mod tests {
         let result = execute_order_with_writers(
             "INVALID".to_string(),
             999_999,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut stdout,

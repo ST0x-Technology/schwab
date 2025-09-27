@@ -311,10 +311,10 @@ The main application now properly handles both Schwab and mock brokers with appr
 - [x] Update SchwabBroker implementation with try_from_config and market hours
 - [x] Update TestBroker implementation with try_from_config
 - [x] Update env.rs methods to use async try_from_config
-- [ ] Simplify src/lib.rs with helper functions and unified code path
-- [ ] Preserve background token refresh logic for Schwab broker during refactoring
-- [ ] Test for regressions in bot functionality
-- [ ] Verify maximum 2-3 levels of nesting (down from 5)
+- [x] Simplify src/lib.rs with helper functions and unified code path
+- [x] Preserve background token refresh logic for Schwab broker during refactoring
+- [x] Test for regressions in bot functionality (fixed market hours logic preservation)
+- [x] Verify maximum 2-3 levels of nesting (down from 5)
 
 **Benefits:**
 - **Cleaner API**: Single initialization point, no redundant methods

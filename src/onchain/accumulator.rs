@@ -27,6 +27,7 @@ use st0x_broker::{Direction, SupportedBroker};
 pub async fn process_onchain_trade(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     trade: OnchainTrade,
+    broker_type: st0x_broker::SupportedBroker,
 ) -> Result<Option<OffchainExecution>, OnChainError> {
     // Check if trade already exists to handle duplicates gracefully
     let tx_hash_str = trade.tx_hash.to_string();
@@ -91,7 +92,9 @@ pub async fn process_onchain_trade(
     clean_up_stale_executions(sql_tx, base_symbol).await?;
 
     let execution = if try_acquire_execution_lease(sql_tx, base_symbol).await? {
-        let result = try_create_execution_if_ready(sql_tx, base_symbol, &mut calculator).await?;
+        let result =
+            try_create_execution_if_ready(sql_tx, base_symbol, &mut calculator, broker_type)
+                .await?;
 
         match &result {
             Some(execution) => {
@@ -198,12 +201,20 @@ async fn try_create_execution_if_ready(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     base_symbol: &EquitySymbol,
     calculator: &mut PositionCalculator,
+    broker_type: st0x_broker::SupportedBroker,
 ) -> Result<Option<OffchainExecution>, OnChainError> {
     let Some(execution_type) = calculator.determine_execution_type() else {
         return Ok(None);
     };
 
-    execute_position(&mut *sql_tx, base_symbol, calculator, execution_type).await
+    execute_position(
+        &mut *sql_tx,
+        base_symbol,
+        calculator,
+        execution_type,
+        broker_type,
+    )
+    .await
 }
 
 async fn execute_position(
@@ -211,6 +222,7 @@ async fn execute_position(
     base_symbol: &EquitySymbol,
     calculator: &mut PositionCalculator,
     execution_type: AccumulationBucket,
+    broker_type: st0x_broker::SupportedBroker,
 ) -> Result<Option<OffchainExecution>, OnChainError> {
     let shares = calculator.calculate_executable_shares();
 
@@ -224,7 +236,8 @@ async fn execute_position(
     };
 
     let execution =
-        create_execution_within_transaction(sql_tx, base_symbol, shares, instruction).await?;
+        create_execution_within_transaction(sql_tx, base_symbol, shares, instruction, broker_type)
+            .await?;
 
     let execution_id = execution
         .id

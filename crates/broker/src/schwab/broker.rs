@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::schwab::auth::SchwabAuthEnv;
-use crate::schwab::market_hours::{MarketHours, fetch_market_hours};
+use crate::schwab::market_hours::MarketStatus;
 use crate::schwab::market_hours_cache::MarketHoursCache;
 use crate::schwab::tokens::SchwabTokens;
 use crate::{Broker, BrokerError, MarketOrder, OrderPlacement, OrderState, OrderUpdate};
@@ -53,25 +53,34 @@ impl Broker for SchwabBroker {
         // Create market hours cache
         let market_hours_cache = Arc::new(MarketHoursCache::new());
 
-        // Get market hours for today
-        let market_hours = fetch_market_hours(&self.auth, &self.pool, None).await?;
+        // Check current market status using cache
+        let status = market_hours_cache
+            .get_current_status("equity", &self.auth, &self.pool)
+            .await?;
 
-        let now = chrono::Utc::now();
+        match status {
+            MarketStatus::Open => Ok(None), // Market is open, no need to wait
+            MarketStatus::Closed => {
+                // Market is closed, get next transition time
+                if let Some(next_transition) = market_hours_cache
+                    .get_next_transition("equity", &self.auth, &self.pool)
+                    .await?
+                {
+                    let now = chrono::Utc::now();
 
-        // Check if market is currently open
-        if market_hours.is_market_open_at(now) {
-            Ok(None) // Market is open, no need to wait
-        } else {
-            // Market is closed, find next open time
-            if let Some(next_open) = market_hours.next_market_open(now) {
-                let wait_duration = (next_open - now)
-                    .to_std()
-                    .map_err(|e| BrokerError::Network(format!("Invalid duration: {}", e)))?;
-                Ok(Some(wait_duration))
-            } else {
-                // No market open time found (e.g., weekend)
-                // Return a default wait time (check again in 1 hour)
-                Ok(Some(std::time::Duration::from_secs(3600)))
+                    if next_transition > now {
+                        let duration = (next_transition - now)
+                            .to_std()
+                            .unwrap_or(std::time::Duration::from_secs(3600)); // 1 hour fallback
+                        Ok(Some(duration))
+                    } else {
+                        // If next transition is in the past, return small wait time to retry
+                        Ok(Some(std::time::Duration::from_secs(60)))
+                    }
+                } else {
+                    // No next transition found, return default wait time
+                    Ok(Some(std::time::Duration::from_secs(3600)))
+                }
             }
         }
     }
@@ -171,6 +180,10 @@ impl Broker for SchwabBroker {
 mod tests {
     use super::*;
     use crate::schwab::auth::SchwabAuthEnv;
+    use crate::schwab::tokens::SchwabTokens;
+    use chrono::{Duration, Utc};
+    use httpmock::prelude::*;
+    use serde_json::json;
     use sqlx::SqlitePool;
 
     fn create_test_auth_env() -> SchwabAuthEnv {
@@ -183,37 +196,282 @@ mod tests {
         }
     }
 
+    fn create_test_auth_env_with_server(server: &MockServer) -> SchwabAuthEnv {
+        SchwabAuthEnv {
+            app_key: "test_key".to_string(),
+            app_secret: "test_secret".to_string(),
+            redirect_uri: "https://127.0.0.1".to_string(),
+            base_url: server.base_url(),
+            account_index: 0,
+        }
+    }
+
+    async fn setup_test_db() -> SqlitePool {
+        SqlitePool::connect(":memory:").await.unwrap()
+    }
+
     #[tokio::test]
-    async fn test_try_from_config_with_invalid_tokens() {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
+    async fn test_try_from_config_with_no_tokens() {
+        let pool = setup_test_db().await;
         let auth = create_test_auth_env();
         let config = (auth, pool);
 
         let result = SchwabBroker::try_from_config(config).await;
 
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            BrokerError::Authentication(_)
-        ));
+        assert!(matches!(result.unwrap_err(), BrokerError::Schwab(_)));
     }
 
     #[tokio::test]
-    async fn test_wait_until_market_open_returns_duration_type() {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
-        let auth = create_test_auth_env();
-        let broker = SchwabBroker { auth, pool };
+    async fn test_try_from_config_with_valid_tokens() {
+        let pool = setup_test_db().await;
+        let server = MockServer::start();
+        let auth = create_test_auth_env_with_server(&server);
 
+        // Store valid tokens
+        let valid_tokens = SchwabTokens {
+            access_token: "valid_access_token".to_string(),
+            access_token_fetched_at: Utc::now() - Duration::minutes(10), // Fresh token
+            refresh_token: "valid_refresh_token".to_string(),
+            refresh_token_fetched_at: Utc::now() - Duration::days(1),
+        };
+        valid_tokens.store(&pool).await.unwrap();
+
+        let config = (auth, pool);
+        let result = SchwabBroker::try_from_config(config).await;
+
+        assert!(result.is_ok());
+        let broker = result.unwrap();
+        assert_eq!(broker.auth.app_key, "test_key");
+    }
+
+    #[tokio::test]
+    async fn test_try_from_config_with_expired_access_token_valid_refresh() {
+        let pool = setup_test_db().await;
+        let server = MockServer::start();
+        let auth = create_test_auth_env_with_server(&server);
+
+        // Store tokens with expired access token but valid refresh token
+        let tokens_needing_refresh = SchwabTokens {
+            access_token: "expired_access_token".to_string(),
+            access_token_fetched_at: Utc::now() - Duration::minutes(35), // Expired
+            refresh_token: "valid_refresh_token".to_string(),
+            refresh_token_fetched_at: Utc::now() - Duration::days(1), // Valid
+        };
+        tokens_needing_refresh.store(&pool).await.unwrap();
+
+        // Mock the token refresh endpoint
+        let refresh_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/oauth/token")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body_contains("grant_type=refresh_token")
+                .body_contains("refresh_token=valid_refresh_token");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "access_token": "refreshed_access_token",
+                    "refresh_token": "new_refresh_token",
+                    "expires_in": 1800,
+                    "token_type": "Bearer"
+                }));
+        });
+
+        let config = (auth, pool.clone());
+        let result = SchwabBroker::try_from_config(config).await;
+
+        assert!(result.is_ok());
+        refresh_mock.assert();
+
+        // Verify tokens were updated
+        let updated_tokens = SchwabTokens::load(&pool).await.unwrap();
+        assert_eq!(updated_tokens.access_token, "refreshed_access_token");
+        assert_eq!(updated_tokens.refresh_token, "new_refresh_token");
+    }
+
+    #[tokio::test]
+    async fn test_try_from_config_with_expired_refresh_token() {
+        let pool = setup_test_db().await;
+        let server = MockServer::start();
+        let auth = create_test_auth_env_with_server(&server);
+
+        // Store tokens with both access and refresh tokens expired
+        let expired_tokens = SchwabTokens {
+            access_token: "expired_access_token".to_string(),
+            access_token_fetched_at: Utc::now() - Duration::minutes(35),
+            refresh_token: "expired_refresh_token".to_string(),
+            refresh_token_fetched_at: Utc::now() - Duration::days(8), // Expired
+        };
+        expired_tokens.store(&pool).await.unwrap();
+
+        // Mock the token refresh endpoint to fail
+        let refresh_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/oauth/token")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body_contains("grant_type=refresh_token")
+                .body_contains("refresh_token=expired_refresh_token");
+            then.status(400)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "error": "invalid_grant",
+                    "error_description": "The provided authorization grant is invalid, expired, revoked, does not match the redirection URI used in the authorization request, or was issued to another client."
+                }));
+        });
+
+        let config = (auth, pool);
+        let result = SchwabBroker::try_from_config(config).await;
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), BrokerError::Schwab(_)));
+        refresh_mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_wait_until_market_open_with_market_open() {
+        let pool = setup_test_db().await;
+        let server = MockServer::start();
+        let auth = create_test_auth_env_with_server(&server);
+
+        // Store valid tokens
+        let valid_tokens = SchwabTokens {
+            access_token: "valid_access_token".to_string(),
+            access_token_fetched_at: Utc::now() - Duration::minutes(10),
+            refresh_token: "valid_refresh_token".to_string(),
+            refresh_token_fetched_at: Utc::now() - Duration::days(1),
+        };
+        valid_tokens.store(&pool).await.unwrap();
+
+        // Mock market hours API to return open market
+        let market_hours_mock = server.mock(|when, then| {
+            when.method(GET)
+                .path("/marketdata/v1/markets/equity")
+                .header("authorization", "Bearer valid_access_token");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "equity": {
+                        "EQ": {
+                            "date": "2025-01-15",
+                            "marketType": "EQUITY",
+                            "exchange": "null",
+                            "category": "null",
+                            "product": "EQ",
+                            "productName": "equity",
+                            "isOpen": true,
+                            "sessionHours": {
+                                "preMarket": [
+                                    {
+                                        "start": "2025-01-15T04:00:00-05:00",
+                                        "end": "2025-01-15T09:30:00-05:00"
+                                    }
+                                ],
+                                "regularMarket": [
+                                    {
+                                        "start": "2025-01-15T09:30:00-05:00",
+                                        "end": "2025-01-15T16:00:00-05:00"
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }));
+        });
+
+        let broker = SchwabBroker { auth, pool };
         let result = broker.wait_until_market_open().await;
 
-        // The result should be a Result containing Option<Duration>
-        assert!(result.is_ok() || matches!(result.unwrap_err(), BrokerError::Network(_)));
-        if let Ok(duration_opt) = result {
-            // If it returns Some(duration), duration should be positive
-            if let Some(duration) = duration_opt {
-                assert!(duration.as_secs() > 0);
-            }
-        }
+        assert!(result.is_ok());
+        let duration_opt = result.unwrap();
+        assert_eq!(duration_opt, None); // Market is open, no wait needed
+        market_hours_mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_wait_until_market_open_with_market_closed() {
+        let pool = setup_test_db().await;
+        let server = MockServer::start();
+        let auth = create_test_auth_env_with_server(&server);
+
+        // Store valid tokens
+        let valid_tokens = SchwabTokens {
+            access_token: "valid_access_token".to_string(),
+            access_token_fetched_at: Utc::now() - Duration::minutes(10),
+            refresh_token: "valid_refresh_token".to_string(),
+            refresh_token_fetched_at: Utc::now() - Duration::days(1),
+        };
+        valid_tokens.store(&pool).await.unwrap();
+
+        // Mock market hours API to return closed market
+        let market_hours_mock = server.mock(|when, then| {
+            when.method(GET)
+                .path("/marketdata/v1/markets/equity")
+                .header("authorization", "Bearer valid_access_token");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "equity": {
+                        "EQ": {
+                            "date": "2025-01-15",
+                            "marketType": "EQUITY",
+                            "exchange": "null",
+                            "category": "null",
+                            "product": "EQ",
+                            "productName": "equity",
+                            "isOpen": false,
+                            "sessionHours": {
+                                "preMarket": [],
+                                "regularMarket": []
+                            }
+                        }
+                    }
+                }));
+        });
+
+        let broker = SchwabBroker { auth, pool };
+        let result = broker.wait_until_market_open().await;
+
+        assert!(result.is_ok());
+        let duration_opt = result.unwrap();
+        assert!(duration_opt.is_some()); // Market is closed, should return wait duration
+        let duration = duration_opt.unwrap();
+        assert!(duration.as_secs() > 0); // Should be positive duration
+        market_hours_mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_wait_until_market_open_with_api_error() {
+        let pool = setup_test_db().await;
+        let server = MockServer::start();
+        let auth = create_test_auth_env_with_server(&server);
+
+        // Store valid tokens
+        let valid_tokens = SchwabTokens {
+            access_token: "valid_access_token".to_string(),
+            access_token_fetched_at: Utc::now() - Duration::minutes(10),
+            refresh_token: "valid_refresh_token".to_string(),
+            refresh_token_fetched_at: Utc::now() - Duration::days(1),
+        };
+        valid_tokens.store(&pool).await.unwrap();
+
+        // Mock market hours API to return error
+        let market_hours_mock = server.mock(|when, then| {
+            when.method(GET)
+                .path("/marketdata/v1/markets/equity")
+                .header("authorization", "Bearer valid_access_token");
+            then.status(500)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "error": "Internal Server Error"
+                }));
+        });
+
+        let broker = SchwabBroker { auth, pool };
+        let result = broker.wait_until_market_open().await;
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), BrokerError::Schwab(_)));
+        market_hours_mock.assert();
     }
 
     #[tokio::test]
