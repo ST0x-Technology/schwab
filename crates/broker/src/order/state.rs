@@ -5,10 +5,10 @@ use crate::BrokerError;
 
 /// Database fields extracted from OrderState for storage
 #[derive(Debug)]
-pub(crate) struct OrderStateDbFields {
-    pub(crate) order_id: Option<String>,
-    pub(crate) price_cents: Option<i64>,
-    pub(crate) executed_at: Option<chrono::NaiveDateTime>,
+pub struct OrderStateDbFields {
+    pub order_id: Option<String>,
+    pub price_cents: Option<i64>,
+    pub executed_at: Option<chrono::NaiveDateTime>,
 }
 
 // Stateful enum with associated data for runtime use

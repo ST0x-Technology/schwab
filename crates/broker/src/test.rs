@@ -52,19 +52,14 @@ impl Broker for TestBroker {
     type OrderId = String;
     type Config = ();
 
-    fn new(_config: Self::Config) -> Self {
-        Self::new()
+    async fn try_from_config(_config: Self::Config) -> Result<Self, Self::Error> {
+        warn!("[TEST] Initializing test broker - always ready in test mode");
+        Ok(Self::new())
     }
 
-    async fn ensure_ready(&self) -> Result<(), Self::Error> {
-        if self.should_fail {
-            return Err(BrokerError::Unavailable {
-                message: self.failure_message.clone(),
-            });
-        }
-
-        warn!("[TEST] Broker readiness check - always ready in test mode");
-        Ok(())
+    async fn wait_until_market_open(&self) -> Result<Option<std::time::Duration>, Self::Error> {
+        warn!("[TEST] Market hours check - market is always open in test mode");
+        Ok(None) // Market is always open in test mode
     }
 
     async fn place_market_order(
@@ -127,5 +122,53 @@ impl Broker for TestBroker {
     fn parse_order_id(&self, order_id_str: &str) -> Result<Self::OrderId, Self::Error> {
         // For TestBroker, OrderId is String, so just clone the input
         Ok(order_id_str.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_try_from_config_success() {
+        let result = TestBroker::try_from_config(()).await;
+        assert!(result.is_ok());
+
+        let broker = result.unwrap();
+        assert!(!broker.should_fail);
+        assert_eq!(broker.failure_message, "");
+    }
+
+    #[tokio::test]
+    async fn test_wait_until_market_open_always_returns_none() {
+        let broker = TestBroker::new();
+        let result = broker.wait_until_market_open().await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None); // Market is always open in test mode
+    }
+
+    #[tokio::test]
+    async fn test_failure_broker_wait_until_market_open() {
+        let broker = TestBroker::with_failure("Test failure");
+        let result = broker.wait_until_market_open().await;
+
+        // wait_until_market_open should succeed even for failure brokers
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_parse_order_id() {
+        let broker = TestBroker::new();
+        let test_id = "TEST_123";
+        let parsed = broker.parse_order_id(test_id).unwrap();
+        assert_eq!(parsed, test_id);
+    }
+
+    #[tokio::test]
+    async fn test_to_supported_broker() {
+        let broker = TestBroker::new();
+        assert_eq!(broker.to_supported_broker(), SupportedBroker::DryRun);
     }
 }

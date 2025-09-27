@@ -75,12 +75,17 @@ impl Env {
         }
     }
 
-    pub(crate) fn get_schwab_broker(&self, pool: SqlitePool) -> SchwabBroker {
-        SchwabBroker::new((self.schwab_auth.clone(), pool))
+    pub(crate) async fn get_schwab_broker(
+        &self,
+        pool: SqlitePool,
+    ) -> Result<SchwabBroker, <SchwabBroker as Broker>::Error> {
+        SchwabBroker::try_from_config((self.schwab_auth.clone(), pool)).await
     }
 
-    pub(crate) fn get_test_broker(&self) -> TestBroker {
-        TestBroker::new()
+    pub(crate) async fn get_test_broker(
+        &self,
+    ) -> Result<TestBroker, <TestBroker as Broker>::Error> {
+        TestBroker::try_from_config(()).await
     }
 }
 

@@ -1,8 +1,11 @@
 use async_trait::async_trait;
 use sqlx::SqlitePool;
-use tracing::{error, info};
+use std::sync::Arc;
+use tracing::info;
 
 use crate::schwab::auth::SchwabAuthEnv;
+use crate::schwab::market_hours::{MarketHours, fetch_market_hours};
+use crate::schwab::market_hours_cache::MarketHoursCache;
 use crate::schwab::tokens::SchwabTokens;
 use crate::{Broker, BrokerError, MarketOrder, OrderPlacement, OrderState, OrderUpdate};
 
@@ -33,24 +36,42 @@ impl Broker for SchwabBroker {
     type OrderId = String;
     type Config = SchwabConfig;
 
-    fn new(config: Self::Config) -> Self {
+    async fn try_from_config(config: Self::Config) -> Result<Self, Self::Error> {
         let (auth, pool) = config;
-        Self { auth, pool }
+
+        // Validate and refresh tokens during initialization
+        SchwabTokens::refresh_if_needed(&pool, &auth)
+            .await
+            .map_err(|e| BrokerError::Authentication(format!("Token validation failed: {}", e)))?;
+
+        info!("Schwab broker initialized with valid tokens");
+
+        Ok(Self { auth, pool })
     }
 
-    async fn ensure_ready(&self) -> Result<(), Self::Error> {
-        // Check if we can get a valid access token (validates token state)
-        match self.validate_token_access().await {
-            Ok(_) => {
-                info!("Schwab broker is ready - tokens are valid");
-                Ok(())
-            }
-            Err(e) => {
-                error!("Schwab broker not ready: {}", e);
-                Err(BrokerError::Authentication(format!(
-                    "Token validation failed: {}",
-                    e
-                )))
+    async fn wait_until_market_open(&self) -> Result<Option<std::time::Duration>, Self::Error> {
+        // Create market hours cache
+        let market_hours_cache = Arc::new(MarketHoursCache::new());
+
+        // Get market hours for today
+        let market_hours = fetch_market_hours(&self.auth, &self.pool, None).await?;
+
+        let now = chrono::Utc::now();
+
+        // Check if market is currently open
+        if market_hours.is_market_open_at(now) {
+            Ok(None) // Market is open, no need to wait
+        } else {
+            // Market is closed, find next open time
+            if let Some(next_open) = market_hours.next_market_open(now) {
+                let wait_duration = (next_open - now)
+                    .to_std()
+                    .map_err(|e| BrokerError::Network(format!("Invalid duration: {}", e)))?;
+                Ok(Some(wait_duration))
+            } else {
+                // No market open time found (e.g., weekend)
+                // Return a default wait time (check again in 1 hour)
+                Ok(Some(std::time::Duration::from_secs(3600)))
             }
         }
     }
@@ -143,5 +164,75 @@ impl Broker for SchwabBroker {
     fn parse_order_id(&self, order_id_str: &str) -> Result<Self::OrderId, Self::Error> {
         // For SchwabBroker, OrderId is String, so just clone the input
         Ok(order_id_str.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schwab::auth::SchwabAuthEnv;
+    use sqlx::SqlitePool;
+
+    fn create_test_auth_env() -> SchwabAuthEnv {
+        SchwabAuthEnv {
+            app_key: "test_key".to_string(),
+            app_secret: "test_secret".to_string(),
+            redirect_uri: "https://127.0.0.1".to_string(),
+            base_url: "https://test.com".to_string(),
+            account_index: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_try_from_config_with_invalid_tokens() {
+        let pool = SqlitePool::connect(":memory:").await.unwrap();
+        let auth = create_test_auth_env();
+        let config = (auth, pool);
+
+        let result = SchwabBroker::try_from_config(config).await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            BrokerError::Authentication(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_wait_until_market_open_returns_duration_type() {
+        let pool = SqlitePool::connect(":memory:").await.unwrap();
+        let auth = create_test_auth_env();
+        let broker = SchwabBroker { auth, pool };
+
+        let result = broker.wait_until_market_open().await;
+
+        // The result should be a Result containing Option<Duration>
+        assert!(result.is_ok() || matches!(result.unwrap_err(), BrokerError::Network(_)));
+        if let Ok(duration_opt) = result {
+            // If it returns Some(duration), duration should be positive
+            if let Some(duration) = duration_opt {
+                assert!(duration.as_secs() > 0);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parse_order_id() {
+        let pool = SqlitePool::connect(":memory:").await.unwrap();
+        let auth = create_test_auth_env();
+        let broker = SchwabBroker { auth, pool };
+
+        let test_id = "12345";
+        let parsed = broker.parse_order_id(test_id).unwrap();
+        assert_eq!(parsed, test_id);
+    }
+
+    #[tokio::test]
+    async fn test_to_supported_broker() {
+        let pool = SqlitePool::connect(":memory:").await.unwrap();
+        let auth = create_test_auth_env();
+        let broker = SchwabBroker { auth, pool };
+
+        assert_eq!(broker.to_supported_broker(), crate::SupportedBroker::Schwab);
     }
 }

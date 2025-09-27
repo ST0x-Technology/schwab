@@ -121,9 +121,16 @@ pub trait Broker: Send + Sync + 'static {
     type OrderId: Display + Debug + Send + Sync + Clone;
     type Config: Send + Sync + Clone + 'static;
 
-    fn new(config: Self::Config) -> Self;
+    /// Create and validate broker instance from config
+    /// All initialization and validation happens here
+    async fn try_from_config(config: Self::Config) -> Result<Self, Self::Error>
+    where
+        Self: Sized;
 
-    async fn ensure_ready(&self) -> Result<(), Self::Error>;
+    /// Wait until market opens if needed
+    /// Returns None if market is already open
+    /// Returns Some(duration) if need to wait for market to open
+    async fn wait_until_market_open(&self) -> Result<Option<std::time::Duration>, Self::Error>;
 
     async fn place_market_order(
         &self,

@@ -274,6 +274,56 @@ The main application now properly handles both Schwab and mock brokers with appr
 - **Production mode (SchwabBroker)**: Validates tokens, spawns token refresh background task, and uses trading hours control
 - Both modes implement the same `Broker` trait interface for consistent orchestration logic
 
+## Task 8b: Reduce Nesting in lib.rs and Extend Broker Abstraction
+
+**Problem Statement:**
+- The `run` function in `src/lib.rs` has 5 levels of deep nesting, violating CLAUDE.md guidelines
+- Redundant `new` + `ensure_ready` pattern in broker trait
+- Market hours control logic should be part of the broker abstraction
+- Bot should restart on all errors without losing functionality
+
+**Solution Approach:**
+1. **Replace `new` + `ensure_ready` with `try_from_config`**: Single async initialization point that handles all validation
+2. **Simplify market hours API**: Use single `wait_until_market_open()` method that returns `Option<Duration>`
+3. **Flatten `src/lib.rs`**: Extract helper functions, eliminate deep nesting
+4. **Unified code path**: Only one conditional for broker creation, everything else identical
+
+**Key Changes:**
+
+### 1. Update Broker Trait
+- Remove `ensure_ready()` method entirely
+- Replace `new()` with `async try_from_config()` that does all validation
+- Add `wait_until_market_open() -> Option<Duration>` for market hours control
+- All brokers implement the same interface
+
+### 2. Update Broker Implementations
+- **SchwabBroker**: `try_from_config` validates tokens, market hours uses real API
+- **TestBroker**: `try_from_config` always succeeds, market hours returns None (always open)
+
+### 3. Simplify lib.rs Structure
+- Extract `initialize_event_streams()` helper function
+- Single `run_bot_session()` with minimal nesting
+- Main `run()` function just handles restart loop
+- No conditional logic after broker creation
+
+### Task Checklist:
+- [x] Update Broker trait: remove ensure_ready, add try_from_config, simplify market methods
+- [x] Update SchwabBroker implementation with try_from_config and market hours
+- [x] Update TestBroker implementation with try_from_config
+- [x] Update env.rs methods to use async try_from_config
+- [ ] Simplify src/lib.rs with helper functions and unified code path
+- [ ] Preserve background token refresh logic for Schwab broker during refactoring
+- [ ] Test for regressions in bot functionality
+- [ ] Verify maximum 2-3 levels of nesting (down from 5)
+
+**Benefits:**
+- **Cleaner API**: Single initialization point, no redundant methods
+- **Maximum 2-3 levels of nesting** (down from 5 levels)
+- **Unified code path**: One conditional for broker creation
+- **No regression**: All original functionality preserved
+- **Resilient**: Bot restarts on any error
+- **Follows CLAUDE.md**: Flat code, extracted functions, single responsibility
+
 ## Task 9: Update CLI and Testing
 
 - [ ] Keep existing Schwab auth command

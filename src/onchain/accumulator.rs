@@ -97,7 +97,7 @@ pub async fn process_onchain_trade(
             Some(execution) => {
                 let execution_id = execution
                     .id
-                    .ok_or(crate::error::PersistenceError::MissingExecutionId)?;
+                    .ok_or(st0x_broker::PersistenceError::MissingExecutionId)?;
                 set_pending_execution_id(sql_tx, base_symbol, execution_id).await?;
             }
             None => {
@@ -228,7 +228,7 @@ async fn execute_position(
 
     let execution_id = execution
         .id
-        .ok_or(crate::error::PersistenceError::MissingExecutionId)?;
+        .ok_or(st0x_broker::PersistenceError::MissingExecutionId)?;
 
     // Find all trades that contributed to this execution and create linkages
     create_trade_execution_linkages(sql_tx, base_symbol, execution_id, execution_type, shares)
