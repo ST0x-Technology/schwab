@@ -19,17 +19,6 @@ pub struct SchwabBroker {
     pool: SqlitePool,
 }
 
-impl SchwabBroker {
-    /// Validates token access using stored pool and auth
-    async fn validate_token_access(&self) -> Result<(), String> {
-        // Use actual token validation logic
-        match SchwabTokens::get_valid_access_token(&self.pool, &self.auth).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(format!("Token validation failed: {}", e)),
-        }
-    }
-}
-
 #[async_trait]
 impl Broker for SchwabBroker {
     type Error = BrokerError;

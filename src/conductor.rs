@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tracing::{debug, error, info, trace};
 
-use st0x_broker::{Broker, Shares, Symbol};
+use st0x_broker::{Broker, MarketOrder, Shares, Symbol};
 
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
 use crate::env::Env;
@@ -51,20 +51,6 @@ macro_rules! loop_with_shutdown {
                         info!("Shutting down {}", $task_name);
                         break;
                     }
-                }
-            }
-        }
-    };
-}
-
-macro_rules! select_with_shutdown {
-    ($shutdown_rx:expr, $task_name:expr, { $($branch:tt)* }) => {
-        tokio::select! {
-            $($branch)*
-            _ = $shutdown_rx.changed() => {
-                if *$shutdown_rx.borrow() {
-                    info!("Shutting down {}", $task_name);
-                    break;
                 }
             }
         }
@@ -141,7 +127,7 @@ impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
             self.shutdown_rx.clone(),
         );
         let position_checker =
-            spawn_position_checker(broker.clone(), &self.env, &self.pool, &self.shutdown_rx);
+            spawn_position_checker(broker.clone(), &self.pool, &self.shutdown_rx);
         let queue_processor = spawn_queue_processor(
             broker,
             &self.env,
@@ -214,7 +200,6 @@ fn spawn_onchain_event_receiver(
 
 fn spawn_position_checker<B: Broker + Clone + Send + 'static>(
     broker: B,
-    env: &Env,
     pool: &SqlitePool,
     shutdown_rx: &watch::Receiver<bool>,
 ) -> JoinHandle<()>
@@ -224,7 +209,6 @@ where
     info!("Starting periodic accumulated position checker");
     tokio::spawn(periodic_accumulated_position_check(
         broker,
-        env.clone(),
         pool.clone(),
         shutdown_rx.clone(),
     ))
@@ -303,7 +287,6 @@ impl BackgroundTasks {
 
 async fn periodic_accumulated_position_check<B: Broker + Clone + Send + 'static>(
     broker: B,
-    env: Env,
     pool: SqlitePool,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
@@ -315,7 +298,7 @@ async fn periodic_accumulated_position_check<B: Broker + Clone + Send + 'static>
     crate::loop_with_shutdown!(shutdown_rx, "periodic accumulated position checker", {
         _ = interval.tick() => {
             debug!("Running periodic accumulated position check");
-            if let Err(e) = check_and_execute_accumulated_positions(&broker, &env, &pool).await {
+            if let Err(e) = check_and_execute_accumulated_positions(&broker, &pool).await {
                 error!("Periodic accumulated position check failed: {e}");
             }
         }
@@ -519,7 +502,7 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone, B: Broker + Clone>(
                     Ok(Some(execution)) => {
                         if let Some(exec_id) = execution.id {
                             if let Err(e) =
-                                execute_pending_schwab_execution(&broker, env, pool, exec_id).await
+                                execute_pending_schwab_execution(&broker, pool, exec_id).await
                             {
                                 error!("Failed to execute Schwab order {exec_id}: {e}");
                             }
@@ -574,18 +557,6 @@ async fn process_next_queued_event<P: Provider + Clone, B: Broker + Clone>(
     };
 
     process_valid_trade(pool, &queued_event, event_id, trade, broker).await
-}
-
-async fn get_next_queued_event(
-    pool: &SqlitePool,
-) -> Result<Option<QueuedEvent>, EventProcessingError> {
-    match get_next_unprocessed_event(pool).await {
-        Ok(event) => Ok(event),
-        Err(e) => {
-            error!("Failed to get next unprocessed event: {e}");
-            Err(EventProcessingError::Queue(e))
-        }
-    }
 }
 
 fn extract_event_id(queued_event: &QueuedEvent) -> Result<i64, EventProcessingError> {
@@ -778,7 +749,6 @@ fn reconstruct_log_from_queued_event(
 /// Checks for accumulated positions ready for execution and spawns tasks to execute them.
 async fn check_and_execute_accumulated_positions<B: Broker + Clone + Send + 'static>(
     broker: &B,
-    env: &Env,
     pool: &SqlitePool,
 ) -> Result<(), EventProcessingError> {
     let executions = check_all_accumulated_positions(pool, broker.to_supported_broker()).await?;
@@ -804,17 +774,11 @@ async fn check_and_execute_accumulated_positions<B: Broker + Clone + Send + 'sta
             execution.symbol, execution.shares, execution.direction, execution_id
         );
 
-        let env_clone = env.clone();
         let pool_clone = pool.clone();
         let broker_clone = broker.clone();
         tokio::spawn(async move {
-            if let Err(e) = execute_pending_schwab_execution(
-                &broker_clone,
-                &env_clone,
-                &pool_clone,
-                execution_id,
-            )
-            .await
+            if let Err(e) =
+                execute_pending_schwab_execution(&broker_clone, &pool_clone, execution_id).await
             {
                 error!(
                     "Failed to execute accumulated position for execution_id {}: {e}",
@@ -835,7 +799,6 @@ async fn check_and_execute_accumulated_positions<B: Broker + Clone + Send + 'sta
 /// Execute a pending Schwab execution by fetching it from the database and placing the order.
 async fn execute_pending_schwab_execution<B: Broker + Clone + Send + 'static>(
     broker: &B,
-    env: &Env,
     pool: &SqlitePool,
     execution_id: i64,
 ) -> Result<(), EventProcessingError> {
@@ -1649,7 +1612,7 @@ mod tests {
         assert_eq!(count, 1);
 
         // Process the event - should filter it out without error
-        let broker = st0x_broker::MockBroker::new();
+        let broker = st0x_broker::TestBroker::new();
         let result = process_next_queued_event(&env, &pool, &cache, &provider, &broker).await;
 
         // Should return Ok(None) indicating filtered event
@@ -1665,10 +1628,10 @@ mod tests {
     async fn test_execute_pending_schwab_execution_not_found() {
         let pool = setup_test_db().await;
         let env = create_test_env();
-        let broker = env.get_broker().await;
+        let broker = env.get_test_broker().await.unwrap();
 
         // Try to execute non-existent execution
-        let result = execute_pending_schwab_execution(&broker, &env, &pool, 99999).await;
+        let result = execute_pending_schwab_execution(&broker, &pool, 99999).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }

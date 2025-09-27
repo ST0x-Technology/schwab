@@ -1,4 +1,3 @@
-use chrono::Utc;
 use rand::Rng;
 use sqlx::SqlitePool;
 use std::time::Duration;

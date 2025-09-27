@@ -1,6 +1,16 @@
 use chrono::{DateTime, Utc};
-use st0x_broker::OrderState;
-use st0x_broker::{Direction, SupportedBroker};
+use st0x_broker::{Direction, OrderState};
+
+#[cfg(test)]
+use crate::db_utils::shares_from_db_i64;
+#[cfg(test)]
+use crate::error::OnChainError;
+#[cfg(test)]
+use crate::onchain::io::TokenizedEquitySymbol;
+#[cfg(test)]
+use sqlx::SqlitePool;
+#[cfg(test)]
+use st0x_broker::{OrderStatus, SupportedBroker};
 
 /// Links individual onchain trades to their contributing Schwab executions.
 ///
@@ -294,17 +304,12 @@ pub struct AuditTrailEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db_utils::shares_from_db_i64;
-    use crate::error::OnChainError;
     use crate::offchain::execution::OffchainExecution;
     use crate::onchain::OnchainTrade;
-    use crate::onchain::io::TokenizedEquitySymbol;
     use crate::test_utils::setup_test_db;
     use crate::tokenized_symbol;
     use alloy::primitives::fixed_bytes;
     use chrono::Utc;
-    use sqlx::SqlitePool;
-    use st0x_broker::OrderStatus;
 
     #[tokio::test]
     async fn test_trade_execution_link_save_and_find() {

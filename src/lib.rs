@@ -17,7 +17,6 @@ mod onchain;
 mod queue;
 mod symbol;
 mod trade_execution_link;
-mod trading_hours_controller;
 
 #[cfg(test)]
 pub mod test_utils;
@@ -25,11 +24,8 @@ pub mod test_utils;
 use crate::conductor::get_cutoff_block;
 use crate::env::Env;
 use crate::symbol::cache::SymbolCache;
-use crate::trading_hours_controller::TradingHoursController;
 use bindings::IOrderBookV4::IOrderBookV4Instance;
 use st0x_broker::Broker;
-use st0x_broker::schwab::tokens::SchwabTokens;
-use st0x_broker::schwab::{SchwabError, market_hours_cache::MarketHoursCache};
 
 pub async fn launch(env: Env) -> anyhow::Result<()> {
     let pool = env.get_sqlite_pool().await?;

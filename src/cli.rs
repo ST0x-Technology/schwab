@@ -16,7 +16,7 @@ use st0x_broker::schwab::auth::SchwabAuthEnv;
 use st0x_broker::schwab::market_hours::{MarketStatus as MarketStatusEnum, fetch_market_hours};
 use st0x_broker::schwab::tokens::SchwabTokens;
 use st0x_broker::schwab::{SchwabError, extract_code_from_url};
-use st0x_broker::{Broker, Direction, MarketOrder, OrderStatus, Shares, Symbol};
+use st0x_broker::{Broker, Direction, MarketOrder, Shares, Symbol};
 
 #[derive(Debug, Error)]
 pub enum CliError {

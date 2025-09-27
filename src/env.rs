@@ -170,10 +170,10 @@ pub mod tests {
         let env = create_test_env();
         let pool = env.get_sqlite_pool().await.unwrap();
 
-        let schwab_broker = env.get_schwab_broker(pool.clone()).await;
+        let schwab_broker = env.get_schwab_broker(pool.clone()).await.unwrap();
         assert!(format!("{schwab_broker:?}").contains("SchwabBroker"));
 
-        let test_broker = env.get_test_broker().await;
+        let test_broker = env.get_test_broker().await.unwrap();
         assert!(format!("{test_broker:?}").contains("TestBroker"));
     }
 

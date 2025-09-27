@@ -109,6 +109,7 @@ impl From<OnChainError> for OrderPollingError {
             OnChainError::Persistence(p) => Self::Persistence(p),
             OnChainError::Alloy(e) => Self::Configuration(format!("Blockchain error: {e}")),
             OnChainError::Validation(e) => Self::Configuration(format!("Validation error: {e}")),
+            OnChainError::Broker(e) => Self::Broker(Box::new(e)),
         }
     }
 }
@@ -123,6 +124,8 @@ pub(crate) enum OnChainError {
     Persistence(#[from] PersistenceError),
     #[error("Alloy error: {0}")]
     Alloy(#[from] AlloyError),
+    #[error("Broker error: {0}")]
+    Broker(#[from] st0x_broker::BrokerError),
 }
 
 impl From<sqlx::Error> for OnChainError {

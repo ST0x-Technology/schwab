@@ -594,7 +594,8 @@ mod tests {
         trade: OnchainTrade,
     ) -> Result<Option<OffchainExecution>, OnChainError> {
         let mut sql_tx = pool.begin().await?;
-        let result = process_onchain_trade(&mut sql_tx, trade).await?;
+        let result =
+            process_onchain_trade(&mut sql_tx, trade, st0x_broker::SupportedBroker::Schwab).await?;
         sql_tx.commit().await?;
         Ok(result)
     }
@@ -1435,6 +1436,7 @@ mod tests {
             symbol: "MSFT".to_string(),
             shares: 1,
             direction: Direction::Buy,
+            broker: st0x_broker::SupportedBroker::Schwab,
             state: OrderState::Submitted {
                 order_id: "recent123".to_string(),
             },
@@ -1445,6 +1447,7 @@ mod tests {
             symbol: "TSLA".to_string(),
             shares: 1,
             direction: Direction::Sell,
+            broker: st0x_broker::SupportedBroker::Schwab,
             state: OrderState::Submitted {
                 order_id: "stale456".to_string(),
             },
@@ -1535,6 +1538,7 @@ mod tests {
             symbol: "NVDA".to_string(),
             shares: 2,
             direction: Direction::Buy,
+            broker: st0x_broker::SupportedBroker::Schwab,
             state: OrderState::Submitted {
                 order_id: "recent789".to_string(),
             },
@@ -1614,7 +1618,10 @@ mod tests {
         assert!(aapl_pending.is_none());
 
         // Run the function - should not create any executions since 0.8 < 1.0
-        let executions = check_all_accumulated_positions(&pool).await.unwrap();
+        let executions =
+            check_all_accumulated_positions(&pool, st0x_broker::SupportedBroker::Schwab)
+                .await
+                .unwrap();
         assert_eq!(executions.len(), 0);
 
         // Verify AAPL state unchanged
@@ -1631,7 +1638,10 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Run the function on empty database
-        let executions = check_all_accumulated_positions(&pool).await.unwrap();
+        let executions =
+            check_all_accumulated_positions(&pool, st0x_broker::SupportedBroker::Schwab)
+                .await
+                .unwrap();
 
         // Should create no executions
         assert_eq!(executions.len(), 0);
@@ -1647,6 +1657,7 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 1,
             direction: Direction::Buy,
+            broker: st0x_broker::SupportedBroker::Schwab,
             state: OrderState::Pending,
         };
 
@@ -1670,7 +1681,10 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Run the function
-        let executions = check_all_accumulated_positions(&pool).await.unwrap();
+        let executions =
+            check_all_accumulated_positions(&pool, st0x_broker::SupportedBroker::Schwab)
+                .await
+                .unwrap();
 
         // Should create no executions since AAPL has pending execution
         assert_eq!(executions.len(), 0);
