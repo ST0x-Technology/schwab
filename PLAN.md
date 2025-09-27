@@ -85,9 +85,9 @@ traits and duplicate types that need to be reconciled:
 - [x] Update schwab module references and make it compile
 - [x] Implement `Broker` trait for `SchwabBroker`
 - [x] Update main application to use `SchwabBroker` instead of `MockBroker`
-- [ ] Adapt existing Schwab order placement logic to trait methods
-- [ ] Keep Schwab OAuth and token refresh as broker-specific methods
-- [ ] Ensure Schwab implementation compiles and works
+- [x] Adapt existing Schwab order placement logic to trait methods
+- [x] Keep Schwab OAuth and token refresh as broker-specific methods
+- [x] Ensure Schwab implementation compiles and works
 
 ## Task 6: Database Migration
 
@@ -106,8 +106,17 @@ traits and duplicate types that need to be reconciled:
 - [ ] Fix failing tests related to database constraints
 - [ ] Remove duplicate schwab execution module from main crate (deferred)
 
-## Task 7: Complete src/schwab/ Directory Removal (CURRENT)
+## Task 7: Complete src/schwab/ Directory Removal (IN PROGRESS)
 
+### Recent Progress (Completed):
+- [x] Fixed HasOrderStatus trait organization (moved from order/state.rs to order/mod.rs)
+- [x] Replaced all TradeState/TradeStatus references with OrderState/OrderStatus from broker crate
+- [x] Fixed import organization - moved function-level imports to module level in tests
+- [x] Fixed missing imports and visibility issues throughout codebase
+- [x] Cleaned up Schwab-specific imports to use proper broker crate paths
+- [x] Fixed duplicate module references and removed conflicting definitions
+
+### Current Status:
 The `src/schwab/` directory still exists with mixed generic and Schwab-specific
 code. Need to properly move all code and update the launch function to use the
 correct broker based on the --dry-run flag.
@@ -135,7 +144,7 @@ All references to TradeState/TradeStatus should be replaced with OrderState/Orde
   - `src/offchain_execution.rs` (from execution.rs, using OrderState from broker)
   - `src/order_poller.rs` (from order_poller.rs)
   - `src/db_utils.rs` (from shares_from_db_i64 utility)
-- [ ] Update all references to TradeState/TradeStatus to use OrderState/OrderStatus
+- [x] Update all references to TradeState/TradeStatus to use OrderState/OrderStatus
   from `st0x_broker`
 - [ ] Move Schwab-specific code to broker crate:
   - `crates/broker/src/schwab/market_hours.rs`
@@ -146,7 +155,7 @@ All references to TradeState/TradeStatus should be replaced with OrderState/Orde
 - [ ] Handle Schwab-specific services conditionally:
   - Token refresh task: Only spawn for Schwab broker
   - Trading hours controller: Make broker-agnostic or Schwab-conditional
-- [ ] Update all imports throughout codebase to use new locations
+- [x] Update all imports throughout codebase to use new locations
 - [ ] Test dry-run mode works with --dry-run flag using DryRunBroker
 - [ ] Test Schwab mode works correctly with SchwabBroker
 - [ ] Delete entire src/schwab/ directory

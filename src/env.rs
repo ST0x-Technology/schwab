@@ -5,8 +5,8 @@ use tracing::Level;
 
 use crate::onchain::EvmEnv;
 use crate::schwab::OrderPollerConfig;
-use st0x_broker::SchwabAuthEnv;
-use st0x_broker::{DryRunBroker, SchwabBroker};
+use st0x_broker::schwab::auth::SchwabAuthEnv;
+use st0x_broker::{SchwabBroker, TestBroker};
 
 #[derive(clap::ValueEnum, Debug, Clone)]
 pub enum LogLevel {
@@ -75,12 +75,12 @@ impl Env {
         }
     }
 
-    pub(crate) fn get_schwab_broker(&self) -> SchwabBroker {
-        SchwabBroker::new(self.schwab_auth.clone())
+    pub(crate) fn get_schwab_broker(&self, pool: SqlitePool) -> SchwabBroker {
+        SchwabBroker::new((self.schwab_auth.clone(), pool))
     }
 
-    pub(crate) fn get_dry_run_broker(&self) -> DryRunBroker {
-        DryRunBroker::new()
+    pub(crate) fn get_test_broker(&self) -> TestBroker {
+        TestBroker::new(())
     }
 }
 
@@ -100,8 +100,8 @@ pub fn setup_tracing(log_level: &LogLevel) {
 pub mod tests {
     use super::*;
     use crate::onchain::EvmEnv;
-    use crate::schwab::SchwabAuthEnv;
     use alloy::primitives::address;
+    use st0x_broker::schwab::auth::SchwabAuthEnv;
 
     pub fn create_test_env_with_order_owner(order_owner: alloy::primitives::Address) -> Env {
         Env {
@@ -168,8 +168,8 @@ pub mod tests {
         let schwab_broker = env.get_schwab_broker();
         assert!(format!("{schwab_broker:?}").contains("SchwabBroker"));
 
-        let dry_run_broker = env.get_dry_run_broker();
-        assert!(format!("{dry_run_broker:?}").contains("DryRunBroker"));
+        let test_broker = env.get_test_broker();
+        assert!(format!("{test_broker:?}").contains("TestBroker"));
     }
 
     #[test]

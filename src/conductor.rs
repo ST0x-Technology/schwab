@@ -773,20 +773,14 @@ async fn execute_pending_schwab_execution<B: Broker + Clone + Send + 'static>(
         direction: execution.direction,
     };
 
-    // Get broker config based on environment
-    let config = if env.dry_run { &() } else { &env.schwab_auth };
-
     // Execute via broker trait
-    broker.ensure_ready(config, pool).await.map_err(|e| {
+    broker.ensure_ready().await.map_err(|e| {
         EventProcessingError::AccumulatorProcessing(format!("Broker not ready: {}", e))
     })?;
 
-    let placement = broker
-        .place_market_order(config, market_order, pool)
-        .await
-        .map_err(|e| {
-            EventProcessingError::AccumulatorProcessing(format!("Order placement failed: {}", e))
-        })?;
+    let placement = broker.place_market_order(market_order).await.map_err(|e| {
+        EventProcessingError::AccumulatorProcessing(format!("Order placement failed: {}", e))
+    })?;
 
     info!("Order placed with ID: {}", placement.order_id);
 

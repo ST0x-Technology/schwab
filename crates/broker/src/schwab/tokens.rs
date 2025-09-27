@@ -203,6 +203,8 @@ mod tests {
     use chrono::Utc;
     use httpmock::prelude::*;
     use serde_json::json;
+    use std::thread;
+    use tokio::time::{Duration as TokioDuration, sleep};
 
     fn create_test_env_with_mock_server(mock_server: &MockServer) -> SchwabAuthEnv {
         SchwabAuthEnv {
@@ -654,9 +656,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_automatic_token_refresh_before_expiration() -> Result<(), SchwabError> {
-        use std::thread;
-        use tokio::time::{Duration as TokioDuration, sleep};
-
         let server = MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;

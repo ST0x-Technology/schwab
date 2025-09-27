@@ -9,7 +9,6 @@ pub(crate) mod market_hours;
 pub(crate) mod market_hours_cache;
 pub(crate) mod order;
 pub(crate) mod order_poller;
-pub(crate) mod order_status;
 
 pub(crate) use order_poller::{OrderPollerConfig, OrderStatusPoller};
 pub(crate) use st0x_broker::Direction;
