@@ -4,9 +4,7 @@ use tracing::{error, info};
 
 use crate::schwab::auth::SchwabAuthEnv;
 use crate::schwab::tokens::SchwabTokens;
-use crate::{
-    Broker, BrokerError, MarketOrder, OrderPlacement, OrderState, OrderStatus, OrderUpdate,
-};
+use crate::{Broker, BrokerError, MarketOrder, OrderPlacement, OrderState, OrderUpdate};
 
 /// Configuration for SchwabBroker containing auth environment and database pool
 pub type SchwabConfig = (SchwabAuthEnv, SqlitePool);
@@ -66,13 +64,29 @@ impl Broker for SchwabBroker {
             order.direction, order.shares, order.symbol
         );
 
-        // For now, create a mock implementation that simulates order placement
-        // This will be replaced with actual Schwab API integration
-        let order_id = format!("SCHWAB_{}", chrono::Utc::now().timestamp_millis());
+        // Convert Direction to Schwab Instruction
+        let instruction = match order.direction {
+            crate::Direction::Buy => crate::schwab::order::Instruction::Buy,
+            crate::Direction::Sell => crate::schwab::order::Instruction::Sell,
+        };
 
-        // Simulate successful order placement
+        // Create Schwab order
+        let schwab_order = crate::schwab::order::Order::new(
+            order.symbol.to_string(),
+            instruction,
+            order.shares.0.into(),
+        );
+
+        // Place the order using Schwab API
+        let response = schwab_order
+            .place(&self.auth, &self.pool)
+            .await
+            .map_err(|e| {
+                BrokerError::OrderPlacement(format!("Schwab order placement failed: {}", e))
+            })?;
+
         Ok(OrderPlacement {
-            order_id,
+            order_id: response.order_id,
             symbol: order.symbol,
             shares: order.shares,
             direction: order.direction,
@@ -83,13 +97,35 @@ impl Broker for SchwabBroker {
     async fn get_order_status(&self, order_id: &Self::OrderId) -> Result<OrderState, Self::Error> {
         info!("Getting order status for: {}", order_id);
 
-        // For now, return filled status with mock data
-        // This will be replaced with actual Schwab API status checking
-        Ok(OrderState::Filled {
-            executed_at: chrono::Utc::now(),
-            order_id: order_id.clone(),
-            price_cents: 10000, // $100.00 mock price
-        })
+        // Call the existing Schwab API function
+        let order_response =
+            crate::schwab::order::Order::get_order_status(order_id, &self.auth, &self.pool)
+                .await
+                .map_err(|e| BrokerError::Network(format!("Failed to get order status: {}", e)))?;
+
+        // Convert OrderStatusResponse to OrderState
+        if order_response.is_filled() {
+            let price_cents = order_response
+                .price_in_cents()
+                .map_err(|e| BrokerError::Network(format!("Failed to calculate price: {}", e)))?
+                .unwrap_or(0);
+
+            Ok(OrderState::Filled {
+                executed_at: chrono::Utc::now(), // TODO: Parse actual timestamp from close_time
+                order_id: order_id.clone(),
+                price_cents,
+            })
+        } else if order_response.is_terminal_failure() {
+            Ok(OrderState::Failed {
+                failed_at: chrono::Utc::now(), // TODO: Parse actual timestamp from close_time
+                error_reason: Some(format!("Order status: {:?}", order_response.status)),
+            })
+        } else {
+            // Order is still pending/working
+            Ok(OrderState::Submitted {
+                order_id: order_id.clone(),
+            })
+        }
     }
 
     async fn poll_pending_orders(&self) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error> {

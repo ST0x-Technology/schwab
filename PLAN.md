@@ -122,17 +122,21 @@ correct broker based on the --dry-run flag.
 - **order.rs** - Schwab-specific order placement (move to broker crate)
 - **order_status.rs** - Schwab-specific order status checking (move to broker
   crate)
-- **TradeStatus enum** in mod.rs - Generic status enum (move to main crate)
 - **shares_from_db_i64 utility** in mod.rs - Generic database utility (move to
   main crate)
+
+**IMPORTANT**: There is NO TradeStatus/TradeState enum to move. The main crate
+should use `OrderState` and `OrderStatus` from the broker crate (`st0x_broker`).
+All references to TradeState/TradeStatus should be replaced with OrderState/OrderStatus.
 
 ### Required Tasks:
 
 - [ ] Create new modules in main crate for generic code:
-  - `src/offchain_execution.rs` (from execution.rs)
+  - `src/offchain_execution.rs` (from execution.rs, using OrderState from broker)
   - `src/order_poller.rs` (from order_poller.rs)
-  - `src/trade_status.rs` (from TradeStatus enum)
   - `src/db_utils.rs` (from shares_from_db_i64 utility)
+- [ ] Update all references to TradeState/TradeStatus to use OrderState/OrderStatus
+  from `st0x_broker`
 - [ ] Move Schwab-specific code to broker crate:
   - `crates/broker/src/schwab/market_hours.rs`
   - `crates/broker/src/schwab/market_hours_cache.rs`
