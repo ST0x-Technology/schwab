@@ -17,7 +17,7 @@ pub(crate) struct OrderPlacementResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[allow(clippy::struct_field_names)]
-pub(crate) struct Order {
+pub struct Order {
     pub order_type: OrderType,
     pub session: Session,
     pub duration: OrderDuration,
@@ -247,7 +247,7 @@ pub(crate) enum OrderType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub(crate) enum Instruction {
+pub enum Instruction {
     Buy,
     Sell,
     BuyToCover,

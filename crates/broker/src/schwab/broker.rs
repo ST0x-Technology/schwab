@@ -139,4 +139,9 @@ impl Broker for SchwabBroker {
     fn to_supported_broker(&self) -> crate::SupportedBroker {
         crate::SupportedBroker::Schwab
     }
+
+    fn parse_order_id(&self, order_id_str: &str) -> Result<Self::OrderId, Self::Error> {
+        // For SchwabBroker, OrderId is String, so just clone the input
+        Ok(order_id_str.to_string())
+    }
 }

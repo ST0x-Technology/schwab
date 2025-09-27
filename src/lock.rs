@@ -106,10 +106,12 @@ pub(crate) async fn clear_pending_execution_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::offchain::execution::OffchainExecution;
     use crate::onchain::accumulator::save_within_transaction;
     use crate::onchain::position_calculator::PositionCalculator;
-    use crate::schwab::{Direction, TradeState, execution::OffchainExecution};
     use crate::test_utils::setup_test_db;
+    use st0x_broker::OrderState;
+    use st0x_broker::{Direction, SupportedBroker};
 
     #[tokio::test]
     async fn test_try_acquire_execution_lease_success() {
@@ -204,7 +206,8 @@ mod tests {
             symbol: symbol.to_string(),
             shares: 100,
             direction: Direction::Buy,
-            state: TradeState::Pending,
+            broker: SupportedBroker::Schwab,
+            state: OrderState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -332,7 +335,8 @@ mod tests {
             symbol: symbol.to_string(),
             shares: 100,
             direction: Direction::Buy,
-            state: TradeState::Pending,
+            broker: SupportedBroker::Schwab,
+            state: OrderState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();

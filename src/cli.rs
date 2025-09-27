@@ -552,11 +552,11 @@ mod tests {
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
     use crate::env::LogLevel;
     use crate::offchain::execution::find_executions_by_symbol_and_status;
+    use crate::onchain::EvmEnv;
     use crate::onchain::trade::OnchainTrade;
     use crate::test_utils::get_test_order;
     use crate::test_utils::setup_test_db;
     use crate::tokenized_symbol;
-    use crate::onchain::EvmEnv;\n    use st0x_broker::schwab::auth::SchwabAuthEnv;
     use alloy::hex;
     use alloy::primitives::{IntoLogData, U256, address, fixed_bytes};
     use alloy::providers::mock::Asserter;
@@ -567,6 +567,7 @@ mod tests {
     use serde_json::json;
     use st0x_broker::Direction;
     use st0x_broker::OrderStatus;
+    use st0x_broker::schwab::auth::SchwabAuthEnv;
     use std::str::FromStr;
 
     #[tokio::test]

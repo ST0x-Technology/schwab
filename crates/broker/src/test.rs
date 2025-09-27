@@ -123,4 +123,9 @@ impl Broker for TestBroker {
     fn to_supported_broker(&self) -> SupportedBroker {
         SupportedBroker::DryRun
     }
+
+    fn parse_order_id(&self, order_id_str: &str) -> Result<Self::OrderId, Self::Error> {
+        // For TestBroker, OrderId is String, so just clone the input
+        Ok(order_id_str.to_string())
+    }
 }

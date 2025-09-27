@@ -6,11 +6,13 @@ use thiserror::Error;
 
 pub mod auth;
 pub mod broker;
+pub mod market_hours;
+pub mod market_hours_cache;
 pub mod order;
 pub(crate) mod order_status;
 pub mod tokens;
 
-pub(crate) use auth::SchwabAuthEnv;
+pub use auth::SchwabAuthEnv;
 pub(crate) use tokens::SchwabTokens;
 
 #[derive(Error, Debug)]

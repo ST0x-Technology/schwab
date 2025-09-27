@@ -101,6 +101,16 @@ impl From<st0x_broker::BrokerError> for OrderPollingError {
     }
 }
 
+impl From<OnChainError> for OrderPollingError {
+    fn from(err: OnChainError) -> Self {
+        match err {
+            OnChainError::Persistence(p) => Self::Persistence(p),
+            OnChainError::Alloy(e) => Self::Configuration(format!("Blockchain error: {e}")),
+            OnChainError::Validation(e) => Self::Configuration(format!("Validation error: {e}")),
+        }
+    }
+}
+
 /// Unified error type for onchain trade processing with clear domain boundaries.
 /// Provides error mapping between layers while maintaining separation of concerns.
 #[derive(Debug, thiserror::Error)]

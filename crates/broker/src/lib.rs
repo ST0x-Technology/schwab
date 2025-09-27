@@ -135,4 +135,8 @@ pub trait Broker: Send + Sync + 'static {
     async fn poll_pending_orders(&self) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error>;
 
     fn to_supported_broker(&self) -> SupportedBroker;
+
+    /// Convert a string representation to the broker's OrderId type
+    /// This is needed for converting database-stored order IDs back to broker types
+    fn parse_order_id(&self, order_id_str: &str) -> Result<Self::OrderId, Self::Error>;
 }

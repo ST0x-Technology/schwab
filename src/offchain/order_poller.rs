@@ -7,8 +7,8 @@ use tokio::time::{Interval, interval};
 use tracing::{debug, error, info};
 
 use super::execution::{
-    find_execution_by_id, find_executions_by_symbol_and_status,
-    update_execution_status_within_transaction, OffchainExecution,
+    OffchainExecution, find_execution_by_id, find_executions_by_symbol_and_status,
+    update_execution_status_within_transaction,
 };
 use crate::error::OrderPollingError;
 use crate::lock::{clear_execution_lease, clear_pending_execution_id};
@@ -88,7 +88,7 @@ impl<B: Broker> OrderStatusPoller<B> {
                 .await
                 .map_err(|e| {
                     error!("Failed to query pending executions: {e}");
-                    OrderPollingError::Database(e)
+                    OrderPollingError::from(e)
                 })?;
 
         if submitted_executions.is_empty() {

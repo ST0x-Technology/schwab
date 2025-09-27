@@ -71,10 +71,9 @@ impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
             st0x_broker::SupportedBroker::Schwab
         ) {
             info!("Starting token refresh service for Schwab broker");
-            Some(tokens::spawn_automatic_token_refresh(
+            Some(tokens::SchwabTokens::spawn_automatic_token_refresh(
                 self.pool.clone(),
                 self.env.schwab_auth.clone(),
-                self.shutdown_rx.clone(),
             ))
         } else {
             info!("Skipping token refresh for non-Schwab broker");
@@ -474,7 +473,7 @@ async fn process_next_queued_event<P: Provider + Clone, B: Broker + Clone>(
     cache: &SymbolCache,
     provider: &P,
     broker: &B,
-) -> Result<Option<crate::schwab::execution::OffchainExecution>, EventProcessingError> {
+) -> Result<Option<crate::offchain::execution::OffchainExecution>, EventProcessingError> {
     let queued_event = match get_next_unprocessed_event(pool).await {
         Ok(Some(event)) => event,
         Ok(None) => return Ok(None),

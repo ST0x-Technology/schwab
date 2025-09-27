@@ -4,13 +4,13 @@ use tracing::info;
 use super::OnchainTrade;
 use crate::error::{OnChainError, TradeValidationError};
 use crate::lock::{clear_execution_lease, set_pending_execution_id, try_acquire_execution_lease};
+use crate::offchain::execution::OffchainExecution;
+use crate::offchain::execution::update_execution_status_within_transaction;
 use crate::onchain::io::EquitySymbol;
 use crate::onchain::position_calculator::{AccumulationBucket, PositionCalculator};
-use crate::schwab::execution::OffchainExecution;
-use crate::schwab::execution::update_execution_status_within_transaction;
 use crate::trade_execution_link::TradeExecutionLink;
-use crate::trade_state::TradeState;
-use st0x_broker::Direction;
+use st0x_broker::OrderState;
+use st0x_broker::{Direction, SupportedBroker};
 
 /// Processes an onchain trade through the accumulation system with duplicate detection.
 ///

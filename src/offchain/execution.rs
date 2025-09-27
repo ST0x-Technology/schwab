@@ -1,7 +1,7 @@
 use sqlx::SqlitePool;
 
-use crate::error::OnChainError;
 use crate::db_utils::shares_from_db_i64;
+use crate::error::OnChainError;
 use st0x_broker::PersistenceError;
 use st0x_broker::{Direction, SupportedBroker};
 use st0x_broker::{OrderState, OrderStatus};
