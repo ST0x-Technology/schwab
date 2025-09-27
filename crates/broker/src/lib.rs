@@ -6,6 +6,9 @@ pub mod order;
 pub mod schwab;
 pub mod test;
 
+#[cfg(test)]
+pub mod test_utils;
+
 pub use error::PersistenceError;
 pub use order::{MarketOrder, OrderPlacement, OrderState, OrderStatus, OrderUpdate};
 pub use schwab::broker::SchwabBroker;
