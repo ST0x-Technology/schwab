@@ -24,20 +24,7 @@ impl Symbol {
                 reason: "Symbol cannot be empty".to_string(),
             });
         }
-        if symbol.len() > 10 {
-            return Err(BrokerError::InvalidOrder {
-                reason: "Symbol cannot be longer than 10 characters".to_string(),
-            });
-        }
         Ok(Self(symbol))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub fn into_string(self) -> String {
-        self.0
     }
 }
 
@@ -63,14 +50,6 @@ impl Shares {
             });
         }
         Ok(Self(shares as u32))
-    }
-
-    pub fn get(&self) -> u32 {
-        self.0
-    }
-
-    pub fn as_u64(&self) -> u64 {
-        self.0 as u64
     }
 }
 
@@ -200,4 +179,69 @@ pub trait Broker: Send + Sync + 'static {
     /// Convert a string representation to the broker's OrderId type
     /// This is needed for converting database-stored order IDs back to broker types
     fn parse_order_id(&self, order_id_str: &str) -> Result<Self::OrderId, Self::Error>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_symbol_new_valid() {
+        let symbol = Symbol::new("AAPL".to_string()).unwrap();
+        assert_eq!(symbol.to_string(), "AAPL");
+    }
+
+    #[test]
+    fn test_symbol_new_empty_fails() {
+        let result = Symbol::new("".to_string());
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            BrokerError::InvalidOrder { .. }
+        ));
+    }
+
+    #[test]
+    fn test_symbol_new_boundary_valid() {
+        let symbol = Symbol::new("A".to_string()).unwrap();
+        assert_eq!(symbol.to_string(), "A");
+
+        let symbol = Symbol::new("ABCDEFGHIJ".to_string()).unwrap(); // 10 chars
+        assert_eq!(symbol.to_string(), "ABCDEFGHIJ");
+    }
+
+    #[test]
+    fn test_shares_new_valid() {
+        let shares = Shares::new(100).unwrap();
+        assert_eq!(shares.to_string(), "100");
+    }
+
+    #[test]
+    fn test_shares_new_zero_fails() {
+        let result = Shares::new(0);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            BrokerError::InvalidOrder { .. }
+        ));
+    }
+
+    #[test]
+    fn test_shares_new_max_boundary() {
+        let shares = Shares::new(u32::MAX as u64).unwrap();
+        assert_eq!(shares.to_string(), u32::MAX.to_string());
+
+        let result = Shares::new(u32::MAX as u64 + 1);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            BrokerError::InvalidOrder { .. }
+        ));
+    }
+
+    #[test]
+    fn test_shares_new_one() {
+        let shares = Shares::new(1).unwrap();
+        assert_eq!(shares.to_string(), "1");
+    }
 }

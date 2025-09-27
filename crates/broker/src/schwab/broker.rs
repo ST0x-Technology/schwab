@@ -6,7 +6,10 @@ use tracing::info;
 use crate::schwab::auth::SchwabAuthEnv;
 use crate::schwab::market_hours::{MarketStatus, fetch_market_hours};
 use crate::schwab::tokens::SchwabTokens;
-use crate::{Broker, BrokerError, MarketOrder, OrderPlacement, OrderState, OrderUpdate};
+use crate::{
+    Broker, BrokerError, Direction, MarketOrder, OrderPlacement, OrderState, OrderUpdate, Shares,
+    Symbol,
+};
 
 /// Configuration for SchwabBroker containing auth environment and database pool
 pub type SchwabConfig = (SchwabAuthEnv, SqlitePool);
@@ -150,9 +153,75 @@ impl Broker for SchwabBroker {
     async fn poll_pending_orders(&self) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error> {
         info!("Polling pending orders");
 
-        // For now, return empty list
-        // This will be replaced with actual Schwab API polling
-        Ok(Vec::new())
+        // Find all submitted orders in the database
+        let submitted_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
+            &self.pool,
+            "", // Empty string means find all symbols
+            crate::schwab::execution::OrderStatus::Submitted,
+        )
+        .await
+        .map_err(|e| {
+            BrokerError::Database(
+                sqlx::Error::RowNotFound, // Convert OnChainError to BrokerError
+            )
+        })?;
+
+        let mut updates = Vec::new();
+
+        for execution in submitted_executions {
+            let Some(execution_id) = execution.id else {
+                continue;
+            };
+
+            // Extract order_id from the execution state
+            let order_id = match &execution.state {
+                crate::schwab::execution::OrderState::Submitted { order_id } => order_id.clone(),
+                _ => continue, // Skip if not submitted
+            };
+
+            // Get current status from Schwab API
+            match self.get_order_status(&order_id).await {
+                Ok(current_state) => {
+                    // Only include orders that have changed status
+                    if !matches!(current_state, OrderState::Submitted { .. }) {
+                        let price_cents = match &current_state {
+                            OrderState::Filled { price_cents, .. } => Some(*price_cents as u64),
+                            _ => None,
+                        };
+
+                        let symbol = crate::Symbol::new(execution.symbol).map_err(|e| {
+                            BrokerError::InvalidOrder {
+                                reason: format!("Invalid symbol in database: {}", e),
+                            }
+                        })?;
+
+                        let shares = crate::Shares::new(execution.shares).map_err(|e| {
+                            BrokerError::InvalidOrder {
+                                reason: format!("Invalid shares in database: {}", e),
+                            }
+                        })?;
+
+                        updates.push(OrderUpdate {
+                            order_id: order_id.clone(),
+                            symbol,
+                            shares,
+                            direction: execution.direction,
+                            status: current_state.status(),
+                            updated_at: chrono::Utc::now(),
+                            price_cents,
+                        });
+                    }
+                }
+                Err(e) => {
+                    // Log error but continue with other orders
+                    info!("Failed to get status for order {}: {}", order_id, e);
+                    continue;
+                }
+            }
+        }
+
+        info!("Found {} order updates", updates.len());
+        Ok(updates)
     }
 
     fn to_supported_broker(&self) -> crate::SupportedBroker {
