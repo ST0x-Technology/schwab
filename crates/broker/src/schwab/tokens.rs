@@ -21,7 +21,7 @@ pub struct SchwabTokens {
 }
 
 impl SchwabTokens {
-    pub(crate) async fn store(&self, pool: &SqlitePool) -> Result<(), SchwabError> {
+    pub async fn store(&self, pool: &SqlitePool) -> Result<(), SchwabError> {
         sqlx::query!(
             r#"
             INSERT INTO schwab_auth (
@@ -49,7 +49,7 @@ impl SchwabTokens {
         Ok(())
     }
 
-    pub(crate) async fn load(pool: &SqlitePool) -> Result<Self, SchwabError> {
+    pub async fn load(pool: &SqlitePool) -> Result<Self, SchwabError> {
         let row = sqlx::query!(
             r#"
             SELECT
@@ -99,7 +99,7 @@ impl SchwabTokens {
         expires_at - now
     }
 
-    pub(crate) async fn get_valid_access_token(
+    pub async fn get_valid_access_token(
         pool: &SqlitePool,
         env: &SchwabAuthEnv,
     ) -> Result<String, SchwabError> {
@@ -126,7 +126,68 @@ impl SchwabTokens {
         Ok(count)
     }
 
-    pub(crate) async fn refresh_if_needed(
+    pub fn spawn_automatic_token_refresh(
+        pool: SqlitePool,
+        env: SchwabAuthEnv,
+        shutdown_rx: watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            if let Err(e) = Self::start_automatic_token_refresh_loop(pool, env, shutdown_rx).await {
+                error!("Token refresh task failed: {e:?}");
+            }
+        })
+    }
+
+    pub(crate) async fn start_automatic_token_refresh_loop(
+        pool: SqlitePool,
+        env: SchwabAuthEnv,
+        mut shutdown_rx: watch::Receiver<bool>,
+    ) -> Result<(), SchwabError> {
+        let refresh_interval_secs = (ACCESS_TOKEN_DURATION_MINUTES - 1) * 60;
+        let refresh_interval_u64 = refresh_interval_secs.try_into().map_err(|_| {
+            SchwabError::InvalidConfiguration("Refresh interval out of range".to_string())
+        })?;
+        let mut interval_timer = interval(TokioDuration::from_secs(refresh_interval_u64));
+
+        loop {
+            tokio::select! {
+                _ = interval_timer.tick() => {
+                    Self::handle_token_refresh(&pool, &env).await?;
+                }
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() {
+                        info!("Shutting down automatic token refresh");
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_token_refresh(
+        pool: &SqlitePool,
+        env: &SchwabAuthEnv,
+    ) -> Result<(), SchwabError> {
+        match Self::refresh_if_needed(pool, env).await {
+            Ok(refreshed) if refreshed => {
+                info!("Access token refreshed successfully");
+                Ok(())
+            }
+            Ok(_) => Ok(()),
+            Err(SchwabError::RefreshTokenExpired) => {
+                error!("Refresh token expired, manual re-authentication required");
+                Err(SchwabError::RefreshTokenExpired)
+            }
+            Err(e) => {
+                warn!("Failed to refresh token: {e}");
+                Ok(())
+            }
+        }
+    }
+
+    pub async fn refresh_if_needed(
         pool: &SqlitePool,
         env: &SchwabAuthEnv,
     ) -> Result<bool, SchwabError> {
@@ -148,64 +209,6 @@ impl SchwabTokens {
     }
 }
 
-// Moved out of impl block to avoid clippy false positive with unsafe_derive_deserialize
-pub(crate) fn spawn_automatic_token_refresh(
-    pool: SqlitePool,
-    env: SchwabAuthEnv,
-    shutdown_rx: watch::Receiver<bool>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        if let Err(e) = start_automatic_token_refresh_loop(pool, env, shutdown_rx).await {
-            error!("Token refresh task failed: {e:?}");
-        }
-    })
-}
-
-async fn start_automatic_token_refresh_loop(
-    pool: SqlitePool,
-    env: SchwabAuthEnv,
-    mut shutdown_rx: watch::Receiver<bool>,
-) -> Result<(), SchwabError> {
-    let refresh_interval_secs = (ACCESS_TOKEN_DURATION_MINUTES - 1) * 60;
-    let refresh_interval_u64 = refresh_interval_secs.try_into().map_err(|_| {
-        SchwabError::InvalidConfiguration("Refresh interval out of range".to_string())
-    })?;
-    let mut interval_timer = interval(TokioDuration::from_secs(refresh_interval_u64));
-
-    loop {
-        tokio::select! {
-            _ = interval_timer.tick() => {
-                handle_token_refresh(&pool, &env).await?;
-            }
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
-                    info!("Token refresh service received shutdown signal, exiting");
-                    break;
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn handle_token_refresh(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<(), SchwabError> {
-    match SchwabTokens::refresh_if_needed(pool, env).await {
-        Ok(refreshed) if refreshed => {
-            info!("Access token refreshed successfully");
-            Ok(())
-        }
-        Ok(_) => Ok(()),
-        Err(SchwabError::RefreshTokenExpired) => {
-            error!("Refresh token expired, manual re-authentication required");
-            Err(SchwabError::RefreshTokenExpired)
-        }
-        Err(e) => {
-            warn!("Failed to refresh token: {e}");
-            Ok(())
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +216,7 @@ mod tests {
     use chrono::Utc;
     use httpmock::prelude::*;
     use serde_json::json;
+    use tokio::time::{Duration as TokioDuration, sleep};
 
     fn create_test_env_with_mock_server(mock_server: &MockServer) -> SchwabAuthEnv {
         SchwabAuthEnv {
@@ -664,9 +668,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_automatic_token_refresh_before_expiration() -> Result<(), SchwabError> {
-        use std::thread;
-        use tokio::time::{Duration as TokioDuration, sleep};
-
         let server = MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
@@ -703,23 +704,21 @@ mod tests {
 
         let pool_clone = pool.clone();
         let env_clone = env.clone();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        let handle = thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async {
-                // Create a dummy shutdown receiver for the test
-                let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-                tokio::time::timeout(
-                    TokioDuration::from_secs(5),
-                    start_automatic_token_refresh_loop(pool_clone, env_clone, shutdown_rx),
-                )
+        let handle = tokio::spawn(async move {
+            SchwabTokens::start_automatic_token_refresh_loop(pool_clone, env_clone, shutdown_rx)
                 .await
-            })
         });
 
+        // Wait for the refresh to happen
         sleep(TokioDuration::from_millis(2000)).await;
 
-        handle.join().unwrap().unwrap_err();
+        // Properly signal shutdown
+        shutdown_tx.send(true).unwrap();
+
+        // Wait for clean shutdown
+        handle.await.unwrap().unwrap();
 
         mock.assert();
 

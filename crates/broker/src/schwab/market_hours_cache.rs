@@ -13,7 +13,7 @@ use super::{SchwabAuthEnv, SchwabError};
 /// Caches only today and tomorrow's market hours to minimize memory usage.
 /// Uses async RwLock for thread-safe concurrent access.
 #[derive(Debug)]
-pub(crate) struct MarketHoursCache {
+pub struct MarketHoursCache {
     cache: RwLock<HashMap<(String, NaiveDate), MarketHours>>,
 }
 
@@ -25,7 +25,7 @@ impl Default for MarketHoursCache {
 
 impl MarketHoursCache {
     /// Create a new empty market hours cache.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             cache: RwLock::new(HashMap::new()),
         }
@@ -35,7 +35,7 @@ impl MarketHoursCache {
     ///
     /// This method checks the cache first and only makes an API call if the data is missing
     /// or stale. All API failures are propagated without fallback values.
-    pub(crate) async fn get_or_fetch(
+    pub async fn get_or_fetch(
         &self,
         market_id: &str,
         date: NaiveDate,
@@ -74,7 +74,7 @@ impl MarketHoursCache {
     ///
     /// Returns the current status (Open/Closed) based on today's market hours
     /// and the current time in Eastern timezone.
-    pub(crate) async fn get_current_status(
+    pub async fn get_current_status(
         &self,
         market_id: &str,
         env: &SchwabAuthEnv,
@@ -91,7 +91,7 @@ impl MarketHoursCache {
     ///
     /// Returns the next time the market will change state (open to closed or closed to open).
     /// If the market is currently open, returns the close time. If closed, returns the next open time.
-    pub(crate) async fn get_next_transition(
+    pub async fn get_next_transition(
         &self,
         market_id: &str,
         env: &SchwabAuthEnv,
@@ -140,7 +140,7 @@ impl MarketHoursCache {
     ///
     /// This method is primarily for testing and monitoring purposes.
     #[cfg(test)]
-    pub(crate) async fn cache_size(&self) -> usize {
+    pub async fn cache_size(&self) -> usize {
         self.cache.read().await.len()
     }
 }

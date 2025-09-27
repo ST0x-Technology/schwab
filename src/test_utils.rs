@@ -1,10 +1,12 @@
 use crate::bindings::IOrderBookV4::{EvaluableV3, IO, OrderV3};
+use crate::offchain::execution::OffchainExecution;
 use crate::onchain::OnchainTrade;
 use crate::onchain::io::TokenizedEquitySymbol;
-use crate::schwab::{Direction, TradeState, execution::SchwabExecution};
 use alloy::primitives::{LogData, U256, address, bytes, fixed_bytes};
 use alloy::rpc::types::Log;
 use sqlx::SqlitePool;
+use st0x_broker::OrderState;
+use st0x_broker::{Direction, SupportedBroker};
 
 /// Returns a test `OrderV3` instance that is shared across multiple
 /// unit-tests. The exact values are not important – only that the
@@ -146,32 +148,33 @@ impl OnchainTradeBuilder {
     }
 }
 
-/// Builder for creating SchwabExecution test instances with sensible defaults.
+/// Builder for creating OffchainExecution test instances with sensible defaults.
 /// Reduces duplication in test data setup.
-pub(crate) struct SchwabExecutionBuilder {
-    execution: SchwabExecution,
+pub(crate) struct OffchainExecutionBuilder {
+    execution: OffchainExecution,
 }
 
-impl Default for SchwabExecutionBuilder {
+impl Default for OffchainExecutionBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl SchwabExecutionBuilder {
+impl OffchainExecutionBuilder {
     pub(crate) fn new() -> Self {
         Self {
-            execution: SchwabExecution {
+            execution: OffchainExecution {
                 id: None,
                 symbol: "AAPL".to_string(),
                 shares: 100,
                 direction: Direction::Buy,
-                state: TradeState::Pending,
+                broker: SupportedBroker::Schwab,
+                state: OrderState::Pending,
             },
         }
     }
 
-    pub(crate) fn build(self) -> SchwabExecution {
+    pub(crate) fn build(self) -> OffchainExecution {
         self.execution
     }
 }

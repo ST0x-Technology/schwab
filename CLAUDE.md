@@ -13,19 +13,28 @@ exploiting price discrepancies.
 
 ## Key Development Commands
 
+### Workspace Structure
+
+This project uses a Cargo workspace with:
+- **Root crate (`st0x-arbot`)**: Main arbitrage bot application
+- **Broker crate (`st0x-broker`)**: Standalone broker abstraction library
+
 ### Building & Running
 
-- `cargo build` - Build the project
-- `cargo run --bin main` - Run the main arbitrage bot
-- `cargo run --bin cli -- auth` - Run the authentication flow for Charles Schwab
-  OAuth setup
+- `cargo build` - Build all workspace members
+- `cargo build -p st0x-arbot` - Build main crate only
+- `cargo build -p st0x-broker` - Build broker crate only
+- `cargo run --bin server` - Run the main arbitrage bot
+- `cargo run --bin cli -- auth` - Run the authentication flow for Charles Schwab OAuth setup
+- `cargo run --bin cli -- test -t AAPL -q 100 -d buy` - Test trading functionality with mock broker
 - `cargo run --bin cli` - Run the command-line interface for manual operations
 
 ### Testing
 
-- `cargo test -q` - Run all tests
+- `cargo test -q` - Run all tests (both main and broker crates)
 - `cargo test -q --lib` - Run library tests only
-- `cargo test -q --bin <binary>` - Run tests for specific binary
+- `cargo test -p st0x-broker -q` - Run broker crate tests only
+- `cargo test -p st0x-arbot -q` - Run main crate tests only
 - `cargo test -q <test_name>` - Run specific test
 
 ### Database Management
@@ -33,6 +42,7 @@ exploiting price discrepancies.
 - `sqlx db create` - Create the database
 - `sqlx migrate run` - Apply database migrations
 - `sqlx migrate revert` - Revert last migration
+- `sqlx migrate reset -y` - Drop the database and re-run all migrations
 - Database URL configured via `DATABASE_URL` environment variable
 
 ### Development Tools
@@ -56,6 +66,30 @@ exploiting price discrepancies.
   the interactive view, e.g. `git --no-pager diff`
 
 ## Architecture Overview
+
+### Broker Abstraction Layer
+
+**Design Principle**: The application uses a generic broker trait to support multiple trading platforms while maintaining type safety and zero-cost abstractions.
+
+**Broker Trait (`st0x-broker` crate)**:
+- Generic interface for executing trades across different brokers
+- Associated types for `Error`, `OrderId`, and `Config` allow broker-specific implementations
+- Key methods: `try_from_config()`, `wait_until_market_open()`, `place_market_order()`, `get_order_status()`
+- Runtime broker selection via `--dry-run` flag (TestBroker vs SchwabBroker)
+
+**Supported Brokers**:
+- **SchwabBroker**: Production Charles Schwab API integration with OAuth 2.0, market hours validation, and real order execution
+- **TestBroker**: Mock implementation for testing and dry-run scenarios with configurable failure modes
+
+**Type Safety Features**:
+- Newtypes: `Symbol`, `Shares`, `Direction` prevent mixing incompatible values
+- Order lifecycle modeling: `OrderState` enum encodes valid order states
+- Compile-time broker configuration validation
+
+**Integration with Main Application**:
+- Main crate remains broker-agnostic using generic `Broker` trait
+- Broker-specific logic (token refresh, market hours) handled through trait methods
+- Clean separation: broker concerns stay in `st0x-broker` crate, orchestration in main crate
 
 ### Core Event Processing Flow
 
@@ -112,7 +146,7 @@ exploiting price discrepancies.
   - `created_at`: Timestamp (default CURRENT_TIMESTAMP)
   - Unique constraint: `(tx_hash, log_index)`
 
-- `schwab_executions`: Schwab order execution tracking
+- `offchain_trades`: Offchain broker order execution tracking
 
   - `id`: Primary key (auto-increment)
   - `symbol`: Asset symbol (non-empty string)
@@ -137,7 +171,7 @@ exploiting price discrepancies.
 
   - `id`: Primary key (auto-increment)
   - `trade_id`: Foreign key to onchain_trades
-  - `execution_id`: Foreign key to schwab_executions
+  - `execution_id`: Foreign key to offchain_trades
   - `contributed_shares`: Fractional shares contributed (positive)
   - `created_at`: Link creation timestamp
   - Unique constraint: `(trade_id, execution_id)`
@@ -195,6 +229,23 @@ Environment variables (can be set via `.env` file):
 4. Include your Charles Schwab account number in the API access request
 5. Wait 3-5 days for account linking approval
 
+#### 5. Requirements for New Brokers
+
+- **Implement all trait methods**: Especially `try_from_config()`, `place_market_order()`, and `get_order_status()`
+- **Handle authentication**: Manage API keys, tokens, or session management as needed
+- **Market hours support**: Implement `wait_until_market_open()` for the broker's supported markets
+- **Error handling**: Map broker-specific errors to `BrokerError` enum
+- **Testing**: Add comprehensive unit tests using the broker's sandbox/paper trading environment
+- **Documentation**: Add broker-specific setup instructions and API documentation
+
+#### 6. Benefits of This Architecture
+
+- **Zero changes to core bot logic**: Main application remains broker-agnostic
+- **Type safety**: Compile-time verification of broker compatibility
+- **Independent testing**: Each broker can be tested in isolation
+- **Extensible**: Easy to add new brokers without affecting existing ones
+- **Performance**: Zero-cost abstractions via generics (no dynamic dispatch in hot paths)
+
 ### Code Quality & Best Practices
 
 - **Event-Driven Architecture**: Each trade spawns independent async task for
@@ -247,6 +298,25 @@ Environment variables (can be set via `.env` file):
   better dead code detection by the compiler and tooling. This makes the
   codebase easier to navigate and understand by making the relevance scope
   explicit
+- **Module Organization**: Organize modules by business domain, not by
+  implementation artifacts or language primitives. Avoid modules that become
+  dumping grounds for unrelated code that happens to use the same language
+  feature. Instead, group code by the business logic it implements. Common
+  anti-patterns to avoid:
+  - ❌ **Language primitive modules**: `types.rs`, `impls.rs`, `trait.rs`,
+    `traits.rs` - these group code by what language feature it uses rather than
+    what business problem it solves
+  - ❌ **Catch-all modules**: `utils.rs`, `helpers.rs`, `common.rs` - these
+    become dumping grounds for unrelated utility functions that don't belong
+    together
+  - ❌ **Cross-cutting concern modules**: `errors.rs`, `models.rs` - while these
+    aren't language primitives, they don't scale because they mix unrelated
+    domain concepts (broker errors with onchain errors, user models with trade
+    models, etc.)
+  - ✅ **Domain-based modules**: `crates/broker/src/lib.rs` (contains broker
+    trait, domain types, errors, and implementations), `src/onchain/mod.rs`
+    (contains blockchain event handling logic), `src/conductor.rs` (contains
+    trade orchestration logic)
 
 ### Testing Strategy
 
