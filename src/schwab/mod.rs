@@ -14,10 +14,9 @@ pub(crate) mod order_status;
 pub(crate) use order_poller::{OrderPollerConfig, OrderStatusPoller};
 pub(crate) use st0x_broker::Direction;
 
-use st0x_broker::schwab::SchwabError;
 use st0x_broker::schwab::auth::SchwabAuthEnv;
-use st0x_broker::schwab::extract_code_from_url;
 use st0x_broker::schwab::tokens::SchwabTokens;
+use st0x_broker::schwab::{SchwabError, extract_code_from_url};
 
 pub(crate) async fn run_oauth_flow(
     pool: &SqlitePool,

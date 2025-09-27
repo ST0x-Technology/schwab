@@ -2,18 +2,9 @@ use backon::{ExponentialBuilder, Retryable};
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use tracing::{error, info};
+use tracing::error;
 
-use chrono::Utc;
-
-use super::{
-    SchwabAuthEnv, SchwabError, SchwabTokens,
-    execution::{SchwabExecution, update_execution_status_within_transaction},
-    order_status::OrderStatusResponse,
-};
-use crate::Direction;
-use crate::OrderState;
-// Removed dependency on crate::env::Env - will be passed as parameter
+use super::{SchwabAuthEnv, SchwabError, SchwabTokens, order_status::OrderStatusResponse};
 
 /// Response from Schwab order placement API.
 /// According to Schwab OpenAPI spec, successful order placement (201) returns
@@ -318,123 +309,8 @@ pub(crate) struct Instrument {
     pub asset_type: AssetType,
 }
 
-const MAX_RETRIES: usize = 3;
-
-/// Execute a Schwab order using the unified system.
-/// Takes a SchwabExecution and places the corresponding order via Schwab API.
-pub(crate) async fn execute_schwab_order(
-    schwab_auth: &SchwabAuthEnv,
-    pool: &SqlitePool,
-    execution: SchwabExecution,
-) -> Result<(), SchwabError> {
-    let schwab_instruction = match execution.direction {
-        Direction::Buy => Instruction::Buy,
-        Direction::Sell => Instruction::Sell,
-    };
-
-    let order = Order::new(
-        execution.symbol.clone(),
-        schwab_instruction,
-        execution.shares,
-    );
-
-    let result = (|| async { order.place(schwab_auth, pool).await })
-        .retry(&ExponentialBuilder::default().with_max_times(MAX_RETRIES))
-        .await;
-
-    let execution_id = execution.id.ok_or_else(|| {
-        error!("SchwabExecution missing ID when executing: {execution:?}");
-        SchwabError::RequestFailed {
-            action: "execute order".to_string(),
-            status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-            body: "Execution missing database ID".to_string(),
-        }
-    })?;
-
-    match result {
-        Ok(response) => handle_execution_success(pool, execution_id, response.order_id).await?,
-        Err(e) => handle_execution_failure(pool, execution_id, e).await?,
-    }
-
-    Ok(())
-}
-
-async fn handle_execution_success(
-    pool: &SqlitePool,
-    execution_id: i64,
-    order_id: String,
-) -> Result<(), SchwabError> {
-    info!("Successfully placed Schwab order for execution: id={execution_id}, order_id={order_id}");
-
-    let mut sql_tx = pool.begin().await.map_err(|e| {
-        error!(
-            "Failed to start transaction for execution success: id={}, error={:?}",
-            execution_id, e
-        );
-        e
-    })?;
-
-    // Update status to Submitted with order_id so order poller can track the order and update with real fill price
-    update_execution_status_within_transaction(
-        &mut sql_tx,
-        execution_id,
-        TradeState::Submitted { order_id },
-    )
-    .await?;
-
-    sql_tx.commit().await.map_err(|e| {
-        error!("Failed to commit execution success transaction: id={execution_id}, error={e:?}",);
-        e
-    })?;
-
-    Ok(())
-}
-
-async fn handle_execution_failure(
-    pool: &SqlitePool,
-    execution_id: i64,
-    error: SchwabError,
-) -> Result<(), SchwabError> {
-    error!(
-        "Failed to place Schwab order after retries for execution: id={execution_id}, error={error:?}",
-    );
-
-    let mut sql_tx =
-        pool.begin().await.map_err(|e| {
-            error!(
-                "Failed to start transaction for execution failure: id={execution_id}, error={e:?}",
-            );
-            e
-        })?;
-
-    if let Err(update_err) = update_execution_status_within_transaction(
-        &mut sql_tx,
-        execution_id,
-        TradeState::Failed {
-            failed_at: Utc::now(),
-            error_reason: Some(error.to_string()),
-        },
-    )
-    .await
-    {
-        error!(
-            "Failed to update execution status to FAILED: id={execution_id}, error={update_err:?}",
-        );
-        let _ = sql_tx.rollback().await;
-        return Err(SchwabError::ExecutionPersistence(update_err));
-    }
-
-    sql_tx.commit().await.map_err(|e| {
-        error!("Failed to commit execution failure transaction: id={execution_id}, error={e:?}",);
-        e
-    })?;
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::super::execution::{SchwabExecution, find_execution_by_id};
     use super::*;
     use crate::Direction;
     use crate::test_utils::setup_test_db;
@@ -1030,7 +906,7 @@ mod tests {
             .unwrap()
             .unwrap();
         match &updated_execution.state {
-            TradeState::Failed { .. } => {
+            OrderState::Failed { .. } => {
                 // Test passes - execution was properly marked as failed
                 // Note: error_reason is not persisted in database yet, so we don't test it
             }

@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use sqlx::SqlitePool;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -7,8 +6,7 @@ use std::sync::{
 use tracing::warn;
 
 use crate::{
-    Broker, BrokerError, MarketOrder, OrderPlacement, OrderState, OrderStatus, OrderUpdate,
-    SupportedBroker,
+    Broker, BrokerError, MarketOrder, OrderPlacement, OrderState, OrderUpdate, SupportedBroker,
 };
 
 /// Unified test broker for dry-run mode and testing that logs operations without executing real trades
@@ -54,7 +52,11 @@ impl Broker for TestBroker {
     type OrderId = String;
     type Config = ();
 
-    async fn ensure_ready(&self, _pool: &SqlitePool) -> Result<(), Self::Error> {
+    fn new(_config: Self::Config) -> Self {
+        Self::new()
+    }
+
+    async fn ensure_ready(&self) -> Result<(), Self::Error> {
         if self.should_fail {
             return Err(BrokerError::Unavailable {
                 message: self.failure_message.clone(),
@@ -68,7 +70,6 @@ impl Broker for TestBroker {
     async fn place_market_order(
         &self,
         order: MarketOrder,
-        _pool: &SqlitePool,
     ) -> Result<OrderPlacement<Self::OrderId>, Self::Error> {
         if self.should_fail {
             return Err(BrokerError::OrderPlacement(self.failure_message.clone()));
@@ -90,11 +91,7 @@ impl Broker for TestBroker {
         })
     }
 
-    async fn get_order_status(
-        &self,
-        order_id: &Self::OrderId,
-        _pool: &SqlitePool,
-    ) -> Result<OrderState, Self::Error> {
+    async fn get_order_status(&self, order_id: &Self::OrderId) -> Result<OrderState, Self::Error> {
         if self.should_fail {
             return Err(BrokerError::OrderNotFound {
                 order_id: order_id.clone(),
@@ -112,10 +109,7 @@ impl Broker for TestBroker {
         })
     }
 
-    async fn poll_pending_orders(
-        &self,
-        _pool: &SqlitePool,
-    ) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error> {
+    async fn poll_pending_orders(&self) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error> {
         if self.should_fail {
             return Err(BrokerError::Network(self.failure_message.clone()));
         }

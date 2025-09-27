@@ -4,13 +4,11 @@ use sqlx::SqlitePool;
 use std::io::{self, Write};
 use thiserror::Error;
 
-pub(crate) mod auth;
+pub mod auth;
 pub mod broker;
-pub mod execution;
-pub(crate) mod order;
-pub(crate) mod order_poller;
+pub mod order;
 pub(crate) mod order_status;
-pub(crate) mod tokens;
+pub mod tokens;
 
 pub(crate) use auth::SchwabAuthEnv;
 pub(crate) use tokens::SchwabTokens;
@@ -81,22 +79,18 @@ pub(crate) async fn run_oauth_flow(
     Ok(())
 }
 
-pub(crate) const fn shares_from_db_i64(db_value: i64) -> Result<u64, error::OnChainError> {
+pub(crate) const fn shares_from_db_i64(db_value: i64) -> Result<u64, error::PersistenceError> {
     if db_value < 0 {
-        Err(error::OnChainError::Persistence(
-            error::PersistenceError::InvalidShareQuantity(db_value),
-        ))
+        Err(error::PersistenceError::InvalidShareQuantity(db_value))
     } else {
         #[allow(clippy::cast_sign_loss)]
         Ok(db_value as u64)
     }
 }
 
-pub(crate) const fn price_cents_from_db_i64(db_value: i64) -> Result<u64, error::OnChainError> {
+pub(crate) const fn price_cents_from_db_i64(db_value: i64) -> Result<u64, error::PersistenceError> {
     if db_value < 0 {
-        Err(error::OnChainError::Persistence(
-            error::PersistenceError::InvalidPriceCents(db_value),
-        ))
+        Err(error::PersistenceError::InvalidPriceCents(db_value))
     } else {
         #[allow(clippy::cast_sign_loss)]
         Ok(db_value as u64)

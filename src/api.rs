@@ -5,7 +5,7 @@ use rocket::{Route, State, get, post, routes};
 use sqlx::SqlitePool;
 
 use crate::env::Env;
-use crate::schwab::extract_code_from_url;
+use st0x_broker::schwab::extract_code_from_url;
 
 #[derive(Serialize, Deserialize)]
 pub struct HealthResponse {

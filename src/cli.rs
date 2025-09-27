@@ -7,16 +7,17 @@ use tracing::{error, info};
 use crate::env::{Env, LogLevel};
 use crate::error::OnChainError;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
-use crate::schwab::SchwabAuthEnv;
 use crate::schwab::market_hours::{MarketStatus as MarketStatusEnum, fetch_market_hours};
 use crate::schwab::order::{Instruction, Order};
 use crate::schwab::run_oauth_flow;
-use crate::schwab::tokens::SchwabTokens;
 use crate::symbol::cache::SymbolCache;
 use alloy::primitives::B256;
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use chrono::Utc;
 use chrono_tz::US::Eastern;
+use st0x_broker::schwab::auth::SchwabAuthEnv;
+use st0x_broker::schwab::tokens::SchwabTokens;
+use st0x_broker::{Broker, Direction, MarketOrder, Shares, Symbol};
 
 #[derive(Debug, Error)]
 pub enum CliError {
@@ -460,14 +461,10 @@ async fn process_found_trade<W: Write>(
         };
 
         if env.dry_run {
-            let broker = env.get_dry_run_broker();
-            let config = &();
-            broker
-                .ensure_ready(config, pool)
-                .await
-                .map_err(anyhow::Error::from)?;
+            let broker = env.get_test_broker();
+            broker.ensure_ready().await.map_err(anyhow::Error::from)?;
             let placement = broker
-                .place_market_order(config, market_order, pool)
+                .place_market_order(market_order)
                 .await
                 .map_err(anyhow::Error::from)?;
             writeln!(
@@ -476,14 +473,10 @@ async fn process_found_trade<W: Write>(
                 placement.order_id
             )?;
         } else {
-            let broker = env.get_schwab_broker();
-            let config = &env.schwab_auth;
-            broker
-                .ensure_ready(config, pool)
-                .await
-                .map_err(anyhow::Error::from)?;
+            let broker = env.get_schwab_broker(pool.clone());
+            broker.ensure_ready().await.map_err(anyhow::Error::from)?;
             let placement = broker
-                .place_market_order(config, market_order, pool)
+                .place_market_order(market_order)
                 .await
                 .map_err(anyhow::Error::from)?;
             writeln!(
