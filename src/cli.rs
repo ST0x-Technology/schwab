@@ -16,7 +16,7 @@ use st0x_broker::schwab::auth::SchwabAuthEnv;
 use st0x_broker::schwab::market_hours::{MarketStatus as MarketStatusEnum, fetch_market_hours};
 use st0x_broker::schwab::tokens::SchwabTokens;
 use st0x_broker::schwab::{SchwabError, extract_code_from_url};
-use st0x_broker::{Broker, Direction, MarketOrder, Shares, Symbol};
+use st0x_broker::{Broker, Direction, MarketOrder, OrderStatus, Shares, Symbol};
 
 #[derive(Debug, Error)]
 pub enum CliError {
@@ -488,14 +488,13 @@ async fn process_found_trade<W: Write>(
         writeln!(stdout, "🔄 Executing Schwab order...")?;
         // Convert OffchainExecution to broker trait types
         let market_order = st0x_broker::MarketOrder {
-            symbol: st0x_broker::Symbol(execution.symbol.clone()),
-            shares: st0x_broker::Shares(execution.shares as u32),
+            symbol: st0x_broker::Symbol::new(execution.symbol.clone())?,
+            shares: st0x_broker::Shares::new(execution.shares)?,
             direction: execution.direction,
         };
 
         if env.dry_run {
-            let broker = env.get_test_broker();
-            broker.ensure_ready().await.map_err(anyhow::Error::from)?;
+            let broker = env.get_test_broker().await.map_err(anyhow::Error::from)?;
             let placement = broker
                 .place_market_order(market_order)
                 .await
@@ -506,8 +505,10 @@ async fn process_found_trade<W: Write>(
                 placement.order_id
             )?;
         } else {
-            let broker = env.get_schwab_broker(pool.clone());
-            broker.ensure_ready().await.map_err(anyhow::Error::from)?;
+            let broker = env
+                .get_schwab_broker(pool.clone())
+                .await
+                .map_err(anyhow::Error::from)?;
             let placement = broker
                 .place_market_order(market_order)
                 .await
@@ -1725,7 +1726,7 @@ mod tests {
         // Verify OffchainExecution was created (due to TradeAccumulator)
         // Executions are now in SUBMITTED status with order_id stored for order status polling
         let executions =
-            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Submitted)
+            find_executions_by_symbol_and_status(&pool, "AAPL", OrderStatus::Submitted)
                 .await
                 .unwrap();
         assert_eq!(executions.len(), 1);

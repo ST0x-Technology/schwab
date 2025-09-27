@@ -8,7 +8,7 @@ pub mod auth;
 pub mod broker;
 pub mod market_hours;
 pub mod market_hours_cache;
-pub mod order;
+pub(crate) mod order;
 pub(crate) mod order_status;
 pub mod tokens;
 

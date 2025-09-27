@@ -51,6 +51,10 @@ impl Shares {
         }
         Ok(Self(shares as u32))
     }
+
+    pub fn value(&self) -> u32 {
+        self.0
+    }
 }
 
 impl Display for Shares {

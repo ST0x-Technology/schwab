@@ -1,8 +1,8 @@
 use alloy::providers::{ProviderBuilder, WsConnect};
+use futures_util::Stream;
 use rocket::Config;
 use sqlx::SqlitePool;
-use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 pub mod api;
 mod bindings;
@@ -89,7 +89,7 @@ async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
         match result {
             Ok(()) => {
                 info!("Bot session completed successfully");
-                break;
+                break Ok(());
             }
             Err(e) if e.to_string().contains("RefreshTokenExpired") => {
                 warn!(
@@ -118,7 +118,11 @@ async fn run_bot_session(env: &Env, pool: &SqlitePool) -> anyhow::Result<()> {
     }
 }
 
-async fn run_with_broker<B: Broker>(env: &Env, pool: &SqlitePool, broker: B) -> anyhow::Result<()> {
+async fn run_with_broker<B: Broker + Clone>(
+    env: &Env,
+    pool: &SqlitePool,
+    broker: B,
+) -> anyhow::Result<()> {
     if let Some(wait_duration) = broker
         .wait_until_market_open()
         .await
@@ -133,12 +137,12 @@ async fn run_with_broker<B: Broker>(env: &Env, pool: &SqlitePool, broker: B) -> 
 
     info!("Market is open, starting bot session");
 
-    let (provider, cache, _orderbook, clear_stream, take_stream) =
+    let (provider, cache, mut clear_stream, mut take_stream) =
         initialize_event_streams(env).await?;
 
     let cutoff_block = get_cutoff_block(
-        &mut clear_stream.clone(),
-        &mut take_stream.clone(),
+        &mut clear_stream,
+        &mut take_stream,
         &provider,
         pool,
     )
@@ -161,11 +165,20 @@ async fn run_with_broker<B: Broker>(env: &Env, pool: &SqlitePool, broker: B) -> 
 async fn initialize_event_streams(
     env: &Env,
 ) -> anyhow::Result<(
-    alloy::providers::WsProvider,
+    impl alloy::providers::Provider + Clone,
     SymbolCache,
-    IOrderBookV4Instance<alloy::providers::WsProvider>,
-    alloy::providers::StreamEvent<bindings::IOrderBookV4::ClearV2Filter>,
-    alloy::providers::StreamEvent<bindings::IOrderBookV4::TakeOrderV2Filter>,
+    impl Stream<
+        Item = Result<
+            (bindings::IOrderBookV4::ClearV2, alloy::rpc::types::Log),
+            alloy::sol_types::Error,
+        >,
+    >,
+    impl Stream<
+        Item = Result<
+            (bindings::IOrderBookV4::TakeOrderV2, alloy::rpc::types::Log),
+            alloy::sol_types::Error,
+        >,
+    >,
 )> {
     let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
     let provider = ProviderBuilder::new().connect_ws(ws).await?;
@@ -175,7 +188,7 @@ async fn initialize_event_streams(
     let clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
     let take_stream = orderbook.TakeOrderV2_filter().watch().await?.into_stream();
 
-    Ok((provider, cache, orderbook, clear_stream, take_stream))
+    Ok((provider, cache, clear_stream, take_stream))
 }
 
 #[cfg(test)]

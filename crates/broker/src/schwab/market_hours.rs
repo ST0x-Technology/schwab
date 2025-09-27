@@ -92,9 +92,9 @@ impl MarketHours {
         }
     }
 
-    /// Convert start time to system timezone.
+    /// Get the next market open time in UTC.
     #[cfg(test)]
-    pub fn start_in_local(&self) -> Option<DateTime<Utc>> {
+    pub fn next_market_open(&self) -> Option<DateTime<Utc>> {
         self.start.map(|dt| dt.with_timezone(&Utc))
     }
 
@@ -582,7 +582,7 @@ mod tests {
             is_open: true,
         };
 
-        let start_utc = market_hours.start_in_local().unwrap();
+        let start_utc = market_hours.next_market_open().unwrap();
         let end_utc = market_hours.end_in_local().unwrap();
 
         assert_eq!(start_utc, start_et.with_timezone(&Utc));

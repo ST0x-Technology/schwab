@@ -61,21 +61,13 @@ impl<B: Broker> OrderStatusPoller<B> {
             self.config.polling_interval
         );
 
-        loop {
-            tokio::select! {
-                _ = self.interval.tick() => {
-                    if let Err(e) = self.poll_pending_orders().await {
-                        error!("Polling cycle failed: {e}");
-                    }
-                }
-                _ = self.shutdown_rx.changed() => {
-                    if *self.shutdown_rx.borrow() {
-                        info!("Received shutdown signal, stopping order poller");
-                        break;
-                    }
+        crate::conductor::loop_with_shutdown!(self.shutdown_rx, "order poller", {
+            _ = self.interval.tick() => {
+                if let Err(e) = self.poll_pending_orders().await {
+                    error!("Polling cycle failed: {e}");
                 }
             }
-        }
+        })
 
         Ok(())
     }

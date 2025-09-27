@@ -846,7 +846,7 @@ mod tests {
         assert!(accumulator_result.is_none());
 
         // Verify only the original execution remains
-        let executions = crate::schwab::execution::find_executions_by_symbol_and_status(
+        let executions = crate::offchain::execution::find_executions_by_symbol_and_status(
             &pool,
             "AAPL",
             OrderStatus::Pending,
@@ -1403,7 +1403,7 @@ mod tests {
         assert_eq!(new_execution.shares, 1);
 
         // Verify the stale execution was marked as failed
-        let stale_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
+        let stale_executions = crate::offchain::execution::find_executions_by_symbol_and_status(
             &pool,
             "AAPL",
             OrderStatus::Failed,
@@ -1414,7 +1414,7 @@ mod tests {
         assert_eq!(stale_executions[0].id.unwrap(), execution_id);
 
         // Verify the new execution was created and is pending
-        let pending_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
+        let pending_executions = crate::offchain::execution::find_executions_by_symbol_and_status(
             &pool,
             "AAPL",
             OrderStatus::Pending,
@@ -1489,7 +1489,7 @@ mod tests {
         test_tx.commit().await.unwrap();
 
         // Verify recent execution (MSFT) is still submitted
-        let msft_submitted = crate::schwab::execution::find_executions_by_symbol_and_status(
+        let msft_submitted = crate::offchain::execution::find_executions_by_symbol_and_status(
             &pool,
             "MSFT",
             OrderStatus::Submitted,
@@ -1500,7 +1500,7 @@ mod tests {
         assert_eq!(msft_submitted[0].id.unwrap(), recent_id);
 
         // Verify stale execution (TSLA) was failed
-        let tsla_failed = crate::schwab::execution::find_executions_by_symbol_and_status(
+        let tsla_failed = crate::offchain::execution::find_executions_by_symbol_and_status(
             &pool,
             "TSLA",
             OrderStatus::Failed,
@@ -1565,7 +1565,7 @@ mod tests {
         test_tx.commit().await.unwrap();
 
         // Verify execution is still submitted (not failed)
-        let submitted_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
+        let submitted_executions = crate::offchain::execution::find_executions_by_symbol_and_status(
             &pool,
             "NVDA",
             OrderStatus::Submitted,

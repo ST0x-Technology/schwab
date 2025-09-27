@@ -80,6 +80,8 @@ pub(crate) enum EventProcessingError {
     OnChain(#[from] OnChainError),
     #[error("Schwab execution error: {0}")]
     Schwab(#[from] st0x_broker::schwab::SchwabError),
+    #[error("Broker error: {0}")]
+    Broker(#[from] st0x_broker::BrokerError),
 }
 
 /// Order polling errors for order status monitoring.

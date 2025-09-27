@@ -56,7 +56,8 @@ impl Broker for SchwabBroker {
             MarketStatus::Open => Ok(None), // Market is open, no need to wait
             MarketStatus::Closed => {
                 // Market is closed, calculate wait time until next open
-                if let Some(next_open) = market_hours.start_in_local() {
+                if let Some(start_time) = market_hours.start {
+                    let next_open = start_time.with_timezone(&chrono::Utc);
                     let now = chrono::Utc::now();
                     if next_open > now {
                         let duration = (next_open - now)
@@ -94,7 +95,7 @@ impl Broker for SchwabBroker {
         let schwab_order = crate::schwab::order::Order::new(
             order.symbol.to_string(),
             instruction,
-            order.shares.0.into(),
+            order.shares.value().into(),
         );
 
         // Place the order using Schwab API
@@ -171,7 +172,7 @@ impl Broker for SchwabBroker {
                     // Only include orders that have changed status
                     if !matches!(current_state, OrderState::Submitted { .. }) {
                         let price_cents = match &current_state {
-                            OrderState::Filled { price_cents, .. } => Some(*price_cents as u64),
+                            OrderState::Filled { price_cents, .. } => Some(*price_cents),
                             _ => None,
                         };
 
@@ -226,11 +227,33 @@ impl Broker for SchwabBroker {
         // For SchwabBroker, OrderId is String, so just clone the input
         Ok(order_id_str.to_string())
     }
+
+    async fn run_broker_maintenance(
+        &self,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> Option<tokio::task::JoinHandle<Result<(), Self::Error>>> {
+        // Schwab broker needs token refresh maintenance
+        let pool_clone = self.pool.clone();
+        let auth_clone = self.auth.clone();
+
+        let handle = tokio::spawn(async move {
+            crate::schwab::tokens::SchwabTokens::start_automatic_token_refresh_loop(
+                pool_clone,
+                auth_clone,
+                shutdown_rx,
+            )
+            .await
+            .map_err(BrokerError::Schwab)
+        });
+
+        Some(handle)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schwab::SchwabError;
     use crate::schwab::auth::SchwabAuthEnv;
     use crate::schwab::tokens::SchwabTokens;
     use chrono::{Duration, Utc};
@@ -358,27 +381,14 @@ mod tests {
         };
         expired_tokens.store(&pool).await.unwrap();
 
-        // Mock the token refresh endpoint to fail
-        let refresh_mock = server.mock(|when, then| {
-            when.method(POST)
-                .path("/v1/oauth/token")
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body_contains("grant_type=refresh_token")
-                .body_contains("refresh_token=expired_refresh_token");
-            then.status(400)
-                .header("content-type", "application/json")
-                .json_body(json!({
-                    "error": "invalid_grant",
-                    "error_description": "The provided authorization grant is invalid, expired, revoked, does not match the redirection URI used in the authorization request, or was issued to another client."
-                }));
-        });
-
         let config = (auth, pool);
         let result = SchwabBroker::try_from_config(config).await;
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), BrokerError::Schwab(_)));
-        refresh_mock.assert();
+        assert!(matches!(
+            result.unwrap_err(),
+            BrokerError::Schwab(SchwabError::RefreshTokenExpired)
+        ));
     }
 
     #[tokio::test]

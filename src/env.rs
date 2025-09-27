@@ -1,6 +1,5 @@
 use clap::Parser;
 use sqlx::SqlitePool;
-use std::sync::Arc;
 use tracing::Level;
 
 use crate::offchain::order_poller::OrderPollerConfig;
@@ -166,14 +165,15 @@ pub mod tests {
         assert!(pool_result.is_ok());
     }
 
-    #[test]
-    fn test_get_broker_types() {
+    #[tokio::test]
+    async fn test_get_broker_types() {
         let env = create_test_env();
+        let pool = env.get_sqlite_pool().await.unwrap();
 
-        let schwab_broker = env.get_schwab_broker();
+        let schwab_broker = env.get_schwab_broker(pool.clone()).await;
         assert!(format!("{schwab_broker:?}").contains("SchwabBroker"));
 
-        let test_broker = env.get_test_broker();
+        let test_broker = env.get_test_broker().await;
         assert!(format!("{test_broker:?}").contains("TestBroker"));
     }
 

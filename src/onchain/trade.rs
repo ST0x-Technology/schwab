@@ -83,18 +83,16 @@ impl OnchainTrade {
         .await?;
 
         let tx_hash = row.tx_hash.parse().map_err(|_| {
-            OnChainError::Persistence(PersistenceError::InvalidDirection(format!(
+            OnChainError::Persistence(PersistenceError::InvalidTradeStatus(format!(
                 "Invalid tx_hash format: {}",
                 row.tx_hash
             )))
         })?;
 
-        let direction = row.direction.parse().map_err(|_| {
-            OnChainError::Persistence(PersistenceError::InvalidDirection(format!(
-                "Invalid direction in database: {}",
-                row.direction
-            )))
-        })?;
+        let direction = row
+            .direction
+            .parse()
+            .map_err(|e| OnChainError::Persistence(PersistenceError::InvalidDirection(e)))?;
 
         Ok(Self {
             id: Some(row.id),
