@@ -61,13 +61,13 @@ impl<B: Broker> OrderStatusPoller<B> {
             self.config.polling_interval
         );
 
-        crate::conductor::loop_with_shutdown!(self.shutdown_rx, "order poller", {
+        crate::loop_with_shutdown!(self.shutdown_rx, "order poller", {
             _ = self.interval.tick() => {
                 if let Err(e) = self.poll_pending_orders().await {
                     error!("Polling cycle failed: {e}");
                 }
             }
-        })
+        });
 
         Ok(())
     }

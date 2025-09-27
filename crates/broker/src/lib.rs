@@ -183,6 +183,13 @@ pub trait Broker: Send + Sync + 'static {
     /// Convert a string representation to the broker's OrderId type
     /// This is needed for converting database-stored order IDs back to broker types
     fn parse_order_id(&self, order_id_str: &str) -> Result<Self::OrderId, Self::Error>;
+
+    /// Run broker-specific maintenance tasks (token refresh, connection health, etc.)
+    /// Returns None if no maintenance needed, Some(handle) if maintenance task spawned
+    async fn run_broker_maintenance(
+        &self,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> Option<tokio::task::JoinHandle<Result<(), Self::Error>>>;
 }
 
 #[cfg(test)]

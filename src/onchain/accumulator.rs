@@ -1565,13 +1565,14 @@ mod tests {
         test_tx.commit().await.unwrap();
 
         // Verify execution is still submitted (not failed)
-        let submitted_executions = crate::offchain::execution::find_executions_by_symbol_and_status(
-            &pool,
-            "NVDA",
-            OrderStatus::Submitted,
-        )
-        .await
-        .unwrap();
+        let submitted_executions =
+            crate::offchain::execution::find_executions_by_symbol_and_status(
+                &pool,
+                "NVDA",
+                OrderStatus::Submitted,
+            )
+            .await
+            .unwrap();
         assert_eq!(submitted_executions.len(), 1);
         assert_eq!(submitted_executions[0].id.unwrap(), execution_id);
 

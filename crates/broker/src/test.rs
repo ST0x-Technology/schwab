@@ -123,6 +123,14 @@ impl Broker for TestBroker {
         // For TestBroker, OrderId is String, so just clone the input
         Ok(order_id_str.to_string())
     }
+
+    async fn run_broker_maintenance(
+        &self,
+        _shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> Option<tokio::task::JoinHandle<Result<(), Self::Error>>> {
+        // TestBroker has no maintenance tasks needed
+        None
+    }
 }
 
 #[cfg(test)]

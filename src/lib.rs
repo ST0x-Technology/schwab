@@ -110,17 +110,17 @@ async fn run_bot_session(env: &Env, pool: &SqlitePool) -> anyhow::Result<()> {
     if env.dry_run {
         info!("Initializing test broker for dry-run mode");
         let broker = env.get_test_broker().await?;
-        run_with_broker(env, pool, broker).await
+        run_with_broker(env.clone(), pool.clone(), broker).await
     } else {
         info!("Initializing Schwab broker");
         let broker = env.get_schwab_broker(pool.clone()).await?;
-        run_with_broker(env, pool, broker).await
+        run_with_broker(env.clone(), pool.clone(), broker).await
     }
 }
 
 async fn run_with_broker<B: Broker + Clone>(
-    env: &Env,
-    pool: &SqlitePool,
+    env: Env,
+    pool: SqlitePool,
     broker: B,
 ) -> anyhow::Result<()> {
     if let Some(wait_duration) = broker
@@ -138,17 +138,12 @@ async fn run_with_broker<B: Broker + Clone>(
     info!("Market is open, starting bot session");
 
     let (provider, cache, mut clear_stream, mut take_stream) =
-        initialize_event_streams(env).await?;
+        initialize_event_streams(env.clone()).await?;
 
-    let cutoff_block = get_cutoff_block(
-        &mut clear_stream,
-        &mut take_stream,
-        &provider,
-        pool,
-    )
-    .await?;
+    let cutoff_block =
+        get_cutoff_block(&mut clear_stream, &mut take_stream, &provider, &pool).await?;
 
-    onchain::backfill::backfill_events(pool, &provider, &env.evm_env, cutoff_block - 1).await?;
+    onchain::backfill::backfill_events(&pool, &provider, &env.evm_env, cutoff_block - 1).await?;
 
     conductor::run_live(
         env.clone(),
@@ -163,7 +158,7 @@ async fn run_with_broker<B: Broker + Clone>(
 }
 
 async fn initialize_event_streams(
-    env: &Env,
+    env: Env,
 ) -> anyhow::Result<(
     impl alloy::providers::Provider + Clone,
     SymbolCache,

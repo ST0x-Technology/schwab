@@ -9,8 +9,7 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tracing::{debug, error, info, trace};
 
-use st0x_broker::schwab::tokens;
-use st0x_broker::{Broker, Direction, MarketOrder, OrderState, OrderStatus, Shares, Symbol};
+use st0x_broker::{Broker, Shares, Symbol};
 
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
 use crate::env::Env;
@@ -23,6 +22,54 @@ use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
 use crate::queue::{QueuedEvent, enqueue, get_next_unprocessed_event, mark_event_processed};
 use crate::symbol::cache::SymbolCache;
 use crate::symbol::lock::get_symbol_lock;
+
+/// Macro to add shutdown handling to tokio::select! blocks
+///
+/// Usage with loop:
+/// ```
+/// loop_with_shutdown!(shutdown_rx, "task name", {
+///     branch1 => { ... },
+///     branch2 => { ... },
+/// })
+/// ```
+///
+/// Usage without loop:
+/// ```
+/// select_with_shutdown!(shutdown_rx, "task name", {
+///     branch1 => { ... },
+///     branch2 => { ... },
+/// })
+/// ```
+#[macro_export]
+macro_rules! loop_with_shutdown {
+    ($shutdown_rx:expr, $task_name:expr, { $($branch:tt)* }) => {
+        loop {
+            tokio::select! {
+                $($branch)*
+                _ = $shutdown_rx.changed() => {
+                    if *$shutdown_rx.borrow() {
+                        info!("Shutting down {}", $task_name);
+                        break;
+                    }
+                }
+            }
+        }
+    };
+}
+
+macro_rules! select_with_shutdown {
+    ($shutdown_rx:expr, $task_name:expr, { $($branch:tt)* }) => {
+        tokio::select! {
+            $($branch)*
+            _ = $shutdown_rx.changed() => {
+                if *$shutdown_rx.borrow() {
+                    info!("Shutting down {}", $task_name);
+                    break;
+                }
+            }
+        }
+    };
+}
 
 pub(crate) struct BackgroundTasksBuilder<P, B> {
     env: Env,
@@ -54,7 +101,7 @@ impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
         }
     }
 
-    pub(crate) fn spawn(
+    pub(crate) async fn spawn(
         self,
         event_sender: UnboundedSender<(TradeEvent, Log)>,
         clear_stream: impl Stream<Item = Result<(ClearV2, Log), sol_types::Error>>
@@ -66,23 +113,33 @@ impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
         + Send
         + 'static,
     ) -> BackgroundTasks {
-        let token_refresher = if matches!(
-            self.broker.to_supported_broker(),
-            st0x_broker::SupportedBroker::Schwab
-        ) {
-            info!("Starting token refresh service for Schwab broker");
-            Some(tokens::SchwabTokens::spawn_automatic_token_refresh(
-                self.pool.clone(),
-                self.env.schwab_auth.clone(),
-            ))
+        let broker_maintenance = self
+            .broker
+            .run_broker_maintenance(self.shutdown_rx.clone())
+            .await
+            .map(|handle| {
+                // Convert broker-specific error to boxed error
+                tokio::spawn(async move {
+                    handle
+                        .await
+                        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+                        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+                })
+            });
+        if broker_maintenance.is_some() {
+            info!("Started broker maintenance tasks");
         } else {
-            info!("Skipping token refresh for non-Schwab broker");
-            None
-        };
+            info!("No broker maintenance tasks needed");
+        }
         let broker = self.broker.clone();
         let order_poller =
             spawn_order_poller(&self.env, &self.pool, &self.shutdown_rx, broker.clone());
-        let event_receiver = spawn_onchain_event_receiver(event_sender, clear_stream, take_stream);
+        let event_receiver = spawn_onchain_event_receiver(
+            event_sender,
+            clear_stream,
+            take_stream,
+            self.shutdown_rx.clone(),
+        );
         let position_checker =
             spawn_position_checker(broker.clone(), &self.env, &self.pool, &self.shutdown_rx);
         let queue_processor = spawn_queue_processor(
@@ -91,11 +148,11 @@ impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
             &self.pool,
             &self.cache,
             self.provider,
-            self.broker,
+            &self.shutdown_rx,
         );
 
         BackgroundTasks {
-            token_refresher,
+            broker_maintenance,
             order_poller,
             event_receiver,
             position_checker,
@@ -105,7 +162,8 @@ impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
 }
 
 pub(crate) struct BackgroundTasks {
-    pub(crate) token_refresher: Option<JoinHandle<()>>,
+    pub(crate) broker_maintenance:
+        Option<JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>>,
     pub(crate) order_poller: JoinHandle<()>,
     pub(crate) event_receiver: JoinHandle<()>,
     pub(crate) position_checker: JoinHandle<()>,
@@ -143,12 +201,14 @@ fn spawn_onchain_event_receiver(
     + Unpin
     + Send
     + 'static,
+    shutdown_rx: watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     info!("Starting blockchain event receiver");
     tokio::spawn(receive_blockchain_events(
         clear_stream,
         take_stream,
         event_sender,
+        shutdown_rx,
     ))
 }
 
@@ -188,8 +248,15 @@ where
     let shutdown_rx_clone = shutdown_rx.clone();
 
     tokio::spawn(async move {
-        if let Err(e) =
-            run_queue_processor(&env_clone, &pool_clone, &cache_clone, provider, broker).await
+        if let Err(e) = run_queue_processor(
+            &env_clone,
+            &pool_clone,
+            &cache_clone,
+            provider,
+            broker,
+            shutdown_rx_clone,
+        )
+        .await
         {
             error!("Queue processor service failed: {e}");
         }
@@ -198,17 +265,19 @@ where
 
 impl BackgroundTasks {
     pub(crate) async fn wait_for_completion(self) -> Result<(), anyhow::Error> {
-        // Handle optional token refresher separately
-        let token_task = async {
-            if let Some(handle) = self.token_refresher {
-                if let Err(e) = handle.await {
-                    error!("Token refresher task panicked: {e}");
+        // Handle optional broker maintenance separately
+        let maintenance_task = async {
+            if let Some(handle) = self.broker_maintenance {
+                match handle.await {
+                    Ok(Ok(())) => info!("Broker maintenance completed successfully"),
+                    Ok(Err(e)) => error!("Broker maintenance failed: {e}"),
+                    Err(e) => error!("Broker maintenance task panicked: {e}"),
                 }
             }
         };
 
         let (_, poller_result, receiver_result, position_result, queue_result) = tokio::join!(
-            token_task,
+            maintenance_task,
             self.order_poller,
             self.event_receiver,
             self.position_checker,
@@ -243,28 +312,21 @@ async fn periodic_accumulated_position_check<B: Broker + Clone + Send + 'static>
     let mut interval = tokio::time::interval(CHECK_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    loop {
-        tokio::select! {
-            _ = interval.tick() => {
-                debug!("Running periodic accumulated position check");
-                if let Err(e) = check_and_execute_accumulated_positions(&broker, &env, &pool).await {
-                    error!("Periodic accumulated position check failed: {e}");
-                }
-            }
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
-                    info!("Shutting down periodic accumulated position checker");
-                    break;
-                }
+    crate::loop_with_shutdown!(shutdown_rx, "periodic accumulated position checker", {
+        _ = interval.tick() => {
+            debug!("Running periodic accumulated position check");
+            if let Err(e) = check_and_execute_accumulated_positions(&broker, &env, &pool).await {
+                error!("Periodic accumulated position check failed: {e}");
             }
         }
-    }
+    })
 }
 
 async fn receive_blockchain_events<S1, S2>(
     mut clear_stream: S1,
     mut take_stream: S2,
     event_sender: UnboundedSender<(TradeEvent, Log)>,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) where
     S1: Stream<Item = Result<(ClearV2, Log), sol_types::Error>> + Unpin,
     S2: Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin,
@@ -276,6 +338,13 @@ async fn receive_blockchain_events<S1, S2>(
             }
             Some(result) = take_stream.next() => {
                 result.map(|(event, log)| (TradeEvent::TakeOrderV2(Box::new(event)), log))
+            }
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("Shutting down blockchain event receiver");
+                    break;
+                }
+                continue;
             }
             else => {
                 error!("All event streams ended, shutting down event receiver");
@@ -363,7 +432,8 @@ where
         broker,
         shutdown_rx.clone(),
     )
-    .spawn(event_sender, clear_stream, take_stream);
+    .spawn(event_sender, clear_stream, take_stream)
+    .await;
 
     while let Some((event, log)) = event_receiver.recv().await {
         trace!(
@@ -424,6 +494,7 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone, B: Broker + Clone>(
     cache: &SymbolCache,
     provider: P,
     broker: B,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), EventProcessingError> {
     info!("Starting queue processor service");
 
@@ -442,22 +513,32 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone, B: Broker + Clone>(
     }
 
     loop {
-        match process_next_queued_event(env, pool, cache, &provider, &broker).await {
-            Ok(Some(execution)) => {
-                if let Some(exec_id) = execution.id {
-                    if let Err(e) =
-                        execute_pending_schwab_execution(broker, env, pool, exec_id).await
-                    {
-                        error!("Failed to execute Schwab order {exec_id}: {e}");
+        tokio::select! {
+            _ = async {
+                match process_next_queued_event(env, pool, cache, &provider, &broker).await {
+                    Ok(Some(execution)) => {
+                        if let Some(exec_id) = execution.id {
+                            if let Err(e) =
+                                execute_pending_schwab_execution(&broker, env, pool, exec_id).await
+                            {
+                                error!("Failed to execute Schwab order {exec_id}: {e}");
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        sleep(Duration::from_millis(100)).await;
+                    }
+                    Err(e) => {
+                        error!("Error processing queued event: {e}");
+                        sleep(Duration::from_millis(500)).await;
                     }
                 }
-            }
-            Ok(None) => {
-                sleep(Duration::from_millis(100)).await;
-            }
-            Err(e) => {
-                error!("Error processing queued event: {e}");
-                sleep(Duration::from_millis(500)).await;
+            } => {},
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("Shutting down queue processor");
+                    break;
+                }
             }
         }
     }
@@ -492,7 +573,7 @@ async fn process_next_queued_event<P: Provider + Clone, B: Broker + Clone>(
         return handle_filtered_event(pool, &queued_event, event_id).await;
     };
 
-    process_valid_trade(pool, &queued_event, event_id, trade).await
+    process_valid_trade(pool, &queued_event, event_id, trade, broker).await
 }
 
 async fn get_next_queued_event(
@@ -583,11 +664,12 @@ async fn handle_filtered_event(
     Ok(None)
 }
 
-async fn process_valid_trade(
+async fn process_valid_trade<B: Broker + Clone>(
     pool: &SqlitePool,
     queued_event: &QueuedEvent,
     event_id: i64,
     trade: OnchainTrade,
+    broker: &B,
 ) -> Result<Option<OffchainExecution>, EventProcessingError> {
     info!(
         "Event successfully converted to trade: event_type={:?}, tx_hash={:?}, log_index={}, symbol={}, amount={}",
@@ -609,14 +691,15 @@ async fn process_valid_trade(
         trade.symbol, trade.amount, trade.direction, trade.tx_hash, trade.log_index
     );
 
-    process_trade_within_transaction(pool, queued_event, event_id, trade).await
+    process_trade_within_transaction(pool, queued_event, event_id, trade, broker).await
 }
 
-async fn process_trade_within_transaction(
+async fn process_trade_within_transaction<B: Broker + Clone>(
     pool: &SqlitePool,
     queued_event: &QueuedEvent,
     event_id: i64,
     trade: OnchainTrade,
+    broker: &B,
 ) -> Result<Option<OffchainExecution>, EventProcessingError> {
     let mut sql_tx = pool.begin().await.map_err(|e| {
         error!("Failed to begin transaction for event processing: {e}");
@@ -628,17 +711,18 @@ async fn process_trade_within_transaction(
         event_id, queued_event.tx_hash, queued_event.log_index
     );
 
-    let execution = accumulator::process_onchain_trade(&mut sql_tx, trade)
-        .await
-        .map_err(|e| {
-            error!(
-                "Failed to process trade through accumulator: {e}, tx_hash={:?}, log_index={}",
-                queued_event.tx_hash, queued_event.log_index
-            );
-            EventProcessingError::AccumulatorProcessing(format!(
-                "Failed to process trade through accumulator: {e}"
-            ))
-        })?;
+    let execution =
+        accumulator::process_onchain_trade(&mut sql_tx, trade, broker.to_supported_broker())
+            .await
+            .map_err(|e| {
+                error!(
+                    "Failed to process trade through accumulator: {e}, tx_hash={:?}, log_index={}",
+                    queued_event.tx_hash, queued_event.log_index
+                );
+                EventProcessingError::AccumulatorProcessing(format!(
+                    "Failed to process trade through accumulator: {e}"
+                ))
+            })?;
 
     mark_event_processed(&mut sql_tx, event_id)
         .await
@@ -697,7 +781,7 @@ async fn check_and_execute_accumulated_positions<B: Broker + Clone + Send + 'sta
     env: &Env,
     pool: &SqlitePool,
 ) -> Result<(), EventProcessingError> {
-    let executions = check_all_accumulated_positions(pool).await?;
+    let executions = check_all_accumulated_positions(pool, broker.to_supported_broker()).await?;
 
     if executions.is_empty() {
         debug!("No accumulated positions ready for execution");
@@ -767,16 +851,12 @@ async fn execute_pending_schwab_execution<B: Broker + Clone + Send + 'static>(
 
     // Convert OffchainExecution to broker trait types
     let market_order = MarketOrder {
-        symbol: Symbol(execution.symbol.clone()),
-        shares: Shares(execution.shares as u32),
+        symbol: Symbol::new(execution.symbol.clone())?,
+        shares: Shares::new(execution.shares as u64)?,
         direction: execution.direction,
     };
 
     // Execute via broker trait
-    broker.ensure_ready().await.map_err(|e| {
-        EventProcessingError::AccumulatorProcessing(format!("Broker not ready: {}", e))
-    })?;
-
     let placement = broker.place_market_order(market_order).await.map_err(|e| {
         EventProcessingError::AccumulatorProcessing(format!("Order placement failed: {}", e))
     })?;
@@ -1041,9 +1121,13 @@ mod tests {
             {
                 // Step 5: Process the trade through accumulation
                 let mut sql_tx = pool.begin().await.unwrap();
-                accumulator::process_onchain_trade(&mut sql_tx, trade)
-                    .await
-                    .unwrap();
+                accumulator::process_onchain_trade(
+                    &mut sql_tx,
+                    trade,
+                    st0x_broker::SupportedBroker::Schwab,
+                )
+                .await
+                .unwrap();
                 sql_tx.commit().await.unwrap();
             } else {
                 // Event doesn't result in a trade or expected test environment error
@@ -1581,7 +1665,7 @@ mod tests {
     async fn test_execute_pending_schwab_execution_not_found() {
         let pool = setup_test_db().await;
         let env = create_test_env();
-        let broker = env.get_broker();
+        let broker = env.get_broker().await;
 
         // Try to execute non-existent execution
         let result = execute_pending_schwab_execution(&broker, &env, &pool, 99999).await;

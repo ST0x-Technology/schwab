@@ -406,6 +406,8 @@ Updated `src/conductor.rs` to:
 - [x] Remove Schwab-specific token refresh from conductor
 - [x] Apply consistent shutdown handling patterns
 - [x] Verify all background processes shutdown cleanly
+- [x] Fix compilation errors and make macro exports work
+- [x] Test successful compilation
 
 ### Benefits Achieved
 
