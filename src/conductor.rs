@@ -260,7 +260,7 @@ impl BackgroundTasks {
             }
         };
 
-        let (_, poller_result, receiver_result, position_result, queue_result) = tokio::join!(
+        let ((), poller_result, receiver_result, position_result, queue_result) = tokio::join!(
             maintenance_task,
             self.order_poller,
             self.event_receiver,
@@ -302,7 +302,7 @@ async fn periodic_accumulated_position_check<B: Broker + Clone + Send + 'static>
                 error!("Periodic accumulated position check failed: {e}");
             }
         }
-    })
+    });
 }
 
 async fn receive_blockchain_events<S1, S2>(
@@ -497,7 +497,7 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone, B: Broker + Clone>(
 
     loop {
         tokio::select! {
-            _ = async {
+            () = async {
                 match process_next_queued_event(env, pool, cache, &provider, &broker).await {
                     Ok(Some(execution)) => {
                         if let Some(exec_id) = execution.id {
@@ -821,7 +821,7 @@ async fn execute_pending_schwab_execution<B: Broker + Clone + Send + 'static>(
 
     // Execute via broker trait
     let placement = broker.place_market_order(market_order).await.map_err(|e| {
-        EventProcessingError::AccumulatorProcessing(format!("Order placement failed: {}", e))
+        EventProcessingError::AccumulatorProcessing(format!("Order placement failed: {e}"))
     })?;
 
     info!("Order placed with ID: {}", placement.order_id);
