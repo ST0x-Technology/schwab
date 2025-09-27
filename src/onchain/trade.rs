@@ -7,8 +7,6 @@ use serde::{Deserialize, Serialize};
 use std::num::ParseFloatError;
 
 use crate::bindings::IOrderBookV4::{ClearV2, OrderV3, TakeOrderV2};
-#[cfg(test)]
-use crate::error::PersistenceError;
 use crate::error::{OnChainError, TradeValidationError};
 use crate::onchain::EvmEnv;
 use crate::onchain::io::{TokenizedEquitySymbol, TradeDetails};
@@ -16,6 +14,8 @@ use crate::symbol::cache::SymbolCache;
 #[cfg(test)]
 use sqlx::SqlitePool;
 use st0x_broker::Direction;
+#[cfg(test)]
+use st0x_broker::PersistenceError;
 
 /// Union of all trade events
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -309,8 +309,11 @@ fn u256_to_f64(amount: U256, decimals: u8) -> Result<f64, ParseFloatError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::onchain::EvmEnv;
+    use crate::symbol::cache::SymbolCache;
     use crate::test_utils::setup_test_db;
     use alloy::primitives::fixed_bytes;
+    use alloy::providers::{ProviderBuilder, mock::Asserter};
 
     #[tokio::test]
     async fn test_onchain_trade_save_within_transaction_and_find() {
@@ -486,10 +489,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_try_from_tx_hash_transaction_not_found() {
-        use crate::onchain::EvmEnv;
-        use crate::symbol::cache::SymbolCache;
-        use alloy::providers::{ProviderBuilder, mock::Asserter};
-
         let asserter = Asserter::new();
         // Mock the eth_getTransactionReceipt call to return null (transaction not found)
         asserter.push_success(&serde_json::Value::Null);

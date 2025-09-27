@@ -119,7 +119,10 @@ impl<B: Broker> OrderStatusPoller<B> {
         Ok(())
     }
 
-    async fn poll_execution_status(&self, execution: &OffchainExecution) -> Result<(), OrderPollingError> {
+    async fn poll_execution_status(
+        &self,
+        execution: &OffchainExecution,
+    ) -> Result<(), OrderPollingError> {
         let Some(execution_id) = execution.id else {
             error!("Execution missing ID: {execution:?}");
             return Ok(());
@@ -139,9 +142,14 @@ impl<B: Broker> OrderStatusPoller<B> {
             }
         };
 
+        let parsed_order_id = self
+            .broker
+            .parse_order_id(&order_id)
+            .map_err(|e| OrderPollingError::Broker(Box::new(e)))?;
+
         let order_state = self
             .broker
-            .get_order_status(&order_id)
+            .get_order_status(&parsed_order_id)
             .await
             .map_err(|e| OrderPollingError::Broker(Box::new(e)))?;
 
