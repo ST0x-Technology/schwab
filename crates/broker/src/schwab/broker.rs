@@ -1,14 +1,12 @@
 use async_trait::async_trait;
 use sqlx::SqlitePool;
-use std::sync::Arc;
 use tracing::info;
 
 use crate::schwab::auth::SchwabAuthEnv;
 use crate::schwab::market_hours::{MarketStatus, fetch_market_hours};
 use crate::schwab::tokens::SchwabTokens;
 use crate::{
-    Broker, BrokerError, Direction, MarketOrder, OrderPlacement, OrderState, OrderUpdate, Shares,
-    Symbol,
+    Broker, BrokerError, MarketOrder, OrderPlacement, OrderState, OrderUpdate, Shares, Symbol,
 };
 
 /// Configuration for SchwabBroker containing auth environment and database pool
@@ -153,34 +151,22 @@ impl Broker for SchwabBroker {
     async fn poll_pending_orders(&self) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error> {
         info!("Polling pending orders");
 
-        // Find all submitted orders in the database
-        let submitted_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
-            &self.pool,
-            "", // Empty string means find all symbols
-            crate::schwab::execution::OrderStatus::Submitted,
+        // Query database directly for submitted orders
+        let rows = sqlx::query!(
+            "SELECT * FROM offchain_trades WHERE status = 'SUBMITTED' ORDER BY id ASC"
         )
-        .await
-        .map_err(|e| {
-            BrokerError::Database(
-                sqlx::Error::RowNotFound, // Convert OnChainError to BrokerError
-            )
-        })?;
+        .fetch_all(&self.pool)
+        .await?;
 
         let mut updates = Vec::new();
 
-        for execution in submitted_executions {
-            let Some(execution_id) = execution.id else {
-                continue;
-            };
-
-            // Extract order_id from the execution state
-            let order_id = match &execution.state {
-                crate::schwab::execution::OrderState::Submitted { order_id } => order_id.clone(),
-                _ => continue, // Skip if not submitted
+        for row in rows {
+            let Some(order_id_value) = row.order_id else {
+                continue; // Skip orders without order_id
             };
 
             // Get current status from Schwab API
-            match self.get_order_status(&order_id).await {
+            match self.get_order_status(&order_id_value).await {
                 Ok(current_state) => {
                     // Only include orders that have changed status
                     if !matches!(current_state, OrderState::Submitted { .. }) {
@@ -189,23 +175,31 @@ impl Broker for SchwabBroker {
                             _ => None,
                         };
 
-                        let symbol = crate::Symbol::new(execution.symbol).map_err(|e| {
-                            BrokerError::InvalidOrder {
+                        let symbol =
+                            Symbol::new(row.symbol).map_err(|e| BrokerError::InvalidOrder {
                                 reason: format!("Invalid symbol in database: {}", e),
-                            }
-                        })?;
+                            })?;
 
-                        let shares = crate::Shares::new(execution.shares).map_err(|e| {
+                        let shares = Shares::new(row.shares as u64).map_err(|e| {
                             BrokerError::InvalidOrder {
                                 reason: format!("Invalid shares in database: {}", e),
                             }
                         })?;
 
+                        let direction =
+                            row.direction
+                                .parse()
+                                .map_err(|e: crate::InvalidDirectionError| {
+                                    BrokerError::InvalidOrder {
+                                        reason: format!("Invalid direction in database: {}", e),
+                                    }
+                                })?;
+
                         updates.push(OrderUpdate {
-                            order_id: order_id.clone(),
+                            order_id: order_id_value.clone(),
                             symbol,
                             shares,
-                            direction: execution.direction,
+                            direction,
                             status: current_state.status(),
                             updated_at: chrono::Utc::now(),
                             price_cents,
@@ -214,7 +208,7 @@ impl Broker for SchwabBroker {
                 }
                 Err(e) => {
                     // Log error but continue with other orders
-                    info!("Failed to get status for order {}: {}", order_id, e);
+                    info!("Failed to get status for order {}: {}", order_id_value, e);
                     continue;
                 }
             }
