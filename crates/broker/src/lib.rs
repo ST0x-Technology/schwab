@@ -14,10 +14,18 @@ pub use order::{MarketOrder, OrderPlacement, OrderState, OrderStatus, OrderUpdat
 pub use schwab::broker::SchwabBroker;
 pub use test::TestBroker;
 
+/// Stock symbol newtype wrapper with validation
+///
+/// Ensures symbols are non-empty and provides type safety to prevent
+/// mixing symbols with other string types.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Symbol(String);
 
 impl Symbol {
+    /// Create a new symbol with validation
+    ///
+    /// # Errors
+    /// Returns `BrokerError::InvalidOrder` if symbol is empty
     pub fn new(symbol: String) -> Result<Self, BrokerError> {
         if symbol.is_empty() {
             return Err(BrokerError::InvalidOrder {
@@ -34,10 +42,18 @@ impl Display for Symbol {
     }
 }
 
+/// Share quantity newtype wrapper with validation
+///
+/// Represents whole share quantities with bounds checking.
+/// Values are constrained to 1..=u32::MAX for practical trading limits.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Shares(u32);
 
 impl Shares {
+    /// Create a new share quantity with validation
+    ///
+    /// # Errors
+    /// Returns `BrokerError::InvalidOrder` if shares is 0 or exceeds u32::MAX
     pub fn new(shares: u64) -> Result<Self, BrokerError> {
         if shares == 0 {
             return Err(BrokerError::InvalidOrder {
@@ -169,15 +185,23 @@ pub trait Broker: Send + Sync + 'static {
     /// Returns Some(duration) if need to wait for market to open
     async fn wait_until_market_open(&self) -> Result<Option<std::time::Duration>, Self::Error>;
 
+    /// Place a market order for the specified symbol and quantity
+    /// Returns order placement details including broker-assigned order ID
     async fn place_market_order(
         &self,
         order: MarketOrder,
     ) -> Result<OrderPlacement<Self::OrderId>, Self::Error>;
 
+    /// Get the current status of a specific order
+    /// Used to check if pending orders have been filled or failed
     async fn get_order_status(&self, order_id: &Self::OrderId) -> Result<OrderState, Self::Error>;
 
+    /// Poll all pending orders for status updates
+    /// More efficient than individual get_order_status calls for multiple orders
     async fn poll_pending_orders(&self) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error>;
 
+    /// Return the enum variant representing this broker type
+    /// Used for database storage and conditional logic
     fn to_supported_broker(&self) -> SupportedBroker;
 
     /// Convert a string representation to the broker's OrderId type

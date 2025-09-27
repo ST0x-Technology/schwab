@@ -407,6 +407,8 @@ mod tests {
         valid_tokens.store(&pool).await.unwrap();
 
         // Mock market hours API to return open market
+        // Use today's date with market hours that encompass current time
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         let market_hours_mock = server.mock(|when, then| {
             when.method(GET)
                 .path("/marketdata/v1/markets/equity")
@@ -416,7 +418,7 @@ mod tests {
                 .json_body(json!({
                     "equity": {
                         "EQ": {
-                            "date": "2025-01-15",
+                            "date": today,
                             "marketType": "EQUITY",
                             "exchange": "null",
                             "category": "null",
@@ -426,14 +428,14 @@ mod tests {
                             "sessionHours": {
                                 "preMarket": [
                                     {
-                                        "start": "2025-01-15T04:00:00-05:00",
-                                        "end": "2025-01-15T09:30:00-05:00"
+                                        "start": format!("{}T04:00:00-05:00", today),
+                                        "end": format!("{}T09:30:00-05:00", today)
                                     }
                                 ],
                                 "regularMarket": [
                                     {
-                                        "start": "2025-01-15T09:30:00-05:00",
-                                        "end": "2025-01-15T16:00:00-05:00"
+                                        "start": format!("{}T00:00:00-05:00", today),
+                                        "end": format!("{}T23:59:59-05:00", today)
                                     }
                                 ]
                             }

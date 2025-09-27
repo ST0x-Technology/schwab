@@ -312,7 +312,6 @@ pub(crate) struct Instrument {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Direction;
     use crate::test_utils::setup_test_db;
     use chrono::Utc;
     use serde_json::json;
