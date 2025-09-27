@@ -87,8 +87,8 @@ mod tests {
     use super::*;
     use crate::env::Env;
     use crate::onchain::EvmEnv;
-    use crate::schwab::SchwabAuthEnv;
     use crate::test_utils::setup_test_db;
+    use st0x_broker::schwab::auth::SchwabAuthEnv;
 
     fn create_test_env_with_mock_server(mock_server: &MockServer) -> Env {
         Env {

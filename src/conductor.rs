@@ -9,17 +9,18 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tracing::{debug, error, info, trace};
 
+use st0x_broker::schwab::tokens;
 use st0x_broker::{Broker, Direction, MarketOrder, OrderState, OrderStatus, Shares, Symbol};
 
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
 use crate::env::Env;
 use crate::error::EventProcessingError;
+use crate::offchain::execution::{OffchainExecution, find_execution_by_id};
+use crate::offchain::order_poller::OrderStatusPoller;
 use crate::onchain::accumulator::check_all_accumulated_positions;
 use crate::onchain::trade::TradeEvent;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
 use crate::queue::{QueuedEvent, enqueue, get_next_unprocessed_event, mark_event_processed};
-use crate::schwab::OrderStatusPoller;
-use crate::schwab::execution::{OffchainExecution, find_execution_by_id};
 use crate::symbol::cache::SymbolCache;
 use crate::symbol::lock::get_symbol_lock;
 
@@ -65,13 +66,19 @@ impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
         + Send
         + 'static,
     ) -> BackgroundTasks {
-        let token_refresher = {
-            info!("Starting token refresh service");
-            crate::schwab::tokens::spawn_automatic_token_refresh(
+        let token_refresher = if matches!(
+            self.broker.to_supported_broker(),
+            st0x_broker::SupportedBroker::Schwab
+        ) {
+            info!("Starting token refresh service for Schwab broker");
+            Some(tokens::spawn_automatic_token_refresh(
                 self.pool.clone(),
                 self.env.schwab_auth.clone(),
                 self.shutdown_rx.clone(),
-            )
+            ))
+        } else {
+            info!("Skipping token refresh for non-Schwab broker");
+            None
         };
         let broker = self.broker.clone();
         let order_poller =
@@ -99,7 +106,7 @@ impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
 }
 
 pub(crate) struct BackgroundTasks {
-    pub(crate) token_refresher: JoinHandle<()>,
+    pub(crate) token_refresher: Option<JoinHandle<()>>,
     pub(crate) order_poller: JoinHandle<()>,
     pub(crate) event_receiver: JoinHandle<()>,
     pub(crate) position_checker: JoinHandle<()>,
@@ -120,13 +127,7 @@ where
         "Starting order status poller with interval: {:?}, max jitter: {:?}",
         config.polling_interval, config.max_jitter
     );
-    let poller = OrderStatusPoller::new(
-        config,
-        env.schwab_auth.clone(),
-        pool.clone(),
-        shutdown_rx.clone(),
-        broker,
-    );
+    let poller = OrderStatusPoller::new(config, pool.clone(), shutdown_rx.clone(), broker);
     tokio::spawn(async move {
         if let Err(e) = poller.run().await {
             error!("Order poller failed: {e}");
@@ -188,15 +189,8 @@ where
     let shutdown_rx_clone = shutdown_rx.clone();
 
     tokio::spawn(async move {
-        if let Err(e) = run_queue_processor(
-            &broker,
-            &env_clone,
-            &pool_clone,
-            &cache_clone,
-            provider,
-            shutdown_rx_clone,
-        )
-        .await
+        if let Err(e) =
+            run_queue_processor(&env_clone, &pool_clone, &cache_clone, provider, broker).await
         {
             error!("Queue processor service failed: {e}");
         }
@@ -205,17 +199,23 @@ where
 
 impl BackgroundTasks {
     pub(crate) async fn wait_for_completion(self) -> Result<(), anyhow::Error> {
-        let (token_result, poller_result, receiver_result, position_result, queue_result) = tokio::join!(
-            self.token_refresher,
+        // Handle optional token refresher separately
+        let token_task = async {
+            if let Some(handle) = self.token_refresher {
+                if let Err(e) = handle.await {
+                    error!("Token refresher task panicked: {e}");
+                }
+            }
+        };
+
+        let (_, poller_result, receiver_result, position_result, queue_result) = tokio::join!(
+            token_task,
             self.order_poller,
             self.event_receiver,
             self.position_checker,
             self.queue_processor
         );
 
-        if let Err(e) = token_result {
-            error!("Token refresher task panicked: {e}");
-        }
         if let Err(e) = poller_result {
             error!("Order poller task panicked: {e}");
         }

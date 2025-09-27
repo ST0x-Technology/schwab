@@ -7,16 +7,16 @@ use tracing::{error, info};
 use crate::env::{Env, LogLevel};
 use crate::error::OnChainError;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
-use crate::schwab::market_hours::{MarketStatus as MarketStatusEnum, fetch_market_hours};
-use crate::schwab::order::{Instruction, Order};
-use crate::schwab::run_oauth_flow;
 use crate::symbol::cache::SymbolCache;
 use alloy::primitives::B256;
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use chrono::Utc;
 use chrono_tz::US::Eastern;
 use st0x_broker::schwab::auth::SchwabAuthEnv;
+use st0x_broker::schwab::market_hours::{MarketStatus as MarketStatusEnum, fetch_market_hours};
+use st0x_broker::schwab::order::{Instruction, Order};
 use st0x_broker::schwab::tokens::SchwabTokens;
+use st0x_broker::schwab::{SchwabError, extract_code_from_url};
 use st0x_broker::{Broker, Direction, MarketOrder, Shares, Symbol};
 
 #[derive(Debug, Error)]
@@ -302,7 +302,7 @@ async fn display_market_status<W: Write>(
 
 async fn ensure_authentication<W: Write>(
     pool: &SqlitePool,
-    schwab_auth: &crate::schwab::SchwabAuthEnv,
+    schwab_auth: &st0x_broker::schwab::auth::SchwabAuthEnv,
     stdout: &mut W,
 ) -> anyhow::Result<()> {
     info!("Refreshing authentication tokens if needed");
@@ -312,7 +312,7 @@ async fn ensure_authentication<W: Write>(
             info!("Authentication tokens are valid, access token obtained");
             return Ok(());
         }
-        Err(crate::schwab::SchwabError::RefreshTokenExpired) => {
+        Err(st0x_broker::schwab::SchwabError::RefreshTokenExpired) => {
             info!("Refresh token has expired, launching interactive OAuth flow");
             writeln!(
                 stdout,
@@ -349,6 +349,27 @@ async fn ensure_authentication<W: Write>(
             Err(oauth_error.into())
         }
     }
+}
+
+async fn run_oauth_flow(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<(), SchwabError> {
+    println!(
+        "Authenticate portfolio brokerage account (not dev account) and paste URL: {}",
+        env.get_auth_url()
+    );
+    print!("Paste the full redirect URL you were sent to: ");
+    std::io::stdout().flush()?;
+
+    let mut redirect_url = String::new();
+    std::io::stdin().read_line(&mut redirect_url)?;
+    let redirect_url = redirect_url.trim();
+
+    let code = extract_code_from_url(redirect_url)?;
+    println!("Extracted code: {code}");
+
+    let tokens = env.get_tokens_from_code(&code).await?;
+    tokens.store(pool).await?;
+
+    Ok(())
 }
 
 async fn execute_order_with_writers<W: Write>(
@@ -530,13 +551,12 @@ mod tests {
     use crate::bindings::IERC20::symbolCall;
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
     use crate::env::LogLevel;
+    use crate::offchain::execution::find_executions_by_symbol_and_status;
     use crate::onchain::trade::OnchainTrade;
-    use crate::schwab::TradeStatus;
-    use crate::schwab::execution::find_executions_by_symbol_and_status;
     use crate::test_utils::get_test_order;
     use crate::test_utils::setup_test_db;
     use crate::tokenized_symbol;
-    use crate::{onchain::EvmEnv, schwab::SchwabAuthEnv};
+    use crate::onchain::EvmEnv;\n    use st0x_broker::schwab::auth::SchwabAuthEnv;
     use alloy::hex;
     use alloy::primitives::{IntoLogData, U256, address, fixed_bytes};
     use alloy::providers::mock::Asserter;
@@ -546,6 +566,7 @@ mod tests {
     use httpmock::MockServer;
     use serde_json::json;
     use st0x_broker::Direction;
+    use st0x_broker::OrderStatus;
     use std::str::FromStr;
 
     #[tokio::test]
@@ -680,7 +701,7 @@ mod tests {
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
 
-        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+        let expired_tokens = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: Utc::now() - Duration::minutes(35),
             refresh_token: "expired_refresh_token".to_string(),
@@ -688,13 +709,11 @@ mod tests {
         };
         expired_tokens.store(&pool).await.unwrap();
 
-        let result =
-            crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
-                .await;
+        let result = SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth).await;
 
         assert!(matches!(
             result.unwrap_err(),
-            crate::schwab::SchwabError::RefreshTokenExpired
+            st0x_broker::schwab::SchwabError::RefreshTokenExpired
         ));
     }
 
@@ -704,7 +723,7 @@ mod tests {
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
 
-        let tokens_needing_refresh = crate::schwab::tokens::SchwabTokens {
+        let tokens_needing_refresh = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: Utc::now() - Duration::minutes(35),
             refresh_token: "valid_refresh_token".to_string(),
@@ -744,10 +763,9 @@ mod tests {
                 .header("location", "/trader/v1/accounts/ABC123DEF456/orders/12345");
         });
 
-        let access_token =
-            crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
-                .await
-                .unwrap();
+        let access_token = SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
+            .await
+            .unwrap();
         assert_eq!(access_token, "refreshed_access_token");
 
         execute_order_with_writers(
@@ -765,9 +783,7 @@ mod tests {
         account_mock.assert();
         order_mock.assert();
 
-        let stored_tokens = crate::schwab::tokens::SchwabTokens::load(&pool)
-            .await
-            .unwrap();
+        let stored_tokens = SchwabTokens::load(&pool).await.unwrap();
         assert_eq!(stored_tokens.access_token, "refreshed_access_token");
         assert_eq!(stored_tokens.refresh_token, "new_refresh_token");
     }
@@ -812,9 +828,7 @@ mod tests {
         account_mock.assert();
         order_mock.assert();
 
-        let stored_tokens = crate::schwab::tokens::SchwabTokens::load(&pool)
-            .await
-            .unwrap();
+        let stored_tokens = SchwabTokens::load(&pool).await.unwrap();
         assert_eq!(stored_tokens.access_token, "test_access_token");
     }
 
@@ -919,7 +933,7 @@ mod tests {
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
 
-        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+        let expired_tokens = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: Utc::now() - Duration::minutes(35),
             refresh_token: "expired_refresh_token".to_string(),
@@ -927,13 +941,11 @@ mod tests {
         };
         expired_tokens.store(&pool).await.unwrap();
 
-        let result =
-            crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
-                .await;
+        let result = SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth).await;
 
         assert!(matches!(
             result.unwrap_err(),
-            crate::schwab::SchwabError::RefreshTokenExpired
+            st0x_broker::schwab::SchwabError::RefreshTokenExpired
         ));
 
         let mut stdout_buffer = Vec::new();
@@ -999,7 +1011,7 @@ mod tests {
     }
 
     async fn setup_test_tokens(pool: &SqlitePool) {
-        let tokens = crate::schwab::tokens::SchwabTokens {
+        let tokens = SchwabTokens {
             access_token: "test_access_token".to_string(),
             access_token_fetched_at: chrono::Utc::now(),
             refresh_token: "test_refresh_token".to_string(),
@@ -1333,7 +1345,7 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Set up expired access token but valid refresh token that will trigger a refresh attempt
-        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+        let expired_tokens = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: chrono::Utc::now() - chrono::Duration::minutes(35),
             refresh_token: "valid_but_rejected_refresh_token".to_string(),
@@ -1387,7 +1399,7 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Set up expired tokens
-        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+        let expired_tokens = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: chrono::Utc::now() - chrono::Duration::minutes(35),
             refresh_token: "valid_refresh_token".to_string(),
@@ -1452,9 +1464,7 @@ mod tests {
         order_mock.assert();
 
         // Verify that new tokens were stored in database
-        let stored_tokens = crate::schwab::tokens::SchwabTokens::load(&pool)
-            .await
-            .unwrap();
+        let stored_tokens = SchwabTokens::load(&pool).await.unwrap();
         assert_eq!(stored_tokens.access_token, "new_access_token");
         assert_eq!(stored_tokens.refresh_token, "new_refresh_token");
     }

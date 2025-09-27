@@ -1,35 +1,35 @@
 use alloy::providers::{ProviderBuilder, WsConnect};
 use rocket::Config;
 use sqlx::SqlitePool;
+use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 pub mod api;
 mod bindings;
 pub mod cli;
 mod conductor;
+mod db_utils;
 pub mod env;
 mod error;
 mod lock;
+mod offchain;
 mod onchain;
 mod queue;
-pub mod schwab;
 mod symbol;
 mod trade_execution_link;
-mod trade_state;
 mod trading_hours_controller;
 
 #[cfg(test)]
 pub mod test_utils;
 
-use st0x_broker::SchwabBroker;
-
 use crate::conductor::get_cutoff_block;
 use crate::env::Env;
-use crate::schwab::SchwabError;
-use crate::schwab::market_hours_cache::MarketHoursCache;
 use crate::symbol::cache::SymbolCache;
 use crate::trading_hours_controller::TradingHoursController;
 use bindings::IOrderBookV4::IOrderBookV4Instance;
+use st0x_broker::Broker;
+use st0x_broker::schwab::tokens::SchwabTokens;
+use st0x_broker::schwab::{SchwabError, market_hours_cache::MarketHoursCache};
 
 pub async fn launch(env: Env) -> anyhow::Result<()> {
     let pool = env.get_sqlite_pool().await?;
@@ -88,31 +88,10 @@ async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
             let env = env.clone();
             let pool = pool.clone();
             async move {
-                debug!("Validating Schwab tokens...");
-                match schwab::tokens::SchwabTokens::refresh_if_needed(&pool, &env.schwab_auth).await
-                {
-                    Err(SchwabError::RefreshTokenExpired) => {
-                        warn!("Refresh token expired, waiting for manual authentication via API");
-                        return Err(anyhow::anyhow!("RefreshTokenExpired"));
-                    }
-                    Err(e) => return Err(anyhow::anyhow!("Token validation failed: {}", e)),
-                    Ok(_) => {
-                        info!("Token validation successful");
-                    }
-                }
-
                 let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
                 let provider = ProviderBuilder::new().connect_ws(ws).await?;
                 let cache = SymbolCache::default();
                 let orderbook = IOrderBookV4Instance::new(env.evm_env.orderbook, &provider);
-
-                // Create a dummy shutdown receiver that never signals shutdown for standalone token refresh
-                let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-                schwab::tokens::spawn_automatic_token_refresh(
-                    pool.clone(),
-                    env.schwab_auth.clone(),
-                    shutdown_rx,
-                );
 
                 let mut clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
                 let mut take_stream = orderbook.TakeOrderV2_filter().watch().await?.into_stream();
@@ -129,83 +108,110 @@ async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
                 .await?;
 
                 // Start all services through unified background tasks management
-                let broker_auth = st0x_broker::SchwabAuthEnv {
-                    app_key: env.schwab_auth.app_key.clone(),
-                    app_secret: env.schwab_auth.app_secret.clone(),
-                    redirect_uri: env.schwab_auth.redirect_uri.clone(),
-                    base_url: env.schwab_auth.base_url.clone(),
-                    account_index: env.schwab_auth.account_index,
-                };
-                let broker = SchwabBroker::new(broker_auth);
-                conductor::run_live(
-                    env,
-                    pool,
-                    cache,
-                    provider,
-                    broker,
-                    clear_stream,
-                    take_stream,
-                )
-                .await
+                if env.dry_run {
+                    let broker = env.get_test_broker();
+                    conductor::run_live(
+                        env,
+                        pool,
+                        cache,
+                        provider,
+                        broker,
+                        clear_stream,
+                        take_stream,
+                    )
+                    .await
+                } else {
+                    debug!("Validating Schwab tokens...");
+                    match SchwabTokens::refresh_if_needed(&pool, &env.schwab_auth).await {
+                        Err(SchwabError::RefreshTokenExpired) => {
+                            warn!(
+                                "Refresh token expired, waiting for manual authentication via API"
+                            );
+                            return Err(anyhow::anyhow!("RefreshTokenExpired"));
+                        }
+                        Err(e) => return Err(anyhow::anyhow!("Token validation failed: {}", e)),
+                        Ok(_) => {
+                            info!("Token validation successful");
+                        }
+                    }
+
+                    let broker = env.get_schwab_broker(pool.clone());
+                    conductor::run_live(
+                        env,
+                        pool,
+                        cache,
+                        provider,
+                        broker,
+                        clear_stream,
+                        take_stream,
+                    )
+                    .await
+                }
             }
         }
     };
 
     const RERUN_DELAY_SECS: u64 = 10;
 
-    // Initialize market hours controller
-    let market_hours_cache = std::sync::Arc::new(MarketHoursCache::new());
-    let controller = TradingHoursController::new(
-        market_hours_cache,
-        env.schwab_auth.clone(),
-        std::sync::Arc::new(pool.clone()),
-    );
+    if env.dry_run {
+        // For dry-run mode, run bot immediately without market hours control
+        info!("Running in dry-run mode, bypassing market hours control");
+        run_bot().await
+    } else {
+        // Initialize market hours controller for Schwab mode only
+        let market_hours_cache = Arc::new(MarketHoursCache::new());
+        let controller = TradingHoursController::new(
+            market_hours_cache,
+            env.schwab_auth.clone(),
+            Arc::new(pool.clone()),
+        );
 
-    // Main market hours control loop
-    loop {
-        // Wait until market opens
-        controller.wait_until_market_open().await?;
+        // Main market hours control loop
+        loop {
+            // Wait until market opens
+            controller.wait_until_market_open().await?;
 
-        // Run bot until market closes or completes
-        let run_result =
-            if let Some(time_until_close) = controller.time_until_market_close().await? {
-                let timeout_duration = time_until_close
-                    .to_std()
-                    .unwrap_or(std::time::Duration::from_secs(60 * 60)); // 1 hour fallback
+            // Run bot until market closes or completes
+            let run_result =
+                if let Some(time_until_close) = controller.time_until_market_close().await? {
+                    let timeout_duration = time_until_close
+                        .to_std()
+                        .unwrap_or(std::time::Duration::from_secs(60 * 60)); // 1 hour fallback
 
-                info!(
-                    "Market is open, starting bot (will timeout in {} minutes)",
-                    timeout_duration.as_secs() / 60
-                );
+                    info!(
+                        "Market is open, starting bot (will timeout in {} minutes)",
+                        timeout_duration.as_secs() / 60
+                    );
 
-                tokio::select! {
-                    result = run_bot() => result,
-                    () = tokio::time::sleep(timeout_duration) => {
-                        info!("Market closing, shutting down bot gracefully");
-                        continue; // Go back to wait for next market open
+                    tokio::select! {
+                        result = run_bot() => result,
+                        () = tokio::time::sleep(timeout_duration) => {
+                            info!("Market closing, shutting down bot gracefully");
+                            continue; // Go back to wait for next market open
+                        }
                     }
-                }
-            } else {
-                // Market already closed, continue to wait
-                warn!("Market already closed, waiting for next open");
-                continue;
-            };
+                } else {
+                    // Market already closed, continue to wait
+                    warn!("Market already closed, waiting for next open");
+                    continue;
+                };
 
-        // Handle bot result - simple retry for token expired, otherwise fail
-        match run_result {
-            Ok(()) => {
-                info!("Bot completed successfully, continuing to next market session");
-            }
-            Err(e) if e.to_string().contains("RefreshTokenExpired") => {
-                warn!(
-                    "Refresh token expired, retrying in {} seconds",
-                    RERUN_DELAY_SECS
-                );
-                tokio::time::sleep(std::time::Duration::from_secs(RERUN_DELAY_SECS)).await;
-            }
-            Err(e) => {
-                error!("Bot failed: {e}");
-                return Err(e);
+            // Handle bot result - simple retry for token expired, otherwise fail
+            match run_result {
+                Ok(()) => {
+                    info!("Bot completed successfully, continuing to next market session");
+                }
+                Err(e) if e.to_string().contains("RefreshTokenExpired") => {
+                    warn!(
+                        "Refresh token expired, retrying in {} seconds",
+                        RERUN_DELAY_SECS
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(RERUN_DELAY_SECS)).await;
+                }
+                Err(e) => {
+                    error!("Bot failed: {e}");
+                    return Err(e);
+                }
             }
         }
     }

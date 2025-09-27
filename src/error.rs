@@ -133,7 +133,7 @@ impl From<ParseFloatError> for OnChainError {
 
 impl From<st0x_broker::InvalidDirectionError> for OnChainError {
     fn from(err: st0x_broker::InvalidDirectionError) -> Self {
-        Self::Persistence(PersistenceError::InvalidDirection(err.to_string()))
+        Self::Persistence(PersistenceError::InvalidDirection(err))
     }
 }
 

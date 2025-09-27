@@ -25,6 +25,7 @@ tracing = "0.1.41"
 url = { version = "2.5.4", features = ["serde"] }
 urlencoding = "2.1"
 rand = "0.8"
+chrono-tz = "0.10.4"
 
 [package]
 name = "st0x-arbot"
@@ -57,7 +58,7 @@ flate2.workspace = true
 itertools = "0.14.0"
 rand = "0.8"
 rocket = { version = "0.5.1", features = ["json"] }
-chrono-tz = "0.10.4"
+chrono-tz.workspace = true
 
 [dev-dependencies]
 httpmock.workspace = true

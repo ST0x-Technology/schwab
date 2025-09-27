@@ -48,7 +48,7 @@ impl OrderState {
 
     /// Converts database row data to an OrderState instance with proper validation.
     /// This centralizes the conversion logic and ensures database consistency.
-    pub(crate) fn from_db_row(
+    pub fn from_db_row(
         status: OrderStatus,
         order_id: Option<String>,
         price_cents: Option<i64>,
@@ -92,7 +92,7 @@ impl OrderState {
 
     /// Extracts database-compatible values from OrderState for storage.
     /// Returns (order_id, price_cents_i64, executed_at) tuple.
-    pub(crate) fn to_db_fields(&self) -> Result<OrderStateDbFields, BrokerError> {
+    pub fn to_db_fields(&self) -> Result<OrderStateDbFields, BrokerError> {
         match self {
             Self::Pending => Ok(OrderStateDbFields {
                 order_id: None,

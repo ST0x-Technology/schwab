@@ -20,7 +20,7 @@ pub struct SchwabTokens {
 }
 
 impl SchwabTokens {
-    pub(crate) async fn store(&self, pool: &SqlitePool) -> Result<(), SchwabError> {
+    pub async fn store(&self, pool: &SqlitePool) -> Result<(), SchwabError> {
         sqlx::query!(
             r#"
             INSERT INTO schwab_auth (
@@ -48,7 +48,7 @@ impl SchwabTokens {
         Ok(())
     }
 
-    pub(crate) async fn load(pool: &SqlitePool) -> Result<Self, SchwabError> {
+    pub async fn load(pool: &SqlitePool) -> Result<Self, SchwabError> {
         let row = sqlx::query!(
             r#"
             SELECT
@@ -98,7 +98,7 @@ impl SchwabTokens {
         expires_at - now
     }
 
-    pub(crate) async fn get_valid_access_token(
+    pub async fn get_valid_access_token(
         pool: &SqlitePool,
         env: &SchwabAuthEnv,
     ) -> Result<String, SchwabError> {
@@ -125,7 +125,7 @@ impl SchwabTokens {
         Ok(count)
     }
 
-    pub(crate) fn spawn_automatic_token_refresh(
+    pub fn spawn_automatic_token_refresh(
         pool: SqlitePool,
         env: SchwabAuthEnv,
     ) -> tokio::task::JoinHandle<()> {
@@ -174,7 +174,7 @@ impl SchwabTokens {
         }
     }
 
-    pub(crate) async fn refresh_if_needed(
+    pub async fn refresh_if_needed(
         pool: &SqlitePool,
         env: &SchwabAuthEnv,
     ) -> Result<bool, SchwabError> {
