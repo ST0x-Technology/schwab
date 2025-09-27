@@ -15,7 +15,31 @@ pub use schwab::broker::SchwabBroker;
 pub use test::TestBroker;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Symbol(pub String);
+pub struct Symbol(String);
+
+impl Symbol {
+    pub fn new(symbol: String) -> Result<Self, BrokerError> {
+        if symbol.is_empty() {
+            return Err(BrokerError::InvalidOrder {
+                reason: "Symbol cannot be empty".to_string(),
+            });
+        }
+        if symbol.len() > 10 {
+            return Err(BrokerError::InvalidOrder {
+                reason: "Symbol cannot be longer than 10 characters".to_string(),
+            });
+        }
+        Ok(Self(symbol))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
 
 impl Display for Symbol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -24,7 +48,31 @@ impl Display for Symbol {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Shares(pub u32);
+pub struct Shares(u32);
+
+impl Shares {
+    pub fn new(shares: u64) -> Result<Self, BrokerError> {
+        if shares == 0 {
+            return Err(BrokerError::InvalidOrder {
+                reason: "Shares must be greater than 0".to_string(),
+            });
+        }
+        if shares > u32::MAX as u64 {
+            return Err(BrokerError::InvalidOrder {
+                reason: "Shares exceeds maximum allowed value".to_string(),
+            });
+        }
+        Ok(Self(shares as u32))
+    }
+
+    pub fn get(&self) -> u32 {
+        self.0
+    }
+
+    pub fn as_u64(&self) -> u64 {
+        self.0 as u64
+    }
+}
 
 impl Display for Shares {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

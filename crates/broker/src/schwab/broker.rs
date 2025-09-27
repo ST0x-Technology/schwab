@@ -4,8 +4,7 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::schwab::auth::SchwabAuthEnv;
-use crate::schwab::market_hours::MarketStatus;
-use crate::schwab::market_hours_cache::MarketHoursCache;
+use crate::schwab::market_hours::{MarketStatus, fetch_market_hours};
 use crate::schwab::tokens::SchwabTokens;
 use crate::{Broker, BrokerError, MarketOrder, OrderPlacement, OrderState, OrderUpdate};
 
@@ -40,9 +39,7 @@ impl Broker for SchwabBroker {
         let (auth, pool) = config;
 
         // Validate and refresh tokens during initialization
-        SchwabTokens::refresh_if_needed(&pool, &auth)
-            .await
-            .map_err(|e| BrokerError::Authentication(format!("Token validation failed: {}", e)))?;
+        SchwabTokens::refresh_if_needed(&pool, &auth).await?;
 
         info!("Schwab broker initialized with valid tokens");
 
@@ -50,35 +47,27 @@ impl Broker for SchwabBroker {
     }
 
     async fn wait_until_market_open(&self) -> Result<Option<std::time::Duration>, Self::Error> {
-        // Create market hours cache
-        let market_hours_cache = Arc::new(MarketHoursCache::new());
+        // Fetch current market hours directly
+        let market_hours = fetch_market_hours(&self.auth, &self.pool, None).await?;
 
-        // Check current market status using cache
-        let status = market_hours_cache
-            .get_current_status("equity", &self.auth, &self.pool)
-            .await?;
-
-        match status {
+        // Check if market is currently open
+        match market_hours.current_status() {
             MarketStatus::Open => Ok(None), // Market is open, no need to wait
             MarketStatus::Closed => {
-                // Market is closed, get next transition time
-                if let Some(next_transition) = market_hours_cache
-                    .get_next_transition("equity", &self.auth, &self.pool)
-                    .await?
-                {
+                // Market is closed, calculate wait time until next open
+                if let Some(next_open) = market_hours.start_in_local() {
                     let now = chrono::Utc::now();
-
-                    if next_transition > now {
-                        let duration = (next_transition - now)
+                    if next_open > now {
+                        let duration = (next_open - now)
                             .to_std()
-                            .unwrap_or(std::time::Duration::from_secs(3600)); // 1 hour fallback
+                            .unwrap_or(std::time::Duration::from_secs(3600));
                         Ok(Some(duration))
                     } else {
-                        // If next transition is in the past, return small wait time to retry
+                        // If next open is in past, return small wait time to retry
                         Ok(Some(std::time::Duration::from_secs(60)))
                     }
                 } else {
-                    // No next transition found, return default wait time
+                    // No next open time found, return default wait time
                     Ok(Some(std::time::Duration::from_secs(3600)))
                 }
             }
@@ -207,7 +196,9 @@ mod tests {
     }
 
     async fn setup_test_db() -> SqlitePool {
-        SqlitePool::connect(":memory:").await.unwrap()
+        let pool = SqlitePool::connect(":memory:").await.unwrap();
+        sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+        pool
     }
 
     #[tokio::test]

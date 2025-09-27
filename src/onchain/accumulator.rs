@@ -358,13 +358,15 @@ async fn create_execution_within_transaction(
     symbol: &EquitySymbol,
     shares: u64,
     direction: Direction,
+    broker: SupportedBroker,
 ) -> Result<OffchainExecution, OnChainError> {
     let execution = OffchainExecution {
         id: None,
         symbol: symbol.to_string(),
         shares,
         direction,
-        state: TradeState::Pending,
+        broker,
+        state: OrderState::Pending,
     };
 
     let execution_id = execution.save_within_transaction(sql_tx).await?;
@@ -400,7 +402,10 @@ async fn clean_up_stale_executions(
     .await?;
 
     for stale_execution in stale_executions {
-        let execution_id = stale_execution.id;
+        let Some(execution_id) = stale_execution.id else {
+            tracing::warn!("Stale execution has null ID, skipping cleanup");
+            continue;
+        };
 
         info!(
             symbol = %base_symbol,
@@ -410,14 +415,14 @@ async fn clean_up_stale_executions(
         );
 
         // Mark execution as failed due to timeout
-        let failed_state = TradeState::Failed {
+        let failed_state = OrderState::Failed {
             failed_at: chrono::Utc::now(),
             error_reason: Some(format!(
                 "Execution timed out after {STALE_EXECUTION_MINUTES} minutes without status update"
             )),
         };
 
-        update_execution_status_within_transaction(sql_tx, execution_id, failed_state).await?;
+        update_execution_status_within_transaction(sql_tx, execution_id, &failed_state).await?;
 
         // Clear the pending execution ID from accumulator
         let base_symbol_str = base_symbol.to_string();
@@ -449,6 +454,7 @@ async fn clean_up_stale_executions(
 /// enough shares to execute but the triggering trade didn't push them over the threshold.
 pub async fn check_all_accumulated_positions(
     pool: &SqlitePool,
+    broker_type: st0x_broker::SupportedBroker,
 ) -> Result<Vec<OffchainExecution>, OnChainError> {
     info!("Checking all accumulated positions for ready executions");
 
@@ -507,13 +513,19 @@ pub async fn check_all_accumulated_positions(
             // Check if still ready after potentially concurrent processing
             if let Some(execution_type) = calculator.determine_execution_type() {
                 // The linkage system will handle allocating the oldest available trades
-                let result =
-                    execute_position(&mut sql_tx, &symbol, &mut calculator, execution_type).await?;
+                let result = execute_position(
+                    &mut sql_tx,
+                    &symbol,
+                    &mut calculator,
+                    execution_type,
+                    broker_type,
+                )
+                .await?;
 
                 if let Some(execution) = &result {
                     let execution_id = execution
                         .id
-                        .ok_or(crate::error::PersistenceError::MissingExecutionId)?;
+                        .ok_or(st0x_broker::PersistenceError::MissingExecutionId)?;
                     set_pending_execution_id(&mut sql_tx, &symbol, execution_id).await?;
 
                     info!(
@@ -573,8 +585,8 @@ mod tests {
     use crate::test_utils::setup_test_db;
     use crate::tokenized_symbol;
     use crate::trade_execution_link::TradeExecutionLink;
-    use crate::trade_state::TradeStatus;
     use alloy::primitives::fixed_bytes;
+    use st0x_broker::OrderStatus;
 
     // Helper function for tests to handle transaction management
     async fn process_trade_with_tx(
@@ -791,7 +803,8 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 50,
             direction: Direction::Buy,
-            state: TradeState::Pending,
+            broker: SupportedBroker::Schwab,
+            state: OrderState::Pending,
         };
         let mut sql_tx = pool.begin().await.unwrap();
         blocking_execution
@@ -836,7 +849,7 @@ mod tests {
         let executions = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
             "AAPL",
-            TradeStatus::Pending,
+            OrderStatus::Pending,
         )
         .await
         .unwrap();
@@ -948,7 +961,7 @@ mod tests {
             for attempt in 0..3 {
                 match process_trade_with_tx(pool, trade.clone()).await {
                     Ok(result) => return Ok(result),
-                    Err(OnChainError::Persistence(crate::error::PersistenceError::Database(
+                    Err(OnChainError::Persistence(st0x_broker::PersistenceError::Database(
                         sqlx::Error::Database(db_err),
                     ))) if db_err.message().contains("database is deadlocked") => {
                         if attempt < 2 {
@@ -960,7 +973,7 @@ mod tests {
                             continue;
                         }
                         return Err(OnChainError::Persistence(
-                            crate::error::PersistenceError::Database(sqlx::Error::Database(db_err)),
+                            st0x_broker::PersistenceError::Database(sqlx::Error::Database(db_err)),
                         ));
                     }
                     Err(e) => return Err(e),
@@ -1333,7 +1346,8 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 1,
             direction: Direction::Buy,
-            state: TradeState::Submitted {
+            broker: SupportedBroker::Schwab,
+            state: OrderState::Submitted {
                 order_id: "123456".to_string(),
             },
         };
@@ -1392,7 +1406,7 @@ mod tests {
         let stale_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
             "AAPL",
-            crate::schwab::TradeStatus::Failed,
+            OrderStatus::Failed,
         )
         .await
         .unwrap();
@@ -1403,7 +1417,7 @@ mod tests {
         let pending_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
             "AAPL",
-            crate::schwab::TradeStatus::Pending,
+            OrderStatus::Pending,
         )
         .await
         .unwrap();
@@ -1421,7 +1435,7 @@ mod tests {
             symbol: "MSFT".to_string(),
             shares: 1,
             direction: Direction::Buy,
-            state: TradeState::Submitted {
+            state: OrderState::Submitted {
                 order_id: "recent123".to_string(),
             },
         };
@@ -1431,7 +1445,7 @@ mod tests {
             symbol: "TSLA".to_string(),
             shares: 1,
             direction: Direction::Sell,
-            state: TradeState::Submitted {
+            state: OrderState::Submitted {
                 order_id: "stale456".to_string(),
             },
         };
@@ -1478,7 +1492,7 @@ mod tests {
         let msft_submitted = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
             "MSFT",
-            crate::schwab::TradeStatus::Submitted,
+            OrderStatus::Submitted,
         )
         .await
         .unwrap();
@@ -1489,7 +1503,7 @@ mod tests {
         let tsla_failed = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
             "TSLA",
-            crate::schwab::TradeStatus::Failed,
+            OrderStatus::Failed,
         )
         .await
         .unwrap();
@@ -1521,7 +1535,7 @@ mod tests {
             symbol: "NVDA".to_string(),
             shares: 2,
             direction: Direction::Buy,
-            state: TradeState::Submitted {
+            state: OrderState::Submitted {
                 order_id: "recent789".to_string(),
             },
         };
@@ -1554,7 +1568,7 @@ mod tests {
         let submitted_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
             "NVDA",
-            crate::schwab::TradeStatus::Submitted,
+            OrderStatus::Submitted,
         )
         .await
         .unwrap();
@@ -1632,7 +1646,7 @@ mod tests {
             symbol: "AAPL".to_string(),
             shares: 1,
             direction: Direction::Buy,
-            state: TradeState::Pending,
+            state: OrderState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
