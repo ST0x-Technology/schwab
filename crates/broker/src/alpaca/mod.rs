@@ -1,3 +1,3 @@
 pub mod auth;
 
-pub use auth::AlpacaAuthEnv;
+pub use auth::{AlpacaAuthEnv, AlpacaClient};
