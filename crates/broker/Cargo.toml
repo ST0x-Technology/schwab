@@ -21,6 +21,7 @@ url.workspace = true
 rand.workspace = true
 serde_json.workspace = true
 chrono-tz.workspace = true
+apca = "0.30.0"
 
 [dev-dependencies]
 httpmock.workspace = true

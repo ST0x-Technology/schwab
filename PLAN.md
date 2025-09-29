@@ -6,17 +6,17 @@ This plan outlines the integration of Alpaca Markets as an additional broker opt
 
 Add the necessary dependencies and basic configuration structure for Alpaca integration.
 
-- [ ] Add `apca` crate dependency to `crates/broker/Cargo.toml`
-- [ ] Add `chrono-tz` for timezone handling if not already present
-- [ ] Create `crates/broker/src/alpaca/mod.rs` as the main module entry point
-- [ ] Create `crates/broker/src/alpaca/auth.rs` with `AlpacaAuthEnv` struct containing:
+- [x] Add `apca` crate dependency to `crates/broker/Cargo.toml`
+- [x] Add `chrono-tz` for timezone handling if not already present
+- [x] Create `crates/broker/src/alpaca/mod.rs` as the main module entry point
+- [x] Create `crates/broker/src/alpaca/auth.rs` with `AlpacaAuthEnv` struct containing:
   - `api_key_id: String` 
   - `api_secret_key: String`
   - `base_url: String` (for paper vs live trading)
-- [ ] Update `crates/broker/src/lib.rs` to add `Alpaca` variant to `SupportedBroker` enum
-- [ ] Update the Display impl for `SupportedBroker` to handle Alpaca variant
-- [ ] Add `pub mod alpaca` declaration to `crates/broker/src/lib.rs`
-- [ ] Update database string parsing in `src/offchain/execution.rs` to handle "alpaca" broker type
+- [x] Update `crates/broker/src/lib.rs` to add `Alpaca` variant to `SupportedBroker` enum
+- [x] Update the Display impl for `SupportedBroker` to handle Alpaca variant
+- [x] Add `pub mod alpaca` declaration to `crates/broker/src/lib.rs`
+- [x] Update database string parsing in `src/offchain/execution.rs` to handle "alpaca" broker type
 
 ## Task 2: Implement Core Alpaca Authentication
 
