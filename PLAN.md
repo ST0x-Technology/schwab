@@ -33,18 +33,16 @@ Implement the authentication layer for Alpaca API access using API keys.
 
 ## Task 3: Implement Market Hours Detection
 
-Create market hours checking functionality using Alpaca's calendar API.
+Create market hours checking functionality using Alpaca's Clock API.
 
-- [ ] Create `crates/broker/src/alpaca/market_hours.rs`
-- [ ] Define `MarketHours` struct to hold market schedule data
-- [ ] Implement `fetch_market_calendar()` to get current day's schedule
-- [ ] Add timezone conversion from Eastern to UTC
-- [ ] Implement logic to determine if market is currently open
-- [ ] Calculate wait duration until next market open
-- [ ] Handle weekends and market holidays
-- [ ] Add support for extended hours configuration
-- [ ] Write tests with mocked calendar API responses
-- [ ] Test edge cases: holidays, weekends, after-hours
+- [x] Create `crates/broker/src/alpaca/market_hours.rs`
+- [x] Implement `wait_until_market_open()` function using Alpaca Clock API
+- [x] Add timezone conversion from Eastern to UTC  
+- [x] Implement logic to determine if market is currently open
+- [x] Calculate wait duration until next market open
+- [x] Handle weekends and market holidays (delegated to Alpaca API)
+- [x] Write tests with mocked clock API responses
+- [x] Test edge cases: open market, closed market, future dates
 
 ## Task 4: Implement Order Placement
 
