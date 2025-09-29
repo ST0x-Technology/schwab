@@ -22,14 +22,14 @@ Add the necessary dependencies and basic configuration structure for Alpaca inte
 
 Implement the authentication layer for Alpaca API access using API keys.
 
-- [ ] Define `AlpacaClient` struct wrapping `apca::Client` in `auth.rs`
-- [ ] Implement `AlpacaClient::new()` that creates client from environment
-- [ ] Add paper trading detection based on base_url
-- [ ] Implement account verification endpoint call to validate credentials
-- [ ] Create `AlpacaError` enum with variants for auth failures, network errors, API errors
-- [ ] Implement `From<AlpacaError>` for `BrokerError`
-- [ ] Add unit tests for auth configuration with valid/invalid API keys
-- [ ] Add test for paper vs live environment detection
+- [x] Define `AlpacaClient` struct wrapping `apca::Client` in `auth.rs`
+- [x] Implement `AlpacaClient::new()` that creates client from environment
+- [x] Add paper trading detection based on base_url
+- [x] Implement account verification endpoint call to validate credentials
+- [x] Use existing `apca::Error` types with `#[from]` conversion (no custom AlpacaError enum needed)
+- [x] Implement `From<apca::Error>` for `BrokerError` with boxed errors for performance
+- [x] Add unit tests for auth configuration with valid/invalid API keys
+- [x] Add test for paper vs live environment detection
 
 ## Task 3: Implement Market Hours Detection
 

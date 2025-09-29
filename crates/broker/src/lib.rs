@@ -10,7 +10,7 @@ pub mod test;
 #[cfg(test)]
 pub mod test_utils;
 
-pub use alpaca::AlpacaAuthEnv;
+pub use alpaca::{AlpacaAuthEnv, AlpacaClient};
 pub use error::PersistenceError;
 pub use order::{MarketOrder, OrderPlacement, OrderState, OrderStatus, OrderUpdate};
 pub use schwab::broker::SchwabBroker;
@@ -150,6 +150,12 @@ pub enum BrokerError {
     #[error("Schwab API error: {0}")]
     Schwab(#[from] schwab::SchwabError),
 
+    #[error("Alpaca API error: {0}")]
+    Alpaca(Box<apca::Error>),
+
+    #[error("Alpaca request error: {0}")]
+    AlpacaRequest(String),
+
     #[error("Authentication failed: {0}")]
     Authentication(String),
 
@@ -170,6 +176,12 @@ pub enum BrokerError {
 
     #[error("Invalid order: {reason}")]
     InvalidOrder { reason: String },
+}
+
+impl From<apca::Error> for BrokerError {
+    fn from(error: apca::Error) -> Self {
+        BrokerError::Alpaca(Box::new(error))
+    }
 }
 
 #[async_trait]
