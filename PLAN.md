@@ -48,16 +48,16 @@ Create market hours checking functionality using Alpaca's Clock API.
 
 Map the generic order types to Alpaca's order API.
 
-- [ ] Create `crates/broker/src/alpaca/order.rs`
-- [ ] Define Alpaca order request structure matching their API
-- [ ] Implement conversion from `MarketOrder` to Alpaca order request
-- [ ] Map `Direction` enum to Alpaca's buy/sell instructions
-- [ ] Implement order submission via apca crate
-- [ ] Parse order response to extract order ID
-- [ ] Convert response to `OrderPlacement` struct
-- [ ] Handle Alpaca-specific validations (day trading restrictions, etc.)
-- [ ] Map Alpaca error responses to `BrokerError` variants
-- [ ] Add tests for successful and failed order placements
+- [x] Create `crates/broker/src/alpaca/order.rs`
+- [x] Define Alpaca order request structure matching their API
+- [x] Implement conversion from `MarketOrder` to Alpaca order request
+- [x] Map `Direction` enum to Alpaca's buy/sell instructions
+- [x] Implement order submission via apca crate
+- [x] Parse order response to extract order ID
+- [x] Convert response to `OrderPlacement` struct
+- [x] Handle Alpaca-specific validations (day trading restrictions, etc.)
+- [x] Map Alpaca error responses to `BrokerError` variants
+- [x] Add tests for successful and failed order placements
 
 ## Task 5: Implement Order Status Polling
 
