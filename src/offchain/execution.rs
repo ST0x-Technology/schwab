@@ -36,6 +36,7 @@ fn row_to_execution(
     let parsed_direction = direction.parse()?;
     let parsed_broker = match broker.as_str() {
         "schwab" => SupportedBroker::Schwab,
+        "alpaca" => SupportedBroker::Alpaca,
         "dry_run" => SupportedBroker::DryRun,
         _ => {
             return Err(OnChainError::Persistence(

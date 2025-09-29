@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use std::fmt::{Debug, Display};
 use tokio::task::JoinHandle;
 
+pub mod alpaca;
 pub mod error;
 pub mod order;
 pub mod schwab;
@@ -10,6 +11,7 @@ pub mod test;
 #[cfg(test)]
 pub mod test_utils;
 
+pub use alpaca::AlpacaAuthEnv;
 pub use error::PersistenceError;
 pub use order::{MarketOrder, OrderPlacement, OrderState, OrderStatus, OrderUpdate};
 pub use schwab::broker::SchwabBroker;
@@ -96,6 +98,7 @@ impl std::error::Error for InvalidDirectionError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupportedBroker {
     Schwab,
+    Alpaca,
     DryRun,
 }
 
@@ -103,6 +106,7 @@ impl std::fmt::Display for SupportedBroker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SupportedBroker::Schwab => write!(f, "schwab"),
+            SupportedBroker::Alpaca => write!(f, "alpaca"),
             SupportedBroker::DryRun => write!(f, "dry_run"),
         }
     }
