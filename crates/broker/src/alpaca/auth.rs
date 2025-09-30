@@ -27,12 +27,13 @@ pub struct AlpacaAuthEnv {
 impl AlpacaAuthEnv {
     /// Returns true if this configuration is for paper trading
     pub fn is_paper_trading(&self) -> bool {
-        self.base_url.contains("paper-api")
+        self.base_url
+            .starts_with("https://paper-api.alpaca.markets")
     }
 
     /// Returns true if this configuration is for live trading
     pub fn is_live_trading(&self) -> bool {
-        !self.is_paper_trading()
+        self.base_url.starts_with("https://api.alpaca.markets")
     }
 }
 
@@ -47,10 +48,9 @@ impl AlpacaClient {
     ///
     /// # Errors
     /// Returns `apca::Error` if API configuration is invalid
-    pub fn new(env: &AlpacaAuthEnv) -> Result<Self, Box<apca::Error>> {
+    pub fn new(env: &AlpacaAuthEnv) -> Result<Self, crate::BrokerError> {
         let api_info =
-            apca::ApiInfo::from_parts(&env.base_url, &env.api_key_id, &env.api_secret_key)
-                .map_err(Box::new)?;
+            apca::ApiInfo::from_parts(&env.base_url, &env.api_key_id, &env.api_secret_key)?;
 
         let client = Client::new(api_info);
         let is_paper_trading = env.is_paper_trading();
@@ -127,7 +127,8 @@ mod tests {
             api_secret_key: "test_secret".to_string(),
             base_url: "https://custom-paper-api.example.com".to_string(),
         };
-        assert!(custom_paper.is_paper_trading());
+        assert!(!custom_paper.is_paper_trading());
+        assert!(!custom_paper.is_live_trading());
     }
 
     #[test]
@@ -136,12 +137,10 @@ mod tests {
         let result = AlpacaClient::new(&config);
 
         // Should succeed with valid configuration
-        assert!(result.is_ok());
-
-        if let Ok(client) = result {
-            assert!(client.is_paper_trading());
-            assert!(!client.is_live_trading());
-        }
+        let client =
+            result.expect("Expected successful AlpacaClient creation with valid paper config");
+        assert!(client.is_paper_trading());
+        assert!(!client.is_live_trading());
     }
 
     #[test]
@@ -150,12 +149,10 @@ mod tests {
         let result = AlpacaClient::new(&config);
 
         // Should succeed with valid configuration
-        assert!(result.is_ok());
-
-        if let Ok(client) = result {
-            assert!(!client.is_paper_trading());
-            assert!(client.is_live_trading());
-        }
+        let client =
+            result.expect("Expected successful AlpacaClient creation with valid live config");
+        assert!(!client.is_paper_trading());
+        assert!(client.is_live_trading());
     }
 
     #[test]
@@ -184,11 +181,9 @@ mod tests {
 
         // apca library accepts empty credentials at creation time
         // validation happens during actual API calls
-        assert!(result.is_ok());
-
-        if let Ok(client) = result {
-            assert!(client.is_paper_trading());
-        }
+        let client =
+            result.expect("Expected successful AlpacaClient creation with empty credentials");
+        assert!(client.is_paper_trading());
     }
 
     #[test]
@@ -196,17 +191,17 @@ mod tests {
         let paper_config = create_test_paper_config();
         let live_config = create_test_live_config();
 
-        if let (Ok(paper_client), Ok(live_client)) = (
-            AlpacaClient::new(&paper_config),
-            AlpacaClient::new(&live_config),
-        ) {
-            // Paper client should detect paper trading correctly
-            assert!(paper_client.is_paper_trading());
-            assert!(!paper_client.is_live_trading());
+        let paper_client =
+            AlpacaClient::new(&paper_config).expect("Expected successful paper client creation");
+        let live_client =
+            AlpacaClient::new(&live_config).expect("Expected successful live client creation");
 
-            // Live client should detect live trading correctly
-            assert!(!live_client.is_paper_trading());
-            assert!(live_client.is_live_trading());
-        }
+        // Paper client should detect paper trading correctly
+        assert!(paper_client.is_paper_trading());
+        assert!(!paper_client.is_live_trading());
+
+        // Live client should detect live trading correctly
+        assert!(!live_client.is_paper_trading());
+        assert!(live_client.is_live_trading());
     }
 }
