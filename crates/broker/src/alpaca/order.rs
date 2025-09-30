@@ -1,8 +1,12 @@
 use apca::api::v2::order;
 use apca::{Client, RequestError};
+use chrono::Utc;
 use tracing::debug;
+use uuid::Uuid;
 
-use crate::{BrokerError, Direction, MarketOrder, OrderPlacement, Shares, Symbol};
+use crate::{
+    BrokerError, Direction, MarketOrder, OrderPlacement, OrderStatus, OrderUpdate, Shares, Symbol,
+};
 
 pub(super) async fn place_market_order(
     client: &Client,
@@ -61,15 +65,135 @@ pub(super) async fn place_market_order(
     })
 }
 
+pub(super) async fn get_order_status(
+    client: &Client,
+    order_id: &str,
+) -> Result<OrderUpdate<String>, BrokerError> {
+    debug!("Querying Alpaca order status for order ID: {}", order_id);
+
+    let order_uuid = Uuid::parse_str(order_id)
+        .map_err(|e| BrokerError::AlpacaRequest(format!("Invalid order ID format: {}", e)))?;
+
+    let alpaca_order_id = order::Id(order_uuid);
+
+    let order_response =
+        client
+            .issue::<order::Get>(&alpaca_order_id)
+            .await
+            .map_err(|e| match e {
+                RequestError::Endpoint(endpoint_error) => BrokerError::AlpacaRequest(format!(
+                    "Order status query failed: {}",
+                    endpoint_error
+                )),
+                RequestError::Hyper(hyper_error) => {
+                    BrokerError::AlpacaRequest(format!("HTTP error: {}", hyper_error))
+                }
+                RequestError::HyperUtil(hyper_util_error) => {
+                    BrokerError::AlpacaRequest(format!("HTTP util error: {}", hyper_util_error))
+                }
+                RequestError::Io(io_error) => {
+                    BrokerError::AlpacaRequest(format!("IO error: {}", io_error))
+                }
+            })?;
+
+    let symbol = Symbol::new(order_response.symbol.clone())
+        .map_err(|e| BrokerError::AlpacaRequest(format!("Invalid symbol: {}", e)))?;
+
+    let shares = extract_shares_from_amount(&order_response.amount)?;
+
+    let direction = match order_response.side {
+        order::Side::Buy => Direction::Buy,
+        order::Side::Sell => Direction::Sell,
+    };
+
+    let status = map_alpaca_status_to_order_status(order_response.status);
+
+    let price_cents = extract_price_cents_from_order(&order_response)?;
+
+    Ok(OrderUpdate {
+        order_id: order_id.to_string(),
+        symbol,
+        shares,
+        direction,
+        status,
+        updated_at: Utc::now(),
+        price_cents,
+    })
+}
+
+/// Maps Alpaca order status to our simplified OrderStatus enum
+fn map_alpaca_status_to_order_status(status: order::Status) -> OrderStatus {
+    match status {
+        // Active/pending statuses
+        order::Status::New
+        | order::Status::Accepted
+        | order::Status::PendingNew
+        | order::Status::PartiallyFilled
+        | order::Status::AcceptedForBidding
+        | order::Status::PendingCancel
+        | order::Status::PendingReplace
+        | order::Status::Stopped => OrderStatus::Submitted,
+
+        // Successfully filled
+        order::Status::Filled => OrderStatus::Filled,
+
+        // Failed/terminal statuses
+        order::Status::Canceled
+        | order::Status::Expired
+        | order::Status::DoneForDay
+        | order::Status::Rejected
+        | order::Status::Replaced
+        | order::Status::Suspended
+        | order::Status::Calculated => OrderStatus::Failed,
+
+        // Catch-all for any new statuses added to the enum
+        _ => OrderStatus::Failed,
+    }
+}
+
+/// Extracts price in cents from Alpaca order
+fn extract_price_cents_from_order(order: &order::Order) -> Result<Option<u64>, BrokerError> {
+    if let Some(avg_fill_price) = &order.average_fill_price {
+        let price_str = format!("{}", avg_fill_price);
+        let price_f64 = price_str
+            .parse::<f64>()
+            .map_err(|e| BrokerError::AlpacaRequest(format!("Invalid fill price: {}", e)))?;
+
+        let price_cents = (price_f64 * 100.0).round() as u64;
+        Ok(Some(price_cents))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Extracts shares from Alpaca Amount enum
+fn extract_shares_from_amount(amount: &order::Amount) -> Result<Shares, BrokerError> {
+    match amount {
+        order::Amount::Quantity { quantity } => {
+            let qty_u64 = quantity
+                .to_string()
+                .parse::<u64>()
+                .map_err(|e| BrokerError::AlpacaRequest(format!("Invalid quantity: {}", e)))?;
+
+            Shares::new(qty_u64)
+                .map_err(|e| BrokerError::AlpacaRequest(format!("Invalid shares: {}", e)))
+        }
+        order::Amount::Notional { notional: _ } => Err(BrokerError::AlpacaRequest(
+            "Notional orders are not supported - cannot determine exact share quantity".to_string(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use apca::api::v2::order::Amount;
     use httpmock::prelude::*;
     use serde_json::json;
 
     fn create_test_client(mock_server: &MockServer) -> Client {
         let api_info =
-            apca::ApiInfo::from_parts(&mock_server.base_url(), "test_key", "test_secret").unwrap();
+            apca::ApiInfo::from_parts(mock_server.base_url(), "test_key", "test_secret").unwrap();
         Client::new(api_info)
     }
 
@@ -292,5 +416,224 @@ mod tests {
         mock.assert();
         let error = result.unwrap_err();
         assert!(matches!(error, BrokerError::AlpacaRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn test_get_order_status_pending_order() {
+        let server = MockServer::start();
+        let order_id = "904837e3-3b76-47ec-b432-046db621571b";
+
+        let mock = server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/v2/orders/{}", order_id.replace("-", "")));
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "id": order_id,
+                    "client_order_id": "",
+                    "symbol": "AAPL",
+                    "asset_id": "904837e3-3b76-47ec-b432-046db621571b",
+                    "asset_class": "us_equity",
+                    "qty": "100",
+                    "filled_qty": "0",
+                    "side": "buy",
+                    "order_class": "simple",
+                    "type": "market",
+                    "time_in_force": "day",
+                    "status": "new",
+                    "extended_hours": false,
+                    "legs": [],
+                    "created_at": "2030-01-15T09:30:00.000Z",
+                    "updated_at": null,
+                    "submitted_at": null,
+                    "filled_at": null,
+                    "expired_at": null,
+                    "canceled_at": null,
+                    "average_fill_price": null,
+                    "limit_price": null,
+                    "stop_price": null,
+                    "trail_price": null,
+                    "trail_percent": null
+                }));
+        });
+
+        let client = create_test_client(&server);
+        let result = get_order_status(&client, order_id).await;
+
+        mock.assert();
+        let order_update = result.unwrap();
+        assert_eq!(order_update.order_id, order_id);
+        assert_eq!(order_update.symbol.to_string(), "AAPL");
+        assert_eq!(order_update.shares.value(), 100);
+        assert_eq!(order_update.direction, Direction::Buy);
+        assert_eq!(order_update.status, OrderStatus::Submitted);
+        assert_eq!(order_update.price_cents, None);
+    }
+
+    #[tokio::test]
+    async fn test_get_order_status_filled_order() {
+        let server = MockServer::start();
+        let order_id = "61e7b016-9c91-4a97-b912-615c9d365c9d";
+
+        let mock = server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/v2/orders/{}", order_id.replace("-", "")));
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "id": order_id,
+                    "client_order_id": "",
+                    "symbol": "TSLA",
+                    "asset_id": "61e7b016-9c91-4a97-b912-615c9d365c9d",
+                    "asset_class": "us_equity",
+                    "qty": "50",
+                    "filled_qty": "50",
+                    "side": "sell",
+                    "order_class": "simple",
+                    "type": "market",
+                    "time_in_force": "day",
+                    "status": "filled",
+                    "extended_hours": false,
+                    "legs": [],
+                    "created_at": "2030-01-15T09:30:00.000Z",
+                    "updated_at": "2030-01-15T09:31:00.000Z",
+                    "submitted_at": "2030-01-15T09:30:00.000Z",
+                    "filled_at": "2030-01-15T09:31:00.000Z",
+                    "expired_at": null,
+                    "canceled_at": null,
+                    "filled_avg_price": "245.67",
+                    "limit_price": null,
+                    "stop_price": null,
+                    "trail_price": null,
+                    "trail_percent": null
+                }));
+        });
+
+        let client = create_test_client(&server);
+        let result = get_order_status(&client, order_id).await;
+
+        mock.assert();
+        let order_update = result.unwrap();
+        assert_eq!(order_update.order_id, order_id);
+        assert_eq!(order_update.symbol.to_string(), "TSLA");
+        assert_eq!(order_update.shares.value(), 50);
+        assert_eq!(order_update.direction, Direction::Sell);
+        assert_eq!(order_update.status, OrderStatus::Filled);
+        assert_eq!(order_update.price_cents, Some(24567));
+    }
+
+    #[tokio::test]
+    async fn test_get_order_status_rejected_order() {
+        let server = MockServer::start();
+        let order_id = "c7ca82d4-3c95-4f89-9b42-abc123def456";
+
+        let mock = server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/v2/orders/{}", order_id.replace("-", "")));
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "id": order_id,
+                    "client_order_id": "",
+                    "symbol": "MSFT",
+                    "asset_id": "c7ca82d4-3c95-4f89-9b42-abc123def456",
+                    "asset_class": "us_equity",
+                    "qty": "25",
+                    "filled_qty": "0",
+                    "side": "buy",
+                    "order_class": "simple",
+                    "type": "market",
+                    "time_in_force": "day",
+                    "status": "rejected",
+                    "extended_hours": false,
+                    "legs": [],
+                    "created_at": "2030-01-15T09:30:00.000Z",
+                    "updated_at": "2030-01-15T09:30:05.000Z",
+                    "submitted_at": "2030-01-15T09:30:00.000Z",
+                    "filled_at": null,
+                    "expired_at": null,
+                    "canceled_at": null,
+                    "average_fill_price": null,
+                    "limit_price": null,
+                    "stop_price": null,
+                    "trail_price": null,
+                    "trail_percent": null
+                }));
+        });
+
+        let client = create_test_client(&server);
+        let result = get_order_status(&client, order_id).await;
+
+        mock.assert();
+        let order_update = result.unwrap();
+        assert_eq!(order_update.order_id, order_id);
+        assert_eq!(order_update.symbol.to_string(), "MSFT");
+        assert_eq!(order_update.shares.value(), 25);
+        assert_eq!(order_update.direction, Direction::Buy);
+        assert_eq!(order_update.status, OrderStatus::Failed);
+        assert_eq!(order_update.price_cents, None);
+    }
+
+    #[tokio::test]
+    async fn test_get_order_status_partially_filled() {
+        let server = MockServer::start();
+        let order_id = "f9e8d7c6-b5a4-9382-7160-543210987654";
+
+        let mock = server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/v2/orders/{}", order_id.replace("-", "")));
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "id": order_id,
+                    "client_order_id": "",
+                    "symbol": "GOOGL",
+                    "asset_id": "f9e8d7c6-b5a4-9382-7160-543210987654",
+                    "asset_class": "us_equity",
+                    "qty": "200",
+                    "filled_qty": "75",
+                    "side": "buy",
+                    "order_class": "simple",
+                    "type": "market",
+                    "time_in_force": "day",
+                    "status": "partially_filled",
+                    "extended_hours": false,
+                    "legs": [],
+                    "created_at": "2030-01-15T09:30:00.000Z",
+                    "updated_at": "2030-01-15T09:30:45.000Z",
+                    "submitted_at": "2030-01-15T09:30:00.000Z",
+                    "filled_at": null,
+                    "expired_at": null,
+                    "canceled_at": null,
+                    "average_fill_price": null,
+                    "limit_price": null,
+                    "stop_price": null,
+                    "trail_price": null,
+                    "trail_percent": null
+                }));
+        });
+
+        let client = create_test_client(&server);
+        let result = get_order_status(&client, order_id).await;
+
+        mock.assert();
+        let order_update = result.unwrap();
+        assert_eq!(order_update.order_id, order_id);
+        assert_eq!(order_update.symbol.to_string(), "GOOGL");
+        assert_eq!(order_update.shares.value(), 200);
+        assert_eq!(order_update.direction, Direction::Buy);
+        assert_eq!(order_update.status, OrderStatus::Submitted);
+        assert_eq!(order_update.price_cents, None);
+    }
+
+    #[test]
+    fn test_extract_shares_from_notional_amount_returns_error() {
+        let quantity_amount = Amount::Quantity {
+            quantity: 100.into(),
+        };
+
+        let result = extract_shares_from_amount(&quantity_amount);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().value(), 100);
     }
 }
