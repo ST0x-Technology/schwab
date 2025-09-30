@@ -22,6 +22,7 @@ rand.workspace = true
 serde_json.workspace = true
 chrono-tz.workspace = true
 apca = "0.30.0"
+uuid = { version = "1.10.0", features = ["v4", "serde"] }
 
 [dev-dependencies]
 httpmock.workspace = true

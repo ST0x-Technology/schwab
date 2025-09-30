@@ -17,10 +17,15 @@ pub(super) async fn wait_until_market_open(
         let next_open_utc = clock_data.next_open;
 
         if next_open_utc > now {
-            let duration = (next_open_utc - now)
-                .to_std()
-                .unwrap_or(std::time::Duration::from_secs(3600));
-            Ok(Some(duration))
+            let chrono_duration = next_open_utc - now;
+            match chrono_duration.to_std() {
+                Ok(duration) => Ok(Some(duration)),
+                Err(_) => {
+                    // Duration is negative or out of range, market should be open
+                    debug!("Duration conversion failed, treating as market open");
+                    Ok(None)
+                }
+            }
         } else {
             Ok(None)
         }
@@ -35,7 +40,7 @@ mod tests {
 
     fn create_test_client(mock_server: &MockServer) -> Client {
         let api_info =
-            apca::ApiInfo::from_parts(&mock_server.base_url(), "test_key", "test_secret").unwrap();
+            apca::ApiInfo::from_parts(mock_server.base_url(), "test_key", "test_secret").unwrap();
         Client::new(api_info)
     }
 
