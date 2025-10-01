@@ -115,17 +115,17 @@ removed as of August 2025. Use NPM package instead.
 
 ### Task 3: Pyth Module - Error Types
 
-- [ ] Create `src/pyth.rs` (single file to start, can split later if needed)
-- [ ] Define error types:
-  - [ ] `PythError::NoPythCall` - No Pyth oracle call found in transaction trace
-  - [ ] `PythError::DecodeError` - Failed to decode Pyth return data
-  - [ ] `PythError::InvalidResponse` - Pyth response structure invalid
-  - [ ] Implement `thiserror::Error` for all variants
-- [ ] Add module declaration to `src/lib.rs`
-- [ ] Define Pyth contract address constant:
-  - [ ] Base network: `0x4305FB66699C3B2702D4d05CF36551390A4c69C6`
-- [ ] **Checkpoint**: Module compiles without warnings
-- [ ] **Note**: Use `PythStructs::Price` from bindings directly, no custom
+- [x] Create `src/pyth.rs` (single file to start, can split later if needed)
+- [x] Define error types:
+  - [x] `PythError::NoPythCall` - No Pyth oracle call found in transaction trace
+  - [x] `PythError::DecodeError` - Failed to decode Pyth return data
+  - [x] `PythError::InvalidResponse` - Pyth response structure invalid
+  - [x] Implement `thiserror::Error` for all variants
+- [x] Add module declaration to `src/lib.rs`
+- [x] Define Pyth contract address constant:
+  - [x] Base network: `0x4305FB66699C3B2702D4d05CF36551390A4c69C6`
+- [x] **Checkpoint**: Module compiles without warnings
+- [x] **Note**: Use `PythStructs::Price` from bindings directly, no custom
       struct needed
 
 ### Task 4: Trace Parsing (using Pyth bindings)
