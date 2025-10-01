@@ -13,6 +13,7 @@ mod error;
 mod lock;
 mod metrics;
 mod onchain;
+mod pyth;
 mod queue;
 pub mod schwab;
 mod symbol;
