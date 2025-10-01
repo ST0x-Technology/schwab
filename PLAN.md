@@ -23,14 +23,19 @@ Extract the exact Pyth oracle price that was returned during onchain trade execu
 ### Architecture Approach
 
 - **dRPC Provider**: Free tier (210M compute units/month) supports debug/trace APIs
-  - Supports both WebSocket and HTTP connections
-  - Test if `debug_traceTransaction` works over WebSocket (preferred: single URL)
-  - If not, use HTTP for debug calls and WebSocket for event subscriptions
+  - ✅ WebSocket works for `debug_traceTransaction` - single URL for everything
+  - No need for separate HTTP endpoint
+- **Alloy Built-in Support**: Use alloy's native trace types instead of custom implementations
+  - ✅ `alloy::providers::ext::DebugApi` trait provides `debug_trace_transaction` method
+  - ✅ `GethTrace::CallTracer(CallFrame)` gives us typed trace structures
+  - No need to build custom JSON-RPC requests or parse raw JSON
 - **CLI-First Development**: Build standalone CLI command to test extraction before integrating
+  - ✅ `get-pyth-price` command started with trace fetching
+- **Single File Module**: Start with `src/pyth.rs`, split into submodules only if needed
 - **Non-blocking Extraction**: Price extraction happens asynchronously after trade processing
 - **Fail-Fast Errors**: If we can't get exact prices, log error and continue with NULL values
 - **No Fallbacks**: Focus on getting accurate data, not approximate fallbacks
-- **Minimal Dependencies**: Leverage existing `alloy` and `reqwest` infrastructure
+- **Minimal Dependencies**: Leverage existing `alloy` infrastructure
 
 ## Implementation Plan
 
@@ -50,11 +55,10 @@ Extract the exact Pyth oracle price that was returned during onchain trade execu
   - [x] Add `http_rpc_url` field (optional, only if WebSocket doesn't work for debug)
 - [x] **Checkpoint**: Verify RPC endpoint(s) accessible and support debug_traceTransaction
 
-### Task 2: Pyth Module and Error Types
+### Task 2: Pyth Module - Error Types and Structs
 
-- [ ] Create `src/pyth/mod.rs` module structure
-- [ ] Define error types in `src/pyth/mod.rs`:
-  - [ ] `PythError::TraceFailed` - debug_traceTransaction RPC call failed
+- [ ] Create `src/pyth.rs` (single file to start, can split later if needed)
+- [ ] Define error types:
   - [ ] `PythError::NoPythCall` - No Pyth oracle call found in transaction trace
   - [ ] `PythError::DecodeError` - Failed to decode Pyth return data
   - [ ] `PythError::InvalidResponse` - Pyth response structure invalid
@@ -67,77 +71,81 @@ Extract the exact Pyth oracle price that was returned during onchain trade execu
 - [ ] Add module declaration to `src/lib.rs`
 - [ ] **Checkpoint**: Module compiles without warnings
 
-### Task 3: Debug Trace RPC Client
+### Task 3: Trace Parsing (using alloy's CallFrame)
 
-- [ ] Create `src/pyth/trace_client.rs`
-- [ ] Implement `debug_traceTransaction` call:
-  - [ ] Accept provider as parameter (WebSocket or HTTP depending on Task 1 results)
-  - [ ] Build JSON-RPC request with `{"tracer": "callTracer"}` params
-  - [ ] Use alloy's RPC client to send request
-  - [ ] Parse JSON-RPC response into trace structure
-  - [ ] Handle JSON-RPC error responses
-- [ ] Define trace response structures:
-  - [ ] `CallFrame` struct with `type`, `from`, `to`, `input`, `output`, `calls` fields
-  - [ ] Use `serde` for JSON deserialization
-- [ ] Add timeout handling (10 second timeout for trace calls)
-- [ ] **Checkpoint**: Successfully retrieve trace for a test transaction on Base network
-
-### Task 4: Trace Parsing
-
-- [ ] Create `src/pyth/trace_parser.rs`
-- [ ] Define Pyth contract address constant:
+- [ ] Define Pyth contract address constant in `src/pyth.rs`:
   - [ ] Base network: `0x4305FB66699C3B2702D4d05CF36551390A4c69C6`
 - [ ] Define Pyth method selectors:
   - [ ] Calculate `getPriceNoOlderThan(bytes32,uint256)` selector
   - [ ] Calculate `getPriceUnsafe(bytes32)` selector
   - [ ] Calculate `getEmaPriceNoOlderThan(bytes32,uint256)` selector
-- [ ] Implement recursive trace traversal:
-  - [ ] Function to find all calls to Pyth contract address
-  - [ ] Check `to` field matches Pyth contract
+- [ ] Implement recursive trace traversal function:
+  - [ ] Accept `GethTrace` from alloy (already fetched via `fetch_transaction_trace`)
+  - [ ] Extract `CallFrame` from `GethTrace::CallTracer` variant
+  - [ ] Recursively search call tree for Pyth contract calls
+  - [ ] Check `to` field matches Pyth contract address
   - [ ] Check `input` field starts with known Pyth method selector
   - [ ] Extract `output` field containing return data
-  - [ ] Recursively search nested `calls` array
 - [ ] Handle multiple Pyth calls in single transaction:
-  - [ ] Return Vec of all Pyth calls found
-  - [ ] Include call depth for debugging
+  - [ ] Return Vec of all Pyth calls found with call depth
+  - [ ] Use first call for price extraction
+- [ ] Write unit tests with mock CallFrame structures
 - [ ] **Checkpoint**: Parse test transaction trace and identify Pyth oracle calls
+
+### Task 4: Pyth Contract Dependency and ABI
+
+**Note**: Pyth's GitHub repo (pyth-network/pyth-sdk-solidity) is deprecated and removed as of August 2025. Use NPM package instead.
+
+- [ ] Initialize npm if not already present:
+  - [ ] Run `npm init -y` in project root
+  - [ ] Verify package.json created
+- [ ] Install Pyth SDK from NPM:
+  - [ ] Run `npm install @pythnetwork/pyth-sdk-solidity`
+  - [ ] Verify `node_modules/@pythnetwork/pyth-sdk-solidity/` directory created
+- [ ] Create/update `remappings.txt` in project root:
+  - [ ] Add line: `@pythnetwork/pyth-sdk-solidity/=node_modules/@pythnetwork/pyth-sdk-solidity/`
+  - [ ] This allows imports like `import "@pythnetwork/pyth-sdk-solidity/IPyth.sol";` in Solidity
+- [ ] Update `flake.nix` prepSolArtifacts task to build Pyth contracts:
+  - [ ] Add forge build command: `(cd node_modules/@pythnetwork/pyth-sdk-solidity/ && forge build)`
+  - [ ] Verify artifacts generated in `node_modules/@pythnetwork/pyth-sdk-solidity/out/`
+- [ ] Add Pyth bindings to `src/bindings.rs`:
+  - [ ] Use `sol!` macro: `IPyth, "node_modules/@pythnetwork/pyth-sdk-solidity/out/IPyth.sol/IPyth.json"`
+  - [ ] Add serde derives: `#[derive(serde::Serialize, serde::Deserialize)]`
+  - [ ] Follow pattern from existing IOrderBookV4 and IERC20 bindings
+- [ ] Research Pyth types from generated bindings:
+  - [ ] Locate `PythStructs::Price` struct in generated Rust types
+  - [ ] Verify fields: `int64 price, uint64 conf, int32 expo, uint publishTime`
+- [ ] **Checkpoint**: Bindings compile and Pyth types available
 
 ### Task 5: Pyth Response Decoder
 
-- [ ] Create `src/pyth/decoder.rs`
-- [ ] Research Pyth contract ABI for return types:
-  - [ ] Pyth returns struct: `(int64 price, uint64 conf, int32 expo, uint publishTime)`
-  - [ ] Document exact ABI encoding format
-- [ ] Implement ABI decoder using `alloy::sol_types`:
-  - [ ] Define Solidity type using `sol!` macro
-  - [ ] Decode bytes into tuple
-  - [ ] Handle decoding errors explicitly
-- [ ] Implement conversion to `PythPrice` struct:
-  - [ ] Extract individual fields from decoded tuple
+- [ ] Implement conversion to `PythPrice` struct in `src/pyth.rs`:
+  - [ ] Use `PythStructs::Price` from bindings (not custom struct)
+  - [ ] Or define `PythPrice` as wrapper around `PythStructs::Price`
+  - [ ] Extract individual fields from Pyth struct
   - [ ] Validate field values are reasonable
 - [ ] Implement human-readable price conversion:
   - [ ] Add `to_decimal()` method: `price × 10^expo`
   - [ ] Use `rust_decimal::Decimal` for precision
   - [ ] Handle negative exponents correctly
 - [ ] Write unit tests:
-  - [ ] Test decoding valid Pyth responses
+  - [ ] Test decoding valid Pyth responses using binding types
   - [ ] Test various exponent values (-8, -6, 0, etc.)
   - [ ] Test error handling for malformed data
+  - [ ] Test decimal conversion accuracy
 - [ ] **Checkpoint**: Successfully decode Pyth response from real transaction
 
 ### Task 6: Price Extraction Implementation
 
-- [ ] Create `src/pyth/extractor.rs`
-- [ ] Implement main extraction function:
-  - [ ] `async fn extract_pyth_price(tx_hash: B256, provider: &impl Provider) -> Result<PythPrice, PythError>`
-  - [ ] Call trace client to get transaction trace
+- [ ] Implement main extraction function in `src/pyth.rs`:
+  - [ ] `pub async fn extract_pyth_price(tx_hash: B256, provider: &impl Provider) -> Result<PythPrice, PythError>`
+  - [ ] Call `fetch_transaction_trace` (already implemented in cli.rs, move to shared location)
   - [ ] Call trace parser to find Pyth calls
-  - [ ] If multiple Pyth calls found, use first one (or most recent based on depth)
-  - [ ] Call decoder to parse return data
+  - [ ] If multiple Pyth calls found, use first one
+  - [ ] Decode output bytes using Pyth bindings from `src/bindings.rs`
   - [ ] Return PythPrice struct
 - [ ] Error handling:
   - [ ] Propagate all errors explicitly (no unwrap, no defaults)
-  - [ ] Return Err if trace fails
   - [ ] Return Err if no Pyth call found
   - [ ] Return Err if decode fails
   - [ ] Add context to errors using `.map_err()`
@@ -149,20 +157,22 @@ Extract the exact Pyth oracle price that was returned during onchain trade execu
   - [ ] Error: "Failed to extract Pyth price from {tx_hash}: {error}"
 - [ ] **Checkpoint**: Extract price from real Base transaction with Pyth oracle call
 
-### Task 7: CLI Command for Testing
+### Task 7: CLI Command Integration
 
-- [ ] Create new CLI command in `src/bin/cli.rs`:
-  - [ ] Add `get-pyth-price` subcommand
-  - [ ] Accept transaction hash as argument
-  - [ ] Load environment config to get RPC URL
-  - [ ] Create provider (WebSocket or HTTP based on Task 1)
-  - [ ] Call `extract_pyth_price` function
+- [x] Create new CLI command in `src/cli.rs`:
+  - [x] Add `get-pyth-price` subcommand
+  - [x] Accept transaction hash as argument
+  - [x] Load environment config to get RPC URL
+  - [x] Create WebSocket provider
+  - [x] Call `fetch_transaction_trace` (implemented with alloy's DebugApi)
+- [ ] Wire up price extraction:
+  - [ ] Call `extract_pyth_price` function from pyth module
   - [ ] Display results in human-readable format:
     - [ ] Raw price, confidence, exponent, publish time
     - [ ] Converted decimal price
     - [ ] Any errors encountered
 - [ ] Test CLI command:
-  - [ ] Run with known Base transaction containing Pyth call
+  - [ ] Run with known Base transaction containing Pyth call (0xa207d7abf2aa69badb2d4b266b5d2ed03ec10c4f0de173b866815714b75e055f)
   - [ ] Verify correct price extraction
   - [ ] Test with transaction without Pyth call (should error clearly)
   - [ ] Test with invalid transaction hash (should error clearly)
@@ -228,11 +238,9 @@ Extract the exact Pyth oracle price that was returned during onchain trade execu
 
 ### Task 11: Testing
 
-- [ ] Write unit tests for trace client:
-  - [ ] Mock provider responses for debug_traceTransaction
-  - [ ] Test successful trace retrieval
-  - [ ] Test RPC error handling
-  - [ ] Test timeout handling
+- [x] Write unit tests for trace fetching:
+  - [x] Mock provider responses for debug_traceTransaction
+  - [x] Test successful trace retrieval (test_fetch_transaction_trace in cli.rs)
 - [ ] Write unit tests for trace parser:
   - [ ] Create mock trace JSON with Pyth calls
   - [ ] Test finding Pyth calls at various depths
