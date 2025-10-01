@@ -15,8 +15,8 @@ use crate::schwab::run_oauth_flow;
 use crate::schwab::tokens::SchwabTokens;
 use crate::symbol::cache::SymbolCache;
 use alloy::primitives::B256;
-use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use alloy::providers::ext::DebugApi;
+use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use alloy::rpc::types::trace::geth::{
     GethDebugBuiltInTracerType, GethDebugTracerType, GethDebugTracingOptions, GethTrace,
 };
@@ -245,23 +245,22 @@ async fn run_command_with_writers<W: Write>(
     Ok(())
 }
 
-async fn get_pyth_price<W: Write>(
-    tx_hash: B256,
-    env: &Env,
-    stdout: &mut W,
-) -> anyhow::Result<()> {
+async fn get_pyth_price<W: Write>(tx_hash: B256, env: &Env, stdout: &mut W) -> anyhow::Result<()> {
     writeln!(stdout, "🔍 Extracting Pyth price from tx: {tx_hash}")?;
     writeln!(stdout)?;
 
     writeln!(stdout, "Fetching transaction trace...")?;
     let ws_url = &env.evm_env.ws_rpc_url;
+    let ws = WsConnect::new(ws_url.as_str());
+    let provider = ProviderBuilder::new().connect_ws(ws).await?;
 
-    let trace_result = fetch_transaction_trace(tx_hash, ws_url).await;
+    let trace_result = fetch_transaction_trace(tx_hash, &provider).await;
 
     match trace_result {
-        Ok(trace_json) => {
+        Ok(trace) => {
             writeln!(stdout, "   ✅ Transaction trace retrieved")?;
             writeln!(stdout, "   Trace result preview (first 200 chars):")?;
+            let trace_json = serde_json::to_string_pretty(&trace)?;
             let preview = trace_json.chars().take(200).collect::<String>();
             writeln!(stdout, "   {preview}...")?;
         }
@@ -275,10 +274,10 @@ async fn get_pyth_price<W: Write>(
     Ok(())
 }
 
-async fn fetch_transaction_trace(tx_hash: B256, ws_url: &url::Url) -> anyhow::Result<String> {
-    let ws = WsConnect::new(ws_url.as_str());
-    let provider = ProviderBuilder::new().connect_ws(ws).await?;
-
+async fn fetch_transaction_trace<P>(tx_hash: B256, provider: &P) -> anyhow::Result<GethTrace>
+where
+    P: Provider,
+{
     let options = GethDebugTracingOptions {
         tracer: Some(GethDebugTracerType::BuiltInTracer(
             GethDebugBuiltInTracerType::CallTracer,
@@ -288,7 +287,7 @@ async fn fetch_transaction_trace(tx_hash: B256, ws_url: &url::Url) -> anyhow::Re
 
     let trace_result: GethTrace = provider.debug_trace_transaction(tx_hash, options).await?;
 
-    Ok(serde_json::to_string_pretty(&trace_result)?)
+    Ok(trace_result)
 }
 
 async fn display_market_status<W: Write>(
@@ -2130,5 +2129,51 @@ mod tests {
         assert_eq!(trade.symbol.to_string(), "GOOG0x");
         assert!((trade.amount - 2.5).abs() < f64::EPSILON);
         assert!((trade.price_usdc - 20000.0).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_transaction_trace() {
+        use alloy::primitives::{Address, Bytes};
+        use alloy::rpc::types::trace::geth::CallFrame;
+
+        let tx_hash = B256::repeat_byte(0xaa);
+
+        let call_frame = CallFrame {
+            from: Address::ZERO,
+            gas: alloy::primitives::U256::from(100_000u64),
+            gas_used: alloy::primitives::U256::from(50_000u64),
+            to: Some(Address::repeat_byte(0x11)),
+            input: Bytes::from(vec![0x01, 0x02]),
+            output: Some(Bytes::from(vec![0x03, 0x04])),
+            error: None,
+            revert_reason: None,
+            calls: vec![],
+            logs: vec![],
+            value: Some(alloy::primitives::U256::from(1_000u64)),
+            typ: "CALL".to_string(),
+        };
+
+        let expected_trace = GethTrace::CallTracer(call_frame.clone());
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::to_value(&expected_trace).unwrap());
+
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        let result = fetch_transaction_trace(tx_hash, &provider).await;
+
+        assert!(result.is_ok(), "fetch_transaction_trace should succeed");
+        let trace = result.unwrap();
+
+        match trace {
+            GethTrace::CallTracer(frame) => {
+                assert_eq!(frame.from, call_frame.from);
+                assert_eq!(frame.gas, call_frame.gas);
+                assert_eq!(frame.gas_used, call_frame.gas_used);
+                assert_eq!(frame.to, call_frame.to);
+                assert_eq!(frame.typ, call_frame.typ);
+            }
+            _ => panic!("Expected CallTracer variant"),
+        }
     }
 }
