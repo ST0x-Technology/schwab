@@ -36,24 +36,19 @@ Extract the exact Pyth oracle price that was returned during onchain trade execu
 
 ### Task 1: RPC Provider Setup and Testing
 
-- [ ] Sign up for dRPC account at https://drpc.org/
-- [ ] Create API key for Base network
-- [ ] Note the endpoints:
-  - [ ] HTTP: `https://lb.drpc.org/base/API_KEY`
-  - [ ] WebSocket: `wss://lb.drpc.org/base/API_KEY`
-- [ ] Test if `debug_traceTransaction` works over WebSocket:
-  - [ ] Connect to WebSocket endpoint
-  - [ ] Call `debug_traceTransaction` with test tx hash
-  - [ ] If successful: use WebSocket for everything (preferred)
-  - [ ] If fails: use HTTP for debug calls, WebSocket for subscriptions
-- [ ] Update `.env` and `.env.example`:
-  - [ ] If WebSocket works: `WS_RPC_URL=wss://lb.drpc.org/base/API_KEY`
-  - [ ] If WebSocket doesn't work: `WS_RPC_URL=wss://lb.drpc.org/base/API_KEY` + `HTTP_RPC_URL=https://lb.drpc.org/base/API_KEY`
-  - [ ] Document dRPC free tier: 210M compute units/month
-  - [ ] Note that debug/trace methods are included
-- [ ] Update `src/env.rs` if HTTP endpoint needed:
-  - [ ] Add `http_rpc_url` field (optional, only if WebSocket doesn't work for debug)
-- [ ] **Checkpoint**: Verify RPC endpoint(s) accessible and support debug_traceTransaction
+- [x] Test if `debug_traceTransaction` works over WebSocket:
+  - [x] Connect to WebSocket endpoint
+  - [x] Call `debug_traceTransaction` with test tx hash
+  - [x] If successful: use WebSocket for everything (preferred)
+  - [x] If fails: use HTTP for debug calls, WebSocket for subscriptions
+- [x] Update `.env.example`:
+  - [x] If WebSocket works: `WS_RPC_URL=wss://lb.drpc.org/base/API_KEY`
+  - [x] If WebSocket doesn't work: `WS_RPC_URL=wss://lb.drpc.org/base/API_KEY` + `HTTP_RPC_URL=https://lb.drpc.org/base/API_KEY`
+  - [x] Document dRPC free tier: 210M compute units/month
+  - [x] Note that debug/trace methods are included
+- [x] Update `src/env.rs` if HTTP endpoint needed:
+  - [x] Add `http_rpc_url` field (optional, only if WebSocket doesn't work for debug)
+- [x] **Checkpoint**: Verify RPC endpoint(s) accessible and support debug_traceTransaction
 
 ### Task 2: Pyth Module and Error Types
 

@@ -15,6 +15,10 @@ use crate::schwab::tokens::SchwabTokens;
 use crate::symbol::cache::SymbolCache;
 use alloy::primitives::B256;
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
+use alloy::providers::ext::DebugApi;
+use alloy::rpc::types::trace::geth::{
+    GethDebugBuiltInTracerType, GethDebugTracerType, GethDebugTracingOptions, GethTrace,
+};
 use chrono::Utc;
 use chrono_tz::US::Eastern;
 
@@ -70,6 +74,12 @@ pub enum Commands {
         /// Date to check market hours for (format: YYYY-MM-DD, defaults to current day)
         #[arg(long = "date")]
         date: Option<String>,
+    },
+    /// Extract Pyth oracle price from transaction trace
+    GetPythPrice {
+        /// Transaction hash (0x prefixed, 64 hex characters)
+        #[arg(long = "tx-hash")]
+        tx_hash: B256,
     },
 }
 
@@ -224,10 +234,60 @@ async fn run_command_with_writers<W: Write>(
             ensure_authentication(pool, &env.schwab_auth, stdout).await?;
             display_market_status(&env, pool, date.as_deref(), stdout).await?;
         }
+        Commands::GetPythPrice { tx_hash } => {
+            info!("Extracting Pyth price for transaction: {tx_hash}");
+            get_pyth_price(tx_hash, &env, stdout).await?;
+        }
     }
 
     info!("CLI operation completed successfully");
     Ok(())
+}
+
+async fn get_pyth_price<W: Write>(
+    tx_hash: B256,
+    env: &Env,
+    stdout: &mut W,
+) -> anyhow::Result<()> {
+    writeln!(stdout, "🔍 Extracting Pyth price from tx: {tx_hash}")?;
+    writeln!(stdout)?;
+
+    writeln!(stdout, "Fetching transaction trace...")?;
+    let ws_url = &env.evm_env.ws_rpc_url;
+
+    let trace_result = fetch_transaction_trace(tx_hash, ws_url).await;
+
+    match trace_result {
+        Ok(trace_json) => {
+            writeln!(stdout, "   ✅ Transaction trace retrieved")?;
+            writeln!(stdout, "   Trace result preview (first 200 chars):")?;
+            let preview = trace_json.chars().take(200).collect::<String>();
+            writeln!(stdout, "   {preview}...")?;
+        }
+        Err(e) => {
+            writeln!(stdout, "   ❌ Failed to fetch trace: {e}")?;
+        }
+    }
+
+    writeln!(stdout)?;
+
+    Ok(())
+}
+
+async fn fetch_transaction_trace(tx_hash: B256, ws_url: &url::Url) -> anyhow::Result<String> {
+    let ws = WsConnect::new(ws_url.as_str());
+    let provider = ProviderBuilder::new().connect_ws(ws).await?;
+
+    let options = GethDebugTracingOptions {
+        tracer: Some(GethDebugTracerType::BuiltInTracer(
+            GethDebugBuiltInTracerType::CallTracer,
+        )),
+        ..Default::default()
+    };
+
+    let trace_result: GethTrace = provider.debug_trace_transaction(tx_hash, options).await?;
+
+    Ok(serde_json::to_string_pretty(&trace_result)?)
 }
 
 async fn display_market_status<W: Write>(
