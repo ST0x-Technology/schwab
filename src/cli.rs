@@ -272,12 +272,38 @@ async fn get_pyth_price<W: Write>(tx_hash: B256, env: &Env, stdout: &mut W) -> a
 
                 for (i, call) in pyth_calls.iter().enumerate() {
                     writeln!(stdout, "   Call #{} (depth: {}):", i + 1, call.depth)?;
-                    writeln!(stdout, "     Output length: {} bytes", call.output.len())?;
-                    writeln!(
-                        stdout,
-                        "     Output (hex): 0x{}",
-                        alloy::hex::encode(&call.output)
-                    )?;
+
+                    match crate::pyth::decode_pyth_price(&call.output) {
+                        Ok(price) => {
+                            writeln!(stdout, "     ✅ Successfully decoded Pyth price:")?;
+                            writeln!(stdout, "        Raw price value: {}", price.price)?;
+                            writeln!(stdout, "        Exponent: {}", price.expo)?;
+                            writeln!(stdout, "        Confidence: {}", price.conf)?;
+                            writeln!(stdout, "        Publish time: {}", price.publishTime)?;
+
+                            match crate::pyth::to_decimal(&price) {
+                                Ok(decimal_price) => {
+                                    writeln!(stdout, "        Decimal price: {decimal_price}")?;
+                                }
+                                Err(e) => {
+                                    writeln!(
+                                        stdout,
+                                        "        ⚠️  Failed to convert to decimal: {e}"
+                                    )?;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            writeln!(stdout, "     ❌ Failed to decode price: {e}")?;
+                            writeln!(
+                                stdout,
+                                "     Output (hex): 0x{}",
+                                alloy::hex::encode(&call.output)
+                            )?;
+                        }
+                    }
+
+                    writeln!(stdout)?;
                 }
             }
         }
