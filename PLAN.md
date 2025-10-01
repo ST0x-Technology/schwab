@@ -149,21 +149,21 @@ removed as of August 2025. Use NPM package instead.
 
 ### Task 5: Pyth Response Decoder and Price Conversion
 
-- [ ] Use Pyth bindings to decode output in `src/pyth.rs`:
-  - [ ] Use `IPyth` return types from bindings to decode `output` bytes
-  - [ ] Extract `PythStructs::Price` from decoded response
-  - [ ] Use `PythStructs::Price` directly (no wrapper struct needed)
-- [ ] Add price conversion helper:
-  - [ ] Implement `to_decimal(price: &PythStructs::Price) -> Decimal` function
-  - [ ] Formula: `price.price × 10^price.expo`
-  - [ ] Use `rust_decimal::Decimal` for precision
-  - [ ] Handle negative exponents correctly
-- [ ] Write unit tests:
-  - [ ] Test decoding valid Pyth responses using binding types
-  - [ ] Test various exponent values (-8, -6, 0, etc.)
-  - [ ] Test error handling for malformed data
-  - [ ] Test decimal conversion accuracy
-- [ ] **Checkpoint**: Successfully decode Pyth response from real transaction
+- [x] Use Pyth bindings to decode output in `src/pyth.rs`:
+  - [x] Use `IPyth` return types from bindings to decode `output` bytes
+  - [x] Extract `PythStructs::Price` from decoded response
+  - [x] Use `PythStructs::Price` directly (no wrapper struct needed)
+- [x] Add price conversion helper:
+  - [x] Implement `to_decimal(price: &PythStructs::Price) -> Decimal` function
+  - [x] Formula: `price.price × 10^price.expo`
+  - [x] Use `rust_decimal::Decimal` for precision
+  - [x] Handle negative exponents correctly
+- [x] Write unit tests:
+  - [x] Test decoding valid Pyth responses using binding types
+  - [x] Test various exponent values (-8, -6, 0, etc.)
+  - [x] Test error handling for malformed data
+  - [x] Test decimal conversion accuracy
+- [x] **Checkpoint**: Successfully decode Pyth response from real transaction
 
 ### Task 6: Price Extraction Implementation
 
