@@ -1,10 +1,13 @@
 use alloy::primitives::{Address, Bytes, address};
 use alloy::rpc::types::trace::geth::{CallFrame, GethTrace};
-use alloy::sol_types::SolCall;
+use alloy::sol_types::{SolCall, SolType};
+use rust_decimal::Decimal;
+use rust_decimal::prelude::FromPrimitive;
 
 use crate::bindings::IPyth::{
     getEmaPriceNoOlderThanCall, getEmaPriceUnsafeCall, getPriceNoOlderThanCall, getPriceUnsafeCall,
 };
+use crate::bindings::PythStructs::Price;
 
 pub const BASE_PYTH_CONTRACT_ADDRESS: Address =
     address!("0x8250f4aF4B972684F7b336503E2D6dFeDeB1487a");
@@ -19,6 +22,10 @@ pub enum PythError {
     InvalidResponse(String),
     #[error("Trace is not CallTracer variant")]
     InvalidTraceVariant,
+    #[error("Arithmetic overflow in price conversion")]
+    ArithmeticOverflow,
+    #[error("Invalid decimal string: {0}")]
+    InvalidDecimal(String),
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +71,42 @@ fn is_pyth_method_selector(input: &Bytes) -> bool {
         || selector == getPriceUnsafeCall::SELECTOR
         || selector == getEmaPriceNoOlderThanCall::SELECTOR
         || selector == getEmaPriceUnsafeCall::SELECTOR
+}
+
+pub fn decode_pyth_price(output: &Bytes) -> Result<Price, PythError> {
+    let price = Price::abi_decode(output)
+        .map_err(|e| PythError::DecodeError(format!("ABI decode failed: {e}")))?;
+
+    Ok(price)
+}
+
+pub fn to_decimal(price: &Price) -> Result<Decimal, PythError> {
+    let exponent = price.expo;
+
+    let result = if exponent >= 0 {
+        let price_value = Decimal::from_i64(price.price)
+            .ok_or_else(|| PythError::InvalidResponse("price value too large".to_string()))?;
+
+        let multiplier = (0..exponent).try_fold(Decimal::from(1_i64), |acc, _| {
+            acc.checked_mul(Decimal::from(10_i64))
+                .ok_or(PythError::ArithmeticOverflow)
+        })?;
+
+        price_value
+            .checked_mul(multiplier)
+            .ok_or(PythError::ArithmeticOverflow)
+    } else {
+        let decimals = exponent
+            .checked_abs()
+            .ok_or(PythError::ArithmeticOverflow)?
+            .try_into()
+            .map_err(|_| PythError::InvalidResponse("exponent too large".to_string()))?;
+
+        Decimal::try_new(price.price, decimals)
+            .map_err(|e| PythError::InvalidResponse(format!("failed to create decimal: {e}")))
+    }?;
+
+    Ok(result.normalize())
 }
 
 #[cfg(test)]
@@ -301,5 +344,157 @@ mod tests {
 
         let empty_input = Bytes::from(vec![]);
         assert!(!is_pyth_method_selector(&empty_input));
+    }
+
+    #[test]
+    fn test_decode_pyth_price_valid() {
+        let price = Price {
+            price: 100_000,
+            conf: 500,
+            expo: -5,
+            publishTime: alloy::primitives::U256::from(1_700_000_000u64),
+        };
+
+        let encoded = Price::abi_encode(&price);
+        let encoded_bytes = Bytes::from(encoded);
+
+        let decoded = decode_pyth_price(&encoded_bytes).unwrap();
+
+        assert_eq!(decoded.price, 100_000);
+        assert_eq!(decoded.conf, 500);
+        assert_eq!(decoded.expo, -5);
+        assert_eq!(
+            decoded.publishTime,
+            alloy::primitives::U256::from(1_700_000_000u64)
+        );
+    }
+
+    #[test]
+    fn test_decode_pyth_price_malformed() {
+        let malformed = Bytes::from(vec![0x01, 0x02, 0x03]);
+        let result = decode_pyth_price(&malformed);
+
+        assert!(matches!(result, Err(PythError::DecodeError(_))));
+    }
+
+    #[test]
+    fn test_to_decimal_negative_exponent() {
+        let price = Price {
+            price: 123_456_789,
+            conf: 1000,
+            expo: -8,
+            publishTime: alloy::primitives::U256::from(1_700_000_000u64),
+        };
+
+        let decimal = to_decimal(&price).unwrap();
+
+        assert_eq!(decimal.to_string(), "1.23456789");
+    }
+
+    #[test]
+    fn test_to_decimal_zero_exponent() {
+        let price = Price {
+            price: 42,
+            conf: 1,
+            expo: 0,
+            publishTime: alloy::primitives::U256::from(1_700_000_000u64),
+        };
+
+        let decimal = to_decimal(&price).unwrap();
+
+        assert_eq!(decimal.to_string(), "42");
+    }
+
+    #[test]
+    fn test_to_decimal_positive_exponent() {
+        let price = Price {
+            price: 123,
+            conf: 10,
+            expo: 3,
+            publishTime: alloy::primitives::U256::from(1_700_000_000u64),
+        };
+
+        let decimal = to_decimal(&price).unwrap();
+
+        assert_eq!(decimal.to_string(), "123000");
+    }
+
+    #[test]
+    fn test_to_decimal_various_exponents() {
+        let test_cases = vec![
+            (100_000_000, -6, "100"),
+            (1_500_000, -6, "1.5"),
+            (500, -2, "5"),
+            (42_000, -3, "42"),
+            (1, 0, "1"),
+            (1, 5, "100000"),
+        ];
+
+        for (price_value, expo, expected) in test_cases {
+            let price = Price {
+                price: price_value,
+                conf: 100,
+                expo,
+                publishTime: alloy::primitives::U256::from(1_700_000_000u64),
+            };
+
+            let decimal = to_decimal(&price).unwrap();
+
+            assert_eq!(
+                decimal.to_string(),
+                expected,
+                "Failed for price={price_value}, expo={expo}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_to_decimal_negative_price() {
+        let price = Price {
+            price: -50_000_000,
+            conf: 1000,
+            expo: -6,
+            publishTime: alloy::primitives::U256::from(1_700_000_000u64),
+        };
+
+        let decimal = to_decimal(&price).unwrap();
+
+        assert_eq!(decimal.to_string(), "-50");
+    }
+
+    #[test]
+    fn test_to_decimal_equity_price() {
+        let price = Price {
+            price: 18_250,
+            conf: 10,
+            expo: -2,
+            publishTime: alloy::primitives::U256::from(1_700_000_000u64),
+        };
+
+        let decimal = to_decimal(&price).unwrap();
+
+        assert_eq!(decimal.to_string(), "182.5");
+    }
+
+    #[test]
+    fn test_decode_and_convert_roundtrip() {
+        let original_price = Price {
+            price: 999_999_999,
+            conf: 5000,
+            expo: -8,
+            publishTime: alloy::primitives::U256::from(1_700_123_456u64),
+        };
+
+        let encoded = Price::abi_encode(&original_price);
+        let encoded_bytes = Bytes::from(encoded);
+
+        let decoded = decode_pyth_price(&encoded_bytes).unwrap();
+        let decimal = to_decimal(&decoded).unwrap();
+
+        assert_eq!(decoded.price, original_price.price);
+        assert_eq!(decoded.conf, original_price.conf);
+        assert_eq!(decoded.expo, original_price.expo);
+        assert_eq!(decoded.publishTime, original_price.publishTime);
+        assert_eq!(decimal.to_string(), "9.99999999");
     }
 }
