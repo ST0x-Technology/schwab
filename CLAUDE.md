@@ -65,6 +65,8 @@ exploiting price discrepancies.
   linting
 - `cargo fmt` - Format code
 - `cargo-tarpaulin --skip-clean --out Html` - Generate test coverage report
+- `cargo expand` - View macro expansions (useful for debugging alloy's `sol!`
+  macro bindings)
 
 ### Nix Development Environment
 

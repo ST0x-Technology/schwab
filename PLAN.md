@@ -2,38 +2,57 @@
 
 ## Overview
 
-Extract the exact Pyth oracle price that was returned during onchain trade execution by analyzing transaction traces using `debug_traceTransaction`. This provides the precise price value that rain.interpreter received from the Pyth contract during trade execution, ensuring maximum accuracy for price verification and arbitrage monitoring.
+Extract the exact Pyth oracle price that was returned during onchain trade
+execution by analyzing transaction traces using `debug_traceTransaction`. This
+provides the precise price value that rain.interpreter received from the Pyth
+contract during trade execution, ensuring maximum accuracy for price
+verification and arbitrage monitoring.
 
 ## Design Decisions
 
 ### Why Transaction Traces
 
-- **Exact Accuracy**: Captures the actual return value from Pyth oracle contract calls during execution, not approximations
-- **No Timing Issues**: Shows precisely what price was used, regardless of when other price updates occurred
-- **Handles Edge Cases**: Works even when multiple price updates occur in the same block or transaction
-- **Verifiable Audit Trail**: Provides cryptographic proof of prices used in trades
-- **No External Dependencies**: Doesn't rely on off-chain APIs that might not match on-chain reality
+- **Exact Accuracy**: Captures the actual return value from Pyth oracle contract
+  calls during execution, not approximations
+- **No Timing Issues**: Shows precisely what price was used, regardless of when
+  other price updates occurred
+- **Handles Edge Cases**: Works even when multiple price updates occur in the
+  same block or transaction
+- **Verifiable Audit Trail**: Provides cryptographic proof of prices used in
+  trades
+- **No External Dependencies**: Doesn't rely on off-chain APIs that might not
+  match on-chain reality
 
 ### Why Not Other Approaches
 
-- **eth_call at Historical Block**: Pyth only stores latest price, not historical prices - won't work
-- **Benchmarks API**: Off-chain approximation, may not match exact on-chain price used
-- **Current Contract State**: Oracle has been updated since, historical price is gone
+- **eth_call at Historical Block**: Pyth only stores latest price, not
+  historical prices - won't work
+- **Benchmarks API**: Off-chain approximation, may not match exact on-chain
+  price used
+- **Current Contract State**: Oracle has been updated since, historical price is
+  gone
 
 ### Architecture Approach
 
-- **dRPC Provider**: Free tier (210M compute units/month) supports debug/trace APIs
+- **dRPC Provider**: Free tier (210M compute units/month) supports debug/trace
+  APIs
   - ✅ WebSocket works for `debug_traceTransaction` - single URL for everything
   - No need for separate HTTP endpoint
-- **Alloy Built-in Support**: Use alloy's native trace types instead of custom implementations
-  - ✅ `alloy::providers::ext::DebugApi` trait provides `debug_trace_transaction` method
+- **Alloy Built-in Support**: Use alloy's native trace types instead of custom
+  implementations
+  - ✅ `alloy::providers::ext::DebugApi` trait provides
+    `debug_trace_transaction` method
   - ✅ `GethTrace::CallTracer(CallFrame)` gives us typed trace structures
   - No need to build custom JSON-RPC requests or parse raw JSON
-- **CLI-First Development**: Build standalone CLI command to test extraction before integrating
+- **CLI-First Development**: Build standalone CLI command to test extraction
+  before integrating
   - ✅ `get-pyth-price` command started with trace fetching
-- **Single File Module**: Start with `src/pyth.rs`, split into submodules only if needed
-- **Non-blocking Extraction**: Price extraction happens asynchronously after trade processing
-- **Fail-Fast Errors**: If we can't get exact prices, log error and continue with NULL values
+- **Single File Module**: Start with `src/pyth.rs`, split into submodules only
+  if needed
+- **Non-blocking Extraction**: Price extraction happens asynchronously after
+  trade processing
+- **Fail-Fast Errors**: If we can't get exact prices, log error and continue
+  with NULL values
 - **No Fallbacks**: Focus on getting accurate data, not approximate fallbacks
 - **Minimal Dependencies**: Leverage existing `alloy` infrastructure
 
@@ -48,38 +67,51 @@ Extract the exact Pyth oracle price that was returned during onchain trade execu
   - [x] If fails: use HTTP for debug calls, WebSocket for subscriptions
 - [x] Update `.env.example`:
   - [x] If WebSocket works: `WS_RPC_URL=wss://lb.drpc.org/base/API_KEY`
-  - [x] If WebSocket doesn't work: `WS_RPC_URL=wss://lb.drpc.org/base/API_KEY` + `HTTP_RPC_URL=https://lb.drpc.org/base/API_KEY`
+  - [x] If WebSocket doesn't work: `WS_RPC_URL=wss://lb.drpc.org/base/API_KEY` +
+        `HTTP_RPC_URL=https://lb.drpc.org/base/API_KEY`
   - [x] Document dRPC free tier: 210M compute units/month
   - [x] Note that debug/trace methods are included
 - [x] Update `src/env.rs` if HTTP endpoint needed:
-  - [x] Add `http_rpc_url` field (optional, only if WebSocket doesn't work for debug)
-- [x] **Checkpoint**: Verify RPC endpoint(s) accessible and support debug_traceTransaction
+  - [x] Add `http_rpc_url` field (optional, only if WebSocket doesn't work for
+        debug)
+- [x] **Checkpoint**: Verify RPC endpoint(s) accessible and support
+      debug_traceTransaction
 
 ### Task 2: Pyth Contract Dependency and ABI
 
-**Note**: Pyth's GitHub repo (pyth-network/pyth-sdk-solidity) is deprecated and removed as of August 2025. Use NPM package instead.
+**Note**: Pyth's GitHub repo (pyth-network/pyth-sdk-solidity) is deprecated and
+removed as of August 2025. Use NPM package instead.
 
-- [ ] Initialize npm if not already present:
-  - [ ] Run `npm init -y` in project root
-  - [ ] Verify package.json created
-- [ ] Install Pyth SDK from NPM:
-  - [ ] Run `npm install @pythnetwork/pyth-sdk-solidity`
-  - [ ] Verify `node_modules/@pythnetwork/pyth-sdk-solidity/` directory created
-- [ ] Create/update `remappings.txt` in project root:
-  - [ ] Add line: `@pythnetwork/pyth-sdk-solidity/=node_modules/@pythnetwork/pyth-sdk-solidity/`
-  - [ ] This allows imports like `import "@pythnetwork/pyth-sdk-solidity/IPyth.sol";` in Solidity
-- [ ] Update `flake.nix` prepSolArtifacts task to build Pyth contracts:
-  - [ ] Add forge build command: `(cd node_modules/@pythnetwork/pyth-sdk-solidity/ && forge build)`
-  - [ ] Verify artifacts generated in `node_modules/@pythnetwork/pyth-sdk-solidity/out/`
-- [ ] Add Pyth bindings to `src/bindings.rs`:
-  - [ ] Use `sol!` macro: `IPyth, "node_modules/@pythnetwork/pyth-sdk-solidity/out/IPyth.sol/IPyth.json"`
-  - [ ] Add serde derives: `#[derive(serde::Serialize, serde::Deserialize)]`
-  - [ ] Follow pattern from existing IOrderBookV4 and IERC20 bindings
-- [ ] Research Pyth types from generated bindings:
-  - [ ] Locate `PythStructs::Price` struct in generated Rust types
-  - [ ] Locate method selectors like `IPyth::getPriceNoOlderThanCall::SELECTOR`
-  - [ ] Verify fields: `int64 price, uint64 conf, int32 expo, uint publishTime`
-- [ ] **Checkpoint**: Bindings compile and Pyth types available
+- [x] Initialize npm if not already present:
+  - [x] Run `npm init -y` in project root
+  - [x] Verify package.json created
+- [x] Install Pyth SDK from NPM:
+  - [x] Run `npm install @pythnetwork/pyth-sdk-solidity`
+  - [x] Verify `node_modules/@pythnetwork/pyth-sdk-solidity/` directory created
+- [x] Create/update `remappings.txt` in project root:
+  - [x] Add line:
+        `@pythnetwork/pyth-sdk-solidity/=node_modules/@pythnetwork/pyth-sdk-solidity/`
+  - [x] This allows imports like
+        `import "@pythnetwork/pyth-sdk-solidity/IPyth.sol";` in Solidity
+- [x] Update `flake.nix` prepSolArtifacts task to build Pyth contracts:
+  - [x] Add forge build command:
+        `(cd node_modules/@pythnetwork/pyth-sdk-solidity/ && forge build)`
+  - [x] Note: Pyth SDK ships with precompiled ABIs in `abis/` directory, no
+        forge build needed
+- [x] Add Pyth bindings to `src/bindings.rs`:
+  - [x] Use `sol!` macro:
+        `IPyth, "node_modules/@pythnetwork/pyth-sdk-solidity/abis/IPyth.json"`
+  - [x] Add serde derives: `#[derive(serde::Serialize, serde::Deserialize)]`
+  - [x] Follow pattern from existing IOrderBookV4 and IERC20 bindings
+- [x] Research Pyth types from generated bindings:
+  - [x] Available types: `IPyth::Price` (not PythStructs, use IPyth namespace
+        directly)
+  - [x] Method selectors available via
+        `IPyth::getPriceNoOlderThanCall::SELECTOR`
+  - [x] Fields: `price: i64, conf: u64, expo: i32, publishTime: U256` (note:
+        publishTime is U256, not u64)
+  - [x] Use `cargo expand` to view macro expansions if needed
+- [x] **Checkpoint**: Bindings compile and Pyth types available
 
 ### Task 3: Pyth Module - Error Types
 
@@ -93,23 +125,27 @@ Extract the exact Pyth oracle price that was returned during onchain trade execu
 - [ ] Define Pyth contract address constant:
   - [ ] Base network: `0x4305FB66699C3B2702D4d05CF36551390A4c69C6`
 - [ ] **Checkpoint**: Module compiles without warnings
-- [ ] **Note**: Use `PythStructs::Price` from bindings directly, no custom struct needed
+- [ ] **Note**: Use `PythStructs::Price` from bindings directly, no custom
+      struct needed
 
 ### Task 4: Trace Parsing (using Pyth bindings)
 
 - [ ] Implement recursive trace traversal function in `src/pyth.rs`:
-  - [ ] Accept `GethTrace` from alloy (already fetched via `fetch_transaction_trace`)
+  - [ ] Accept `GethTrace` from alloy (already fetched via
+        `fetch_transaction_trace`)
   - [ ] Extract `CallFrame` from `GethTrace::CallTracer` variant
   - [ ] Recursively search call tree for Pyth contract calls
   - [ ] Check `to` field matches Pyth contract address
-  - [ ] Use Pyth bindings for method selectors (e.g., `IPyth::getPriceNoOlderThanCall::SELECTOR`)
+  - [ ] Use Pyth bindings for method selectors (e.g.,
+        `IPyth::getPriceNoOlderThanCall::SELECTOR`)
   - [ ] Check `input` field starts with Pyth method selector from bindings
   - [ ] Extract `output` field containing return data
 - [ ] Handle multiple Pyth calls in single transaction:
   - [ ] Return Vec of all Pyth calls found with call depth
   - [ ] Use first call for price extraction
 - [ ] Write unit tests with mock CallFrame structures
-- [ ] **Checkpoint**: Parse test transaction trace and identify Pyth oracle calls
+- [ ] **Checkpoint**: Parse test transaction trace and identify Pyth oracle
+      calls
 
 ### Task 5: Pyth Response Decoder and Price Conversion
 
@@ -133,7 +169,8 @@ Extract the exact Pyth oracle price that was returned during onchain trade execu
 
 - [ ] Implement main extraction function in `src/pyth.rs`:
   - [ ] `pub async fn extract_pyth_price(tx_hash: B256, provider: &impl Provider) -> Result<PythStructs::Price, PythError>`
-  - [ ] Call `fetch_transaction_trace` (already implemented in cli.rs, move to shared location)
+  - [ ] Call `fetch_transaction_trace` (already implemented in cli.rs, move to
+        shared location)
   - [ ] Call trace parser to find Pyth calls
   - [ ] If multiple Pyth calls found, use first one
   - [ ] Decode output bytes using Pyth bindings from `src/bindings.rs`
@@ -149,7 +186,8 @@ Extract the exact Pyth oracle price that was returned during onchain trade execu
   - [ ] Info: "Extracted Pyth price: {price} (expo: {expo}, conf: {conf})"
   - [ ] Warn: "No Pyth call found in transaction {tx_hash}"
   - [ ] Error: "Failed to extract Pyth price from {tx_hash}: {error}"
-- [ ] **Checkpoint**: Extract price from real Base transaction with Pyth oracle call
+- [ ] **Checkpoint**: Extract price from real Base transaction with Pyth oracle
+      call
 
 ### Task 7: CLI Command Integration
 
@@ -166,7 +204,8 @@ Extract the exact Pyth oracle price that was returned during onchain trade execu
     - [ ] Converted decimal price
     - [ ] Any errors encountered
 - [ ] Test CLI command:
-  - [ ] Run with known Base transaction containing Pyth call (0xa207d7abf2aa69badb2d4b266b5d2ed03ec10c4f0de173b866815714b75e055f)
+  - [ ] Run with known Base transaction containing Pyth call
+        (0xa207d7abf2aa69badb2d4b266b5d2ed03ec10c4f0de173b866815714b75e055f)
   - [ ] Verify correct price extraction
   - [ ] Test with transaction without Pyth call (should error clearly)
   - [ ] Test with invalid transaction hash (should error clearly)
@@ -180,7 +219,8 @@ Extract the exact Pyth oracle price that was returned during onchain trade execu
   - [ ] `pyth_confidence` (REAL, nullable) - Confidence interval in decimal form
   - [ ] `pyth_exponent` (INTEGER, nullable) - Exponent value for reference
   - [ ] `pyth_publish_time` (TIMESTAMP, nullable) - Oracle publish timestamp
-  - [ ] `pyth_trace_depth` (INTEGER, nullable) - Call depth in trace (debugging aid)
+  - [ ] `pyth_trace_depth` (INTEGER, nullable) - Call depth in trace (debugging
+        aid)
 - [ ] Add constraints:
   - [ ] `pyth_confidence >= 0` if not null
   - [ ] `pyth_trace_depth >= 0` if not null
@@ -228,7 +268,8 @@ Extract the exact Pyth oracle price that was returned during onchain trade execu
 - [ ] Add comprehensive logging:
   - [ ] Info: Starting Pyth extraction for each trade
   - [ ] Success or error outcome for each extraction
-- [ ] **Checkpoint**: Process test trade and verify Pyth data populated in database
+- [ ] **Checkpoint**: Process test trade and verify Pyth data populated in
+      database
 
 ### Task 11: Testing
 
@@ -260,7 +301,8 @@ Extract the exact Pyth oracle price that was returned during onchain trade execu
 ### Task 12: Configuration and Documentation
 
 - [ ] Update `.env.example`:
-  - [ ] Document RPC URL format: `wss://lb.drpc.org/base/API_KEY` or `https://lb.drpc.org/base/API_KEY`
+  - [ ] Document RPC URL format: `wss://lb.drpc.org/base/API_KEY` or
+        `https://lb.drpc.org/base/API_KEY`
   - [ ] Note that RPC must support `debug_traceTransaction`
   - [ ] Document dRPC free tier: 210M compute units/month
   - [ ] Include example with placeholder API_KEY
@@ -268,7 +310,8 @@ Extract the exact Pyth oracle price that was returned during onchain trade execu
   - [ ] Document Pyth price extraction feature
   - [ ] Note that prices come from transaction traces
   - [ ] Explain that NULL prices mean extraction failed
-  - [ ] Document CLI command for testing: `cargo run --bin cli get-pyth-price <TX_HASH>`
+  - [ ] Document CLI command for testing:
+        `cargo run --bin cli get-pyth-price <TX_HASH>`
 - [ ] Add code comments for complex trace parsing logic
 - [ ] **Checkpoint**: Configuration documented clearly
 
@@ -314,15 +357,23 @@ Extract the exact Pyth oracle price that was returned during onchain trade execu
 
 ## Risk Mitigation
 
-- **RPC Rate Limits**: dRPC free tier is 210M compute units/month - monitor usage
-- **Compute Unit Costs**: debug_traceTransaction is expensive - track costs against quota
-- **RPC Reliability**: If debug calls fail, trades still process (Pyth fields are NULL)
-- **No Pyth Call in Trace**: Some trades might not use Pyth oracle - this is expected and OK
-- **Decoding Failures**: Fail explicitly with error logs, never fake or approximate data
-- **Performance**: Async extraction ensures trade processing pipeline not blocked
-- **CLI-First Testing**: Validates implementation before integrating into main flow
+- **RPC Rate Limits**: dRPC free tier is 210M compute units/month - monitor
+  usage
+- **Compute Unit Costs**: debug_traceTransaction is expensive - track costs
+  against quota
+- **RPC Reliability**: If debug calls fail, trades still process (Pyth fields
+  are NULL)
+- **No Pyth Call in Trace**: Some trades might not use Pyth oracle - this is
+  expected and OK
+- **Decoding Failures**: Fail explicitly with error logs, never fake or
+  approximate data
+- **Performance**: Async extraction ensures trade processing pipeline not
+  blocked
+- **CLI-First Testing**: Validates implementation before integrating into main
+  flow
 - **Cost Scaling**: If free tier insufficient, dRPC has pay-as-you-go pricing
 
 ---
 
-_Each task should be completed and verified at checkpoints before moving to the next. Checkpoints ensure implementation is working correctly at each stage._
+_Each task should be completed and verified at checkpoints before moving to the
+next. Checkpoints ensure implementation is working correctly at each stage._
