@@ -28,3 +28,6 @@ uuid = { version = "1.10.0", features = ["v4", "serde"] }
 httpmock.workspace = true
 serde_json.workspace = true
 serial_test.workspace = true
+
+[lints]
+workspace = true
