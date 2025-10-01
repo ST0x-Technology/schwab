@@ -21,8 +21,8 @@ code in this repository.
 ### While implementing
 
 - You should update PLAN.md every time you complete a section
-- Once the entirety of PLAN.md was implemented and approved by the user, you 
-  can remove the planning file from git
+- Once the entirety of PLAN.md was implemented and approved by the user, you can
+  remove the planning file from git
 
 ## Project Overview
 
@@ -66,6 +66,8 @@ exploiting price discrepancies.
   linting
 - `cargo fmt` - Format code
 - `cargo-tarpaulin --skip-clean --out Html` - Generate test coverage report
+- `cargo expand` - View macro expansions (useful for debugging alloy's `sol!`
+  macro bindings)
 
 ### Nix Development Environment
 

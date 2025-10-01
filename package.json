@@ -1,0 +1,19 @@
+{
+  "name": "schwad",
+  "version": "1.0.0",
+  "description": "## **Background**",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@pythnetwork/pyth-sdk-solidity": "^4.2.0"
+  }
+}
