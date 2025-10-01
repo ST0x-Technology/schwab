@@ -9,6 +9,7 @@ code in this repository.
 
 - Write a comprehensive step-by-step plan to PLAN.md with each task having a
   corresponding section and a list of subtasks as checkboxes inside of it
+- The task sections should follow the format `## Task N. <TASK NAME>`
 - The plan should be a detailed implementation plan and the reasoning behind the
   design decisions
 - Do not include timelines in the plan as they tend to be inaccurate
