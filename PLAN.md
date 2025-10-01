@@ -123,28 +123,28 @@ removed as of August 2025. Use NPM package instead.
   - [x] Implement `thiserror::Error` for all variants
 - [x] Add module declaration to `src/lib.rs`
 - [x] Define Pyth contract address constant:
-  - [x] Base network: `0x4305FB66699C3B2702D4d05CF36551390A4c69C6`
+  - [x] Base network: `0x8250f4aF4B972684F7b336503E2D6dFeDeB1487a`
 - [x] **Checkpoint**: Module compiles without warnings
 - [x] **Note**: Use `PythStructs::Price` from bindings directly, no custom
       struct needed
 
 ### Task 4: Trace Parsing (using Pyth bindings)
 
-- [ ] Implement recursive trace traversal function in `src/pyth.rs`:
-  - [ ] Accept `GethTrace` from alloy (already fetched via
+- [x] Implement recursive trace traversal function in `src/pyth.rs`:
+  - [x] Accept `GethTrace` from alloy (already fetched via
         `fetch_transaction_trace`)
-  - [ ] Extract `CallFrame` from `GethTrace::CallTracer` variant
-  - [ ] Recursively search call tree for Pyth contract calls
-  - [ ] Check `to` field matches Pyth contract address
-  - [ ] Use Pyth bindings for method selectors (e.g.,
+  - [x] Extract `CallFrame` from `GethTrace::CallTracer` variant
+  - [x] Recursively search call tree for Pyth contract calls
+  - [x] Check `to` field matches Pyth contract address
+  - [x] Use Pyth bindings for method selectors (e.g.,
         `IPyth::getPriceNoOlderThanCall::SELECTOR`)
-  - [ ] Check `input` field starts with Pyth method selector from bindings
-  - [ ] Extract `output` field containing return data
-- [ ] Handle multiple Pyth calls in single transaction:
-  - [ ] Return Vec of all Pyth calls found with call depth
-  - [ ] Use first call for price extraction
-- [ ] Write unit tests with mock CallFrame structures
-- [ ] **Checkpoint**: Parse test transaction trace and identify Pyth oracle
+  - [x] Check `input` field starts with Pyth method selector from bindings
+  - [x] Extract `output` field containing return data
+- [x] Handle multiple Pyth calls in single transaction:
+  - [x] Return Vec of all Pyth calls found with call depth
+  - [x] Use first call for price extraction
+- [x] Write unit tests with mock CallFrame structures
+- [x] **Checkpoint**: Parse test transaction trace and identify Pyth oracle
       calls
 
 ### Task 5: Pyth Response Decoder and Price Conversion

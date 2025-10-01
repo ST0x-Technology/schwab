@@ -253,18 +253,36 @@ async fn get_pyth_price<W: Write>(tx_hash: B256, env: &Env, stdout: &mut W) -> a
     let ws = WsConnect::new(ws_url.as_str());
     let provider = ProviderBuilder::new().connect_ws(ws).await?;
 
-    let trace_result = fetch_transaction_trace(tx_hash, &provider).await;
+    let trace = fetch_transaction_trace(tx_hash, &provider).await?;
+    writeln!(stdout, "   ✅ Transaction trace retrieved")?;
+    writeln!(stdout)?;
 
-    match trace_result {
-        Ok(trace) => {
-            writeln!(stdout, "   ✅ Transaction trace retrieved")?;
-            writeln!(stdout, "   Trace result preview (first 200 chars):")?;
-            let trace_json = serde_json::to_string_pretty(&trace)?;
-            let preview = trace_json.chars().take(200).collect::<String>();
-            writeln!(stdout, "   {preview}...")?;
+    writeln!(stdout, "Parsing trace for Pyth oracle calls...")?;
+    match crate::pyth::find_pyth_calls(&trace) {
+        Ok(pyth_calls) => {
+            if pyth_calls.is_empty() {
+                writeln!(stdout, "   ⚠️  No Pyth oracle calls found in transaction")?;
+            } else {
+                writeln!(
+                    stdout,
+                    "   ✅ Found {} Pyth oracle call(s)",
+                    pyth_calls.len()
+                )?;
+                writeln!(stdout)?;
+
+                for (i, call) in pyth_calls.iter().enumerate() {
+                    writeln!(stdout, "   Call #{} (depth: {}):", i + 1, call.depth)?;
+                    writeln!(stdout, "     Output length: {} bytes", call.output.len())?;
+                    writeln!(
+                        stdout,
+                        "     Output (hex): 0x{}",
+                        alloy::hex::encode(&call.output)
+                    )?;
+                }
+            }
         }
         Err(e) => {
-            writeln!(stdout, "   ❌ Failed to fetch trace: {e}")?;
+            writeln!(stdout, "   ❌ Failed to parse trace: {e}")?;
         }
     }
 
