@@ -9,6 +9,7 @@ code in this repository.
 
 - Write a comprehensive step-by-step plan to PLAN.md with each task having a
   corresponding section and a list of subtasks as checkboxes inside of it
+- The task sections should follow the format `## Task N. <TASK NAME>`
 - The plan should be a detailed implementation plan and the reasoning behind the
   design decisions
 - Do not include timelines in the plan as they tend to be inaccurate
@@ -19,10 +20,9 @@ code in this repository.
 
 ### While implementing
 
-- You should update .claude/tasks/YYYY-MM-DD-TASK_NAME.md every time you
-  complete a section
-- Upon completing a planned task, add detailed descriptions of the changes you
-  made to ease the review process
+- You should update PLAN.md every time you complete a section
+- Once the entirety of PLAN.md was implemented and approved by the user, you 
+  can remove the planning file from git
 
 ## Project Overview
 
