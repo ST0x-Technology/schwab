@@ -55,44 +55,7 @@ Extract the exact Pyth oracle price that was returned during onchain trade execu
   - [x] Add `http_rpc_url` field (optional, only if WebSocket doesn't work for debug)
 - [x] **Checkpoint**: Verify RPC endpoint(s) accessible and support debug_traceTransaction
 
-### Task 2: Pyth Module - Error Types and Structs
-
-- [ ] Create `src/pyth.rs` (single file to start, can split later if needed)
-- [ ] Define error types:
-  - [ ] `PythError::NoPythCall` - No Pyth oracle call found in transaction trace
-  - [ ] `PythError::DecodeError` - Failed to decode Pyth return data
-  - [ ] `PythError::InvalidResponse` - Pyth response structure invalid
-  - [ ] Implement `thiserror::Error` for all variants
-- [ ] Define `PythPrice` struct:
-  - [ ] `price: i64` - Raw price value from oracle
-  - [ ] `conf: u64` - Confidence interval
-  - [ ] `expo: i32` - Exponent (power of 10)
-  - [ ] `publish_time: u64` - Unix timestamp of price publication
-- [ ] Add module declaration to `src/lib.rs`
-- [ ] **Checkpoint**: Module compiles without warnings
-
-### Task 3: Trace Parsing (using alloy's CallFrame)
-
-- [ ] Define Pyth contract address constant in `src/pyth.rs`:
-  - [ ] Base network: `0x4305FB66699C3B2702D4d05CF36551390A4c69C6`
-- [ ] Define Pyth method selectors:
-  - [ ] Calculate `getPriceNoOlderThan(bytes32,uint256)` selector
-  - [ ] Calculate `getPriceUnsafe(bytes32)` selector
-  - [ ] Calculate `getEmaPriceNoOlderThan(bytes32,uint256)` selector
-- [ ] Implement recursive trace traversal function:
-  - [ ] Accept `GethTrace` from alloy (already fetched via `fetch_transaction_trace`)
-  - [ ] Extract `CallFrame` from `GethTrace::CallTracer` variant
-  - [ ] Recursively search call tree for Pyth contract calls
-  - [ ] Check `to` field matches Pyth contract address
-  - [ ] Check `input` field starts with known Pyth method selector
-  - [ ] Extract `output` field containing return data
-- [ ] Handle multiple Pyth calls in single transaction:
-  - [ ] Return Vec of all Pyth calls found with call depth
-  - [ ] Use first call for price extraction
-- [ ] Write unit tests with mock CallFrame structures
-- [ ] **Checkpoint**: Parse test transaction trace and identify Pyth oracle calls
-
-### Task 4: Pyth Contract Dependency and ABI
+### Task 2: Pyth Contract Dependency and ABI
 
 **Note**: Pyth's GitHub repo (pyth-network/pyth-sdk-solidity) is deprecated and removed as of August 2025. Use NPM package instead.
 
@@ -114,18 +77,49 @@ Extract the exact Pyth oracle price that was returned during onchain trade execu
   - [ ] Follow pattern from existing IOrderBookV4 and IERC20 bindings
 - [ ] Research Pyth types from generated bindings:
   - [ ] Locate `PythStructs::Price` struct in generated Rust types
+  - [ ] Locate method selectors like `IPyth::getPriceNoOlderThanCall::SELECTOR`
   - [ ] Verify fields: `int64 price, uint64 conf, int32 expo, uint publishTime`
 - [ ] **Checkpoint**: Bindings compile and Pyth types available
 
-### Task 5: Pyth Response Decoder
+### Task 3: Pyth Module - Error Types
 
-- [ ] Implement conversion to `PythPrice` struct in `src/pyth.rs`:
-  - [ ] Use `PythStructs::Price` from bindings (not custom struct)
-  - [ ] Or define `PythPrice` as wrapper around `PythStructs::Price`
-  - [ ] Extract individual fields from Pyth struct
-  - [ ] Validate field values are reasonable
-- [ ] Implement human-readable price conversion:
-  - [ ] Add `to_decimal()` method: `price × 10^expo`
+- [ ] Create `src/pyth.rs` (single file to start, can split later if needed)
+- [ ] Define error types:
+  - [ ] `PythError::NoPythCall` - No Pyth oracle call found in transaction trace
+  - [ ] `PythError::DecodeError` - Failed to decode Pyth return data
+  - [ ] `PythError::InvalidResponse` - Pyth response structure invalid
+  - [ ] Implement `thiserror::Error` for all variants
+- [ ] Add module declaration to `src/lib.rs`
+- [ ] Define Pyth contract address constant:
+  - [ ] Base network: `0x4305FB66699C3B2702D4d05CF36551390A4c69C6`
+- [ ] **Checkpoint**: Module compiles without warnings
+- [ ] **Note**: Use `PythStructs::Price` from bindings directly, no custom struct needed
+
+### Task 4: Trace Parsing (using Pyth bindings)
+
+- [ ] Implement recursive trace traversal function in `src/pyth.rs`:
+  - [ ] Accept `GethTrace` from alloy (already fetched via `fetch_transaction_trace`)
+  - [ ] Extract `CallFrame` from `GethTrace::CallTracer` variant
+  - [ ] Recursively search call tree for Pyth contract calls
+  - [ ] Check `to` field matches Pyth contract address
+  - [ ] Use Pyth bindings for method selectors (e.g., `IPyth::getPriceNoOlderThanCall::SELECTOR`)
+  - [ ] Check `input` field starts with Pyth method selector from bindings
+  - [ ] Extract `output` field containing return data
+- [ ] Handle multiple Pyth calls in single transaction:
+  - [ ] Return Vec of all Pyth calls found with call depth
+  - [ ] Use first call for price extraction
+- [ ] Write unit tests with mock CallFrame structures
+- [ ] **Checkpoint**: Parse test transaction trace and identify Pyth oracle calls
+
+### Task 5: Pyth Response Decoder and Price Conversion
+
+- [ ] Use Pyth bindings to decode output in `src/pyth.rs`:
+  - [ ] Use `IPyth` return types from bindings to decode `output` bytes
+  - [ ] Extract `PythStructs::Price` from decoded response
+  - [ ] Use `PythStructs::Price` directly (no wrapper struct needed)
+- [ ] Add price conversion helper:
+  - [ ] Implement `to_decimal(price: &PythStructs::Price) -> Decimal` function
+  - [ ] Formula: `price.price × 10^price.expo`
   - [ ] Use `rust_decimal::Decimal` for precision
   - [ ] Handle negative exponents correctly
 - [ ] Write unit tests:
@@ -138,12 +132,12 @@ Extract the exact Pyth oracle price that was returned during onchain trade execu
 ### Task 6: Price Extraction Implementation
 
 - [ ] Implement main extraction function in `src/pyth.rs`:
-  - [ ] `pub async fn extract_pyth_price(tx_hash: B256, provider: &impl Provider) -> Result<PythPrice, PythError>`
+  - [ ] `pub async fn extract_pyth_price(tx_hash: B256, provider: &impl Provider) -> Result<PythStructs::Price, PythError>`
   - [ ] Call `fetch_transaction_trace` (already implemented in cli.rs, move to shared location)
   - [ ] Call trace parser to find Pyth calls
   - [ ] If multiple Pyth calls found, use first one
   - [ ] Decode output bytes using Pyth bindings from `src/bindings.rs`
-  - [ ] Return PythPrice struct
+  - [ ] Return `PythStructs::Price` directly
 - [ ] Error handling:
   - [ ] Propagate all errors explicitly (no unwrap, no defaults)
   - [ ] Return Err if no Pyth call found
