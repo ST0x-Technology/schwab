@@ -407,6 +407,63 @@ fail fast with a clear error than to continue with potentially corrupted data.
 Silent data corruption in financial systems can lead to massive losses,
 regulatory violations, and complete system failure.**
 
+### CRITICAL: Security and Secrets Management
+
+**NEVER read files containing secrets, credentials, or sensitive configuration
+without explicit user permission.**
+
+This project handles financial transactions and sensitive API credentials.
+Unauthorized access to secrets can lead to:
+
+- Account compromise
+- Financial losses
+- Security breaches
+
+#### Files That Require Explicit Permission
+
+The following files MUST NOT be read without explicit user permission:
+
+- `.env` - Environment variables containing API keys, secrets, and credentials
+- `.env.*` - Environment-specific configuration files (`.env.local`,
+  `.env.production`, etc.)
+- `credentials.json` - Credential storage files
+- `*.key`, `*.pem` - Private keys and certificates
+- `*.p12`, `*.pfx` - Certificate bundles
+- Database files containing sensitive data (unless necessary for debugging with
+  permission)
+- Any file that may contain API keys, tokens, passwords, or other secrets
+
+#### Required Practice
+
+**Before reading any file that may contain secrets:**
+
+1. **Ask the user explicitly** for permission to read the file
+2. **Explain why** you need to read it
+3. **Wait for confirmation** before proceeding
+
+**Example of correct behavior:**
+
+```
+User: "Why isn't the bot connecting to Schwab?"
+Assistant: "I can help debug this. To check the configuration, I would need to
+read your .env file which contains sensitive credentials. May I have permission
+to read it?"
+```
+
+#### Alternative Approaches
+
+When debugging configuration issues, prefer these approaches:
+
+1. **Ask the user** to verify specific environment variables are set
+2. **Request sanitized output** where sensitive values are redacted
+3. **Check example files** like `.env.example` instead of the actual `.env`
+4. **Review code** that uses the configuration rather than the configuration
+   itself
+
+**Remember: Protecting secrets is critical for application security. Always
+respect the sensitivity of credential files and never access them without
+explicit permission.**
+
 ### Testing Strategy
 
 - **Mock Blockchain Interactions**: Uses `alloy::providers::mock::Asserter` for
