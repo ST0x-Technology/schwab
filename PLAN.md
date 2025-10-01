@@ -1,139 +1,163 @@
-# OTLP Migration Plan - Grafana Metrics Integration
+# Plan: Add Pyth Price Data Collection to onchain_trades Table
 
-## Current State (VERIFIED WORKING ✅)
+## Overview
 
-- ✅ Manual HTTP export is working and committed
-- ✅ Metrics appearing in Grafana: heartbeat_counter_total=1,
-  token_retry_attempts_total=3, system_startup_total=1
-- ✅ Clean baseline with no compilation warnings
-- ✅ 10-second export interval with successful HTTP 200 responses
-- ✅ Improved error handling using `?` operator and `let-else` patterns
+Add Pyth Network price data collection to the arbitrage bot to store both off-chain (Benchmarks API) and on-chain (EVM oracle) prices alongside trade records. This will enable price comparison and monitoring of oracle accuracy.
 
-## Phase 2: Initial OTLP Migration Attempt (COMPLETED WITH LEARNINGS)
+## Design Decisions
 
-### Task 1: Add OTLP Dependencies & Runtime Fix Preparation
+### Why Store Pyth Prices
 
-- [x] Add back OTLP imports: `WithExportConfig`, `WithHttpConfig`,
-      `PeriodicReader`
-- [x] Keep manual export as primary (no changes to setup flow)
-- [x] Test: Run server, verify metrics still appear in Grafana
-- [x] **Checkpoint**: Confirmed with user that metrics still work
+- **Price Verification**: Compare actual trade prices against Pyth oracle prices to detect discrepancies
+- **Oracle Monitoring**: Track differences between off-chain benchmark and on-chain oracle prices  
+- **Audit Trail**: Maintain historical record of prices at trade execution time
+- **Performance Analysis**: Analyze trade profitability relative to oracle prices
 
-### Task 2: Implement Spawn Blocking OTLP Setup
+### Architecture Approach
 
-- [x] Add spawn_blocking OTLP setup in `setup()` function
-- [x] Keep manual export as primary for testing
-- [x] Log whether OTLP setup succeeded or failed
-- [x] Test: Run server, verify no runtime panic initially
-- [x] **Checkpoint**: Confirmed metrics still appear in Grafana
+- **Non-blocking**: Pyth price fetching should not block trade processing
+- **Graceful Degradation**: Trades continue if Pyth data is unavailable
+- **Efficient Caching**: Cache price feed IDs to minimize API calls
+- **Reuse Infrastructure**: Leverage existing `alloy` and `reqwest` dependencies
 
-### Task 3: Try OTLP First with Manual Fallback
+## Implementation Plan
 
-- [x] Modify logic to try OTLP setup first via spawn_blocking
-- [x] Set global meter provider when OTLP succeeds
-- [x] Add clear logging for which method is active
-- [x] Test: Run server, check logs for which method is used
-- [x] **Issue Discovered**: OTLP setup succeeded but metrics not reaching
-      Grafana
+### Section 1: Database Schema Update
 
-### Task 4: Verify OTLP is Actually Working
+- [ ] Create new migration using `sqlx migrate add add_pyth_prices`
+- [ ] Add columns to `onchain_trades` table:
+  - [ ] `pyth_price_offchain` (REAL, nullable) - Benchmark price from API
+  - [ ] `pyth_price_onchain` (REAL, nullable) - Oracle price from contract
+  - [ ] `pyth_confidence_offchain` (REAL, nullable) - Benchmark confidence interval
+  - [ ] `pyth_confidence_onchain` (REAL, nullable) - Oracle confidence interval
+  - [ ] `pyth_price_timestamp` (TIMESTAMP, nullable) - When prices were fetched
+- [ ] Run migration with `sqlx migrate run`
+- [ ] **Checkpoint**: Verify database schema updated correctly
 
-- [x] Increase export frequency to 10 seconds
-- [x] Add debug logging in OTLP path
-- [x] Run for 2+ minutes testing
-- [x] **Critical Finding**: OTLP PeriodicReader still causes runtime panic "no
-      reactor running"
-- [x] **User Verification**: Confirmed metrics from OTLP attempt not appearing
-      in Grafana
+### Section 2: Pyth Module Structure
 
-### Task 5: Stabilize with Working Solution
+- [ ] Create `src/pyth/mod.rs` module structure
+- [ ] Define `PythPrice` struct with price and confidence fields
+- [ ] Define `PythPriceData` struct containing both off-chain and on-chain prices
+- [ ] Create error types for Pyth-specific failures
+- [ ] Add module to `src/lib.rs`
+- [ ] **Checkpoint**: Ensure module compiles without warnings
 
-- [x] Revert to manual HTTP export due to OTLP runtime issues
-- [x] Keep 10-second interval (improvement over original 30 seconds)
-- [x] Clean up unused OTLP imports and dependencies
-- [x] Fix error handling with `?` operator and `let-else` patterns
-- [x] **Checkpoint**: Confirmed stable metrics appearing in Grafana with fresh
-      timestamps
+### Section 3: Benchmarks API Client
 
-## Key Learnings from Phase 2
+- [ ] Create `src/pyth/benchmarks.rs`
+- [ ] Implement HTTP client using existing `reqwest` dependency
+- [ ] Add rate limiting (30 requests per 10 seconds)
+- [ ] Implement `/v1/updates/price/{timestamp}` endpoint for historical prices
+- [ ] Implement `/v1/price_feeds/` endpoint for feed discovery
+- [ ] Parse JSON responses into `PythPrice` structs
+- [ ] Add comprehensive error handling
+- [ ] Write unit tests with mocked HTTP responses
+- [ ] **Checkpoint**: Test API client with real Benchmarks API
 
-### Issues Identified
+### Section 4: On-chain Oracle Reader
 
-- ❌ **Runtime Panic**: PeriodicReader creates background threads outside Tokio
-  context
-- ❌ **spawn_blocking Insufficient**: Does not fully resolve the reactor issue
-- ❌ **Silent Failure**: OTLP setup can succeed but fail to deliver metrics
-- ❌ **Incomplete Understanding**: Need deeper research into OpenTelemetry
-  architecture
+- [ ] Add Pyth oracle ABI to `src/bindings.rs`
+  - [ ] Contract address: `0x4305FB66699C3B2702D4d05CF36551390A4c69C6`
+  - [ ] Include `getPrice(bytes32)` method
+  - [ ] Include `getPriceUnsafe(bytes32)` method
+- [ ] Create `src/pyth/oracle.rs`
+- [ ] Implement oracle reader using existing `alloy` provider
+- [ ] Parse contract responses into `PythPrice` struct
+- [ ] Add error handling for contract call failures
+- [ ] Write unit tests with mock provider
+- [ ] **Checkpoint**: Test oracle reader on actual chain
 
-### Successes
+### Section 5: Price Feed Mapping
 
-- ✅ **Manual HTTP Export**: Reliable fallback that works perfectly
-- ✅ **OTLP Format**: Confirmed we can generate correct OTLP JSON
-- ✅ **10-second Exports**: Improved frequency from 30 seconds
-- ✅ **Verification Process**: Always check with user before claiming success
+- [ ] Create `src/pyth/feeds.rs`
+- [ ] Map common equity symbols to Pyth feed IDs:
+  - [ ] AAPL → Pyth feed ID
+  - [ ] GOOGL → Pyth feed ID  
+  - [ ] MSFT → Pyth feed ID
+  - [ ] TSLA → Pyth feed ID
+  - [ ] AMZN → Pyth feed ID
+- [ ] Implement lazy static HashMap for lookups
+- [ ] Add function to discover feed IDs via API
+- [ ] Cache discovered feed IDs
+- [ ] **Checkpoint**: Verify feed ID mappings are correct
 
-## Phase 3: Deep Research & Proper OTLP Implementation
+### Section 6: Update OnchainTrade Struct
 
-### Task 6: Research OpenTelemetry Architecture
+- [ ] Modify `src/onchain/trade.rs`
+- [ ] Add optional Pyth fields to `OnchainTrade`:
+  - [ ] `pyth_price_offchain: Option<f64>`
+  - [ ] `pyth_price_onchain: Option<f64>`
+  - [ ] `pyth_confidence_offchain: Option<f64>`
+  - [ ] `pyth_confidence_onchain: Option<f64>`
+  - [ ] `pyth_price_timestamp: Option<DateTime<Utc>>`
+- [ ] Update `save_within_transaction` method
+- [ ] Modify SQL INSERT to include Pyth columns
+- [ ] Update any existing tests
+- [ ] **Checkpoint**: Run existing tests to ensure no breakage
 
-- [ ] Study OpenTelemetry SDK documentation for runtime requirements
-- [ ] Research alternative to PeriodicReader (push vs pull exporters)
-- [ ] Investigate proper Tokio runtime integration patterns
-- [ ] Examine successful OTLP implementations in other Rust projects
-- [ ] **Goal**: Understand root cause of "no reactor running" issue
+### Section 7: Integrate with Trade Processing
 
-### Task 7: Alternative OTLP Approaches
+- [ ] Modify `src/conductor.rs`
+- [ ] In `convert_event_to_trade`:
+  - [ ] After creating `OnchainTrade`, spawn async task to fetch Pyth prices
+  - [ ] Use block timestamp for historical benchmark lookup
+  - [ ] Fetch on-chain price from oracle
+  - [ ] Store prices in trade struct
+- [ ] Ensure price fetching is non-blocking
+- [ ] Add logging for Pyth data collection status
+- [ ] Handle failures gracefully (continue trade processing)
+- [ ] **Checkpoint**: Process test trade and verify Pyth data collected
 
-- [ ] Research `opentelemetry_sdk::export::metrics::PushController`
-- [ ] Investigate manual metric export without PeriodicReader
-- [ ] Test `opentelemetry::global::meter_provider()` setup patterns
-- [ ] Explore different runtime configurations (Tokio vs blocking)
-- [ ] **Goal**: Find OTLP approach that works with our Tokio setup
+### Section 8: Configuration
 
-### Task 8: Protocol-Level Investigation
+- [ ] Add environment variables to `.env.example`:
+  - [ ] `PYTH_BENCHMARKS_API_URL` (default: https://benchmarks.pyth.network)
+  - [ ] `PYTH_ORACLE_ADDRESS` (default: 0x4305FB66699C3B2702D4d05CF36551390A4c69C6)
+  - [ ] `ENABLE_PYTH_PRICES` (default: true)
+- [ ] Update `src/env.rs` to read new variables
+- [ ] Add configuration struct for Pyth settings
+- [ ] **Checkpoint**: Test with different configurations
 
-- [ ] Compare our manual OTLP JSON with library-generated OTLP
-- [ ] Test library's HTTP client configuration options
-- [ ] Investigate different OTLP transport options (HTTP vs gRPC)
-- [ ] Research Grafana Cloud OTLP endpoint requirements
-- [ ] **Goal**: Ensure library can generate compatible OTLP format
+### Section 9: Testing
 
-### Task 9: Runtime Environment Analysis
+- [ ] Write unit tests for Benchmarks API client
+- [ ] Write unit tests for oracle reader
+- [ ] Write unit tests for feed ID mapping
+- [ ] Write integration test for full flow
+- [ ] Test graceful degradation when Pyth unavailable
+- [ ] Test database persistence of Pyth data
+- [ ] Run all tests with `cargo test`
+- [ ] **Checkpoint**: All tests passing
 
-- [ ] Profile our Tokio runtime setup in `src/lib.rs`
-- [ ] Test OTLP in isolated minimal examples
-- [ ] Compare with official OpenTelemetry Rust examples
-- [ ] Investigate if our async context is missing something
-- [ ] **Goal**: Identify what our runtime needs for OTLP compatibility
+### Section 10: Final Integration
 
-### Task 10: Implementation & Integration
-
-- [ ] Implement researched OTLP solution
-- [ ] Add comprehensive error handling and logging
-- [ ] Test with manual export as verified fallback
-- [ ] Gradual rollout with user verification at each step
-- [ ] **Goal**: Working OTLP implementation using the library properly
+- [ ] Run full system test with real trades
+- [ ] Verify Pyth prices stored in database
+- [ ] Check performance impact (should be minimal)
+- [ ] Verify trade processing continues if Pyth fails
+- [ ] Review logs for any warnings or errors
+- [ ] Run clippy and fix any issues
+- [ ] Run `pre-commit run -a` to ensure formatting
+- [ ] **Final Checkpoint**: System working with Pyth integration
 
 ## Success Criteria
 
-- ✅ No runtime panics ("no reactor running")
-- ✅ Metrics appear consistently in Grafana using OTLP library
-- ✅ Clean code with no warnings
-- ✅ Proper OpenTelemetry SDK usage following best practices
-- ✅ Each step verified with user confirmation
-- ✅ Maintain manual export as fallback during transition
+- ✅ Trades enriched with Pyth price data when available
+- ✅ Trade processing continues if Pyth unavailable  
+- ✅ Both off-chain and on-chain prices stored
+- ✅ No performance degradation
+- ✅ Clear logging of Pyth status
+- ✅ All tests passing
+- ✅ No clippy warnings
 
-## Research Resources
+## Risk Mitigation
 
-- OpenTelemetry Rust SDK documentation
-- GitHub examples and successful implementations
-- Grafana Cloud OTLP documentation
-- Tokio runtime integration guides
-- Community discussions on similar issues
+- **API Rate Limits**: Implement proper rate limiting and caching
+- **Network Failures**: Use timeouts and continue without Pyth data
+- **Contract Changes**: Make oracle address configurable
+- **Data Accuracy**: Store confidence intervals for reliability assessment
 
 ---
 
-_Phase 3 focuses on proper research and understanding before implementation,
-ensuring we leverage the OpenTelemetry library correctly rather than working
-around its limitations._
+_Each section should be completed and verified before moving to the next. Checkpoints ensure the implementation is working correctly at each stage._
