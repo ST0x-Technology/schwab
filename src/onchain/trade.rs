@@ -35,6 +35,8 @@ pub struct OnchainTrade {
     pub price_usdc: f64,
     pub block_timestamp: Option<DateTime<Utc>>,
     pub created_at: Option<DateTime<Utc>>,
+    pub gas_used: Option<u64>,
+    pub effective_gas_price: Option<u128>,
 }
 
 impl OnchainTrade {
@@ -49,10 +51,17 @@ impl OnchainTrade {
         let direction_str = self.direction.as_str();
         let symbol_str = self.symbol.to_string();
         let block_timestamp_naive = self.block_timestamp.map(|dt| dt.naive_utc());
+
+        // Convert gas fields for database storage using safe casting
+        #[allow(clippy::cast_possible_wrap)]
+        let gas_used_i64 = self.gas_used.map(|g| g as i64);
+        #[allow(clippy::cast_possible_truncation)]
+        let effective_gas_price_i64 = self.effective_gas_price.map(|p| p as i64);
+
         let result = sqlx::query!(
             r#"
-            INSERT INTO onchain_trades (tx_hash, log_index, symbol, amount, direction, price_usdc, block_timestamp)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            INSERT INTO onchain_trades (tx_hash, log_index, symbol, amount, direction, price_usdc, block_timestamp, gas_used, effective_gas_price)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             "#,
             tx_hash_str,
             log_index_i64,
@@ -60,7 +69,9 @@ impl OnchainTrade {
             self.amount,
             direction_str,
             self.price_usdc,
-            block_timestamp_naive
+            block_timestamp_naive,
+            gas_used_i64,
+            effective_gas_price_i64
         )
         .execute(&mut **sql_tx)
         .await?;
@@ -78,7 +89,7 @@ impl OnchainTrade {
         #[allow(clippy::cast_possible_wrap)]
         let log_index_i64 = log_index as i64;
         let row = sqlx::query!(
-            "SELECT id, tx_hash, log_index, symbol, amount, direction, price_usdc, block_timestamp, created_at FROM onchain_trades WHERE tx_hash = ?1 AND log_index = ?2",
+            "SELECT id, tx_hash, log_index, symbol, amount, direction, price_usdc, block_timestamp, created_at, gas_used, effective_gas_price FROM onchain_trades WHERE tx_hash = ?1 AND log_index = ?2",
             tx_hash_str,
             log_index_i64
         )
@@ -114,6 +125,10 @@ impl OnchainTrade {
             created_at: row
                 .created_at
                 .map(|naive_dt| DateTime::from_naive_utc_and_offset(naive_dt, Utc)),
+            #[allow(clippy::cast_sign_loss)]
+            gas_used: row.gas_used.map(|g| g as u64),
+            #[allow(clippy::cast_sign_loss)]
+            effective_gas_price: row.effective_gas_price.map(|p| p as u128),
         })
     }
 
@@ -135,6 +150,13 @@ impl OnchainTrade {
     ) -> Result<Option<Self>, OnChainError> {
         let tx_hash = log.transaction_hash.ok_or(TradeValidationError::NoTxHash)?;
         let log_index = log.log_index.ok_or(TradeValidationError::NoLogIndex)?;
+
+        // Fetch transaction receipt to get gas information
+        let receipt = provider.get_transaction_receipt(tx_hash).await?;
+        let (gas_used, effective_gas_price) = match receipt {
+            Some(receipt) => (Some(receipt.gas_used), Some(receipt.effective_gas_price)),
+            None => (None, None),
+        };
 
         let input = order
             .validInputs
@@ -193,6 +215,8 @@ impl OnchainTrade {
                 .block_timestamp
                 .and_then(|ts| DateTime::from_timestamp(ts as i64, 0)),
             created_at: None,
+            gas_used,
+            effective_gas_price,
         };
 
         Ok(Some(trade))
@@ -338,6 +362,8 @@ mod tests {
             price_usdc: 150.25,
             block_timestamp: DateTime::from_timestamp(1_672_531_200, 0), // Jan 1, 2023 00:00:00 UTC
             created_at: None,
+            gas_used: Some(21000),
+            effective_gas_price: Some(2_000_000_000), // 2 gwei
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -357,6 +383,8 @@ mod tests {
         assert_eq!(found.direction, trade.direction);
         assert!((found.price_usdc - trade.price_usdc).abs() < f64::EPSILON);
         assert_eq!(found.block_timestamp, trade.block_timestamp);
+        assert_eq!(found.gas_used, trade.gas_used);
+        assert_eq!(found.effective_gas_price, trade.effective_gas_price);
         assert!(found.id.is_some());
         assert!(found.created_at.is_some());
     }
@@ -422,6 +450,8 @@ mod tests {
             price_usdc: 150.0,
             block_timestamp: DateTime::from_timestamp(1_672_531_800, 0), // Jan 1, 2023 00:10:00 UTC
             created_at: None,
+            gas_used: Some(50000), // Complex contract interaction
+            effective_gas_price: Some(1_500_000_000), // 1.5 gwei in wei
         };
 
         // Insert first trade
@@ -457,6 +487,8 @@ mod tests {
             price_usdc: 150.0,
             block_timestamp: None,
             created_at: None,
+            gas_used: None,
+            effective_gas_price: None,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -570,6 +602,8 @@ mod tests {
                 price_usdc: 150.0,
                 block_timestamp: None,
                 created_at: None,
+                gas_used: None,
+                effective_gas_price: None,
             };
 
             let mut sql_tx = pool.begin().await.unwrap();

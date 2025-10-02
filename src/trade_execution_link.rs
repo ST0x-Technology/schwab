@@ -325,6 +325,8 @@ mod tests {
             price_usdc: 150.0,
             block_timestamp: None,
             created_at: None,
+            gas_used: None,
+            effective_gas_price: None,
         };
 
         let execution = SchwabExecution {
@@ -384,6 +386,8 @@ mod tests {
                 price_usdc: 300.0,
                 block_timestamp: None,
                 created_at: None,
+                gas_used: None,
+                effective_gas_price: None,
             },
             OnchainTrade {
                 id: None,
@@ -397,6 +401,8 @@ mod tests {
                 price_usdc: 305.0,
                 block_timestamp: None,
                 created_at: None,
+                gas_used: None,
+                effective_gas_price: None,
             },
         ];
 
@@ -474,6 +480,8 @@ mod tests {
                 price_usdc: 150.0,
                 block_timestamp: None,
                 created_at: None,
+                gas_used: None,
+                effective_gas_price: None,
             };
             let trade_id = trade.save_within_transaction(&mut sql_tx).await.unwrap();
             trade_ids.push(trade_id);
@@ -527,6 +535,8 @@ mod tests {
             price_usdc: 150.0,
             block_timestamp: None,
             created_at: None,
+            gas_used: None,
+            effective_gas_price: None,
         };
 
         let execution = SchwabExecution {
