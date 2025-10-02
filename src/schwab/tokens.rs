@@ -1,6 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 use sqlx::SqlitePool;
+use tokio::task::JoinHandle;
 use tokio::time::{Duration as TokioDuration, interval};
 use tracing::{error, info, warn};
 
@@ -151,7 +152,7 @@ impl SchwabTokens {
 pub(crate) fn spawn_automatic_token_refresh(
     pool: SqlitePool,
     env: SchwabAuthEnv,
-) -> tokio::task::JoinHandle<()> {
+) -> JoinHandle<()> {
     info!("Starting token refresh service");
     tokio::spawn(async move {
         if let Err(e) = start_automatic_token_refresh_loop(pool, env).await {
