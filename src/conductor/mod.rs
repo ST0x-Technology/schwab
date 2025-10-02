@@ -334,51 +334,22 @@ async fn receive_blockchain_events<S1, S2>(
     S1: Stream<Item = Result<(ClearV2, Log), sol_types::Error>> + Unpin,
     S2: Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin,
 {
-    info!("WebSocket event receiver started, waiting for blockchain events");
-    let mut iterations = 0u32;
-    let mut consecutive_errors = 0u32;
-
     loop {
-        iterations = iterations.saturating_add(1);
-
-        if iterations % 100 == 0 {
-            trace!(
-                "WebSocket receiver iteration #{}, consecutive_errors={}",
-                iterations, consecutive_errors
-            );
-        }
-
-        trace!(
-            "WebSocket receiver entering tokio::select! (iteration #{})",
-            iterations
-        );
         let event_result = tokio::select! {
             Some(result) = clear_stream.next() => {
-                trace!("WebSocket receiver got ClearV2 result");
                 result.map(|(event, log)| (TradeEvent::ClearV2(Box::new(event)), log))
             }
             Some(result) = take_stream.next() => {
-                trace!("WebSocket receiver got TakeOrderV2 result");
                 result.map(|(event, log)| (TradeEvent::TakeOrderV2(Box::new(event)), log))
-            }
-            () = tokio::time::sleep(Duration::from_millis(50)) => {
-                // Rate-limit the polling to prevent CPU spinning when no events are available
-                trace!("WebSocket polling rate limiter triggered (iteration #{})", iterations);
-                continue;
             }
             else => {
                 error!("All event streams ended, shutting down event receiver");
                 break;
             }
         };
-        trace!(
-            "WebSocket receiver exited tokio::select! (iteration #{})",
-            iterations
-        );
 
         match event_result {
             Ok((event, log)) => {
-                consecutive_errors = 0;
                 trace!(
                     "Received blockchain event: tx_hash={:?}, log_index={:?}, block_number={:?}",
                     log.transaction_hash, log.log_index, log.block_number
@@ -389,25 +360,7 @@ async fn receive_blockchain_events<S1, S2>(
                 }
             }
             Err(e) => {
-                consecutive_errors = consecutive_errors.saturating_add(1);
-                error!(
-                    "Error in event stream (consecutive errors: {}): {e}",
-                    consecutive_errors
-                );
-
-                // Add exponential backoff for errors to prevent tight spin loop
-                let delay_ms = match consecutive_errors {
-                    1..=3 => 100,
-                    4..=10 => 500,
-                    11..=50 => 2000,
-                    _ => 5000,
-                };
-
-                error!(
-                    "Sleeping {}ms after event stream error before retry",
-                    delay_ms
-                );
-                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                error!("Error in event stream: {e}");
             }
         }
     }
@@ -503,18 +456,9 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
         }
     }
 
-    let mut empty_polls = 0u32;
-    let mut total_polls = 0u32;
-    let mut successful_polls = 0u32;
-
     loop {
-        total_polls += 1;
-
         match process_next_queued_event(env, pool, cache, &provider).await {
             Ok(Some(execution)) => {
-                empty_polls = 0;
-                successful_polls += 1;
-
                 if let Some(exec_id) = execution.id {
                     if let Err(e) =
                         execute_pending_schwab_execution(broker, env, pool, exec_id).await
@@ -524,29 +468,7 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
                 }
             }
             Ok(None) => {
-                empty_polls = empty_polls.saturating_add(1);
-
-                // Log stats every 100 polls
-                if total_polls % 100 == 0 {
-                    trace!(
-                        "Queue processor stats: polls={}, successful={}, empty_streak={}",
-                        total_polls, successful_polls, empty_polls
-                    );
-                }
-
-                // Progressive backoff for idle polling: 100ms -> 500ms -> 2s -> 10s -> 30s
-                let delay_ms = match empty_polls {
-                    1..=10 => 100,
-                    11..=50 => 500,
-                    51..=200 => 2000,
-                    201..=1000 => 10000,
-                    _ => 30000,
-                };
-                trace!(
-                    "Queue empty (poll #{}), sleeping {}ms",
-                    empty_polls, delay_ms
-                );
-                sleep(Duration::from_millis(delay_ms)).await;
+                sleep(Duration::from_millis(100)).await;
             }
             Err(e) => {
                 error!("Error processing queued event: {e}");
