@@ -38,7 +38,7 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
     sqlx::migrate!().run(&pool).await?;
 
     // Initialize metrics (optional - returns None if not configured)
-    let metrics = Arc::new(metrics::setup(&env).await);
+    let metrics = Arc::new(metrics::setup(&env));
     if metrics.is_some() {
         info!("Metrics initialized successfully");
     } else {
@@ -71,10 +71,9 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
 
                     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                     continue;
-                } else {
-                    error!("Bot failed with non-recoverable error: {e}");
-                    break;
                 }
+                error!("Bot failed with non-recoverable error: {e}");
+                break;
             }
             // If run() succeeds, it means the bot completed normally (market closed, etc.)
             // Continue the loop to restart for next market session
