@@ -5,6 +5,8 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 jobs:
   rainix:
+    env:
+      DATABASE_URL: "sqlite:schwab.db"
     strategy:
       matrix:
         os: [ubuntu-latest]
@@ -31,7 +33,8 @@ jobs:
           # collect garbage until the Nix store size (in bytes) is at most this number
           gc-max-store-size-linux: 10G
       - run: nix run .#prepSolArtifacts
-      - run: cp -v .env.example .env
+      - run: nix flake check
+
       - run: nix develop -c sqlx db create
       - run: nix develop -c sqlx migrate run
       - name: Run ${{ matrix.task }}
