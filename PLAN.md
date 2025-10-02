@@ -1,22 +1,28 @@
 # Alpaca Broker Integration Plan
 
-This plan outlines the integration of Alpaca Markets as an additional broker option for the st0x arbitrage bot, leveraging the existing broker abstraction layer.
+This plan outlines the integration of Alpaca Markets as an additional broker
+option for the st0x arbitrage bot, leveraging the existing broker abstraction
+layer.
 
 ## Task 1: Add Alpaca Dependencies and Auth Configuration
 
-Add the necessary dependencies and basic configuration structure for Alpaca integration.
+Add the necessary dependencies and basic configuration structure for Alpaca
+integration.
 
 - [x] Add `apca` crate dependency to `crates/broker/Cargo.toml`
 - [x] Add `chrono-tz` for timezone handling if not already present
 - [x] Create `crates/broker/src/alpaca/mod.rs` as the main module entry point
-- [x] Create `crates/broker/src/alpaca/auth.rs` with `AlpacaAuthEnv` struct containing:
-  - `api_key_id: String` 
+- [x] Create `crates/broker/src/alpaca/auth.rs` with `AlpacaAuthEnv` struct
+      containing:
+  - `api_key_id: String`
   - `api_secret_key: String`
   - `base_url: String` (for paper vs live trading)
-- [x] Update `crates/broker/src/lib.rs` to add `Alpaca` variant to `SupportedBroker` enum
+- [x] Update `crates/broker/src/lib.rs` to add `Alpaca` variant to
+      `SupportedBroker` enum
 - [x] Update the Display impl for `SupportedBroker` to handle Alpaca variant
 - [x] Add `pub mod alpaca` declaration to `crates/broker/src/lib.rs`
-- [x] Update database string parsing in `src/offchain/execution.rs` to handle "alpaca" broker type
+- [x] Update database string parsing in `src/offchain/execution.rs` to handle
+      "alpaca" broker type
 
 ## Task 2: Implement Core Alpaca Authentication
 
@@ -26,8 +32,10 @@ Implement the authentication layer for Alpaca API access using API keys.
 - [x] Implement `AlpacaClient::new()` that creates client from environment
 - [x] Add paper trading detection based on base_url
 - [x] Implement account verification endpoint call to validate credentials
-- [x] Use existing `apca::Error` types with `#[from]` conversion (no custom AlpacaError enum needed)
-- [x] Implement `From<apca::Error>` for `BrokerError` with boxed errors for performance
+- [x] Use existing `apca::Error` types with `#[from]` conversion (no custom
+      AlpacaError enum needed)
+- [x] Implement `From<apca::Error>` for `BrokerError` with boxed errors for
+      performance
 - [x] Add unit tests for auth configuration with valid/invalid API keys
 - [x] Add test for paper vs live environment detection
 
@@ -37,7 +45,7 @@ Create market hours checking functionality using Alpaca's Clock API.
 
 - [x] Create `crates/broker/src/alpaca/market_hours.rs`
 - [x] Implement `wait_until_market_open()` function using Alpaca Clock API
-- [x] Add timezone conversion from Eastern to UTC  
+- [x] Add timezone conversion from Eastern to UTC
 - [x] Implement logic to determine if market is currently open
 - [x] Calculate wait duration until next market open
 - [x] Handle weekends and market holidays (delegated to Alpaca API)
@@ -63,19 +71,26 @@ Map the generic order types to Alpaca's order API.
 
 Implement order status checking and batch polling functionality.
 
-- [ ] Define order status query functions using apca
-- [ ] Map Alpaca order statuses to `OrderState` enum:
+- [x] Write comprehensive tests for order status functionality
+- [x] Complete actual API implementation to replace placeholder
+      `get_order_status()` function
+- [x] Define order status query functions using apca with proper type handling
+- [x] Map Alpaca order statuses to `OrderStatus` enum:
   - `new`/`accepted`/`pending_new` → `Submitted`
   - `filled` → `Filled`
   - `rejected`/`canceled`/`expired` → `Failed`
   - `partially_filled` → handle appropriately
-- [ ] Implement `get_order_status()` for single order queries
-- [ ] Implement `poll_pending_orders()` for batch status checks
-- [ ] Extract execution price from filled orders
-- [ ] Handle partial fills with appropriate state
-- [ ] Add retry logic for transient failures
-- [ ] Write tests for all order state transitions
-- [ ] Test error scenarios and edge cases
+- [x] Implement proper `get_order_status()` with actual Alpaca API calls
+- [x] Implement `poll_pending_orders()` for batch status checks
+- [x] Extract execution price from filled orders
+- [x] Handle partial fills with appropriate state
+- [x] Add retry logic for transient failures
+- [x] Replace placeholder implementation with real API integration
+
+**Current Status**: ✅ **COMPLETED** - Full API integration implemented with
+comprehensive test coverage. Both `get_order_status()` and
+`poll_pending_orders()` functions are fully functional with proper error
+handling, status mapping, and price extraction.
 
 ## Task 6: Create AlpacaBroker Implementation
 
@@ -91,8 +106,13 @@ Implement the complete Broker trait for Alpaca.
 - [ ] Implement `poll_pending_orders()` for batch updates
 - [ ] Implement `parse_order_id()` for database compatibility
 - [ ] Implement `to_supported_broker()` returning `SupportedBroker::Alpaca`
-- [ ] Implement `run_broker_maintenance()` (return None - no token refresh needed)
+- [ ] Implement `run_broker_maintenance()` (return None - no token refresh
+      needed)
 - [ ] Add comprehensive integration tests
+
+**Note**: This task will resolve the current dead code warnings for
+`wait_until_market_open`, `place_market_order`, and `get_order_status`
+functions, as they will be used by the `AlpacaBroker` implementation.
 
 ## Task 7: Update Main Application Integration
 
