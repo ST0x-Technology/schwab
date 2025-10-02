@@ -211,20 +211,19 @@ removed as of August 2025. Use NPM package instead.
 
 ### Task 8: Database Schema Update
 
-- [ ] Create migration: `sqlx migrate add add_pyth_prices_from_traces`
-- [ ] Add columns to `onchain_trades` table:
-  - [ ] `pyth_price` (REAL, nullable) - Decoded price value in decimal form
-  - [ ] `pyth_confidence` (REAL, nullable) - Confidence interval in decimal form
-  - [ ] `pyth_exponent` (INTEGER, nullable) - Exponent value for reference
-  - [ ] `pyth_publish_time` (TIMESTAMP, nullable) - Oracle publish timestamp
-        aid)
-- [ ] Add constraints:
-  - [ ] `pyth_confidence >= 0` if not null
-- [ ] Run migration: `sqlx migrate run`
-- [ ] Verify migration applied:
-  - [ ] Check schema with `.schema onchain_trades` in sqlite3
-  - [ ] Confirm all columns added correctly
-- [ ] **Checkpoint**: Database schema updated successfully
+- [x] Create migration: `sqlx migrate add add_pyth_prices_from_traces`
+- [x] Add columns to `onchain_trades` table:
+  - [x] `pyth_price` (REAL, nullable) - Decoded price value in decimal form
+  - [x] `pyth_confidence` (REAL, nullable) - Confidence interval in decimal form
+  - [x] `pyth_exponent` (INTEGER, nullable) - Exponent value for reference
+  - [x] `pyth_publish_time` (TIMESTAMP, nullable) - Oracle publish timestamp
+- [x] Add constraints:
+  - [x] `pyth_confidence >= 0` if not null
+- [x] Run migration: `sqlx migrate run`
+- [x] Verify migration applied:
+  - [x] Check schema with `.schema onchain_trades` in sqlite3
+  - [x] Confirm all columns added correctly
+- [x] **Checkpoint**: Database schema updated successfully
 
 ### Task 9: Update OnchainTrade Struct
 
