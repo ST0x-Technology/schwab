@@ -14,11 +14,7 @@ use crate::schwab::run_oauth_flow;
 use crate::schwab::tokens::SchwabTokens;
 use crate::symbol::cache::SymbolCache;
 use alloy::primitives::B256;
-use alloy::providers::ext::DebugApi;
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
-use alloy::rpc::types::trace::geth::{
-    GethDebugBuiltInTracerType, GethDebugTracerType, GethDebugTracingOptions, GethTrace,
-};
 use chrono::Utc;
 use chrono_tz::US::Eastern;
 
@@ -80,6 +76,9 @@ pub enum Commands {
         /// Transaction hash (0x prefixed, 64 hex characters)
         #[arg(long = "tx-hash")]
         tx_hash: B256,
+        /// Symbol to validate price feed (e.g., AAPL, TSLA) - required to ensure correct price extraction
+        #[arg(long = "symbol")]
+        symbol: String,
     },
 }
 
@@ -234,9 +233,9 @@ async fn run_command_with_writers<W: Write>(
             ensure_authentication(pool, &env.schwab_auth, stdout).await?;
             display_market_status(&env, pool, date.as_deref(), stdout).await?;
         }
-        Commands::GetPythPrice { tx_hash } => {
-            info!("Extracting Pyth price for transaction: {tx_hash}");
-            get_pyth_price(tx_hash, &env, stdout).await?;
+        Commands::GetPythPrice { tx_hash, symbol } => {
+            info!("Extracting Pyth price for transaction: {tx_hash}, symbol: {symbol}");
+            get_pyth_price(tx_hash, &symbol, &env, stdout).await?;
         }
     }
 
@@ -244,93 +243,47 @@ async fn run_command_with_writers<W: Write>(
     Ok(())
 }
 
-async fn get_pyth_price<W: Write>(tx_hash: B256, env: &Env, stdout: &mut W) -> anyhow::Result<()> {
+async fn get_pyth_price<W: Write>(
+    tx_hash: B256,
+    symbol: &str,
+    env: &Env,
+    stdout: &mut W,
+) -> anyhow::Result<()> {
     writeln!(stdout, "🔍 Extracting Pyth price from tx: {tx_hash}")?;
+    writeln!(stdout, "   Filtering for symbol: {symbol}")?;
     writeln!(stdout)?;
 
-    writeln!(stdout, "Fetching transaction trace...")?;
     let ws_url = &env.evm_env.ws_rpc_url;
     let ws = WsConnect::new(ws_url.as_str());
     let provider = ProviderBuilder::new().connect_ws(ws).await?;
 
-    let trace = fetch_transaction_trace(tx_hash, &provider).await?;
-    writeln!(stdout, "   ✅ Transaction trace retrieved")?;
-    writeln!(stdout)?;
+    let cache = crate::pyth::FeedIdCache::new();
 
-    writeln!(stdout, "Parsing trace for Pyth oracle calls...")?;
-    match crate::pyth::find_pyth_calls(&trace) {
-        Ok(pyth_calls) => {
-            if pyth_calls.is_empty() {
-                writeln!(stdout, "   ⚠️  No Pyth oracle calls found in transaction")?;
-            } else {
-                writeln!(
-                    stdout,
-                    "   ✅ Found {} Pyth oracle call(s)",
-                    pyth_calls.len()
-                )?;
-                writeln!(stdout)?;
+    match crate::pyth::extract_pyth_price(tx_hash, &provider, symbol, &cache).await {
+        Ok(price) => {
+            writeln!(stdout, "✅ Successfully extracted Pyth price:")?;
+            writeln!(stdout, "   Raw price value: {}", price.price)?;
+            writeln!(stdout, "   Exponent: {}", price.expo)?;
+            writeln!(stdout, "   Confidence: {}", price.conf)?;
+            writeln!(stdout, "   Publish time: {}", price.publishTime)?;
 
-                for (i, call) in pyth_calls.iter().enumerate() {
-                    writeln!(stdout, "   Call #{} (depth: {}):", i + 1, call.depth)?;
-
-                    match crate::pyth::decode_pyth_price(&call.output) {
-                        Ok(price) => {
-                            writeln!(stdout, "     ✅ Successfully decoded Pyth price:")?;
-                            writeln!(stdout, "        Raw price value: {}", price.price)?;
-                            writeln!(stdout, "        Exponent: {}", price.expo)?;
-                            writeln!(stdout, "        Confidence: {}", price.conf)?;
-                            writeln!(stdout, "        Publish time: {}", price.publishTime)?;
-
-                            match crate::pyth::to_decimal(&price) {
-                                Ok(decimal_price) => {
-                                    writeln!(stdout, "        Decimal price: {decimal_price}")?;
-                                }
-                                Err(e) => {
-                                    writeln!(
-                                        stdout,
-                                        "        ⚠️  Failed to convert to decimal: {e}"
-                                    )?;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            writeln!(stdout, "     ❌ Failed to decode price: {e}")?;
-                            writeln!(
-                                stdout,
-                                "     Output (hex): 0x{}",
-                                alloy::hex::encode(&call.output)
-                            )?;
-                        }
-                    }
-
-                    writeln!(stdout)?;
+            match crate::pyth::to_decimal(&price) {
+                Ok(decimal_price) => {
+                    writeln!(stdout, "   Decimal price: {decimal_price}")?;
+                }
+                Err(e) => {
+                    writeln!(stdout, "   ⚠️  Failed to convert to decimal: {e}")?;
                 }
             }
         }
         Err(e) => {
-            writeln!(stdout, "   ❌ Failed to parse trace: {e}")?;
+            writeln!(stdout, "❌ Failed to extract Pyth price: {e}")?;
         }
     }
 
     writeln!(stdout)?;
 
     Ok(())
-}
-
-async fn fetch_transaction_trace<P>(tx_hash: B256, provider: &P) -> anyhow::Result<GethTrace>
-where
-    P: Provider,
-{
-    let options = GethDebugTracingOptions {
-        tracer: Some(GethDebugTracerType::BuiltInTracer(
-            GethDebugBuiltInTracerType::CallTracer,
-        )),
-        ..Default::default()
-    };
-
-    let trace_result: GethTrace = provider.debug_trace_transaction(tx_hash, options).await?;
-
-    Ok(trace_result)
 }
 
 async fn display_market_status<W: Write>(
@@ -2172,51 +2125,5 @@ mod tests {
         assert_eq!(trade.symbol.to_string(), "GOOG0x");
         assert!((trade.amount - 2.5).abs() < f64::EPSILON);
         assert!((trade.price_usdc - 20000.0).abs() < f64::EPSILON);
-    }
-
-    #[tokio::test]
-    async fn test_fetch_transaction_trace() {
-        use alloy::primitives::{Address, Bytes};
-        use alloy::rpc::types::trace::geth::CallFrame;
-
-        let tx_hash = B256::repeat_byte(0xaa);
-
-        let call_frame = CallFrame {
-            from: Address::ZERO,
-            gas: alloy::primitives::U256::from(100_000u64),
-            gas_used: alloy::primitives::U256::from(50_000u64),
-            to: Some(Address::repeat_byte(0x11)),
-            input: Bytes::from(vec![0x01, 0x02]),
-            output: Some(Bytes::from(vec![0x03, 0x04])),
-            error: None,
-            revert_reason: None,
-            calls: vec![],
-            logs: vec![],
-            value: Some(alloy::primitives::U256::from(1_000u64)),
-            typ: "CALL".to_string(),
-        };
-
-        let expected_trace = GethTrace::CallTracer(call_frame.clone());
-
-        let asserter = Asserter::new();
-        asserter.push_success(&serde_json::to_value(&expected_trace).unwrap());
-
-        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
-
-        let result = fetch_transaction_trace(tx_hash, &provider).await;
-
-        assert!(result.is_ok(), "fetch_transaction_trace should succeed");
-        let trace = result.unwrap();
-
-        match trace {
-            GethTrace::CallTracer(frame) => {
-                assert_eq!(frame.from, call_frame.from);
-                assert_eq!(frame.gas, call_frame.gas);
-                assert_eq!(frame.gas_used, call_frame.gas_used);
-                assert_eq!(frame.to, call_frame.to);
-                assert_eq!(frame.typ, call_frame.typ);
-            }
-            _ => panic!("Expected CallTracer variant"),
-        }
     }
 }
