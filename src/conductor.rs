@@ -4,7 +4,7 @@ use alloy::sol_types;
 use futures_util::{Stream, StreamExt};
 use sqlx::SqlitePool;
 use std::time::Duration;
-use tokio::sync::{mpsc::UnboundedSender, watch};
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tracing::{debug, error, info, trace};
@@ -20,6 +20,7 @@ use crate::schwab::broker::{Broker, DynBroker};
 use crate::schwab::{
     OrderStatusPoller,
     execution::{SchwabExecution, find_execution_by_id},
+    tokens::spawn_automatic_token_refresh,
 };
 use crate::symbol::cache::SymbolCache;
 use crate::symbol::lock::get_symbol_lock;
@@ -53,18 +54,16 @@ impl<P: Provider + Clone + Send + 'static> BackgroundTasksBuilder<P> {
         + Send
         + 'static,
     ) -> BackgroundTasks {
-        let token_refresher = {
-            info!("Starting token refresh service");
-            crate::schwab::tokens::spawn_automatic_token_refresh(
-                self.pool.clone(),
-                self.env.schwab_auth.clone(),
-                self.shutdown_rx.clone(),
-            )
-        };
+        let token_refresher =
+            spawn_automatic_token_refresh(self.pool.clone(), self.env.schwab_auth.clone());
         let broker = self.env.get_broker();
         let order_poller = spawn_order_poller(&self.env, &self.pool, broker.clone());
         let event_processor = spawn_onchain_event_receiver(event_sender, clear_stream, take_stream);
-        let position_checker = spawn_position_checker(broker.clone(), &self.env, &self.pool);
+        let position_checker = spawn_periodic_accumulated_position_check(
+            broker.clone(),
+            self.env.clone(),
+            self.pool.clone(),
+        );
         let queue_processor =
             spawn_queue_processor(broker, &self.env, &self.pool, &self.cache, self.provider);
 
@@ -86,11 +85,6 @@ pub(crate) struct BackgroundTasks {
     pub(crate) queue_processor: JoinHandle<()>,
 }
 
-fn spawn_token_refresher(env: &Env, pool: &SqlitePool) -> JoinHandle<()> {
-    info!("Starting token refresh service");
-    SchwabTokens::spawn_automatic_token_refresh(pool.clone(), env.schwab_auth.clone())
-}
-
 fn spawn_order_poller(env: &Env, pool: &SqlitePool, broker: DynBroker) -> JoinHandle<()> {
     let config = env.get_order_poller_config();
     info!(
@@ -98,16 +92,7 @@ fn spawn_order_poller(env: &Env, pool: &SqlitePool, broker: DynBroker) -> JoinHa
         config.polling_interval, config.max_jitter
     );
 
-    // Create a dummy shutdown receiver since we now use abort mechanism instead
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-
-    let poller = OrderStatusPoller::new(
-        config,
-        env.schwab_auth.clone(),
-        pool.clone(),
-        shutdown_rx,
-        broker,
-    );
+    let poller = OrderStatusPoller::new(config, env.schwab_auth.clone(), pool.clone(), broker);
     tokio::spawn(async move {
         if let Err(e) = poller.run().await {
             error!("Order poller failed: {e}");
@@ -133,47 +118,20 @@ fn spawn_onchain_event_receiver(
     ))
 }
 
-fn spawn_position_checker(broker: DynBroker, env: &Env, pool: &SqlitePool) -> JoinHandle<()> {
-    info!("Starting periodic accumulated position checker");
-
-    // Create a dummy shutdown receiver since we now use abort mechanism instead
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-
-    tokio::spawn(periodic_accumulated_position_check(
-        broker,
-        env.clone(),
-        pool.clone(),
-        shutdown_rx,
-    ))
-}
-
 fn spawn_queue_processor<P: Provider + Clone + Send + 'static>(
     broker: DynBroker,
     env: &Env,
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: P,
-    shutdown_rx: &watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     info!("Starting queue processor service");
     let env_clone = env.clone();
     let pool_clone = pool.clone();
     let cache_clone = cache.clone();
-    let shutdown_rx_clone = shutdown_rx.clone();
 
     tokio::spawn(async move {
-        if let Err(e) = run_queue_processor(
-            &broker,
-            &env_clone,
-            &pool_clone,
-            &cache_clone,
-            provider,
-            shutdown_rx_clone,
-        )
-        .await
-        {
-            error!("Queue processor service failed: {e}");
-        }
+        run_queue_processor(&broker, &env_clone, &pool_clone, &cache_clone, provider).await;
     })
 }
 
@@ -219,33 +177,27 @@ impl BackgroundTasks {
     }
 }
 
-async fn periodic_accumulated_position_check(
+fn spawn_periodic_accumulated_position_check(
     broker: DynBroker,
     env: Env,
     pool: SqlitePool,
-    mut shutdown_rx: watch::Receiver<bool>,
-) {
-    const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+) -> JoinHandle<()> {
+    info!("Starting periodic accumulated position checker");
 
-    let mut interval = tokio::time::interval(CHECK_INTERVAL);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tokio::spawn(async move {
+        const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
-    loop {
-        tokio::select! {
-            _ = interval.tick() => {
-                debug!("Running periodic accumulated position check");
-                if let Err(e) = check_and_execute_accumulated_positions(&broker, &env, &pool).await {
-                    error!("Periodic accumulated position check failed: {e}");
-                }
-            }
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
-                    info!("Shutting down periodic accumulated position checker");
-                    break;
-                }
+        let mut interval = tokio::time::interval(CHECK_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            interval.tick().await;
+            debug!("Running periodic accumulated position check");
+            if let Err(e) = check_and_execute_accumulated_positions(&broker, &env, &pool).await {
+                error!("Periodic accumulated position check failed: {e}");
             }
         }
-    }
+    })
 }
 
 async fn receive_blockchain_events<S1, S2>(
@@ -406,31 +358,23 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: P,
-    mut shutdown_rx: watch::Receiver<bool>,
-) -> Result<(), EventProcessingError> {
+) {
     info!("Starting queue processor service");
 
     // Log initial unprocessed event count
-    let unprocessed_count = crate::queue::count_unprocessed(pool)
-        .await
-        .map_err(EventProcessingError::Queue)?;
-
-    if unprocessed_count > 0 {
-        info!(
-            "Found {} unprocessed events from previous sessions to process",
-            unprocessed_count
-        );
-    } else {
-        info!("No unprocessed events found, starting fresh");
+    match crate::queue::count_unprocessed(pool).await {
+        Ok(count) if count > 0 => {
+            info!("Found {count} unprocessed events from previous sessions to process");
+        }
+        Ok(_) => {
+            info!("No unprocessed events found, starting fresh");
+        }
+        Err(e) => {
+            error!("Failed to count unprocessed events: {e}");
+        }
     }
 
     loop {
-        // Check for shutdown signal
-        if *shutdown_rx.borrow_and_update() {
-            info!("Queue processor received shutdown signal, exiting");
-            break;
-        }
-
         match process_next_queued_event(env, pool, cache, &provider).await {
             Ok(Some(execution)) => {
                 if let Some(exec_id) = execution.id {
@@ -450,8 +394,6 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
             }
         }
     }
-
-    Ok(())
 }
 
 /// Processes the next unprocessed event from the queue.

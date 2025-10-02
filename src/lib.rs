@@ -104,10 +104,7 @@ fn create_bot_runner(
             let cache = SymbolCache::default();
             let orderbook = IOrderBookV4Instance::new(env.evm_env.orderbook, &provider);
 
-            schwab::tokens::SchwabTokens::spawn_automatic_token_refresh(
-                pool.clone(),
-                env.schwab_auth.clone(),
-            );
+            schwab::tokens::spawn_automatic_token_refresh(pool.clone(), env.schwab_auth.clone());
 
             let mut clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
             let mut take_stream = orderbook.TakeOrderV2_filter().watch().await?.into_stream();
