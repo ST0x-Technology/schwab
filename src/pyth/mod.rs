@@ -7,15 +7,15 @@ use alloy::rpc::types::trace::geth::{
 use alloy::sol_types::{SolCall, SolType};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::bindings::IPyth::{
     getEmaPriceNoOlderThanCall, getEmaPriceUnsafeCall, getPriceNoOlderThanCall, getPriceUnsafeCall,
 };
 use crate::bindings::PythStructs::Price;
+
+mod feed_id_cache;
+pub use feed_id_cache::FeedIdCache;
 
 pub const BASE_PYTH_CONTRACT_ADDRESS: Address =
     address!("0x8250f4aF4B972684F7b336503E2D6dFeDeB1487a");
@@ -24,6 +24,8 @@ pub const BASE_PYTH_CONTRACT_ADDRESS: Address =
 pub enum PythError {
     #[error("No Pyth oracle call found in transaction trace")]
     NoPythCall,
+    #[error("No Pyth call found matching price feed ID {0}")]
+    NoMatchingFeedId(B256),
     #[error("Failed to decode Pyth return data: {0}")]
     DecodeError(String),
     #[error("Pyth response structure invalid: {0}")]
