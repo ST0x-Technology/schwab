@@ -139,7 +139,7 @@ async fn get_or_create_within_transaction(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     symbol: &EquitySymbol,
 ) -> Result<PositionCalculator, OnChainError> {
-    let symbol_str = symbol.to_string();
+    let symbol_str = symbol.as_str();
     let row = sqlx::query!(
         "SELECT * FROM trade_accumulators WHERE symbol = ?1",
         symbol_str
@@ -165,7 +165,7 @@ pub async fn save_within_transaction(
     calculator: &PositionCalculator,
     pending_execution_id: Option<i64>,
 ) -> Result<(), OnChainError> {
-    let symbol_str = symbol.to_string();
+    let symbol_str = symbol.as_str();
     sqlx::query!(
         r#"
         INSERT INTO trade_accumulators (
@@ -406,7 +406,7 @@ async fn clean_up_stale_executions(
         update_execution_status_within_transaction(sql_tx, execution_id, failed_state).await?;
 
         // Clear the pending execution ID from accumulator
-        let base_symbol_str = base_symbol.to_string();
+        let base_symbol_str = base_symbol.as_str();
         sqlx::query!(
             "UPDATE trade_accumulators SET pending_execution_id = NULL WHERE symbol = ?1",
             base_symbol_str
@@ -589,8 +589,8 @@ mod tests {
             price_usdc: 150.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(45000),
+            effective_gas_price: Some(1_200_000_000),
         };
 
         let result = process_trade_with_tx(&pool, trade).await.unwrap();
@@ -621,8 +621,8 @@ mod tests {
             price_usdc: 300.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(52000),
+            effective_gas_price: Some(1_800_000_000),
         };
 
         let execution = process_trade_with_tx(&pool, trade).await.unwrap().unwrap();
@@ -655,8 +655,8 @@ mod tests {
             price_usdc: 150.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(43000),
+            effective_gas_price: Some(1_100_000_000),
         };
 
         let result1 = process_trade_with_tx(&pool, trade1).await.unwrap();
@@ -674,8 +674,8 @@ mod tests {
             price_usdc: 150.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(44000),
+            effective_gas_price: Some(1_250_000_000),
         };
 
         let result2 = process_trade_with_tx(&pool, trade2).await.unwrap();
@@ -693,8 +693,8 @@ mod tests {
             price_usdc: 150.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(46000),
+            effective_gas_price: Some(1_300_000_000),
         };
 
         let result3 = process_trade_with_tx(&pool, trade3).await.unwrap();
@@ -728,8 +728,8 @@ mod tests {
             price_usdc: 100.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(48000),
+            effective_gas_price: Some(1_400_000_000),
         };
 
         let result = process_trade_with_tx(&pool, trade).await;
@@ -753,8 +753,8 @@ mod tests {
             price_usdc: 150.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(47000),
+            effective_gas_price: Some(1_350_000_000),
         };
 
         let execution = process_trade_with_tx(&pool, trade).await.unwrap().unwrap();
@@ -780,8 +780,8 @@ mod tests {
             price_usdc: 300.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(49000),
+            effective_gas_price: Some(1_450_000_000),
         };
 
         let execution = process_trade_with_tx(&pool, trade).await.unwrap().unwrap();
@@ -823,8 +823,8 @@ mod tests {
             price_usdc: 150.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(51000),
+            effective_gas_price: Some(1_600_000_000),
         };
 
         // Attempt to add trade - should fail when trying to save execution due to unique constraint
@@ -874,8 +874,8 @@ mod tests {
             price_usdc: 150.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(42000),
+            effective_gas_price: Some(1_050_000_000),
         };
 
         let trade2 = OnchainTrade {
@@ -890,8 +890,8 @@ mod tests {
             price_usdc: 150.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(43500),
+            effective_gas_price: Some(1_150_000_000),
         };
 
         // Add first trade (should not trigger execution)
@@ -945,8 +945,8 @@ mod tests {
             price_usdc: 15000.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(44500),
+            effective_gas_price: Some(1_220_000_000),
         };
 
         let trade2 = OnchainTrade {
@@ -961,8 +961,8 @@ mod tests {
             price_usdc: 15000.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(45500),
+            effective_gas_price: Some(1_280_000_000),
         };
 
         // Helper function to process trades with retry on deadlock
@@ -1068,8 +1068,8 @@ mod tests {
             price_usdc: 150.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(46500),
+            effective_gas_price: Some(1_320_000_000),
         };
 
         let execution = process_trade_with_tx(&pool, trade).await.unwrap().unwrap();
@@ -1108,8 +1108,8 @@ mod tests {
                 price_usdc: 300.0,
                 block_timestamp: None,
                 created_at: None,
-                gas_used: None,
-                effective_gas_price: None,
+                gas_used: Some(41000),
+                effective_gas_price: Some(1_000_000_000),
             },
             OnchainTrade {
                 id: None,
@@ -1123,8 +1123,8 @@ mod tests {
                 price_usdc: 305.0,
                 block_timestamp: None,
                 created_at: None,
-                gas_used: None,
-                effective_gas_price: None,
+                gas_used: Some(42500),
+                effective_gas_price: Some(1_080_000_000),
             },
             OnchainTrade {
                 id: None,
@@ -1138,8 +1138,8 @@ mod tests {
                 price_usdc: 310.0,
                 block_timestamp: None,
                 created_at: None,
-                gas_used: None,
-                effective_gas_price: None,
+                gas_used: Some(44000),
+                effective_gas_price: Some(1_180_000_000),
             },
         ];
 
@@ -1202,8 +1202,8 @@ mod tests {
                 price_usdc: 150.0,
                 block_timestamp: None,
                 created_at: None,
-                gas_used: None,
-                effective_gas_price: None,
+                gas_used: Some(40000),
+                effective_gas_price: Some(950_000_000),
             },
             OnchainTrade {
                 id: None,
@@ -1217,8 +1217,8 @@ mod tests {
                 price_usdc: 155.0,
                 block_timestamp: None,
                 created_at: None,
-                gas_used: None,
-                effective_gas_price: None,
+                gas_used: Some(41500),
+                effective_gas_price: Some(1_020_000_000),
             },
         ];
 
@@ -1281,8 +1281,8 @@ mod tests {
             price_usdc: 800.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(47500),
+            effective_gas_price: Some(1_380_000_000),
         };
 
         // Add trade and trigger execution
@@ -1326,8 +1326,8 @@ mod tests {
             price_usdc: 150.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(48500),
+            effective_gas_price: Some(1_420_000_000),
         };
 
         let sell_trade = OnchainTrade {
@@ -1342,8 +1342,8 @@ mod tests {
             price_usdc: 155.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(49500),
+            effective_gas_price: Some(1_480_000_000),
         };
 
         // Execute both trades
@@ -1431,8 +1431,8 @@ mod tests {
             price_usdc: 150.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(50000),
+            effective_gas_price: Some(1_500_000_000),
         };
 
         let result = process_trade_with_tx(&pool, trade).await.unwrap();
@@ -1641,8 +1641,8 @@ mod tests {
             price_usdc: 150.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(43200),
+            effective_gas_price: Some(1_120_000_000),
         };
 
         let result = process_trade_with_tx(&pool, aapl_trade).await.unwrap();
@@ -1744,8 +1744,8 @@ mod tests {
             price_usdc: 120.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(39000),
+            effective_gas_price: Some(900_000_000),
         };
 
         let trade_s1 = OnchainTrade {
@@ -1760,8 +1760,8 @@ mod tests {
             price_usdc: 100.0,
             block_timestamp: None,
             created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
+            gas_used: Some(40500),
+            effective_gas_price: Some(980_000_000),
         };
 
         // Process first trade (GME0x) - should not trigger execution
