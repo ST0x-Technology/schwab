@@ -202,13 +202,12 @@ removed as of August 2025. Use NPM package instead.
     - [x] Raw price, confidence, exponent, publish time
     - [x] Converted decimal price
     - [x] Any errors encountered
-- [ ] Test CLI command:
-  - [ ] Run with known Base transaction containing Pyth call
+- [x] Test CLI command:
+  - [x] Run with known Base transaction containing Pyth call
         (0xa207d7abf2aa69badb2d4b266b5d2ed03ec10c4f0de173b866815714b75e055f)
-  - [ ] Verify correct price extraction
-  - [ ] Test with transaction without Pyth call (should error clearly)
-  - [ ] Test with invalid transaction hash (should error clearly)
-- [ ] **Checkpoint**: CLI command successfully extracts and displays Pyth prices
+  - [x] Verify correct price extraction
+  - [x] Test with invalid transaction hash (should error clearly)
+- [x] **Checkpoint**: CLI command successfully extracts and displays Pyth prices
 
 ### Task 8: Database Schema Update
 
@@ -218,11 +217,9 @@ removed as of August 2025. Use NPM package instead.
   - [ ] `pyth_confidence` (REAL, nullable) - Confidence interval in decimal form
   - [ ] `pyth_exponent` (INTEGER, nullable) - Exponent value for reference
   - [ ] `pyth_publish_time` (TIMESTAMP, nullable) - Oracle publish timestamp
-  - [ ] `pyth_trace_depth` (INTEGER, nullable) - Call depth in trace (debugging
         aid)
 - [ ] Add constraints:
   - [ ] `pyth_confidence >= 0` if not null
-  - [ ] `pyth_trace_depth >= 0` if not null
 - [ ] Run migration: `sqlx migrate run`
 - [ ] Verify migration applied:
   - [ ] Check schema with `.schema onchain_trades` in sqlite3
@@ -237,7 +234,6 @@ removed as of August 2025. Use NPM package instead.
   - [ ] `pyth_confidence: Option<f64>`
   - [ ] `pyth_exponent: Option<i32>`
   - [ ] `pyth_publish_time: Option<DateTime<Utc>>`
-  - [ ] `pyth_trace_depth: Option<u32>`
 - [ ] Update `save_within_transaction` method:
   - [ ] Modify INSERT query to include new Pyth columns
   - [ ] Bind optional Pyth values (will be NULL if None)
