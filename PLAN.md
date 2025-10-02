@@ -1,0 +1,974 @@
+# FIFO P&L Reporter Implementation Plan
+
+## Overview
+
+Implement a FIFO P&L reporter as a separate Rust binary that processes trades
+and writes performance metrics to a single `metrics_pnl` table for Grafana
+visualization. The reporter maintains in-memory FIFO inventory state and can
+rebuild it on restart by replaying all trades.
+
+**Key Design Decisions:**
+
+1. **Single Table**: Only `metrics_pnl` - serves both as metrics storage and
+   processing checkpoint
+2. **All Trades Tracked**: Every trade (position-increasing and
+   position-reducing) gets a row
+3. **Timestamp Checkpoint**: Use `MAX(timestamp)` from metrics_pnl to resume
+   processing
+4. **In-Memory FIFO**: Rebuild state on startup by replaying all trades (fast,
+   no writes)
+5. **Flake.nix Scripts**: Development tools follow existing patterns in
+   flake.nix
+6. **Data Focus**: Get metrics into database; Grafana dashboards come later
+
+---
+
+## Task 1. Database Schema Design
+
+Design single `metrics_pnl` table that serves both as Grafana metrics and
+processing checkpoint.
+
+### Rationale
+
+Every trade (both position-increasing and position-reducing) needs a row in
+metrics_pnl. This allows us to:
+
+- Track all position changes over time
+- Use MAX(timestamp) as checkpoint for resuming processing
+- Filter by realized_pnl IS NOT NULL to see only P&L realization events
+- Avoid needing separate checkpoint or inventory tables
+
+### Subtasks
+
+- [ ] Design `metrics_pnl` table schema with all necessary columns
+- [ ] Add constraints to ensure data integrity (positive quantities, valid trade
+      types)
+- [ ] Add indexes for Grafana queries (symbol + timestamp, symbol alone)
+- [ ] Add UNIQUE constraint on (trade_type, trade_id) to prevent duplicate
+      processing
+- [ ] Write migration file `migrations/20251002000000_pnl_metrics.sql`
+- [ ] Ensure schema supports rust_decimal precision for financial data
+
+### Table Schema
+
+```sql
+CREATE TABLE metrics_pnl (
+  id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+  symbol TEXT NOT NULL CHECK (symbol != ''),
+  timestamp TIMESTAMP NOT NULL,
+  trade_type TEXT NOT NULL CHECK (trade_type IN ('ONCHAIN', 'OFFCHAIN')),
+  trade_id INTEGER NOT NULL,
+  trade_direction TEXT NOT NULL CHECK (trade_direction IN ('BUY', 'SELL')),
+  quantity REAL NOT NULL CHECK (quantity > 0),
+  price_per_share REAL NOT NULL CHECK (price_per_share > 0),
+  realized_pnl REAL,  -- NULL for position-increasing trades, value for position-reducing
+  cumulative_pnl REAL NOT NULL,  -- Running total for this symbol
+  net_position_after REAL NOT NULL,  -- Position after this trade (can be negative for short)
+  UNIQUE (trade_type, trade_id)  -- Prevents duplicate processing
+);
+
+CREATE INDEX idx_metrics_pnl_symbol_timestamp ON metrics_pnl(symbol, timestamp);
+CREATE INDEX idx_metrics_pnl_symbol ON metrics_pnl(symbol);
+CREATE INDEX idx_metrics_pnl_timestamp ON metrics_pnl(timestamp);
+```
+
+**Column Explanations:**
+
+- `realized_pnl`: NULL when trade increases position (opens new lot), has value
+  when trade decreases position (consumes lots)
+- `cumulative_pnl`: Running total of all realized P&L for this symbol up to this
+  trade
+- `net_position_after`: Positive = long position, negative = short position,
+  zero = flat
+- `UNIQUE (trade_type, trade_id)`: Ensures each trade processed exactly once
+
+---
+
+## Task 2. Core FIFO P&L Logic
+
+Implement FIFO algorithm with rust_decimal for financial precision.
+
+### Rationale
+
+The FIFO algorithm manages an in-memory queue of position lots per symbol. When
+trades come in:
+
+- **Position increase**: Add new lot to end of queue
+- **Position decrease**: Consume oldest lots first (FIFO), calculate realized
+  P&L
+- **Position reversal**: Close all lots in one direction, then open new lots in
+  opposite direction
+
+Using rust_decimal prevents floating-point precision errors. All calculations
+must use explicit error handling (no silent data corruption).
+
+### Subtasks
+
+- [ ] Create `src/pnl/mod.rs` module structure
+- [ ] Define core types: `InventoryLot`, `Direction`, `TradeType`, `PnlResult`
+- [ ] Implement `FifoInventory` struct with VecDeque for lot storage
+- [ ] Implement `add_lot()` method for position-increasing trades
+- [ ] Implement `consume_lots()` method with FIFO logic and P&L calculation
+- [ ] Implement `process_trade()` method to determine increase vs decrease
+- [ ] Handle position reversals (long→short, short→long)
+- [ ] Add comprehensive error types in `src/pnl/error.rs`
+- [ ] Write unit tests for all FIFO scenarios
+
+### Core Types
+
+```rust
+use rust_decimal::Decimal;
+use std::collections::VecDeque;
+use chrono::{DateTime, Utc};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Direction {
+    Long,   // We own shares
+    Short,  // We owe shares
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TradeType {
+    Onchain,
+    Offchain,
+}
+
+#[derive(Debug, Clone)]
+struct InventoryLot {
+    quantity_remaining: Decimal,
+    cost_basis_per_share: Decimal,
+    direction: Direction,
+}
+
+pub struct FifoInventory {
+    symbol: String,
+    lots: VecDeque<InventoryLot>,
+    cumulative_pnl: Decimal,
+}
+
+pub struct PnlResult {
+    pub realized_pnl: Option<Decimal>,  // None if position increased, Some if decreased
+    pub cumulative_pnl: Decimal,
+    pub net_position_after: Decimal,
+}
+```
+
+### FIFO Algorithm
+
+```rust
+impl FifoInventory {
+    pub fn process_trade(
+        &mut self,
+        quantity: Decimal,
+        price_per_share: Decimal,
+        trade_direction: Direction,
+    ) -> Result<PnlResult, PnlError> {
+        let current_direction = self.current_direction();
+
+        // Determine if trade increases or decreases position
+        match (current_direction, trade_direction) {
+            (None, _) => {
+                // Flat position -> opens new position
+                self.add_lot(quantity, price_per_share, trade_direction);
+                Ok(PnlResult {
+                    realized_pnl: None,
+                    cumulative_pnl: self.cumulative_pnl,
+                    net_position_after: self.net_position(),
+                })
+            }
+            (Some(dir), _) if dir == trade_direction => {
+                // Same direction -> increases position
+                self.add_lot(quantity, price_per_share, trade_direction);
+                Ok(PnlResult {
+                    realized_pnl: None,
+                    cumulative_pnl: self.cumulative_pnl,
+                    net_position_after: self.net_position(),
+                })
+            }
+            (Some(_), _) => {
+                // Opposite direction -> decreases position (may reverse)
+                let pnl = self.consume_lots(quantity, price_per_share, trade_direction)?;
+                self.cumulative_pnl += pnl;
+                Ok(PnlResult {
+                    realized_pnl: Some(pnl),
+                    cumulative_pnl: self.cumulative_pnl,
+                    net_position_after: self.net_position(),
+                })
+            }
+        }
+    }
+
+    fn consume_lots(
+        &mut self,
+        mut quantity: Decimal,
+        execution_price: Decimal,
+        trade_direction: Direction,
+    ) -> Result<Decimal, PnlError> {
+        let mut total_pnl = Decimal::ZERO;
+
+        while quantity > Decimal::ZERO && !self.lots.is_empty() {
+            let lot = self.lots.front_mut().ok_or(PnlError::InsufficientInventory)?;
+
+            let consumed = quantity.min(lot.quantity_remaining);
+
+            // P&L calculation depends on direction
+            let pnl = match lot.direction {
+                Direction::Long => {
+                    // Selling long: (sell_price - cost_basis) * quantity
+                    (execution_price - lot.cost_basis_per_share) * consumed
+                }
+                Direction::Short => {
+                    // Buying to cover short: (cost_basis - buy_price) * quantity
+                    (lot.cost_basis_per_share - execution_price) * consumed
+                }
+            };
+
+            total_pnl += pnl;
+            lot.quantity_remaining -= consumed;
+            quantity -= consumed;
+
+            if lot.quantity_remaining == Decimal::ZERO {
+                self.lots.pop_front();
+            }
+        }
+
+        // If quantity remains, position reversed - open new lot in opposite direction
+        if quantity > Decimal::ZERO {
+            self.add_lot(quantity, execution_price, trade_direction);
+        }
+
+        Ok(total_pnl)
+    }
+
+    fn add_lot(&mut self, quantity: Decimal, price: Decimal, direction: Direction) {
+        self.lots.push_back(InventoryLot {
+            quantity_remaining: quantity,
+            cost_basis_per_share: price,
+            direction,
+        });
+    }
+
+    fn net_position(&self) -> Decimal {
+        self.lots.iter().fold(Decimal::ZERO, |acc, lot| {
+            match lot.direction {
+                Direction::Long => acc + lot.quantity_remaining,
+                Direction::Short => acc - lot.quantity_remaining,
+            }
+        })
+    }
+
+    fn current_direction(&self) -> Option<Direction> {
+        let net = self.net_position();
+        if net > Decimal::ZERO {
+            Some(Direction::Long)
+        } else if net < Decimal::ZERO {
+            Some(Direction::Short)
+        } else {
+            None
+        }
+    }
+}
+```
+
+### Unit Tests
+
+- [ ] Test: Simple buy then sell (basic FIFO)
+- [ ] Test: Multiple buys at different prices, then partial sell
+- [ ] Test: Position reversal (long → short)
+- [ ] Test: Short position P&L calculation
+- [ ] Test: Example from requirements doc (7-step scenario)
+- [ ] Test: Fractional share handling
+- [ ] Test: Precision with rust_decimal (no floating point errors)
+
+---
+
+## Task 3. Reporter Implementation
+
+Create `reporter` binary that loads trades, processes with FIFO, writes to
+metrics_pnl.
+
+### Rationale
+
+The reporter runs independently in a loop:
+
+1. Load checkpoint (MAX timestamp from metrics_pnl)
+2. Rebuild in-memory FIFO state by replaying all trades from beginning
+3. Process new trades (timestamp > checkpoint)
+4. Write results to metrics_pnl in transaction
+5. Sleep and repeat
+
+Rebuilding FIFO state on each iteration is fast (no database writes during
+replay) and ensures correctness if database is manually modified.
+
+### Subtasks
+
+- [ ] Create `src/bin/reporter.rs` binary entry point
+- [ ] Implement reporter initialization (DB pool, environment config)
+- [ ] Implement `load_checkpoint()` to get MAX timestamp from metrics_pnl
+- [ ] Implement `load_all_trades()` to fetch and merge onchain + offchain trades
+- [ ] Implement `rebuild_fifo_state()` to replay trades up to checkpoint
+- [ ] Implement `process_new_trades()` to process trades after checkpoint
+- [ ] Write metrics_pnl rows in database transactions
+- [ ] Add OTEL metrics emission for observability
+- [ ] Handle graceful shutdown (SIGTERM/SIGINT)
+- [ ] Integration tests with in-memory SQLite
+
+### Reporter Structure
+
+```rust
+// src/bin/reporter.rs
+
+#[derive(Debug)]
+struct Trade {
+    trade_type: TradeType,
+    trade_id: i64,
+    symbol: String,
+    quantity: Decimal,
+    price_per_share: Decimal,
+    direction: Direction,
+    timestamp: DateTime<Utc>,
+}
+
+struct Reporter {
+    pool: SqlitePool,
+    processing_interval: Duration,
+}
+
+impl Reporter {
+    async fn process_iteration(&self) -> Result<usize> {
+        // 1. Load checkpoint
+        let checkpoint = self.load_checkpoint().await?;
+
+        // 2. Load all trades (for rebuilding + new processing)
+        let all_trades = self.load_all_trades().await?;
+
+        // 3. Rebuild FIFO state (replay trades up to checkpoint)
+        let mut inventories = self.rebuild_fifo_state(&all_trades, checkpoint).await?;
+
+        // 4. Process new trades (after checkpoint)
+        let new_trades: Vec<_> = all_trades.into_iter()
+            .filter(|t| t.timestamp > checkpoint)
+            .collect();
+
+        // 5. Process each new trade and write to DB
+        for trade in &new_trades {
+            self.process_and_persist_trade(&mut inventories, trade).await?;
+        }
+
+        Ok(new_trades.len())
+    }
+
+    async fn load_checkpoint(&self) -> Result<DateTime<Utc>> {
+        let result = sqlx::query!(
+            "SELECT MAX(timestamp) as max_ts FROM metrics_pnl"
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(result.max_ts.unwrap_or_else(|| Utc.timestamp(0, 0)))
+    }
+
+    async fn load_all_trades(&self) -> Result<Vec<Trade>> {
+        // Query onchain_trades
+        let onchain = sqlx::query!(
+            "SELECT id, symbol, amount, direction, price_usdc, created_at
+             FROM onchain_trades
+             ORDER BY created_at, id"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Query schwab_executions (only FILLED)
+        let offchain = sqlx::query!(
+            "SELECT id, symbol, shares, direction, price_cents, executed_at
+             FROM schwab_executions
+             WHERE status = 'FILLED'
+             ORDER BY executed_at, id"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Merge and sort chronologically
+        let mut trades = Vec::new();
+
+        for row in onchain {
+            trades.push(Trade {
+                trade_type: TradeType::Onchain,
+                trade_id: row.id,
+                symbol: row.symbol,
+                quantity: Decimal::from_f64(row.amount).ok_or(...)?,
+                price_per_share: Decimal::from_f64(row.price_usdc).ok_or(...)?,
+                direction: parse_direction(&row.direction)?,
+                timestamp: row.created_at,
+            });
+        }
+
+        for row in offchain {
+            trades.push(Trade {
+                trade_type: TradeType::Offchain,
+                trade_id: row.id,
+                symbol: row.symbol,
+                quantity: Decimal::from(row.shares),
+                price_per_share: Decimal::from(row.price_cents.unwrap()) / Decimal::from(100),
+                direction: parse_direction(&row.direction)?,
+                timestamp: row.executed_at.unwrap(),
+            });
+        }
+
+        trades.sort_by_key(|t| (t.timestamp, t.trade_id));
+        Ok(trades)
+    }
+
+    async fn rebuild_fifo_state(
+        &self,
+        trades: &[Trade],
+        checkpoint: DateTime<Utc>,
+    ) -> Result<HashMap<String, FifoInventory>> {
+        let mut inventories = HashMap::new();
+
+        for trade in trades {
+            if trade.timestamp > checkpoint {
+                break;  // Only replay up to checkpoint
+            }
+
+            let inventory = inventories
+                .entry(trade.symbol.clone())
+                .or_insert_with(|| FifoInventory::new(trade.symbol.clone()));
+
+            // Process trade (no DB writes during rebuild)
+            inventory.process_trade(
+                trade.quantity,
+                trade.price_per_share,
+                trade.direction,
+            )?;
+        }
+
+        Ok(inventories)
+    }
+
+    async fn process_and_persist_trade(
+        &self,
+        inventories: &mut HashMap<String, FifoInventory>,
+        trade: &Trade,
+    ) -> Result<()> {
+        let inventory = inventories
+            .entry(trade.symbol.clone())
+            .or_insert_with(|| FifoInventory::new(trade.symbol.clone()));
+
+        let result = inventory.process_trade(
+            trade.quantity,
+            trade.price_per_share,
+            trade.direction,
+        )?;
+
+        // Insert into metrics_pnl
+        sqlx::query!(
+            "INSERT INTO metrics_pnl (
+                symbol, timestamp, trade_type, trade_id, trade_direction,
+                quantity, price_per_share, realized_pnl, cumulative_pnl, net_position_after
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            trade.symbol,
+            trade.timestamp,
+            format!("{:?}", trade.trade_type).to_uppercase(),
+            trade.trade_id,
+            format!("{:?}", trade.direction).to_uppercase(),
+            trade.quantity.to_string(),
+            trade.price_per_share.to_string(),
+            result.realized_pnl.map(|p| p.to_string()),
+            result.cumulative_pnl.to_string(),
+            result.net_position_after.to_string(),
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Initialize tracing, load env, create pool
+    let env = Env::from_env()?;
+    let pool = env.get_sqlite_pool().await?;
+    sqlx::migrate!().run(&pool).await?;
+
+    let interval = env.reporter_processing_interval_secs.unwrap_or(30);
+    let reporter = Reporter {
+        pool,
+        processing_interval: Duration::from_secs(interval),
+    };
+
+    // Main loop
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("Shutdown signal received");
+                break;
+            }
+            _ = tokio::time::sleep(reporter.processing_interval) => {
+                match reporter.process_iteration().await {
+                    Ok(count) => info!("Processed {} new trades", count),
+                    Err(e) => error!("Processing error: {}", e),
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+```
+
+---
+
+## Task 4. Docker Compose Integration
+
+Add reporter container to docker-compose.template.yaml.
+
+### Rationale
+
+The reporter runs alongside the arbitrage bot, sharing the SQLite database via
+mounted volume. Both containers built from same Dockerfile.
+
+### Subtasks
+
+- [ ] Update `docker-compose.template.yaml` to add reporter
+- [ ] Update `Dockerfile` to build reporter binary
+- [ ] Update `.env.example` with REPORTER_PROCESSING_INTERVAL_SECS
+- [ ] Ensure SQLite WAL mode is enabled for concurrent access
+- [ ] Test docker compose build and run locally
+
+### Docker Compose Changes
+
+```yaml
+services:
+  schwarbot:
+  # ... existing config ...
+
+  reporter:
+    image: registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}
+    container_name: reporter
+    command: ["reporter"]
+    environment:
+      - REPORTER_PROCESSING_INTERVAL_SECS=${REPORTER_PROCESSING_INTERVAL_SECS:-30}
+    env_file:
+      - .env
+    volumes:
+      - ${DATA_VOLUME_PATH}:/data
+    depends_on:
+      - grafana
+    restart: unless-stopped
+
+  grafana:
+# ... existing config ...
+```
+
+### Dockerfile Updates
+
+Ensure reporter binary is built and copied:
+
+```dockerfile
+# In builder stage
+RUN cargo build --release --bin reporter
+
+# In final stage
+COPY --from=builder /app/target/release/reporter /usr/local/bin/
+```
+
+### Environment Variables
+
+Add to `.env.example`:
+
+```bash
+# Reporter Configuration
+REPORTER_PROCESSING_INTERVAL_SECS=30
+```
+
+---
+
+## Task 5. Development Tooling (flake.nix)
+
+Add scripts to flake.nix for viewing P&L metrics and running reporter locally.
+
+### Rationale
+
+Following existing patterns in flake.nix, add convenient scripts for developers
+to inspect P&L data and test locally.
+
+### Subtasks
+
+- [ ] Add `viewPnlMetrics` script to query recent P&L realizations
+- [ ] Add `viewPnlSummary` script showing cumulative P&L by symbol
+- [ ] Add `runReporter` script for local development
+- [ ] Add all scripts to devShell buildInputs
+
+### Flake Scripts
+
+Add to `packages` section in flake.nix:
+
+```nix
+viewPnlMetrics = rainix.mkTask.${system} {
+  name = "view-pnl-metrics";
+  additionalBuildInputs = [ pkgs.sqlite ];
+  body = ''
+    set -euxo pipefail
+    ${setDbPath}
+    echo "=== Recent P&L Metrics (Last 20 Trades) ==="
+    sqlite3 "$DB_PATH" "
+      SELECT
+        symbol,
+        datetime(timestamp) as time,
+        trade_type,
+        trade_direction,
+        printf('%.6f', quantity) as qty,
+        printf('%.2f', price_per_share) as price,
+        COALESCE(printf('%.2f', realized_pnl), 'N/A') as pnl,
+        printf('%.2f', cumulative_pnl) as cum_pnl,
+        printf('%.6f', net_position_after) as position
+      FROM metrics_pnl
+      ORDER BY timestamp DESC, id DESC
+      LIMIT 20;
+    "
+  '';
+};
+
+viewPnlSummary = rainix.mkTask.${system} {
+  name = "view-pnl-summary";
+  additionalBuildInputs = [ pkgs.sqlite ];
+  body = ''
+    set -euxo pipefail
+    ${setDbPath}
+    echo "=== P&L Summary by Symbol ==="
+    sqlite3 "$DB_PATH" "
+      SELECT
+        symbol,
+        COUNT(*) as num_trades,
+        SUM(CASE WHEN realized_pnl IS NOT NULL THEN 1 ELSE 0 END) as num_pnl_events,
+        printf('%.2f', COALESCE(SUM(realized_pnl), 0)) as total_realized_pnl,
+        printf('%.2f', MAX(cumulative_pnl)) as current_cumulative_pnl,
+        printf('%.6f', (
+          SELECT net_position_after
+          FROM metrics_pnl m2
+          WHERE m2.symbol = m1.symbol
+          ORDER BY timestamp DESC, id DESC
+          LIMIT 1
+        )) as current_position
+      FROM metrics_pnl m1
+      GROUP BY symbol
+      ORDER BY symbol;
+    "
+  '';
+};
+
+runReporter = rainix.mkTask.${system} {
+  name = "run-reporter";
+  body = ''
+    set -euxo pipefail
+    cargo run --bin reporter
+  '';
+};
+```
+
+Add to devShell:
+
+```nix
+devShell = pkgs.mkShell {
+  # ... existing config ...
+  buildInputs = with pkgs;
+    [
+      # ... existing packages ...
+      packages.viewPnlMetrics
+      packages.viewPnlSummary
+      packages.runReporter
+    ] ++ # ... rest of buildInputs
+};
+```
+
+---
+
+## Task 6. Deployment Integration
+
+Update CI/CD workflow to deploy and health check reporter.
+
+### Rationale
+
+Deployment must verify reporter starts successfully and doesn't have errors in
+logs.
+
+### Subtasks
+
+- [ ] Verify `Dockerfile` builds reporter binary (update if needed)
+- [ ] Update `.github/workflows/deploy.yaml` health checks for reporter
+- [ ] Add reporter log capture in deployment script
+- [ ] Add error detection in reporter logs
+- [ ] Test full deployment workflow
+
+### Deployment Health Checks
+
+Add to `.github/workflows/deploy.yaml` after existing health checks:
+
+```bash
+# Check if reporter container is running
+if ! docker ps --format "{{.Names}}" | grep -q "^reporter$"; then
+  echo "$(date '+%Y-%m-%d %H:%M:%S') - Reporter container not found in docker ps" | tee -a "${DEPLOY_LOG}" >&2
+  docker compose logs reporter 2>&1 | tee -a "${DEPLOY_LOG}"
+  exit 1
+fi
+
+echo "$(date '+%Y-%m-%d %H:%M:%S') - Reporter confirmed running" | tee -a "${DEPLOY_LOG}"
+
+# Check for errors in reporter logs
+if docker compose logs reporter 2>&1 | grep -q "error\|panic\|failed"; then
+  echo "$(date '+%Y-%m-%d %H:%M:%S') - Reporter errors detected in logs" | tee -a "${DEPLOY_LOG}" >&2
+  docker compose logs --tail 20 reporter 2>&1 | tee -a "${DEPLOY_LOG}"
+  exit 1
+fi
+```
+
+---
+
+## Task 7. Testing and Validation
+
+Comprehensive testing to ensure FIFO correctness and service reliability.
+
+### Rationale
+
+P&L calculations must be absolutely correct for financial applications. Testing
+validates FIFO algorithm handles all scenarios correctly.
+
+### Subtasks
+
+- [ ] Unit tests for FIFO logic in `src/pnl/fifo.rs`
+- [ ] Integration tests with SQLite in `tests/pnl_integration.rs`
+- [ ] Manual validation with requirements doc 7-step example
+- [ ] End-to-end test with realistic trade sequence
+- [ ] Verify metrics_pnl data is queryable in Grafana (manual check)
+
+### Unit Tests
+
+Test file: `src/pnl/fifo.rs`
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    #[test]
+    fn test_simple_buy_sell() {
+        let mut fifo = FifoInventory::new("AAPL".to_string());
+
+        // Buy 100 @ 10.00
+        let result = fifo.process_trade(dec!(100), dec!(10.00), Direction::Long).unwrap();
+        assert_eq!(result.realized_pnl, None);
+        assert_eq!(result.net_position_after, dec!(100));
+
+        // Sell 100 @ 11.00
+        let result = fifo.process_trade(dec!(100), dec!(11.00), Direction::Short).unwrap();
+        assert_eq!(result.realized_pnl, Some(dec!(100.00))); // (11-10)*100
+        assert_eq!(result.cumulative_pnl, dec!(100.00));
+        assert_eq!(result.net_position_after, dec!(0));
+    }
+
+    #[test]
+    fn test_multiple_lots_fifo() {
+        let mut fifo = FifoInventory::new("AAPL".to_string());
+
+        // Buy 100 @ 10.00
+        fifo.process_trade(dec!(100), dec!(10.00), Direction::Long).unwrap();
+        // Buy 50 @ 12.00
+        fifo.process_trade(dec!(50), dec!(12.00), Direction::Long).unwrap();
+
+        // Sell 80 @ 11.00 (should consume from first lot only)
+        let result = fifo.process_trade(dec!(80), dec!(11.00), Direction::Short).unwrap();
+        assert_eq!(result.realized_pnl, Some(dec!(80.00))); // (11-10)*80
+        assert_eq!(result.net_position_after, dec!(70)); // 20 + 50 remaining
+    }
+
+    #[test]
+    fn test_position_reversal() {
+        let mut fifo = FifoInventory::new("AAPL".to_string());
+
+        // Buy 100 @ 10.00
+        fifo.process_trade(dec!(100), dec!(10.00), Direction::Long).unwrap();
+
+        // Sell 150 @ 11.00 (closes 100 long, opens 50 short)
+        let result = fifo.process_trade(dec!(150), dec!(11.00), Direction::Short).unwrap();
+        assert_eq!(result.realized_pnl, Some(dec!(100.00))); // (11-10)*100
+        assert_eq!(result.net_position_after, dec!(-50)); // 50 short
+    }
+
+    #[test]
+    fn test_requirements_doc_example() {
+        // Implement exact 7-step example from requirements doc
+        // Step 1: BUY 100 @ 10.00
+        // Step 2: BUY 50 @ 12.00
+        // Step 3: SELL 80 @ 11.00 -> P&L = +80.00
+        // Step 4: SELL 60 @ 9.50 -> P&L = -110.00 (cum: -30.00)
+        // Step 5: BUY 30 @ 12.20
+        // Step 6: SELL 70 @ 12.00 -> P&L = -6.00 (cum: -36.00)
+        // Step 7: BUY 20 @ 11.50 -> P&L = +10.00 (cum: -26.00)
+
+        // Final: 10 short @ 12.00, cumulative P&L = -26.00
+    }
+}
+```
+
+### Integration Tests
+
+Test file: `tests/pnl_integration.rs`
+
+```rust
+#[tokio::test]
+async fn test_reporter_processes_trades_end_to_end() {
+    let pool = create_in_memory_pool().await;
+    run_migrations(&pool).await;
+
+    // Insert test trades
+    insert_onchain_trade(&pool, "AAPL", 10.0, 100.0, "BUY", "2025-01-01 10:00:00").await;
+    insert_onchain_trade(&pool, "AAPL", 10.0, 110.0, "SELL", "2025-01-01 10:01:00").await;
+
+    // Run reporter
+    let reporter = Reporter::new(pool.clone(), Duration::from_secs(30));
+    let count = reporter.process_iteration().await.unwrap();
+    assert_eq!(count, 2);
+
+    // Verify metrics_pnl
+    let metrics = query_all_pnl_metrics(&pool, "AAPL").await;
+    assert_eq!(metrics.len(), 2);
+
+    // First trade: position increase, no P&L
+    assert_eq!(metrics[0].realized_pnl, None);
+    assert_eq!(metrics[0].net_position_after, 10.0);
+
+    // Second trade: position decrease, realize P&L
+    assert_eq!(metrics[1].realized_pnl, Some(100.0)); // (110-100)*10
+    assert_eq!(metrics[1].cumulative_pnl, 100.0);
+    assert_eq!(metrics[1].net_position_after, 0.0);
+}
+```
+
+---
+
+## Task 8. Documentation
+
+Document P&L reporter for users and future maintainers.
+
+### Rationale
+
+Clear documentation enables operators to use the reporter and developers to
+understand/extend it.
+
+### Subtasks
+
+- [ ] Add "P&L Reporter" section to README.md
+- [ ] Document FIFO algorithm in code comments
+- [ ] Update CLAUDE.md with P&L reporter information
+- [ ] Add inline documentation for complex logic
+
+### README.md Updates
+
+Add new section:
+
+````markdown
+## P&L Reporter
+
+The reporter calculates realized profit/loss using FIFO (First-In-First-Out)
+accounting. It processes all trades (onchain and offchain) and maintains
+performance metrics in the `metrics_pnl` table for Grafana visualization.
+
+### How It Works
+
+- **FIFO Accounting**: Oldest position lots are consumed first when closing
+  positions
+- **In-Memory State**: FIFO inventory rebuilt on startup by replaying all trades
+- **Checkpoint**: Uses MAX(timestamp) from metrics_pnl to resume processing new
+  trades
+- **All Trades Tracked**: Both position-increasing and position-reducing trades
+  recorded
+
+### Running Locally
+
+```bash
+# View recent P&L metrics
+nix run .#viewPnlMetrics
+
+# View P&L summary by symbol
+nix run .#viewPnlSummary
+
+# Run reporter
+nix run .#runReporter
+# or
+cargo run --bin reporter
+```
+````
+
+### Metrics Table Schema
+
+Every trade gets a row in `metrics_pnl`:
+
+- **realized_pnl**: NULL for position increases, value for position decreases
+- **cumulative_pnl**: Running total of realized P&L for this symbol
+- **net_position_after**: Current position after trade (positive=long,
+  negative=short)
+
+### Example
+
+```
+Step 1: BUY 100 @ $10.00
+  - Opens lot: 100 shares @ $10.00 cost basis
+  - realized_pnl: NULL
+  - net_position_after: 100
+
+Step 2: SELL 60 @ $11.00
+  - Consumes 60 from oldest lot (FIFO)
+  - realized_pnl: (11.00 - 10.00) * 60 = $60.00
+  - cumulative_pnl: $60.00
+  - net_position_after: 40
+```
+
+````
+### CLAUDE.md Updates
+
+Add to Architecture section:
+
+```markdown
+### P&L Reporter
+
+**Reporter Binary (`src/bin/reporter.rs`)**
+
+- Processes trades to calculate FIFO P&L
+- Runs independently in Docker container
+- Shares SQLite database via mounted volume
+
+**Core FIFO Logic (`src/pnl/`)**
+
+- `FifoInventory`: Manages per-symbol lot queues
+- In-memory state rebuilt on startup by replaying trades
+- Uses rust_decimal for financial precision
+- Handles position increases, decreases, and reversals
+
+**Database Schema:**
+
+- `metrics_pnl`: Single table for metrics and checkpoint
+  - Every trade gets a row (position-increasing and position-reducing)
+  - `realized_pnl` NULL for increases, value for decreases
+  - UNIQUE constraint on (trade_type, trade_id) prevents duplicates
+  - MAX(timestamp) serves as processing checkpoint
+````
+
+---
+
+## Summary
+
+This plan implements FIFO P&L calculation with:
+
+1. **Single Table**: `metrics_pnl` serves as both metrics storage and checkpoint
+2. **Simple Checkpoint**: Use MAX(timestamp) instead of separate table
+3. **In-Memory FIFO**: Fast state rebuild by replaying all trades on startup
+4. **Rust Decimal**: Financial precision, explicit error handling
+5. **Flake.nix Scripts**: Development tools follow project patterns
+6. **Docker Compose**: Separate service shares database via volume
+7. **Data Focus**: Get metrics into database; Grafana dashboards later
+
+The implementation handles all FIFO scenarios including position reversals,
+fractional shares, and the 7-step example from requirements.
