@@ -1,8 +1,16 @@
-use alloy::primitives::{Address, Bytes, address};
-use alloy::rpc::types::trace::geth::{CallFrame, GethTrace};
+use alloy::primitives::{Address, B256, Bytes, address};
+use alloy::providers::Provider;
+use alloy::providers::ext::DebugApi;
+use alloy::rpc::types::trace::geth::{
+    CallFrame, GethDebugBuiltInTracerType, GethDebugTracerType, GethDebugTracingOptions, GethTrace,
+};
 use alloy::sol_types::{SolCall, SolType};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use tracing::{debug, error, info, warn};
 
 use crate::bindings::IPyth::{
     getEmaPriceNoOlderThanCall, getEmaPriceUnsafeCall, getPriceNoOlderThanCall, getPriceUnsafeCall,
@@ -24,12 +32,13 @@ pub enum PythError {
     InvalidTraceVariant,
     #[error("Arithmetic overflow in price conversion")]
     ArithmeticOverflow,
-    #[error("Invalid decimal string: {0}")]
-    InvalidDecimal(String),
+    #[error("RPC error while fetching trace: {0}")]
+    RpcError(String),
 }
 
 #[derive(Debug, Clone)]
 pub struct PythCall {
+    pub price_feed_id: B256,
     pub output: Bytes,
     pub depth: u32,
 }
@@ -47,9 +56,12 @@ fn traverse_call_frame(frame: &CallFrame, depth: u32) -> Vec<PythCall> {
         .filter(|&to| to == BASE_PYTH_CONTRACT_ADDRESS)
         .filter(|_| is_pyth_method_selector(&frame.input))
         .and(frame.output.as_ref())
-        .map(|output| PythCall {
-            output: output.clone(),
-            depth,
+        .and_then(|output| {
+            extract_price_feed_id(&frame.input).map(|feed_id| PythCall {
+                price_feed_id: feed_id,
+                output: output.clone(),
+                depth,
+            })
         });
 
     let nested_calls = frame
@@ -71,6 +83,15 @@ fn is_pyth_method_selector(input: &Bytes) -> bool {
         || selector == getPriceUnsafeCall::SELECTOR
         || selector == getEmaPriceNoOlderThanCall::SELECTOR
         || selector == getEmaPriceUnsafeCall::SELECTOR
+}
+
+fn extract_price_feed_id(input: &Bytes) -> Option<B256> {
+    if input.len() < 36 {
+        return None;
+    }
+
+    let feed_id_bytes = &input[4..36];
+    Some(B256::from_slice(feed_id_bytes))
 }
 
 pub fn decode_pyth_price(output: &Bytes) -> Result<Price, PythError> {
@@ -109,6 +130,97 @@ pub fn to_decimal(price: &Price) -> Result<Decimal, PythError> {
     Ok(result.normalize())
 }
 
+pub async fn extract_pyth_price<P>(
+    tx_hash: B256,
+    provider: &P,
+    symbol: &str,
+    cache: &FeedIdCache,
+) -> Result<Price, PythError>
+where
+    P: Provider,
+{
+    debug!("Fetching trace for tx {tx_hash}");
+
+    let trace = fetch_transaction_trace(tx_hash, provider).await?;
+
+    debug!("Parsing trace for Pyth oracle calls");
+
+    let pyth_calls = find_pyth_calls(&trace)?;
+
+    if pyth_calls.is_empty() {
+        warn!("No Pyth call found in transaction {tx_hash}");
+        return Err(PythError::NoPythCall);
+    }
+
+    debug!("Found {} Pyth call(s) in trace", pyth_calls.len());
+
+    let cached_feed_id = cache.get(symbol).await;
+
+    let matching_call = if let Some(feed_id) = cached_feed_id {
+        debug!("Found cached feed ID for {symbol}: {feed_id}");
+
+        pyth_calls
+            .iter()
+            .find(|call| call.price_feed_id == feed_id)
+            .ok_or_else(|| {
+                warn!(
+                    "No Pyth call found matching cached feed ID {feed_id} for {symbol} in transaction {tx_hash}"
+                );
+                PythError::NoMatchingFeedId(feed_id)
+            })?
+    } else {
+        debug!("No cached feed ID for {symbol}, using first Pyth call and caching");
+
+        let first_call = &pyth_calls[0];
+        cache
+            .insert(symbol.to_string(), first_call.price_feed_id)
+            .await;
+
+        info!(
+            "Cached new feed ID mapping: {symbol} -> {}",
+            first_call.price_feed_id
+        );
+
+        first_call
+    };
+
+    debug!(
+        "Using Pyth call at depth {} with feed ID {} for price extraction",
+        matching_call.depth, matching_call.price_feed_id
+    );
+
+    let price = decode_pyth_price(&matching_call.output).map_err(|e| {
+        error!("Failed to extract Pyth price from {tx_hash}: {e}");
+        e
+    })?;
+
+    info!(
+        "Extracted Pyth price for {symbol} (feed {}): {} (expo: {}, conf: {})",
+        matching_call.price_feed_id, price.price, price.expo, price.conf
+    );
+
+    Ok(price)
+}
+
+async fn fetch_transaction_trace<P>(tx_hash: B256, provider: &P) -> Result<GethTrace, PythError>
+where
+    P: Provider,
+{
+    let options = GethDebugTracingOptions {
+        tracer: Some(GethDebugTracerType::BuiltInTracer(
+            GethDebugBuiltInTracerType::CallTracer,
+        )),
+        ..Default::default()
+    };
+
+    let trace = provider
+        .debug_trace_transaction(tx_hash, options)
+        .await
+        .map_err(|e| PythError::RpcError(e.to_string()))?;
+
+    Ok(trace)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,7 +252,8 @@ mod tests {
     fn test_find_pyth_calls_single_call_at_root() {
         let pyth_selector = crate::bindings::IPyth::getPriceNoOlderThanCall::SELECTOR;
         let mut input = pyth_selector.to_vec();
-        input.extend_from_slice(&[0u8; 32]);
+        let feed_id = B256::repeat_byte(0xaa);
+        input.extend_from_slice(feed_id.as_slice());
 
         let output = vec![0x01, 0x02, 0x03, 0x04];
 
@@ -155,6 +268,7 @@ mod tests {
         let result = find_pyth_calls(&trace).unwrap();
 
         assert_eq!(result.len(), 1);
+        assert_eq!(result[0].price_feed_id, feed_id);
         assert_eq!(result[0].output.as_ref(), &output);
         assert_eq!(result[0].depth, 0);
     }
@@ -163,7 +277,8 @@ mod tests {
     fn test_find_pyth_calls_nested() {
         let pyth_selector = crate::bindings::IPyth::getPriceUnsafeCall::SELECTOR;
         let mut input = pyth_selector.to_vec();
-        input.extend_from_slice(&[0u8; 32]);
+        let feed_id = B256::repeat_byte(0xbb);
+        input.extend_from_slice(feed_id.as_slice());
 
         let output = vec![0xaa, 0xbb, 0xcc];
 
@@ -185,6 +300,7 @@ mod tests {
         let result = find_pyth_calls(&trace).unwrap();
 
         assert_eq!(result.len(), 1);
+        assert_eq!(result[0].price_feed_id, feed_id);
         assert_eq!(result[0].output.as_ref(), &output);
         assert_eq!(result[0].depth, 1);
     }
@@ -195,10 +311,12 @@ mod tests {
         let pyth_selector2 = crate::bindings::IPyth::getEmaPriceNoOlderThanCall::SELECTOR;
 
         let mut input1 = pyth_selector1.to_vec();
-        input1.extend_from_slice(&[0u8; 32]);
+        let feed_id1 = B256::repeat_byte(0xcc);
+        input1.extend_from_slice(feed_id1.as_slice());
 
         let mut input2 = pyth_selector2.to_vec();
-        input2.extend_from_slice(&[0u8; 32]);
+        let feed_id2 = B256::repeat_byte(0xdd);
+        input2.extend_from_slice(feed_id2.as_slice());
 
         let output1 = vec![0x01, 0x02];
         let output2 = vec![0x03, 0x04];
@@ -227,8 +345,10 @@ mod tests {
         let result = find_pyth_calls(&trace).unwrap();
 
         assert_eq!(result.len(), 2);
+        assert_eq!(result[0].price_feed_id, feed_id1);
         assert_eq!(result[0].output.as_ref(), &output1);
         assert_eq!(result[0].depth, 1);
+        assert_eq!(result[1].price_feed_id, feed_id2);
         assert_eq!(result[1].output.as_ref(), &output2);
         assert_eq!(result[1].depth, 1);
     }
@@ -281,7 +401,8 @@ mod tests {
     fn test_find_pyth_calls_deeply_nested() {
         let pyth_selector = crate::bindings::IPyth::getPriceNoOlderThanCall::SELECTOR;
         let mut input = pyth_selector.to_vec();
-        input.extend_from_slice(&[0u8; 32]);
+        let feed_id = B256::repeat_byte(0xee);
+        input.extend_from_slice(feed_id.as_slice());
 
         let output = vec![0xde, 0xad];
 
@@ -310,6 +431,7 @@ mod tests {
         let result = find_pyth_calls(&trace).unwrap();
 
         assert_eq!(result.len(), 1);
+        assert_eq!(result[0].price_feed_id, feed_id);
         assert_eq!(result[0].output.as_ref(), &output);
         assert_eq!(result[0].depth, 2);
     }
@@ -325,7 +447,8 @@ mod tests {
 
         for selector in selectors {
             let mut input = selector.to_vec();
-            input.extend_from_slice(&[0u8; 32]);
+            let feed_id = B256::repeat_byte(0xff);
+            input.extend_from_slice(feed_id.as_slice());
 
             assert!(
                 is_pyth_method_selector(&Bytes::from(input)),

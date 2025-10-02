@@ -167,26 +167,25 @@ removed as of August 2025. Use NPM package instead.
 
 ### Task 6: Price Extraction Implementation
 
-- [ ] Implement main extraction function in `src/pyth.rs`:
-  - [ ] `pub async fn extract_pyth_price(tx_hash: B256, provider: &impl Provider) -> Result<PythStructs::Price, PythError>`
-  - [ ] Call `fetch_transaction_trace` (already implemented in cli.rs, move to
-        shared location)
-  - [ ] Call trace parser to find Pyth calls
-  - [ ] If multiple Pyth calls found, use first one
-  - [ ] Decode output bytes using Pyth bindings from `src/bindings.rs`
-  - [ ] Return `PythStructs::Price` directly
-- [ ] Error handling:
-  - [ ] Propagate all errors explicitly (no unwrap, no defaults)
-  - [ ] Return Err if no Pyth call found
-  - [ ] Return Err if decode fails
-  - [ ] Add context to errors using `.map_err()`
-- [ ] Add structured logging:
-  - [ ] Debug: "Fetching trace for tx {tx_hash}"
-  - [ ] Debug: "Found {n} Pyth calls in trace"
-  - [ ] Info: "Extracted Pyth price: {price} (expo: {expo}, conf: {conf})"
-  - [ ] Warn: "No Pyth call found in transaction {tx_hash}"
-  - [ ] Error: "Failed to extract Pyth price from {tx_hash}: {error}"
-- [ ] **Checkpoint**: Extract price from real Base transaction with Pyth oracle
+- [x] Implement main extraction function in `src/pyth.rs`:
+  - [x] `pub async fn extract_pyth_price(tx_hash: B256, provider: &impl Provider) -> Result<PythStructs::Price, PythError>`
+  - [x] Call `fetch_transaction_trace` (moved from cli.rs to pyth.rs)
+  - [x] Call trace parser to find Pyth calls
+  - [x] If multiple Pyth calls found, use first one
+  - [x] Decode output bytes using Pyth bindings from `src/bindings.rs`
+  - [x] Return `PythStructs::Price` directly
+- [x] Error handling:
+  - [x] Propagate all errors explicitly (no unwrap, no defaults)
+  - [x] Return Err if no Pyth call found
+  - [x] Return Err if decode fails
+  - [x] Add context to errors using `.map_err()`
+- [x] Add structured logging:
+  - [x] Debug: "Fetching trace for tx {tx_hash}"
+  - [x] Debug: "Found {n} Pyth calls in trace"
+  - [x] Info: "Extracted Pyth price: {price} (expo: {expo}, conf: {conf})"
+  - [x] Warn: "No Pyth call found in transaction {tx_hash}"
+  - [x] Error: "Failed to extract Pyth price from {tx_hash}: {error}"
+- [x] **Checkpoint**: Extract price from real Base transaction with Pyth oracle
       call
 
 ### Task 7: CLI Command Integration
@@ -197,12 +196,12 @@ removed as of August 2025. Use NPM package instead.
   - [x] Load environment config to get RPC URL
   - [x] Create WebSocket provider
   - [x] Call `fetch_transaction_trace` (implemented with alloy's DebugApi)
-- [ ] Wire up price extraction:
-  - [ ] Call `extract_pyth_price` function from pyth module
-  - [ ] Display results in human-readable format:
-    - [ ] Raw price, confidence, exponent, publish time
-    - [ ] Converted decimal price
-    - [ ] Any errors encountered
+- [x] Wire up price extraction:
+  - [x] Call `extract_pyth_price` function from pyth module
+  - [x] Display results in human-readable format:
+    - [x] Raw price, confidence, exponent, publish time
+    - [x] Converted decimal price
+    - [x] Any errors encountered
 - [ ] Test CLI command:
   - [ ] Run with known Base transaction containing Pyth call
         (0xa207d7abf2aa69badb2d4b266b5d2ed03ec10c4f0de173b866815714b75e055f)
