@@ -55,9 +55,15 @@ exploiting price discrepancies.
 - `sqlx db drop` - Drop the database
 - `sqlx db reset` - Drop database, recreate, and run pending migrations
 - `sqlx db setup` - Create database and run pending migrations
+- `sqlx migrate add <DESCRIPTION>` - Create a new migration file with
+  auto-generated version number
 - `sqlx migrate run` - Apply database migrations
 - `sqlx migrate revert` - Revert last migration
 - Database URL configured via `DATABASE_URL` environment variable
+
+**IMPORTANT:** Always use `sqlx migrate add` to create migration files. NEVER
+manually create migration files using the Write tool, as this bypasses sqlx's
+versioning system.
 
 ### Development Tools
 
