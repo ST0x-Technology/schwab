@@ -37,6 +37,10 @@ pub struct OnchainTrade {
     pub created_at: Option<DateTime<Utc>>,
     pub gas_used: Option<u64>,
     pub effective_gas_price: Option<u128>,
+    pub pyth_price: Option<f64>,
+    pub pyth_confidence: Option<f64>,
+    pub pyth_exponent: Option<i32>,
+    pub pyth_publish_time: Option<DateTime<Utc>>,
 }
 
 impl OnchainTrade {
@@ -60,8 +64,19 @@ impl OnchainTrade {
 
         let result = sqlx::query!(
             r#"
-            INSERT INTO onchain_trades (tx_hash, log_index, symbol, amount, direction, price_usdc, block_timestamp, gas_used, effective_gas_price)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            INSERT INTO onchain_trades (
+                tx_hash,
+                log_index,
+                symbol,
+                amount,
+                direction,
+                price_usdc,
+                pyth_price,
+                pyth_confidence,
+                pyth_exponent,
+                pyth_publish_time
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             "#,
             tx_hash_str,
             log_index_i64,
@@ -72,6 +87,10 @@ impl OnchainTrade {
             block_timestamp_naive,
             gas_used_i64,
             effective_gas_price_i64
+            self.pyth_price,
+            self.pyth_confidence,
+            self.pyth_exponent,
+            self.pyth_publish_time
         )
         .execute(&mut **sql_tx)
         .await?;
@@ -89,7 +108,14 @@ impl OnchainTrade {
         #[allow(clippy::cast_possible_wrap)]
         let log_index_i64 = log_index as i64;
         let row = sqlx::query!(
-            "SELECT id, tx_hash, log_index, symbol, amount, direction, price_usdc, block_timestamp, created_at, gas_used, effective_gas_price FROM onchain_trades WHERE tx_hash = ?1 AND log_index = ?2",
+            "
+SELECT (
+id,
+tx_hash, log_index, symbol, amount, direction, price_usdc, created_at, pyth_price, pyth_confidence, pyth_exponent,
+pyth_publish_time
+)
+FROM onchain_trades
+WHERE tx_hash = ?1 AND log_index = ?2",
             tx_hash_str,
             log_index_i64
         )
@@ -129,6 +155,13 @@ impl OnchainTrade {
             gas_used: row.gas_used.map(|g| g as u64),
             #[allow(clippy::cast_sign_loss)]
             effective_gas_price: row.effective_gas_price.map(|p| p as u128),
+            pyth_price: row.pyth_price,
+            pyth_confidence: row.pyth_confidence,
+            #[allow(clippy::cast_possible_truncation)]
+            pyth_exponent: row.pyth_exponent.map(|exp| exp as i32),
+            pyth_publish_time: row
+                .pyth_publish_time
+                .map(|naive_dt| DateTime::from_naive_utc_and_offset(naive_dt, Utc)),
         })
     }
 
@@ -217,6 +250,10 @@ impl OnchainTrade {
             created_at: None,
             gas_used,
             effective_gas_price,
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         Ok(Some(trade))
@@ -364,6 +401,10 @@ mod tests {
             created_at: None,
             gas_used: Some(21000),
             effective_gas_price: Some(2_000_000_000), // 2 gwei
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -452,6 +493,10 @@ mod tests {
             created_at: None,
             gas_used: Some(50000), // Complex contract interaction
             effective_gas_price: Some(1_500_000_000), // 1.5 gwei in wei
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         // Insert first trade
@@ -489,6 +534,10 @@ mod tests {
             created_at: None,
             gas_used: None,
             effective_gas_price: None,
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -604,6 +653,10 @@ mod tests {
                 created_at: None,
                 gas_used: None,
                 effective_gas_price: None,
+                pyth_price: None,
+                pyth_confidence: None,
+                pyth_exponent: None,
+                pyth_publish_time: None,
             };
 
             let mut sql_tx = pool.begin().await.unwrap();

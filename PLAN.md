@@ -227,21 +227,21 @@ removed as of August 2025. Use NPM package instead.
 
 ### Task 9: Update OnchainTrade Struct
 
-- [ ] Modify `src/onchain/trade.rs`
-- [ ] Add Pyth fields to `OnchainTrade` struct:
-  - [ ] `pyth_price: Option<f64>`
-  - [ ] `pyth_confidence: Option<f64>`
-  - [ ] `pyth_exponent: Option<i32>`
-  - [ ] `pyth_publish_time: Option<DateTime<Utc>>`
-- [ ] Update `save_within_transaction` method:
-  - [ ] Modify INSERT query to include new Pyth columns
-  - [ ] Bind optional Pyth values (will be NULL if None)
-  - [ ] Maintain existing transaction handling
-- [ ] Update any existing tests that create `OnchainTrade`:
-  - [ ] Set Pyth fields to None in test data
-- [ ] Run existing tests to verify no breakage:
-  - [ ] `cargo test -q onchain::trade`
-- [ ] **Checkpoint**: All existing tests passing with new fields
+- [x] Modify `src/onchain/trade.rs`
+- [x] Add Pyth fields to `OnchainTrade` struct:
+  - [x] `pyth_price: Option<f64>`
+  - [x] `pyth_confidence: Option<f64>`
+  - [x] `pyth_exponent: Option<i32>`
+  - [x] `pyth_publish_time: Option<DateTime<Utc>>`
+- [x] Update `save_within_transaction` method:
+  - [x] Modify INSERT query to include new Pyth columns
+  - [x] Bind optional Pyth values (will be NULL if None)
+  - [x] Maintain existing transaction handling
+- [x] Update any existing tests that create `OnchainTrade`:
+  - [x] Set Pyth fields to None in test data
+- [x] Run existing tests to verify no breakage:
+  - [x] `cargo test -q onchain::trade`
+- [x] **Checkpoint**: All existing tests passing with new fields
 
 ### Task 10: Integration with Trade Processing
 
