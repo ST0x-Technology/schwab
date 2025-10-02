@@ -40,14 +40,14 @@ metrics_pnl. This allows us to:
 
 ### Subtasks
 
-- [ ] Design `metrics_pnl` table schema with all necessary columns
-- [ ] Add constraints to ensure data integrity (positive quantities, valid trade
+- [x] Design `metrics_pnl` table schema with all necessary columns
+- [x] Add constraints to ensure data integrity (positive quantities, valid trade
       types)
-- [ ] Add indexes for Grafana queries (symbol + timestamp, symbol alone)
-- [ ] Add UNIQUE constraint on (trade_type, trade_id) to prevent duplicate
+- [x] Add indexes for Grafana queries (symbol + timestamp, symbol alone)
+- [x] Add UNIQUE constraint on (trade_type, trade_id) to prevent duplicate
       processing
-- [ ] Write migration file `migrations/20251002000000_pnl_metrics.sql`
-- [ ] Ensure schema supports rust_decimal precision for financial data
+- [x] Write migration file `migrations/20251002210824_pnl_metrics.sql`
+- [x] Ensure schema supports rust_decimal precision for financial data
 
 ### Table Schema
 
