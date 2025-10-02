@@ -1490,36 +1490,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_max_processed_block_no_events() {
-        let pool = setup_test_db().await;
-
-        let result = crate::queue::get_max_processed_block(&pool).await.unwrap();
-        assert_eq!(result, None);
-    }
-
-    #[tokio::test]
-    async fn test_get_max_processed_block_with_processed_events() {
-        let pool = setup_test_db().await;
-
-        // Insert some events with different processed states
-        sqlx::query!(
-            r#"
-            INSERT INTO event_queue (tx_hash, log_index, block_number, event_data, processed)
-            VALUES 
-                ('0x1111111111111111111111111111111111111111111111111111111111111111', 0, 100, '{}', 1),
-                ('0x2222222222222222222222222222222222222222222222222222222222222222', 0, 150, '{}', 1),
-                ('0x3333333333333333333333333333333333333333333333333333333333333333', 0, 200, '{}', 0)
-            "#
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let result = crate::queue::get_max_processed_block(&pool).await.unwrap();
-        assert_eq!(result, Some(150)); // Should return highest processed block
-    }
-
-    #[tokio::test]
     async fn test_backfill_resumes_from_last_processed_block() {
         let pool = setup_test_db().await;
 

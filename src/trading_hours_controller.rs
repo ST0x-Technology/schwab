@@ -104,7 +104,6 @@ impl TradingHoursController {
                         );
                     }
 
-                    // Use the full duration instead of truncating to seconds to prevent 0-second sleeps
                     sleep(sleep_duration).await;
                     continue;
                 }
