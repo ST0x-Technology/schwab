@@ -971,113 +971,57 @@ mod tests {
         assert_eq!(execution_count, 1);
     }
 
-    #[tokio::test]
-    async fn test_concurrent_trade_processing_prevents_duplicate_executions() {
-        let pool = setup_test_db().await;
-
-        // Create two identical trades that should be processed concurrently
-        // Both trades are for 0.8 AAPL shares, which when combined (1.6 shares) should trigger only one execution of 1 share
-        let trade1 = OnchainTrade {
-            id: None,
-            tx_hash: fixed_bytes!(
-                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            ),
-            log_index: 1,
-            symbol: tokenized_symbol!("AAPL0x"),
-            amount: 0.8,
-            direction: Direction::Sell,
-            price_usdc: 15000.0,
-            block_timestamp: None,
-            created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
-            pyth_price: None,
-            pyth_confidence: None,
-            pyth_exponent: None,
-            pyth_publish_time: None,
-        };
-
-        let trade2 = OnchainTrade {
-            id: None,
-            tx_hash: fixed_bytes!(
-                "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-            ),
-            log_index: 1,
-            symbol: tokenized_symbol!("AAPL0x"), // Same symbol to test race condition
-            amount: 0.8,
-            direction: Direction::Sell,
-            price_usdc: 15000.0,
-            block_timestamp: None,
-            created_at: None,
-            gas_used: None,
-            effective_gas_price: None,
-            pyth_price: None,
-            pyth_confidence: None,
-            pyth_exponent: None,
-            pyth_publish_time: None,
-        };
-
-        // Helper function to process trades with retry on deadlock
-        async fn process_with_retry(
-            pool: &SqlitePool,
-            trade: OnchainTrade,
-        ) -> Result<Option<SchwabExecution>, OnChainError> {
-            for attempt in 0..3 {
-                match process_trade_with_tx(pool, trade.clone()).await {
-                    Ok(result) => return Ok(result),
-                    Err(OnChainError::Persistence(crate::error::PersistenceError::Database(
-                        sqlx::Error::Database(db_err),
-                    ))) if db_err.message().contains("database is deadlocked") => {
-                        if attempt < 2 {
-                            // Exponential backoff: 10ms, 20ms
-                            tokio::time::sleep(std::time::Duration::from_millis(
-                                10 * (1 << attempt),
-                            ))
+    async fn process_with_retry(
+        pool: &SqlitePool,
+        trade: OnchainTrade,
+    ) -> Result<Option<SchwabExecution>, OnChainError> {
+        for attempt in 0..3 {
+            match process_trade_with_tx(pool, trade.clone()).await {
+                Ok(result) => return Ok(result),
+                Err(OnChainError::Persistence(crate::error::PersistenceError::Database(
+                    sqlx::Error::Database(db_err),
+                ))) if db_err.message().contains("database is deadlocked") => {
+                    if attempt < 2 {
+                        tokio::time::sleep(std::time::Duration::from_millis(10 * (1 << attempt)))
                             .await;
-                            continue;
-                        }
-                        return Err(OnChainError::Persistence(
-                            crate::error::PersistenceError::Database(sqlx::Error::Database(db_err)),
-                        ));
+                        continue;
                     }
-                    Err(e) => return Err(e),
+                    return Err(OnChainError::Persistence(
+                        crate::error::PersistenceError::Database(sqlx::Error::Database(db_err)),
+                    ));
                 }
+                Err(e) => return Err(e),
             }
-            unreachable!()
         }
+        unreachable!()
+    }
 
-        // Process both trades concurrently to simulate race condition scenario
-        let pool_clone1 = pool.clone();
-        let pool_clone2 = pool.clone();
+    fn create_test_trade(tx_hash_byte: u8, symbol: &str, amount: f64) -> OnchainTrade {
+        OnchainTrade {
+            id: None,
+            tx_hash: alloy::primitives::B256::repeat_byte(tx_hash_byte),
+            log_index: 1,
+            symbol: tokenized_symbol!(symbol),
+            amount,
+            direction: Direction::Sell,
+            price_usdc: 15000.0,
+            block_timestamp: None,
+            created_at: None,
+            gas_used: None,
+            effective_gas_price: None,
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
+        }
+    }
 
-        let (result1, result2) = tokio::join!(
-            process_with_retry(&pool_clone1, trade1),
-            process_with_retry(&pool_clone2, trade2)
-        );
-
-        // Both should succeed without error
-        let execution1 = result1.unwrap();
-        let execution2 = result2.unwrap();
-
-        // Exactly one of them should have triggered an execution (for 1 share)
-        let executions_created = match (execution1, execution2) {
-            (Some(_), None) | (None, Some(_)) => 1,
-            (Some(_), Some(_)) => 2, // This would be the bug we're preventing
-            (None, None) => 0,
-        };
-
-        // Per-symbol lease mechanism should prevent duplicate executions
-        assert_eq!(
-            executions_created, 1,
-            "Per-symbol lease should prevent duplicate executions, but got {executions_created}"
-        );
-
-        // Verify database state: 2 trades saved, 1 execution created
-        let trade_count = super::OnchainTrade::db_count(&pool).await.unwrap();
+    async fn verify_concurrent_execution_state(pool: &SqlitePool, expected_short: f64) {
+        let trade_count = super::OnchainTrade::db_count(pool).await.unwrap();
         assert_eq!(trade_count, 2, "Expected 2 trades to be saved");
 
         let execution_count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
-            .fetch_one(&pool)
+            .fetch_one(pool)
             .await
             .unwrap()
             .count;
@@ -1086,22 +1030,45 @@ mod tests {
             "Expected exactly 1 execution to prevent duplicate orders"
         );
 
-        // Verify the accumulator state shows the remaining fractional amount
-        let accumulator_result = find_by_symbol(&pool, symbol!("AAPL").as_str())
+        let (calculator, _) = find_by_symbol(pool, symbol!("AAPL").as_str())
             .await
-            .unwrap();
-        assert!(
-            accumulator_result.is_some(),
-            "Accumulator should exist for AAPL"
-        );
+            .unwrap()
+            .expect("Accumulator should exist for AAPL");
 
-        let (calculator, _) = accumulator_result.unwrap();
-        // Total 1.6 shares accumulated (short exposure), 1.0 executed, should have 0.6 remaining
         assert!(
-            (calculator.accumulated_short - 0.6).abs() < f64::EPSILON,
-            "Expected 0.6 accumulated_short remaining, got {}",
+            (calculator.accumulated_short - expected_short).abs() < f64::EPSILON,
+            "Expected {expected_short} accumulated_short remaining, got {}",
             calculator.accumulated_short
         );
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_trade_processing_prevents_duplicate_executions() {
+        let pool = setup_test_db().await;
+
+        let trade1 = create_test_trade(0xaa, "AAPL0x", 0.8);
+        let trade2 = create_test_trade(0xbb, "AAPL0x", 0.8);
+
+        let (result1, result2) = tokio::join!(
+            process_with_retry(&pool, trade1),
+            process_with_retry(&pool, trade2)
+        );
+
+        let execution1 = result1.unwrap();
+        let execution2 = result2.unwrap();
+
+        let executions_created = match (execution1, execution2) {
+            (Some(_), None) | (None, Some(_)) => 1,
+            (Some(_), Some(_)) => 2,
+            (None, None) => 0,
+        };
+
+        assert_eq!(
+            executions_created, 1,
+            "Per-symbol lease should prevent duplicate executions, but got {executions_created}"
+        );
+
+        verify_concurrent_execution_state(&pool, 0.6).await;
     }
 
     #[tokio::test]

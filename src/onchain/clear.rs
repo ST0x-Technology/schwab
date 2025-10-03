@@ -728,6 +728,61 @@ mod tests {
         assert_eq!(trade.log_index, 1);
     }
 
+    fn create_parameterized_after_clear_event(
+        sender_byte: u8,
+        alice_output: &str,
+        bob_output: u64,
+    ) -> AfterClear {
+        AfterClear {
+            sender: alloy::primitives::Address::repeat_byte(sender_byte),
+            clearStateChange: ClearStateChange {
+                aliceOutput: U256::from_str(alice_output).unwrap(),
+                bobOutput: U256::from(bob_output),
+                aliceInput: U256::from(bob_output),
+                bobInput: U256::from_str(alice_output).unwrap(),
+            },
+        }
+    }
+
+    fn create_test_log(
+        orderbook: alloy::primitives::Address,
+        tx_hash: alloy::primitives::B256,
+        log_data: alloy::primitives::LogData,
+        log_index: u64,
+    ) -> Log {
+        Log {
+            inner: alloy::primitives::Log {
+                address: orderbook,
+                data: log_data,
+            },
+            block_hash: None,
+            block_number: Some(1),
+            block_timestamp: None,
+            transaction_hash: Some(tx_hash),
+            transaction_index: None,
+            log_index: Some(log_index),
+            removed: false,
+        }
+    }
+
+    fn create_test_receipt_json(tx_hash: alloy::primitives::B256) -> serde_json::Value {
+        json!({
+            "transactionHash": tx_hash,
+            "transactionIndex": "0x1",
+            "blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234",
+            "blockNumber": "0x1",
+            "from": "0x1234567890123456789012345678901234567890",
+            "to": "0x5678901234567890123456789012345678901234",
+            "gasUsed": "0x5208",
+            "effectiveGasPrice": "0x77359400",
+            "cumulativeGasUsed": "0x5208",
+            "status": "0x1",
+            "type": "0x2",
+            "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+            "logs": []
+        })
+    }
+
     #[tokio::test]
     async fn test_fetch_after_clear_multiple_logs_picks_first_match() {
         let env = create_test_env();
@@ -746,85 +801,21 @@ mod tests {
         let tx_hash =
             fixed_bytes!("0xbeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
 
-        let clear_log = Log {
-            inner: alloy::primitives::Log {
-                address: orderbook,
-                data: clear_event.to_log_data(),
-            },
-            block_hash: None,
-            block_number: Some(1),
-            block_timestamp: None,
-            transaction_hash: Some(tx_hash),
-            transaction_index: None,
-            log_index: Some(5),
-            removed: false,
-        };
+        let clear_log = create_test_log(orderbook, tx_hash, clear_event.to_log_data(), 5);
 
-        let after_clear_event_1 = AfterClear {
-            sender: address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-            clearStateChange: ClearStateChange {
-                aliceOutput: U256::from_str("9000000000000000000").unwrap(),
-                bobOutput: U256::from(100_000_000u64),
-                aliceInput: U256::from(100_000_000u64),
-                bobInput: U256::from_str("9000000000000000000").unwrap(),
-            },
-        };
+        let after_clear_event_1 =
+            create_parameterized_after_clear_event(0xaa, "9000000000000000000", 100_000_000);
+        let after_clear_event_2 =
+            create_parameterized_after_clear_event(0xbb, "5000000000000000000", 50_000_000);
 
-        let after_clear_event_2 = AfterClear {
-            sender: address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
-            clearStateChange: ClearStateChange {
-                aliceOutput: U256::from_str("5000000000000000000").unwrap(),
-                bobOutput: U256::from(50_000_000u64),
-                aliceInput: U256::from(50_000_000u64),
-                bobInput: U256::from_str("5000000000000000000").unwrap(),
-            },
-        };
-
-        let after_clear_log_1 = Log {
-            inner: alloy::primitives::Log {
-                address: orderbook,
-                data: after_clear_event_1.to_log_data(),
-            },
-            block_hash: None,
-            block_number: Some(1),
-            block_timestamp: None,
-            transaction_hash: Some(tx_hash),
-            transaction_index: None,
-            log_index: Some(6),
-            removed: false,
-        };
-
-        let after_clear_log_2 = Log {
-            inner: alloy::primitives::Log {
-                address: orderbook,
-                data: after_clear_event_2.to_log_data(),
-            },
-            block_hash: None,
-            block_number: Some(1),
-            block_timestamp: None,
-            transaction_hash: Some(tx_hash),
-            transaction_index: None,
-            log_index: Some(7),
-            removed: false,
-        };
+        let after_clear_log_1 =
+            create_test_log(orderbook, tx_hash, after_clear_event_1.to_log_data(), 6);
+        let after_clear_log_2 =
+            create_test_log(orderbook, tx_hash, after_clear_event_2.to_log_data(), 7);
 
         let asserter = Asserter::new();
         asserter.push_success(&json!([after_clear_log_1, after_clear_log_2]));
-        let receipt_json = json!({
-            "transactionHash": tx_hash,
-            "transactionIndex": "0x1",
-            "blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234",
-            "blockNumber": "0x1",
-            "from": "0x1234567890123456789012345678901234567890",
-            "to": "0x5678901234567890123456789012345678901234",
-            "gasUsed": "0x5208",
-            "effectiveGasPrice": "0x77359400",
-            "cumulativeGasUsed": "0x5208",
-            "status": "0x1",
-            "type": "0x2",
-            "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-            "logs": []
-        });
+        let receipt_json = create_test_receipt_json(tx_hash);
         asserter.push_success(&receipt_json);
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
@@ -939,76 +930,28 @@ mod tests {
         let other_tx_hash =
             fixed_bytes!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 
-        let clear_log = Log {
-            inner: alloy::primitives::Log {
-                address: orderbook,
-                data: clear_event.to_log_data(),
-            },
-            block_hash: None,
-            block_number: Some(1),
-            block_timestamp: None,
-            transaction_hash: Some(target_tx_hash),
-            transaction_index: None,
-            log_index: Some(3),
-            removed: false,
-        };
+        let clear_log = create_test_log(orderbook, target_tx_hash, clear_event.to_log_data(), 3);
 
         let after_clear_event_correct = create_after_clear_event();
-        let after_clear_event_wrong = AfterClear {
-            sender: address!("0xcccccccccccccccccccccccccccccccccccccccc"),
-            clearStateChange: ClearStateChange {
-                aliceOutput: U256::from_str("1000000000000000000").unwrap(),
-                bobOutput: U256::from(10_000_000u64),
-                aliceInput: U256::from(10_000_000u64),
-                bobInput: U256::from_str("1000000000000000000").unwrap(),
-            },
-        };
+        let after_clear_event_wrong =
+            create_parameterized_after_clear_event(0xcc, "1000000000000000000", 10_000_000);
 
-        let wrong_tx_log = Log {
-            inner: alloy::primitives::Log {
-                address: orderbook,
-                data: after_clear_event_wrong.to_log_data(),
-            },
-            block_hash: None,
-            block_number: Some(1),
-            block_timestamp: None,
-            transaction_hash: Some(other_tx_hash),
-            transaction_index: None,
-            log_index: Some(4),
-            removed: false,
-        };
-
-        let correct_log = Log {
-            inner: alloy::primitives::Log {
-                address: orderbook,
-                data: after_clear_event_correct.to_log_data(),
-            },
-            block_hash: None,
-            block_number: Some(1),
-            block_timestamp: None,
-            transaction_hash: Some(target_tx_hash),
-            transaction_index: None,
-            log_index: Some(5),
-            removed: false,
-        };
+        let wrong_tx_log = create_test_log(
+            orderbook,
+            other_tx_hash,
+            after_clear_event_wrong.to_log_data(),
+            4,
+        );
+        let correct_log = create_test_log(
+            orderbook,
+            target_tx_hash,
+            after_clear_event_correct.to_log_data(),
+            5,
+        );
 
         let asserter = Asserter::new();
         asserter.push_success(&json!([wrong_tx_log, correct_log]));
-        let receipt_json = json!({
-            "transactionHash": target_tx_hash,
-            "transactionIndex": "0x1",
-            "blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234",
-            "blockNumber": "0x1",
-            "from": "0x1234567890123456789012345678901234567890",
-            "to": "0x5678901234567890123456789012345678901234",
-            "gasUsed": "0x5208",
-            "effectiveGasPrice": "0x77359400",
-            "cumulativeGasUsed": "0x5208",
-            "status": "0x1",
-            "type": "0x2",
-            "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-            "logs": []
-        });
+        let receipt_json = create_test_receipt_json(target_tx_hash);
         asserter.push_success(&receipt_json);
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),

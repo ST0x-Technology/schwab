@@ -585,6 +585,25 @@ fn save_data(data: &Data) -> Result<(), Error> {
 3. If you believe a lint is incorrect, ask for permission before suppressing it
 4. Document your reasoning if given permission to suppress a specific lint
 
+**Exception for third-party macro-generated code:**
+
+When using third-party macros, such as `sol!` to generate Rust code , lint
+suppression is acceptable for issues that originate from the contract's function
+signatures, which we cannot control.
+
+For example, to deal with a function generated from a smart contract's ABI, we
+can add `allow` inside the `sol!` macro invocation.
+
+```rust
+// ✅ CORRECT - Suppressing lint for third-party ABI generated code
+sol!(
+    #![sol(all_derives = true, rpc)]
+    #[allow(clippy::too_many_arguments)]
+    #[derive(serde::Serialize, serde::Deserialize)]
+    IPyth, "node_modules/@pythnetwork/pyth-sdk-solidity/abis/IPyth.json"
+);
+```
+
 This policy ensures code quality remains high and prevents technical debt
 accumulation through lint suppression.
 
