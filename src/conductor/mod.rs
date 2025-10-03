@@ -16,6 +16,7 @@ use crate::env::Env;
 use crate::error::EventProcessingError;
 use crate::onchain::accumulator::check_all_accumulated_positions;
 use crate::onchain::backfill::backfill_events;
+use crate::onchain::pyth::FeedIdCache;
 use crate::onchain::trade::TradeEvent;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
 use crate::queue::{QueuedEvent, enqueue, get_next_unprocessed_event, mark_event_processed};
@@ -443,6 +444,8 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
 ) {
     info!("Starting queue processor service");
 
+    let feed_id_cache = FeedIdCache::default();
+
     // Log initial unprocessed event count
     match crate::queue::count_unprocessed(pool).await {
         Ok(count) if count > 0 => {
@@ -457,7 +460,7 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
     }
 
     loop {
-        match process_next_queued_event(env, pool, cache, &provider).await {
+        match process_next_queued_event(env, pool, cache, &provider, &feed_id_cache).await {
             Ok(Some(execution)) => {
                 if let Some(exec_id) = execution.id {
                     if let Err(e) =
@@ -485,6 +488,7 @@ async fn process_next_queued_event<P: Provider + Clone>(
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: &P,
+    feed_id_cache: &FeedIdCache,
 ) -> Result<Option<SchwabExecution>, EventProcessingError> {
     let queued_event = get_next_queued_event(pool).await?;
     let Some(queued_event) = queued_event else {
@@ -493,7 +497,8 @@ async fn process_next_queued_event<P: Provider + Clone>(
 
     let event_id = extract_event_id(&queued_event)?;
 
-    let onchain_trade = convert_event_to_trade(env, cache, provider, &queued_event).await?;
+    let onchain_trade =
+        convert_event_to_trade(env, cache, provider, &queued_event, feed_id_cache).await?;
 
     // If the event was filtered, mark as processed and return None
     let Some(trade) = onchain_trade else {
@@ -528,6 +533,7 @@ async fn convert_event_to_trade<P: Provider + Clone>(
     cache: &SymbolCache,
     provider: &P,
     queued_event: &QueuedEvent,
+    feed_id_cache: &FeedIdCache,
 ) -> Result<Option<OnchainTrade>, EventProcessingError> {
     let reconstructed_log = reconstruct_log_from_queued_event(&env.evm_env, queued_event);
 
@@ -539,6 +545,7 @@ async fn convert_event_to_trade<P: Provider + Clone>(
                 provider,
                 *clear_event.clone(),
                 reconstructed_log,
+                feed_id_cache,
             )
             .await?
         }
@@ -549,6 +556,7 @@ async fn convert_event_to_trade<P: Provider + Clone>(
                 *take_event.clone(),
                 reconstructed_log,
                 env.evm_env.order_owner,
+                feed_id_cache,
             )
             .await?
         }
@@ -957,6 +965,10 @@ mod tests {
             created_at: None,
             gas_used: None,
             effective_gas_price: None,
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
         let mut sql_tx = pool.begin().await.unwrap();
         existing_trade
@@ -1024,12 +1036,14 @@ mod tests {
 
             // Try to convert to OnchainTrade (this will fail in test since we don't have mock RPC)
             // but we can at least verify the flow structure
+            let feed_id_cache = FeedIdCache::default();
             if let Ok(Some(trade)) = OnchainTrade::try_from_clear_v2(
                 &env.evm_env,
                 &cache,
                 &http_provider,
                 *boxed_clear_event,
                 log,
+                &feed_id_cache,
             )
             .await
             {
@@ -1523,6 +1537,7 @@ mod tests {
         let pool = setup_test_db().await;
         let env = create_test_env();
         let cache = SymbolCache::default();
+        let feed_id_cache = FeedIdCache::default();
         let asserter = Asserter::new();
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
 
@@ -1559,7 +1574,8 @@ mod tests {
         assert_eq!(count, 1);
 
         // Process the event - should filter it out without error
-        let result = process_next_queued_event(&env, &pool, &cache, &provider).await;
+        let result =
+            process_next_queued_event(&env, &pool, &cache, &provider, &feed_id_cache).await;
 
         // Should return Ok(None) indicating filtered event
         assert!(result.is_ok());

@@ -6,6 +6,7 @@ pub(crate) mod backfill;
 mod clear;
 pub(crate) mod io;
 pub(crate) mod position_calculator;
+pub(crate) mod pyth;
 mod take_order;
 pub(crate) mod trade;
 

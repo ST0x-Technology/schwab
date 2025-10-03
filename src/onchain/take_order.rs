@@ -3,6 +3,7 @@ use alloy::rpc::types::Log;
 
 use crate::bindings::IOrderBookV4::{TakeOrderConfigV3, TakeOrderV2};
 use crate::error::OnChainError;
+use crate::onchain::pyth::FeedIdCache;
 use crate::onchain::trade::{OnchainTrade, OrderFill};
 use crate::symbol::cache::SymbolCache;
 
@@ -14,6 +15,7 @@ impl OnchainTrade {
         event: TakeOrderV2,
         log: Log,
         target_order_owner: alloy::primitives::Address,
+        feed_id_cache: &FeedIdCache,
     ) -> Result<Option<Self>, OnChainError> {
         if event.config.order.owner != target_order_owner {
             return Ok(None);
@@ -36,7 +38,8 @@ impl OnchainTrade {
             output_amount: event.output,
         };
 
-        Self::try_from_order_and_fill_details(cache, provider, order, fill, log).await
+        Self::try_from_order_and_fill_details(cache, &provider, order, fill, log, feed_id_cache)
+            .await
     }
 }
 
@@ -45,6 +48,7 @@ mod tests {
     use super::*;
     use crate::bindings::IERC20::symbolCall;
     use crate::bindings::IOrderBookV4::{SignedContextV1, TakeOrderConfigV3, TakeOrderV2};
+    use crate::onchain::pyth::FeedIdCache;
     use crate::symbol::cache::SymbolCache;
     use crate::test_utils::{get_test_log, get_test_order};
     use crate::tokenized_symbol;
@@ -111,6 +115,7 @@ mod tests {
         ));
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let feed_id_cache = FeedIdCache::default();
 
         let result = OnchainTrade::try_from_take_order_if_target_owner(
             &cache,
@@ -118,6 +123,7 @@ mod tests {
             take_event,
             log,
             target_order_owner,
+            &feed_id_cache,
         )
         .await
         .unwrap();
@@ -145,13 +151,15 @@ mod tests {
 
         let asserter = Asserter::new();
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let feed_id_cache = FeedIdCache::default();
 
         let result = OnchainTrade::try_from_take_order_if_target_owner(
             &cache,
-            provider,
+            &provider,
             take_event,
             log,
             different_target_owner,
+            &feed_id_cache,
         )
         .await
         .unwrap();
@@ -212,6 +220,7 @@ mod tests {
         ));
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let feed_id_cache = FeedIdCache::default();
 
         let result = OnchainTrade::try_from_take_order_if_target_owner(
             &cache,
@@ -219,6 +228,7 @@ mod tests {
             take_event,
             log,
             target_order_owner,
+            &feed_id_cache,
         )
         .await
         .unwrap();
@@ -281,6 +291,7 @@ mod tests {
         ));
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let feed_id_cache = FeedIdCache::default();
 
         let result = OnchainTrade::try_from_take_order_if_target_owner(
             &cache,
@@ -288,6 +299,7 @@ mod tests {
             take_event,
             log,
             target_order_owner,
+            &feed_id_cache,
         )
         .await
         .unwrap();
@@ -352,6 +364,7 @@ mod tests {
         ));
 
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let feed_id_cache = FeedIdCache::default();
 
         let result = OnchainTrade::try_from_take_order_if_target_owner(
             &cache,
@@ -359,6 +372,7 @@ mod tests {
             take_event,
             log,
             target_order_owner,
+            &feed_id_cache,
         )
         .await;
 
@@ -392,6 +406,7 @@ mod tests {
 
         let asserter = Asserter::new();
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+        let feed_id_cache = FeedIdCache::default();
 
         let result = OnchainTrade::try_from_take_order_if_target_owner(
             &cache,
@@ -399,6 +414,7 @@ mod tests {
             take_event,
             log,
             target_order_owner,
+            &feed_id_cache,
         )
         .await;
 
