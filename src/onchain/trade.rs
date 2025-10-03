@@ -5,6 +5,7 @@ use alloy::sol_types::SolEvent;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::num::ParseFloatError;
+use tracing::error;
 
 use crate::bindings::IOrderBookV4::{ClearV2, OrderV3, TakeOrderV2};
 #[cfg(test)]
@@ -12,12 +13,14 @@ use crate::error::PersistenceError;
 use crate::error::{OnChainError, TradeValidationError};
 use crate::onchain::EvmEnv;
 use crate::onchain::io::{TokenizedEquitySymbol, TradeDetails};
+use crate::onchain::pyth::FeedIdCache;
+
+use super::pyth::PythPricing;
 use crate::schwab::Direction;
 use crate::symbol::cache::SymbolCache;
 #[cfg(test)]
 use sqlx::SqlitePool;
 
-/// Union of all trade events
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TradeEvent {
     ClearV2(Box<ClearV2>),
@@ -174,12 +177,13 @@ WHERE tx_hash = ?1 AND log_index = ?2",
     }
 
     /// Core parsing logic for converting blockchain events to trades
-    pub async fn try_from_order_and_fill_details<P: Provider>(
+    pub(crate) async fn try_from_order_and_fill_details<P: Provider>(
         cache: &SymbolCache,
         provider: P,
         order: OrderV3,
         fill: OrderFill,
         log: Log,
+        feed_id_cache: &FeedIdCache,
     ) -> Result<Option<Self>, OnChainError> {
         let tx_hash = log.transaction_hash.ok_or(TradeValidationError::NoTxHash)?;
         let log_index = log.log_index.ok_or(TradeValidationError::NoLogIndex)?;
@@ -205,7 +209,7 @@ WHERE tx_hash = ?1 AND log_index = ?2",
         let onchain_input_symbol = cache.get_io_symbol(&provider, input).await?;
 
         let onchain_output_amount = u256_to_f64(fill.output_amount, output.decimals)?;
-        let onchain_output_symbol = cache.get_io_symbol(provider, output).await?;
+        let onchain_output_symbol = cache.get_io_symbol(&provider, output).await?;
 
         // Use centralized TradeDetails::try_from_io to extract all trade data consistently
         let trade_details = TradeDetails::try_from_io(
@@ -235,6 +239,21 @@ WHERE tx_hash = ?1 AND log_index = ?2",
         };
         let tokenized_symbol = TokenizedEquitySymbol::parse(&tokenized_symbol_str)?;
 
+        let pyth_pricing = match PythPricing::try_from_tx_hash(
+            tx_hash,
+            &provider,
+            tokenized_symbol.base().as_str(),
+            feed_id_cache,
+        )
+        .await
+        {
+            Ok(pricing) => Some(pricing),
+            Err(e) => {
+                error!("Failed to get Pyth pricing for tx_hash={tx_hash:?}: {e}");
+                None
+            }
+        };
+
         let trade = Self {
             id: None,
             tx_hash,
@@ -248,12 +267,10 @@ WHERE tx_hash = ?1 AND log_index = ?2",
                 .block_timestamp
                 .and_then(|ts| DateTime::from_timestamp(ts as i64, 0)),
             created_at: None,
-            gas_used,
-            effective_gas_price,
-            pyth_price: None,
-            pyth_confidence: None,
-            pyth_exponent: None,
-            pyth_publish_time: None,
+            pyth_price: pyth_pricing.as_ref().map(|p| p.price),
+            pyth_confidence: pyth_pricing.as_ref().map(|p| p.confidence),
+            pyth_exponent: pyth_pricing.as_ref().map(|p| p.exponent),
+            pyth_publish_time: pyth_pricing.as_ref().map(|p| p.publish_time),
         };
 
         Ok(Some(trade))
@@ -266,6 +283,7 @@ WHERE tx_hash = ?1 AND log_index = ?2",
         provider: P,
         cache: &SymbolCache,
         env: &EvmEnv,
+        feed_id_cache: &FeedIdCache,
     ) -> Result<Option<Self>, OnChainError> {
         let receipt = provider
             .get_transaction_receipt(tx_hash)
@@ -296,7 +314,7 @@ WHERE tx_hash = ?1 AND log_index = ?2",
 
         for log in trades {
             if let Some(trade) =
-                try_convert_log_to_onchain_trade(log, &provider, cache, env).await?
+                try_convert_log_to_onchain_trade(log, &provider, cache, env, feed_id_cache).await?
             {
                 return Ok(Some(trade));
             }
@@ -307,7 +325,7 @@ WHERE tx_hash = ?1 AND log_index = ?2",
 }
 
 #[derive(Debug)]
-pub struct OrderFill {
+pub(crate) struct OrderFill {
     pub input_index: usize,
     pub input_amount: U256,
     pub output_index: usize,
@@ -319,6 +337,7 @@ async fn try_convert_log_to_onchain_trade<P: Provider>(
     provider: P,
     cache: &SymbolCache,
     env: &EvmEnv,
+    feed_id_cache: &FeedIdCache,
 ) -> Result<Option<OnchainTrade>, OnChainError> {
     let log_with_metadata = Log {
         inner: log.inner.clone(),
@@ -338,6 +357,7 @@ async fn try_convert_log_to_onchain_trade<P: Provider>(
             &provider,
             clear_event.data().clone(),
             log_with_metadata,
+            feed_id_cache,
         )
         .await;
     }
@@ -349,6 +369,7 @@ async fn try_convert_log_to_onchain_trade<P: Provider>(
             take_order_event.data().clone(),
             log_with_metadata,
             env.order_owner,
+            feed_id_cache,
         )
         .await;
     }
@@ -449,7 +470,7 @@ mod tests {
 
         // Attempt to insert invalid tx_hash format - should fail due to constraint
         let insert_result = sqlx::query!(
-            "INSERT INTO onchain_trades (tx_hash, log_index, symbol, amount, direction, price_usdc) 
+            "INSERT INTO onchain_trades (tx_hash, log_index, symbol, amount, direction, price_usdc)
              VALUES ('invalid_hash', 1, 'TEST', 1.0, 'BUY', 1.0)"
         )
         .execute(&pool)
@@ -465,7 +486,7 @@ mod tests {
 
         // Attempt to insert invalid direction data - should fail due to constraint
         let insert_result = sqlx::query!(
-            "INSERT INTO onchain_trades (tx_hash, log_index, symbol, amount, direction, price_usdc) 
+            "INSERT INTO onchain_trades (tx_hash, log_index, symbol, amount, direction, price_usdc)
              VALUES ('0x1234567890123456789012345678901234567890123456789012345678901234', 1, 'TEST', 1.0, 'INVALID', 1.0)"
         )
         .execute(&pool)
@@ -590,6 +611,7 @@ mod tests {
         asserter.push_success(&serde_json::Value::Null);
         let provider = ProviderBuilder::new().connect_mocked_client(asserter);
         let cache = SymbolCache::default();
+        let feed_id_cache = FeedIdCache::default();
         let env = EvmEnv {
             ws_rpc_url: "ws://localhost:8545".parse().unwrap(),
             orderbook: alloy::primitives::Address::ZERO,
@@ -601,7 +623,8 @@ mod tests {
             fixed_bytes!("0x4444444444444444444444444444444444444444444444444444444444444444");
 
         // Mock returns empty response by default, simulating transaction not found
-        let result = OnchainTrade::try_from_tx_hash(tx_hash, provider, &cache, &env).await;
+        let result =
+            OnchainTrade::try_from_tx_hash(tx_hash, provider, &cache, &env, &feed_id_cache).await;
 
         assert!(matches!(
             result.unwrap_err(),

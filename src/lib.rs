@@ -11,7 +11,6 @@ pub mod env;
 mod error;
 mod lock;
 mod onchain;
-mod pyth;
 mod queue;
 pub mod schwab;
 mod symbol;

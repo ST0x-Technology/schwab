@@ -1,12 +1,13 @@
-use alloy::primitives::{Address, B256, Bytes, address};
+use alloy::primitives::{Address, B256, Bytes, U256, address};
 use alloy::providers::Provider;
 use alloy::providers::ext::DebugApi;
 use alloy::rpc::types::trace::geth::{
     CallFrame, GethDebugBuiltInTracerType, GethDebugTracerType, GethDebugTracingOptions, GethTrace,
 };
 use alloy::sol_types::{SolCall, SolType};
+use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
-use rust_decimal::prelude::FromPrimitive;
+use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use tracing::{debug, error, info, warn};
 
 use crate::bindings::IPyth::{
@@ -36,6 +37,10 @@ pub enum PythError {
     ArithmeticOverflow,
     #[error("RPC error while fetching trace: {0}")]
     RpcError(String),
+    #[error("Failed to convert Pyth data: {0}")]
+    ConversionFailed(String),
+    #[error("Invalid timestamp value: {0}")]
+    InvalidTimestamp(U256),
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +48,73 @@ pub struct PythCall {
     pub price_feed_id: B256,
     pub output: Bytes,
     pub depth: u32,
+}
+
+pub(super) struct PythPricing {
+    pub price: f64,
+    pub confidence: f64,
+    pub exponent: i32,
+    pub publish_time: DateTime<Utc>,
+}
+
+impl PythPricing {
+    pub(super) async fn try_from_tx_hash<P: Provider>(
+        tx_hash: B256,
+        provider: P,
+        symbol: &str,
+        feed_id_cache: &FeedIdCache,
+    ) -> Result<Self, PythError> {
+        let pyth_price = extract_pyth_price(tx_hash, &provider, symbol, feed_id_cache).await?;
+
+        let price_decimal = pyth_price.to_decimal()?;
+        let price_f64 = price_decimal
+            .to_f64()
+            .ok_or_else(|| PythError::ConversionFailed("Price to f64 conversion failed".into()))?;
+
+        let confidence_f64 = scale_with_exponent(pyth_price.conf, pyth_price.expo)?;
+
+        let publish_time_i64 = i64::try_from(pyth_price.publishTime)
+            .map_err(|_| PythError::InvalidTimestamp(pyth_price.publishTime))?;
+
+        let publish_time = DateTime::from_timestamp(publish_time_i64, 0)
+            .ok_or(PythError::InvalidTimestamp(pyth_price.publishTime))?;
+
+        Ok(Self {
+            price: price_f64,
+            confidence: confidence_f64,
+            exponent: pyth_price.expo,
+            publish_time,
+        })
+    }
+}
+
+fn scale_with_exponent(value: u64, exponent: i32) -> Result<f64, PythError> {
+    let decimal_value = Decimal::from(value);
+    let scaled = if exponent >= 0 {
+        decimal_value
+            .checked_mul(Decimal::from(
+                10_i64.pow(
+                    exponent
+                        .try_into()
+                        .map_err(|_| PythError::ArithmeticOverflow)?,
+                ),
+            ))
+            .ok_or(PythError::ArithmeticOverflow)?
+    } else {
+        decimal_value
+            .checked_div(Decimal::from(
+                10_i64.pow(
+                    (-exponent)
+                        .try_into()
+                        .map_err(|_| PythError::ArithmeticOverflow)?,
+                ),
+            ))
+            .ok_or(PythError::ArithmeticOverflow)?
+    };
+
+    scaled
+        .to_f64()
+        .ok_or_else(|| PythError::ConversionFailed("Decimal to f64 conversion failed".into()))
 }
 
 pub fn find_pyth_calls(trace: &GethTrace) -> Result<Vec<PythCall>, PythError> {
@@ -103,33 +175,35 @@ pub fn decode_pyth_price(output: &Bytes) -> Result<Price, PythError> {
     Ok(price)
 }
 
-pub fn to_decimal(price: &Price) -> Result<Decimal, PythError> {
-    let exponent = price.expo;
+impl Price {
+    pub(crate) fn to_decimal(&self) -> Result<Decimal, PythError> {
+        let exponent = self.expo;
 
-    let result = if exponent >= 0 {
-        let price_value = Decimal::from_i64(price.price)
-            .ok_or_else(|| PythError::InvalidResponse("price value too large".to_string()))?;
+        let result = if exponent >= 0 {
+            let price_value = Decimal::from_i64(self.price)
+                .ok_or_else(|| PythError::InvalidResponse("price value too large".to_string()))?;
 
-        let multiplier = (0..exponent).try_fold(Decimal::from(1_i64), |acc, _| {
-            acc.checked_mul(Decimal::from(10_i64))
+            let multiplier = (0..exponent).try_fold(Decimal::from(1_i64), |acc, _| {
+                acc.checked_mul(Decimal::from(10_i64))
+                    .ok_or(PythError::ArithmeticOverflow)
+            })?;
+
+            price_value
+                .checked_mul(multiplier)
                 .ok_or(PythError::ArithmeticOverflow)
-        })?;
+        } else {
+            let decimals = exponent
+                .checked_abs()
+                .ok_or(PythError::ArithmeticOverflow)?
+                .try_into()
+                .map_err(|_| PythError::InvalidResponse("exponent too large".to_string()))?;
 
-        price_value
-            .checked_mul(multiplier)
-            .ok_or(PythError::ArithmeticOverflow)
-    } else {
-        let decimals = exponent
-            .checked_abs()
-            .ok_or(PythError::ArithmeticOverflow)?
-            .try_into()
-            .map_err(|_| PythError::InvalidResponse("exponent too large".to_string()))?;
+            Decimal::try_new(self.price, decimals)
+                .map_err(|e| PythError::InvalidResponse(format!("failed to create decimal: {e}")))
+        }?;
 
-        Decimal::try_new(price.price, decimals)
-            .map_err(|e| PythError::InvalidResponse(format!("failed to create decimal: {e}")))
-    }?;
-
-    Ok(result.normalize())
+        Ok(result.normalize())
+    }
 }
 
 pub async fn extract_pyth_price<P>(
@@ -511,7 +585,7 @@ mod tests {
             publishTime: alloy::primitives::U256::from(1_700_000_000u64),
         };
 
-        let decimal = to_decimal(&price).unwrap();
+        let decimal = price.to_decimal().unwrap();
 
         assert_eq!(decimal.to_string(), "1.23456789");
     }
@@ -525,7 +599,7 @@ mod tests {
             publishTime: alloy::primitives::U256::from(1_700_000_000u64),
         };
 
-        let decimal = to_decimal(&price).unwrap();
+        let decimal = price.to_decimal().unwrap();
 
         assert_eq!(decimal.to_string(), "42");
     }
@@ -539,7 +613,7 @@ mod tests {
             publishTime: alloy::primitives::U256::from(1_700_000_000u64),
         };
 
-        let decimal = to_decimal(&price).unwrap();
+        let decimal = price.to_decimal().unwrap();
 
         assert_eq!(decimal.to_string(), "123000");
     }
@@ -563,7 +637,7 @@ mod tests {
                 publishTime: alloy::primitives::U256::from(1_700_000_000u64),
             };
 
-            let decimal = to_decimal(&price).unwrap();
+            let decimal = price.to_decimal().unwrap();
 
             assert_eq!(
                 decimal.to_string(),
@@ -582,7 +656,7 @@ mod tests {
             publishTime: alloy::primitives::U256::from(1_700_000_000u64),
         };
 
-        let decimal = to_decimal(&price).unwrap();
+        let decimal = price.to_decimal().unwrap();
 
         assert_eq!(decimal.to_string(), "-50");
     }
@@ -596,7 +670,7 @@ mod tests {
             publishTime: alloy::primitives::U256::from(1_700_000_000u64),
         };
 
-        let decimal = to_decimal(&price).unwrap();
+        let decimal = price.to_decimal().unwrap();
 
         assert_eq!(decimal.to_string(), "182.5");
     }
@@ -614,7 +688,7 @@ mod tests {
         let encoded_bytes = Bytes::from(encoded);
 
         let decoded = decode_pyth_price(&encoded_bytes).unwrap();
-        let decimal = to_decimal(&decoded).unwrap();
+        let decimal = decoded.to_decimal().unwrap();
 
         assert_eq!(decoded.price, original_price.price);
         assert_eq!(decoded.conf, original_price.conf);

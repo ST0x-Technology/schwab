@@ -6,6 +6,7 @@ use tracing::{error, info};
 
 use crate::env::{Env, LogLevel};
 use crate::error::OnChainError;
+use crate::onchain::pyth::{FeedIdCache, extract_pyth_price};
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
 use crate::schwab::SchwabAuthEnv;
 use crate::schwab::market_hours::{MarketStatus as MarketStatusEnum, fetch_market_hours};
@@ -257,9 +258,9 @@ async fn get_pyth_price<W: Write>(
     let ws = WsConnect::new(ws_url.as_str());
     let provider = ProviderBuilder::new().connect_ws(ws).await?;
 
-    let cache = crate::pyth::FeedIdCache::new();
+    let cache = FeedIdCache::new();
 
-    match crate::pyth::extract_pyth_price(tx_hash, &provider, symbol, &cache).await {
+    match extract_pyth_price(tx_hash, &provider, symbol, &cache).await {
         Ok(price) => {
             writeln!(stdout, "✅ Successfully extracted Pyth price:")?;
             writeln!(stdout, "   Raw price value: {}", price.price)?;
@@ -267,7 +268,7 @@ async fn get_pyth_price<W: Write>(
             writeln!(stdout, "   Confidence: {}", price.conf)?;
             writeln!(stdout, "   Publish time: {}", price.publishTime)?;
 
-            match crate::pyth::to_decimal(&price) {
+            match price.to_decimal() {
                 Ok(decimal_price) => {
                     writeln!(stdout, "   Decimal price: {decimal_price}")?;
                 }
@@ -451,8 +452,9 @@ async fn process_tx_with_provider<W: Write, P: Provider + Clone>(
     cache: &SymbolCache,
 ) -> anyhow::Result<()> {
     let evm_env = &env.evm_env;
+    let feed_id_cache = FeedIdCache::default();
 
-    match OnchainTrade::try_from_tx_hash(tx_hash, provider, cache, evm_env).await {
+    match OnchainTrade::try_from_tx_hash(tx_hash, provider, cache, evm_env, &feed_id_cache).await {
         Ok(Some(onchain_trade)) => {
             process_found_trade(onchain_trade, env, pool, stdout).await?;
         }
