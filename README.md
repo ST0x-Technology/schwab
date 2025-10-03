@@ -161,6 +161,22 @@ defined in `migrations/20250703115746_trades.sql`.
 - Separate reporting process reads from SQLite database for analysis without
   impacting trading performance
 
+**P&L Metrics and Grafana Integration:**
+
+The P&L reporter processes all trades using FIFO accounting and writes metrics
+to the `metrics_pnl` table, which is optimized for Grafana visualization.
+
+- **Metrics Table Design**: Uses REAL (f64) types for seamless Grafana
+  integration and query performance
+- **Precision Trade-off**: Slight precision loss from internal Decimal
+  calculations is acceptable for analytics dashboards
+- **Source of Truth**: Full precision maintained in `onchain_trades` and
+  `schwab_executions` tables for auditing and reconciliation
+- **FIFO Accounting**: Maintains in-memory inventory state per symbol, rebuilt
+  on startup by replaying all trades
+- **Checkpoint Resume**: Uses MAX(timestamp) from metrics_pnl to process only
+  new trades in each iteration
+
 ### **Health Monitoring and Logging**
 
 - System uptime and connectivity status using structured logging
