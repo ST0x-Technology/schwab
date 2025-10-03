@@ -260,25 +260,22 @@ async fn get_pyth_price<W: Write>(
 
     let cache = FeedIdCache::new();
 
-    match extract_pyth_price(tx_hash, &provider, symbol, &cache).await {
-        Ok(price) => {
-            writeln!(stdout, "✅ Successfully extracted Pyth price:")?;
-            writeln!(stdout, "   Raw price value: {}", price.price)?;
-            writeln!(stdout, "   Exponent: {}", price.expo)?;
-            writeln!(stdout, "   Confidence: {}", price.conf)?;
-            writeln!(stdout, "   Publish time: {}", price.publishTime)?;
+    let price = extract_pyth_price(tx_hash, &provider, symbol, &cache)
+        .await
+        .map_err(|e| anyhow::Error::new(e).context("extracting Pyth price"))?;
 
-            match price.to_decimal() {
-                Ok(decimal_price) => {
-                    writeln!(stdout, "   Decimal price: {decimal_price}")?;
-                }
-                Err(e) => {
-                    writeln!(stdout, "   ⚠️  Failed to convert to decimal: {e}")?;
-                }
-            }
+    writeln!(stdout, "✅ Successfully extracted Pyth price:")?;
+    writeln!(stdout, "   Raw price value: {}", price.price)?;
+    writeln!(stdout, "   Exponent: {}", price.expo)?;
+    writeln!(stdout, "   Confidence: {}", price.conf)?;
+    writeln!(stdout, "   Publish time: {}", price.publishTime)?;
+
+    match price.to_decimal() {
+        Ok(decimal_price) => {
+            writeln!(stdout, "   Decimal price: {decimal_price}")?;
         }
         Err(e) => {
-            writeln!(stdout, "❌ Failed to extract Pyth price: {e}")?;
+            writeln!(stdout, "   ⚠️  Failed to convert to decimal: {e}")?;
         }
     }
 

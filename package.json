@@ -7,13 +7,11 @@
     "lib": "lib",
     "test": "tests"
   },
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
+  "scripts": {},
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@pythnetwork/pyth-sdk-solidity": "^4.2.0"
+    "@pythnetwork/pyth-sdk-solidity": "4.2.0"
   }
 }

@@ -90,25 +90,28 @@ impl PythPricing {
 
 fn scale_with_exponent(value: u64, exponent: i32) -> Result<f64, PythError> {
     let decimal_value = Decimal::from(value);
+
     let scaled = if exponent >= 0 {
+        let multiplier = (0..exponent).try_fold(Decimal::from(1_i64), |acc, _| {
+            acc.checked_mul(Decimal::from(10_i64))
+                .ok_or(PythError::ArithmeticOverflow)
+        })?;
+
         decimal_value
-            .checked_mul(Decimal::from(
-                10_i64.pow(
-                    exponent
-                        .try_into()
-                        .map_err(|_| PythError::ArithmeticOverflow)?,
-                ),
-            ))
+            .checked_mul(multiplier)
             .ok_or(PythError::ArithmeticOverflow)?
     } else {
+        let abs_exponent = exponent
+            .checked_abs()
+            .ok_or(PythError::ArithmeticOverflow)?;
+
+        let divisor = (0..abs_exponent).try_fold(Decimal::from(1_i64), |acc, _| {
+            acc.checked_mul(Decimal::from(10_i64))
+                .ok_or(PythError::ArithmeticOverflow)
+        })?;
+
         decimal_value
-            .checked_div(Decimal::from(
-                10_i64.pow(
-                    (-exponent)
-                        .try_into()
-                        .map_err(|_| PythError::ArithmeticOverflow)?,
-                ),
-            ))
+            .checked_div(divisor)
             .ok_or(PythError::ArithmeticOverflow)?
     };
 
