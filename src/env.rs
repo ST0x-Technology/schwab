@@ -8,6 +8,10 @@ use crate::schwab::OrderPollerConfig;
 use crate::schwab::SchwabAuthEnv;
 use crate::schwab::broker::{DynBroker, LogBroker, Schwab};
 
+pub(crate) trait HasSqlite {
+    async fn get_sqlite_pool(&self) -> Result<SqlitePool, sqlx::Error>;
+}
+
 #[derive(clap::ValueEnum, Debug, Clone)]
 pub enum LogLevel {
     Trace,
@@ -65,11 +69,35 @@ pub struct Env {
     pub otel_metrics_exporter_instance_id: Option<String>,
 }
 
-impl Env {
-    pub async fn get_sqlite_pool(&self) -> Result<SqlitePool, sqlx::Error> {
-        SqlitePool::connect(&self.database_url).await
-    }
+impl HasSqlite for Env {
+    async fn get_sqlite_pool(&self) -> Result<SqlitePool, sqlx::Error> {
+        let pool = SqlitePool::connect(&self.database_url).await?;
 
+        // SQLite Concurrency Configuration:
+        //
+        // WAL Mode: Allows concurrent readers but only ONE writer at a time across
+        // all processes. When both main bot and reporter try to write simultaneously,
+        // one will block until the other completes. This is a fundamental SQLite
+        // limitation.
+        sqlx::query("PRAGMA journal_mode = WAL")
+            .execute(&pool)
+            .await?;
+
+        // Busy Timeout: 10 seconds - when a write is blocked by another process,
+        // SQLite will wait up to 10 seconds before failing with "database is locked".
+        // This prevents immediate failures when main bot and reporter write concurrently.
+        //
+        // Future: This limitation will be eliminated when migrating to Kafka +
+        // Elasticsearch with CQRS pattern for separate read/write paths.
+        sqlx::query("PRAGMA busy_timeout = 10000")
+            .execute(&pool)
+            .await?;
+
+        Ok(pool)
+    }
+}
+
+impl Env {
     pub const fn get_order_poller_config(&self) -> OrderPollerConfig {
         OrderPollerConfig {
             polling_interval: std::time::Duration::from_secs(self.order_polling_interval),

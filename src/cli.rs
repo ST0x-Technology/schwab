@@ -5,7 +5,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tracing::{error, info};
 
-use crate::env::{Env, LogLevel};
+use crate::env::{Env, HasSqlite, LogLevel};
 use crate::error::OnChainError;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
 use crate::schwab::SchwabAuthEnv;

@@ -15,6 +15,7 @@ mod metrics;
 mod onchain;
 mod pyth;
 mod queue;
+pub mod reporter;
 pub mod schwab;
 mod symbol;
 mod trade_execution_link;
@@ -24,7 +25,7 @@ mod trading_hours_controller;
 pub mod test_utils;
 
 use crate::conductor::get_cutoff_block;
-use crate::env::Env;
+use crate::env::{Env, HasSqlite};
 use crate::schwab::SchwabError;
 use crate::schwab::market_hours_cache::MarketHoursCache;
 use crate::symbol::cache::SymbolCache;
@@ -38,7 +39,7 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
     sqlx::migrate!().run(&pool).await?;
 
     // Initialize metrics (optional - returns None if not configured)
-    let metrics = Arc::new(metrics::setup(&env));
+    let metrics = Arc::new(metrics::setup(&env).await);
     if metrics.is_some() {
         info!("Metrics initialized successfully");
     } else {
