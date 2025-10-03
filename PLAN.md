@@ -104,28 +104,24 @@ must use explicit error handling (no silent data corruption).
 
 ### Subtasks
 
-- [ ] Create `src/pnl/mod.rs` module structure
-- [ ] Define core types: `InventoryLot`, `Direction`, `TradeType`, `PnlResult`
-- [ ] Implement `FifoInventory` struct with VecDeque for lot storage
-- [ ] Implement `add_lot()` method for position-increasing trades
-- [ ] Implement `consume_lots()` method with FIFO logic and P&L calculation
-- [ ] Implement `process_trade()` method to determine increase vs decrease
-- [ ] Handle position reversals (long→short, short→long)
-- [ ] Add comprehensive error types in `src/pnl/error.rs`
-- [ ] Write unit tests for all FIFO scenarios
+- [x] Create `src/reporter/pnl.rs` module for FIFO logic
+- [x] Define core types: `InventoryLot`, `TradeType`, `PnlResult`
+- [x] Reuse existing `schwab::Direction` enum (no duplicates)
+- [x] Implement `FifoInventory` struct with VecDeque for lot storage
+- [x] Implement `add_lot()` method for position-increasing trades
+- [x] Implement `consume_lots()` method with FIFO logic and P&L calculation
+- [x] Implement `process_trade()` method to determine increase vs decrease
+- [x] Handle position reversals (long→short, short→long)
+- [x] Add comprehensive error types
+- [x] Write unit tests for all FIFO scenarios
 
 ### Core Types
 
 ```rust
+use crate::schwab::Direction;  // USE EXISTING Direction ENUM - NO DUPLICATES
 use rust_decimal::Decimal;
 use std::collections::VecDeque;
 use chrono::{DateTime, Utc};
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Direction {
-    Long,   // We own shares
-    Short,  // We owe shares
-}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TradeType {
@@ -137,7 +133,7 @@ pub enum TradeType {
 struct InventoryLot {
     quantity_remaining: Decimal,
     cost_basis_per_share: Decimal,
-    direction: Direction,
+    direction: Direction,  // Direction::Buy or Direction::Sell - REUSE existing type
 }
 
 pub struct FifoInventory {
@@ -155,40 +151,42 @@ pub struct PnlResult {
 
 ### FIFO Algorithm
 
+**IMPORTANT: Uses existing `schwab::Direction` enum (Buy/Sell) - NO new
+direction types**
+
 ```rust
 impl FifoInventory {
     pub fn process_trade(
         &mut self,
         quantity: Decimal,
         price_per_share: Decimal,
-        trade_direction: Direction,
+        direction: Direction,  // Direction::Buy or Direction::Sell
     ) -> Result<PnlResult, PnlError> {
-        let current_direction = self.current_direction();
-
         // Determine if trade increases or decreases position
-        match (current_direction, trade_direction) {
-            (None, _) => {
+        match self.current_direction() {
+            None => {
                 // Flat position -> opens new position
-                self.add_lot(quantity, price_per_share, trade_direction);
+                self.add_lot(quantity, price_per_share, direction);
                 Ok(PnlResult {
                     realized_pnl: None,
                     cumulative_pnl: self.cumulative_pnl,
                     net_position_after: self.net_position(),
                 })
             }
-            (Some(dir), _) if dir == trade_direction => {
+            Some(current) if current == direction => {
                 // Same direction -> increases position
-                self.add_lot(quantity, price_per_share, trade_direction);
+                self.add_lot(quantity, price_per_share, direction);
                 Ok(PnlResult {
                     realized_pnl: None,
                     cumulative_pnl: self.cumulative_pnl,
                     net_position_after: self.net_position(),
                 })
             }
-            (Some(_), _) => {
+            Some(_) => {
                 // Opposite direction -> decreases position (may reverse)
-                let pnl = self.consume_lots(quantity, price_per_share, trade_direction)?;
-                self.cumulative_pnl += pnl;
+                let pnl = self.consume_lots(quantity, price_per_share, direction)?;
+                self.cumulative_pnl = self.cumulative_pnl.checked_add(pnl)
+                    .ok_or(PnlError::ArithmeticOverflow)?;
                 Ok(PnlResult {
                     realized_pnl: Some(pnl),
                     cumulative_pnl: self.cumulative_pnl,
@@ -200,41 +198,46 @@ impl FifoInventory {
 
     fn consume_lots(
         &mut self,
-        mut quantity: Decimal,
+        quantity: Decimal,
         execution_price: Decimal,
-        trade_direction: Direction,
+        direction: Direction,
     ) -> Result<Decimal, PnlError> {
-        let mut total_pnl = Decimal::ZERO;
-
-        while quantity > Decimal::ZERO && !self.lots.is_empty() {
-            let lot = self.lots.front_mut().ok_or(PnlError::InsufficientInventory)?;
-
-            let consumed = quantity.min(lot.quantity_remaining);
-
-            // P&L calculation depends on direction
-            let pnl = match lot.direction {
-                Direction::Long => {
-                    // Selling long: (sell_price - cost_basis) * quantity
-                    (execution_price - lot.cost_basis_per_share) * consumed
+        // Use try_fold iterator pattern - no imperative loops
+        let (total_pnl, remaining) = self.lots.iter_mut().try_fold(
+            (Decimal::ZERO, quantity),
+            |(pnl_acc, qty_remaining), lot| {
+                if qty_remaining == Decimal::ZERO {
+                    return Ok((pnl_acc, qty_remaining));
                 }
-                Direction::Short => {
-                    // Buying to cover short: (cost_basis - buy_price) * quantity
-                    (lot.cost_basis_per_share - execution_price) * consumed
-                }
-            };
 
-            total_pnl += pnl;
-            lot.quantity_remaining -= consumed;
-            quantity -= consumed;
+                let consumed = qty_remaining.min(lot.quantity_remaining);
 
-            if lot.quantity_remaining == Decimal::ZERO {
-                self.lots.pop_front();
-            }
-        }
+                let pnl = match lot.direction {
+                    Direction::Buy => (execution_price - lot.cost_basis_per_share)
+                        .checked_mul(consumed)
+                        .ok_or(PnlError::ArithmeticOverflow)?,
+                    Direction::Sell => (lot.cost_basis_per_share - execution_price)
+                        .checked_mul(consumed)
+                        .ok_or(PnlError::ArithmeticOverflow)?,
+                };
 
-        // If quantity remains, position reversed - open new lot in opposite direction
-        if quantity > Decimal::ZERO {
-            self.add_lot(quantity, execution_price, trade_direction);
+                lot.quantity_remaining = lot.quantity_remaining
+                    .checked_sub(consumed)
+                    .ok_or(PnlError::ArithmeticOverflow)?;
+
+                let new_pnl = pnl_acc.checked_add(pnl)
+                    .ok_or(PnlError::ArithmeticOverflow)?;
+                let new_remaining = qty_remaining.checked_sub(consumed)
+                    .ok_or(PnlError::ArithmeticOverflow)?;
+
+                Ok((new_pnl, new_remaining))
+            },
+        )?;
+
+        self.lots.retain(|lot| lot.quantity_remaining > Decimal::ZERO);
+
+        if remaining > Decimal::ZERO {
+            self.add_lot(remaining, execution_price, direction);
         }
 
         Ok(total_pnl)
@@ -251,20 +254,17 @@ impl FifoInventory {
     fn net_position(&self) -> Decimal {
         self.lots.iter().fold(Decimal::ZERO, |acc, lot| {
             match lot.direction {
-                Direction::Long => acc + lot.quantity_remaining,
-                Direction::Short => acc - lot.quantity_remaining,
+                Direction::Buy => acc + lot.quantity_remaining,
+                Direction::Sell => acc - lot.quantity_remaining,
             }
         })
     }
 
     fn current_direction(&self) -> Option<Direction> {
-        let net = self.net_position();
-        if net > Decimal::ZERO {
-            Some(Direction::Long)
-        } else if net < Decimal::ZERO {
-            Some(Direction::Short)
-        } else {
-            None
+        match self.net_position().cmp(&Decimal::ZERO) {
+            Ordering::Greater => Some(Direction::Buy),
+            Ordering::Less => Some(Direction::Sell),
+            Ordering::Equal => None,
         }
     }
 }
@@ -300,220 +300,135 @@ The reporter runs independently in a loop:
 Rebuilding FIFO state on each iteration is fast (no database writes during
 replay) and ensures correctness if database is manually modified.
 
+### Design Decisions
+
+**Code Organization:**
+
+- Module structure: `reporter::pnl` (reporter reports P&L, not P&L reports)
+- FIFO logic in `src/reporter/pnl.rs`
+- Reporter config and loop logic in `src/reporter/mod.rs`
+- Binary `src/bin/reporter.rs` is minimal (matches pattern of other binaries)
+- This enables comprehensive unit testing and code reuse
+
+**Type System:**
+
+- Created `Symbol` newtype in `src/symbol/mod.rs` for type safety
+  - `pub(crate)` visibility following CLAUDE.md guidelines
+  - Validated via `TryFrom<String>` and `TryFrom<&str>` (no empty symbols)
+  - No unnecessary `new()` constructor - use TryFrom implementations
+- Trade struct uses `r#type` (not `trade_type`) and `id` (not `trade_id`)
+- Leverages existing `Direction::from_str()` instead of custom parsing
+- Uses algebraic data types to make invalid states unrepresentable
+
+**Functional Programming:**
+
+- `rebuild_fifo_state()` uses `try_fold()` iterator pattern instead of
+  imperative loops
+- Trade loading uses iterator chains with `map()` and `collect()`
+- Eliminated mutable variables where possible
+
+**Database:**
+
+- SQL formatted with newlines per column for readability
+- All metric conversions centralized in `Trade::to_db_values()`
+- Checkpoint uses `DateTime::UNIX_EPOCH` as default instead of special sentinel
+  values
+- **Precision Trade-off**: `metrics_pnl` uses REAL (f64) for Grafana
+  compatibility
+  - Internal calculations use `Decimal` for precision
+  - Conversion to f64 for database storage has acceptable precision loss for
+    analytics
+  - Source of truth (`onchain_trades`, `schwab_executions`) maintains full
+    precision
+  - Design documented in CLAUDE.md and README.md
+
+**Error Handling:**
+
+- Never imports bare `Result` - always uses qualified `anyhow::Result`
+- Explicit error context for all conversions
+- Proper error propagation with `?` operator
+
 ### Subtasks
 
-- [ ] Create `src/bin/reporter.rs` binary entry point
-- [ ] Implement reporter initialization (DB pool, environment config)
-- [ ] Implement `load_checkpoint()` to get MAX timestamp from metrics_pnl
-- [ ] Implement `load_all_trades()` to fetch and merge onchain + offchain trades
-- [ ] Implement `rebuild_fifo_state()` to replay trades up to checkpoint
-- [ ] Implement `process_new_trades()` to process trades after checkpoint
-- [ ] Write metrics_pnl rows in database transactions
+- [x] Create `src/bin/reporter.rs` binary entry point
+- [x] Implement reporter initialization (DB pool, environment config)
+- [x] Implement `load_checkpoint()` to get MAX timestamp from metrics_pnl
+- [x] Implement `load_all_trades()` to fetch and merge onchain + offchain trades
+- [x] Implement `rebuild_fifo_state()` to replay trades up to checkpoint
+- [x] Implement `process_new_trades()` to process trades after checkpoint
+- [x] Write metrics_pnl rows in database transactions
 - [ ] Add OTEL metrics emission for observability
-- [ ] Handle graceful shutdown (SIGTERM/SIGINT)
-- [ ] Integration tests with in-memory SQLite
+- [x] Handle graceful shutdown (SIGTERM/SIGINT)
+- [x] Integration tests with in-memory SQLite
 
 ### Reporter Structure
 
 ```rust
-// src/bin/reporter.rs
+// src/bin/reporter.rs (minimal entry point, matches other binaries)
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv_override().ok();
+    let config = ReporterConfig::parse();
+    setup_tracing(&config.log_level);
 
-#[derive(Debug)]
+    let pool = config.get_sqlite_pool().await?;
+    let interval = Duration::from_secs(config.reporter_processing_interval_secs);
+
+    run_reporter_loop(pool, interval).await
+}
+
+// src/reporter/mod.rs (library code with config and logic)
+#[derive(Debug, Clone)]
 struct Trade {
-    trade_type: TradeType,
-    trade_id: i64,
-    symbol: String,
+    r#type: TradeType,
+    id: i64,
+    symbol: Symbol,
     quantity: Decimal,
     price_per_share: Decimal,
     direction: Direction,
     timestamp: DateTime<Utc>,
 }
 
-struct Reporter {
-    pool: SqlitePool,
-    processing_interval: Duration,
+async fn process_iteration(pool: &SqlitePool) -> anyhow::Result<usize> {
+    let checkpoint = load_checkpoint(pool).await?;
+    let all_trades = load_all_trades(pool).await?;
+    let mut inventories = rebuild_fifo_state(&all_trades, checkpoint)?;
+
+    let new_trades: Vec<_> = all_trades
+        .into_iter()
+        .filter(|t| t.timestamp > checkpoint)
+        .collect();
+
+    for trade in &new_trades {
+        process_and_persist_trade(pool, &mut inventories, trade).await?;
+    }
+
+    Ok(new_trades.len())
 }
 
-impl Reporter {
-    async fn process_iteration(&self) -> Result<usize> {
-        // 1. Load checkpoint
-        let checkpoint = self.load_checkpoint().await?;
-
-        // 2. Load all trades (for rebuilding + new processing)
-        let all_trades = self.load_all_trades().await?;
-
-        // 3. Rebuild FIFO state (replay trades up to checkpoint)
-        let mut inventories = self.rebuild_fifo_state(&all_trades, checkpoint).await?;
-
-        // 4. Process new trades (after checkpoint)
-        let new_trades: Vec<_> = all_trades.into_iter()
-            .filter(|t| t.timestamp > checkpoint)
-            .collect();
-
-        // 5. Process each new trade and write to DB
-        for trade in &new_trades {
-            self.process_and_persist_trade(&mut inventories, trade).await?;
-        }
-
-        Ok(new_trades.len())
-    }
-
-    async fn load_checkpoint(&self) -> Result<DateTime<Utc>> {
-        let result = sqlx::query!(
-            "SELECT MAX(timestamp) as max_ts FROM metrics_pnl"
-        )
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(result.max_ts.unwrap_or_else(|| Utc.timestamp(0, 0)))
-    }
-
-    async fn load_all_trades(&self) -> Result<Vec<Trade>> {
-        // Query onchain_trades
-        let onchain = sqlx::query!(
-            "SELECT id, symbol, amount, direction, price_usdc, created_at
-             FROM onchain_trades
-             ORDER BY created_at, id"
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        // Query schwab_executions (only FILLED)
-        let offchain = sqlx::query!(
-            "SELECT id, symbol, shares, direction, price_cents, executed_at
-             FROM schwab_executions
-             WHERE status = 'FILLED'
-             ORDER BY executed_at, id"
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        // Merge and sort chronologically
-        let mut trades = Vec::new();
-
-        for row in onchain {
-            trades.push(Trade {
-                trade_type: TradeType::Onchain,
-                trade_id: row.id,
-                symbol: row.symbol,
-                quantity: Decimal::from_f64(row.amount).ok_or(...)?,
-                price_per_share: Decimal::from_f64(row.price_usdc).ok_or(...)?,
-                direction: parse_direction(&row.direction)?,
-                timestamp: row.created_at,
-            });
-        }
-
-        for row in offchain {
-            trades.push(Trade {
-                trade_type: TradeType::Offchain,
-                trade_id: row.id,
-                symbol: row.symbol,
-                quantity: Decimal::from(row.shares),
-                price_per_share: Decimal::from(row.price_cents.unwrap()) / Decimal::from(100),
-                direction: parse_direction(&row.direction)?,
-                timestamp: row.executed_at.unwrap(),
-            });
-        }
-
-        trades.sort_by_key(|t| (t.timestamp, t.trade_id));
-        Ok(trades)
-    }
-
-    async fn rebuild_fifo_state(
-        &self,
-        trades: &[Trade],
-        checkpoint: DateTime<Utc>,
-    ) -> Result<HashMap<String, FifoInventory>> {
-        let mut inventories = HashMap::new();
-
-        for trade in trades {
-            if trade.timestamp > checkpoint {
-                break;  // Only replay up to checkpoint
-            }
-
-            let inventory = inventories
-                .entry(trade.symbol.clone())
-                .or_insert_with(|| FifoInventory::new(trade.symbol.clone()));
-
-            // Process trade (no DB writes during rebuild)
-            inventory.process_trade(
-                trade.quantity,
-                trade.price_per_share,
-                trade.direction,
-            )?;
-        }
-
-        Ok(inventories)
-    }
-
-    async fn process_and_persist_trade(
-        &self,
-        inventories: &mut HashMap<String, FifoInventory>,
-        trade: &Trade,
-    ) -> Result<()> {
-        let inventory = inventories
-            .entry(trade.symbol.clone())
-            .or_insert_with(|| FifoInventory::new(trade.symbol.clone()));
-
-        let result = inventory.process_trade(
-            trade.quantity,
-            trade.price_per_share,
-            trade.direction,
-        )?;
-
-        // Insert into metrics_pnl
-        sqlx::query!(
-            "INSERT INTO metrics_pnl (
-                symbol, timestamp, trade_type, trade_id, trade_direction,
-                quantity, price_per_share, realized_pnl, cumulative_pnl, net_position_after
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            trade.symbol,
-            trade.timestamp,
-            format!("{:?}", trade.trade_type).to_uppercase(),
-            trade.trade_id,
-            format!("{:?}", trade.direction).to_uppercase(),
-            trade.quantity.to_string(),
-            trade.price_per_share.to_string(),
-            result.realized_pnl.map(|p| p.to_string()),
-            result.cumulative_pnl.to_string(),
-            result.net_position_after.to_string(),
-        )
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Initialize tracing, load env, create pool
-    let env = Env::from_env()?;
-    let pool = env.get_sqlite_pool().await?;
+pub async fn run_reporter_loop(pool: SqlitePool, interval: Duration) -> anyhow::Result<()> {
+    info!("Starting P&L reporter");
     sqlx::migrate!().run(&pool).await?;
 
-    let interval = env.reporter_processing_interval_secs.unwrap_or(30);
-    let reporter = Reporter {
-        pool,
-        processing_interval: Duration::from_secs(interval),
-    };
-
-    // Main loop
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                info!("Shutdown signal received");
+            result = tokio::signal::ctrl_c() => {
+                match result {
+                    Ok(()) => info!("Shutdown signal received"),
+                    Err(e) => error!("Error receiving shutdown signal: {e}"),
+                }
                 break;
             }
-            _ = tokio::time::sleep(reporter.processing_interval) => {
-                match reporter.process_iteration().await {
-                    Ok(count) => info!("Processed {} new trades", count),
-                    Err(e) => error!("Processing error: {}", e),
+            () = tokio::time::sleep(interval) => {
+                match process_iteration(&pool).await {
+                    Ok(count) => info!("Processed {count} new trades"),
+                    Err(e) => error!("Processing error: {e}"),
                 }
             }
         }
     }
 
+    info!("Reporter shutdown complete");
     Ok(())
 }
 ```
