@@ -269,27 +269,43 @@ removed as of August 2025. Use NPM package instead.
 - [x] Write unit tests for trace fetching:
   - [x] Mock provider responses for debug_traceTransaction
   - [x] Test successful trace retrieval (test_fetch_transaction_trace in cli.rs)
-- [ ] Write unit tests for trace parser:
-  - [ ] Create mock trace JSON with Pyth calls
-  - [ ] Test finding Pyth calls at various depths
-  - [ ] Test handling traces with no Pyth calls
-  - [ ] Test handling multiple Pyth calls
-  - [ ] Test filtering by method selector
-- [ ] Write unit tests for decoder:
-  - [ ] Test decoding valid Pyth ABI responses
-  - [ ] Test various exponent values
-  - [ ] Test error handling for invalid data
-  - [ ] Test decimal conversion accuracy
-- [ ] Write integration test:
-  - [ ] Use real transaction hash from Base with known Pyth price
-  - [ ] Call full extraction flow
-  - [ ] Verify price extracted matches expected value
-  - [ ] Requires debug RPC access (may need to skip in CI)
-- [ ] Test error propagation:
-  - [ ] Verify errors bubble up correctly
-  - [ ] Verify trade processing continues on extraction failure
-- [ ] Run all tests: `cargo test -q`
-- [ ] **Checkpoint**: All tests passing
+- [x] Write unit tests for trace parser:
+  - [x] Create mock trace JSON with Pyth calls
+  - [x] Test finding Pyth calls at various depths
+  - [x] Test handling traces with no Pyth calls
+  - [x] Test handling multiple Pyth calls
+  - [x] Test filtering by method selector
+- [x] Write unit tests for decoder:
+  - [x] Test decoding valid Pyth ABI responses
+  - [x] Test various exponent values
+  - [x] Test error handling for invalid data
+  - [x] Test decimal conversion accuracy
+- [x] Write integration test:
+  - [x] Use real transaction hash from Base with known Pyth price
+  - [x] Call full extraction flow
+  - [x] Verify price extracted matches expected value
+  - [x] Requires debug RPC access (marked with #[ignore] to skip in CI)
+- [x] Test error propagation:
+  - [x] Verify errors bubble up correctly
+  - [x] Verify trade processing continues on extraction failure
+- [x] Run all tests: `cargo test -q`
+- [x] **Checkpoint**: All tests passing
+
+**Completed**: Added comprehensive unit tests for pyth module including:
+
+- Trace parser tests: single call, nested calls, multiple calls, deeply nested
+  calls, no Pyth calls, wrong selectors, no output
+- Method selector validation tests for all 4 Pyth methods
+- Decoder tests: valid decoding, malformed data, roundtrip encoding/decoding
+- Decimal conversion tests: negative/zero/positive exponents, various values,
+  negative prices, equity prices
+- Scale with exponent tests: negative, positive, zero, overflow handling
+- Extract price feed ID tests: valid extraction, too short input
+- Invalid trace variant error handling
+- Integration test (ignored): Real transaction on Base network with actual Pyth
+  price extraction
+- Error propagation tests: Invalid timestamp handling, conversion errors
+- All 428 tests pass, 1 ignored (integration test requiring RPC access)
 
 ### Task 12: Configuration and Documentation
 

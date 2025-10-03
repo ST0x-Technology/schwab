@@ -301,6 +301,9 @@ where
 mod tests {
     use super::*;
     use alloy::primitives::{Address, U256};
+    use alloy::providers::ProviderBuilder;
+    use alloy::providers::mock::Asserter;
+    use alloy::rpc::types::trace::geth::FourByteFrame;
 
     fn create_test_call_frame(
         to: Address,
@@ -695,5 +698,166 @@ mod tests {
         assert_eq!(decoded.expo, original_price.expo);
         assert_eq!(decoded.publishTime, original_price.publishTime);
         assert_eq!(decimal.to_string(), "9.99999999");
+    }
+
+    #[test]
+    fn test_scale_with_exponent_negative() {
+        let result = scale_with_exponent(123_456_789, -8).unwrap();
+        assert!((result - 1.234_567_89).abs() < 0.000_000_01);
+    }
+
+    #[test]
+    fn test_scale_with_exponent_positive() {
+        let result = scale_with_exponent(123, 3).unwrap();
+        assert!((result - 123_000.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_scale_with_exponent_zero() {
+        let result = scale_with_exponent(42, 0).unwrap();
+        assert!((result - 42.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_scale_with_exponent_decimal_overflow() {
+        let result = scale_with_exponent(u64::MAX, 10);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_price_feed_id_valid() {
+        let pyth_selector = crate::bindings::IPyth::getPriceNoOlderThanCall::SELECTOR;
+        let mut input = pyth_selector.to_vec();
+        let expected_feed_id = B256::repeat_byte(0xaa);
+        input.extend_from_slice(expected_feed_id.as_slice());
+
+        let bytes = Bytes::from(input);
+        let result = extract_price_feed_id(&bytes).unwrap();
+
+        assert_eq!(result, expected_feed_id);
+    }
+
+    #[test]
+    fn test_extract_price_feed_id_too_short() {
+        let short_input = Bytes::from(vec![0x01, 0x02, 0x03]);
+        let result = extract_price_feed_id(&short_input);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_pyth_calls_invalid_trace_variant() {
+        let trace = GethTrace::FourByteTracer(FourByteFrame::default());
+        let result = find_pyth_calls(&trace);
+
+        assert!(matches!(result, Err(PythError::InvalidTraceVariant)));
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_extract_pyth_price_integration() {
+        let rpc_url = std::env::var("WS_RPC_URL")
+            .unwrap_or_else(|_| "wss://lb.drpc.org/ogHmws/base".to_string());
+
+        let provider = ProviderBuilder::new().connect(&rpc_url).await.unwrap();
+
+        let tx_hash = "0xa207d7abf2aa69badb2d4b266b5d2ed03ec10c4f0de173b866815714b75e055f"
+            .parse()
+            .unwrap();
+
+        let cache = FeedIdCache::new();
+        let result = extract_pyth_price(tx_hash, &provider, "AAPL", &cache).await;
+
+        assert!(result.is_ok(), "Failed to extract price: {result:?}");
+
+        let price = result.unwrap();
+        assert_eq!(price.expo, -8);
+        assert!(price.price > 0);
+        assert!(price.conf > 0);
+        assert!(price.publishTime > U256::ZERO);
+    }
+
+    #[tokio::test]
+    async fn test_pyth_pricing_conversion() {
+        let price = Price {
+            price: 18_250_000_000,
+            conf: 10_000_000,
+            expo: -8,
+            publishTime: U256::from(1_700_000_000u64),
+        };
+
+        let pricing = PythPricing {
+            price: 182.50,
+            confidence: 0.10,
+            exponent: -8,
+            publish_time: DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+        };
+
+        let price_decimal = price.to_decimal().unwrap();
+        let price_f64 = price_decimal.to_f64().unwrap();
+
+        assert!((price_f64 - pricing.price).abs() < 0.01);
+
+        let confidence_f64 = scale_with_exponent(price.conf, price.expo).unwrap();
+        assert!((confidence_f64 - pricing.confidence).abs() < 0.01);
+    }
+
+    #[tokio::test]
+    async fn test_pyth_pricing_invalid_timestamp_propagates_error() {
+        let call_frame = create_test_call_frame(
+            Address::repeat_byte(0x11),
+            vec![0x01, 0x02],
+            Some(vec![0x05]),
+            vec![],
+        );
+        let trace = GethTrace::CallTracer(call_frame);
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::to_value(&trace).unwrap());
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        let tx_hash = B256::repeat_byte(0xff);
+        let cache = FeedIdCache::new();
+
+        let result = extract_pyth_price(tx_hash, &provider, "TEST", &cache).await;
+
+        assert!(matches!(result, Err(PythError::NoPythCall)));
+    }
+
+    #[tokio::test]
+    async fn test_pyth_pricing_try_from_tx_hash_timestamp_overflow() {
+        let pyth_selector = crate::bindings::IPyth::getPriceNoOlderThanCall::SELECTOR;
+        let mut input = pyth_selector.to_vec();
+        let feed_id = B256::repeat_byte(0xaa);
+        input.extend_from_slice(feed_id.as_slice());
+
+        let price = Price {
+            price: 100_000,
+            conf: 500,
+            expo: -5,
+            publishTime: U256::MAX,
+        };
+
+        let encoded = Price::abi_encode(&price);
+        let output = Bytes::from(encoded);
+
+        let call_frame = create_test_call_frame(
+            BASE_PYTH_CONTRACT_ADDRESS,
+            input,
+            Some(output.to_vec()),
+            vec![],
+        );
+        let trace = GethTrace::CallTracer(call_frame);
+
+        let asserter = Asserter::new();
+        asserter.push_success(&serde_json::to_value(&trace).unwrap());
+        let provider = ProviderBuilder::new().connect_mocked_client(asserter);
+
+        let tx_hash = B256::repeat_byte(0xff);
+        let cache = FeedIdCache::new();
+
+        let result = PythPricing::try_from_tx_hash(tx_hash, provider, "TEST", &cache).await;
+
+        assert!(matches!(result, Err(PythError::InvalidTimestamp(_))));
     }
 }

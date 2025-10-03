@@ -1,7 +1,7 @@
 {
   "name": "schwad",
   "version": "1.0.0",
-  "description": "## **Background**",
+  "description": "Pyth SDK dependency for oracle price extraction",
   "main": "index.js",
   "directories": {
     "lib": "lib",
