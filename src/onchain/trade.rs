@@ -74,12 +74,15 @@ impl OnchainTrade {
                 amount,
                 direction,
                 price_usdc,
+                block_timestamp,
+                gas_used,
+                effective_gas_price,
                 pyth_price,
                 pyth_confidence,
                 pyth_exponent,
                 pyth_publish_time
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
             "#,
             tx_hash_str,
             log_index_i64,
@@ -89,7 +92,7 @@ impl OnchainTrade {
             self.price_usdc,
             block_timestamp_naive,
             gas_used_i64,
-            effective_gas_price_i64
+            effective_gas_price_i64,
             self.pyth_price,
             self.pyth_confidence,
             self.pyth_exponent,
@@ -112,11 +115,22 @@ impl OnchainTrade {
         let log_index_i64 = log_index as i64;
         let row = sqlx::query!(
             "
-SELECT (
-id,
-tx_hash, log_index, symbol, amount, direction, price_usdc, created_at, pyth_price, pyth_confidence, pyth_exponent,
-pyth_publish_time
-)
+SELECT
+    id,
+    tx_hash,
+    log_index,
+    symbol,
+    amount,
+    direction,
+    price_usdc,
+    created_at,
+    block_timestamp,
+    gas_used,
+    effective_gas_price,
+    pyth_price,
+    pyth_confidence,
+    pyth_exponent,
+    pyth_publish_time
 FROM onchain_trades
 WHERE tx_hash = ?1 AND log_index = ?2",
             tx_hash_str,
@@ -267,6 +281,8 @@ WHERE tx_hash = ?1 AND log_index = ?2",
                 .block_timestamp
                 .and_then(|ts| DateTime::from_timestamp(ts as i64, 0)),
             created_at: None,
+            gas_used,
+            effective_gas_price,
             pyth_price: pyth_pricing.as_ref().map(|p| p.price),
             pyth_confidence: pyth_pricing.as_ref().map(|p| p.confidence),
             pyth_exponent: pyth_pricing.as_ref().map(|p| p.exponent),
