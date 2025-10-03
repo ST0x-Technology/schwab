@@ -1,29 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with
-code in this repository.
-
-## Plan & Review
-
-### Before starting work
-
-- Write a comprehensive step-by-step plan to
-  .claude/tasks/YYYY-MM-DD-TASK_NAME.md with each task having a corresponding
-  section and a list of subtasks as checkboxes inside of it
-- The plan should be a detailed implementation plan and the reasoning behind the
-  design decisions
-- Do not include timelines in the plan as they tend to be inaccurate
-- Remain focused on the task at hand, do not include unrelated improvements or
-  premature optimizations
-- Once you write the plan, ask me to review it. Do not continue until I approve
-  the plan.
-
-### While implementing
-
-- You should update .claude/tasks/YYYY-MM-DD-TASK_NAME.md every time you
-  complete a section
-- Upon completing a planned task, add detailed descriptions of the changes you
-  made to ease the review process
+This file provides guidance to AI agents working with code in this repository.
 
 ## Plan & Review
 
@@ -59,7 +36,7 @@ exploiting price discrepancies.
 ### Building & Running
 
 - `cargo build` - Build the project
-- `cargo run --bin main` - Run the main arbitrage bot
+- `cargo run --bin server` - Run the main arbitrage bot
 - `cargo run --bin cli -- auth` - Run the authentication flow for Charles Schwab
   OAuth setup
 - `cargo run --bin cli` - Run the command-line interface for manual operations

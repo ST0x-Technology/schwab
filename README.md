@@ -135,7 +135,7 @@ rainix-rs-static
 - `src/schwab.rs` - Charles Schwab API integration and OAuth
 - `src/symbol/` - Token symbol caching
 - `migrations/` - SQLite database schema
-- `CLAUDE.md` - Development guidelines for AI assistance
+- `AGENTS.md` - Development guidelines for AI assistance
 - `SPEC.md` - Full technical specification
 
 ## Architecture
