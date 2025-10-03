@@ -209,15 +209,15 @@ pub(crate) async fn get_max_processed_block(
             .fetch_one(pool)
             .await?;
 
-    match row.max_block {
-        Some(block) => {
-            let block_u64 = u64::try_from(block).map_err(|_| {
-                EventQueueError::Processing("Block number conversion failed".to_string())
-            })?;
-            Ok(Some(block_u64))
-        }
-        None => Ok(None),
-    }
+    let Some(block) = row.max_block else {
+        return Ok(None);
+    };
+
+    let block_u64 = u64::try_from(block).map_err(|_| {
+        EventQueueError::Processing(format!("Block number {block} conversion failed"))
+    })?;
+
+    Ok(Some(block_u64))
 }
 
 #[cfg(test)]

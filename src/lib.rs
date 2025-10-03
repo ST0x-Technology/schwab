@@ -1,6 +1,7 @@
 use rocket::Config;
 use sqlx::SqlitePool;
-use tracing::{debug, error, info, warn};
+use std::sync::Arc;
+use tracing::{error, info};
 
 pub mod api;
 mod bindings;
