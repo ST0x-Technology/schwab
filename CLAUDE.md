@@ -200,12 +200,46 @@ versioning system.
   - `symbol`: Primary key (non-empty string)
   - `locked_at`: Lock acquisition timestamp
 
+- `metrics_pnl`: P&L metrics for Grafana visualization
+
+  - `id`: Primary key (auto-increment)
+  - `symbol`: Asset symbol (non-empty string)
+  - `timestamp`: Trade timestamp
+  - `trade_type`: Source type ('ONCHAIN' or 'OFFCHAIN')
+  - `trade_id`: Foreign key to source table
+  - `trade_direction`: Trade direction ('BUY' or 'SELL')
+  - `quantity`: Trade quantity (REAL/f64 for Grafana compatibility)
+  - `price_per_share`: Price per share (REAL/f64 for Grafana compatibility)
+  - `realized_pnl`: Realized P&L for this trade (nullable, REAL/f64)
+  - `cumulative_pnl`: Running total P&L for symbol (REAL/f64)
+  - `net_position_after`: Position after trade (REAL/f64)
+  - Unique constraint: `(trade_type, trade_id)`
+  - **Design Note**: Uses REAL (f64) types for Grafana compatibility. Slight
+    precision loss from internal Decimal calculations is acceptable for
+    analytics dashboards. Source of truth with full precision remains in
+    `onchain_trades` and `schwab_executions` tables.
+
 **Idempotency Controls:**
 
 - Uses `(tx_hash, log_index)` as unique identifier to prevent duplicate trade
   execution
 - Trade status tracking: pending → completed/failed
 - Retry logic with exponential backoff for failed trades
+
+**SQLite Concurrency Limitations (Current Architecture):**
+
+- **Single Writer Serialization**: SQLite WAL mode allows only ONE writer at a
+  time across all processes
+- **Main bot and reporter serialize writes**: When both try to write
+  simultaneously, one blocks until the other completes
+- **10-second busy timeout**: Blocked writers wait up to 10 seconds before
+  failing with "database is locked" error
+- **Transaction discipline**: Reporter keeps transactions minimal (single INSERT
+  per trade) to avoid blocking critical bot operations
+- **Future migration**: This limitation will be eliminated when migrating to
+  Kafka + Elasticsearch with CQRS pattern
+- **Data integrity**: While writes serialize, SQLite guarantees no corruption -
+  data consistency is maintained
 
 ### Configuration
 
@@ -273,8 +307,13 @@ Environment variables (can be set via `.env` file):
   do top-of-module imports. Note that I said top-of-module and not top-of-file,
   e.g. imports required only inside a tests module should be done in the module
   and not hidden behind #[cfg(test)] at the top of the file
-- **Error Handling**: Avoid `unwrap()` even post-validation since validation
-  logic changes might leave panics in the codebase
+- **Error Handling - ZERO TOLERANCE POLICY**: **NEVER** use `.unwrap()` or
+  `.expect()` in non-test code under ANY circumstances. This is a **HARD RULE**
+  with ZERO exceptions. Even if you believe the value cannot be None/Err due to
+  prior validation, validation logic can change and leave panics in production
+  code. Always use proper error handling with `?`, `if let`, `match`, or
+  iterator methods like `.ok()`, `.ok_or()`, `.map_or()`. Using `.unwrap()` or
+  `.expect()` in non-test code is grounds for immediate rejection of the work
 - **Visibility Levels**: Always keep visibility levels as restrictive as
   possible (prefer `pub(crate)` over `pub`, private over `pub(crate)`) to enable
   better dead code detection by the compiler and tooling. This makes the
