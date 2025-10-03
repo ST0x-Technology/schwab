@@ -12,6 +12,7 @@ mod error;
 mod lock;
 mod onchain;
 mod queue;
+pub mod reporter;
 pub mod schwab;
 mod symbol;
 mod trade_execution_link;
