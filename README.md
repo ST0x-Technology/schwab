@@ -300,6 +300,24 @@ export GRAFANA_ADMIN_PASSWORD=secure_password
 docker compose up -d
 ```
 
+## P&L Tracking and Metrics
+
+### P&L Metrics and Grafana Integration
+
+The P&L reporter processes all trades using FIFO accounting and writes metrics
+to the `metrics_pnl` table, which is optimized for Grafana visualization.
+
+- **Metrics Table Design**: Uses REAL (f64) types for seamless Grafana
+  integration and query performance
+- **Precision Trade-off**: Slight precision loss from internal Decimal
+  calculations is acceptable for analytics dashboards
+- **Source of Truth**: Full precision maintained in `onchain_trades` and
+  `schwab_executions` tables for auditing and reconciliation
+- **FIFO Accounting**: Maintains in-memory inventory state per symbol, rebuilt
+  on startup by replaying all trades
+- **Checkpoint Resume**: Uses MAX(timestamp) from metrics_pnl to process only
+  new trades in each iteration
+
 ## Project Structure
 
 This is a Cargo workspace with two crates:
