@@ -7,9 +7,8 @@ code in this repository.
 
 ### Before starting work
 
-- Write a comprehensive step-by-step plan to
-  .claude/tasks/YYYY-MM-DD-TASK_NAME.md with each task having a corresponding
-  section and a list of subtasks as checkboxes inside of it
+- Write a comprehensive step-by-step plan to PLAN.md with each task having a
+  corresponding section and a list of subtasks as checkboxes inside of it
 - The plan should be a detailed implementation plan and the reasoning behind the
   design decisions
 - Do not include timelines in the plan as they tend to be inaccurate
@@ -20,31 +19,11 @@ code in this repository.
 
 ### While implementing
 
-- You should update .claude/tasks/YYYY-MM-DD-TASK_NAME.md every time you
-  complete a section
+- You should update PLAN.md every time you complete a section
 - Upon completing a planned task, add detailed descriptions of the changes you
   made to ease the review process
-
-## Plan & Review
-
-### Before starting work
-
-- Write a comprehensive step-by-step plan to
-  .claude/tasks/YYYY-MM-DD-TASK_NAME.md with each task having a corresponding
-  section and a list of subtasks as checkboxes inside of it
-- The plan should be a detailed implementation plan and the reasoning behind the
-  design decisions
-- Remain focused on the task at hand, do not include unrelated improvements or
-  premature optimizations
-- Once you write the plan, ask me to review it. Do not continue until I approve
-  the plan.
-
-### While implementing
-
-- You should update .claude/tasks/YYYY-MM-DD-TASK_NAME.md every time you
-  complete a section
-- Upon completing a planned task, add detailed descriptions of the changes you
-  made to ease the review process
+- Upon completing everything in PLAN.md and getting approval from the user on
+  the changes, you can delete the planning file to avoid polluting the repo
 
 ## Project Overview
 
