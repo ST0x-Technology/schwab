@@ -112,9 +112,13 @@ impl Conductor {
         match SchwabTokens::refresh_if_needed(pool, &env.schwab_auth).await {
             Err(SchwabError::RefreshTokenExpired) => {
                 warn!("Refresh token expired, waiting for manual authentication via API");
+                token_refresher.abort();
                 return Err(anyhow::anyhow!("RefreshTokenExpired"));
             }
-            Err(e) => return Err(anyhow::anyhow!("Token validation failed: {}", e)),
+            Err(e) => {
+                token_refresher.abort();
+                return Err(anyhow::anyhow!("Token validation failed: {}", e));
+            }
             Ok(_) => {
                 info!("Token validation successful");
             }
