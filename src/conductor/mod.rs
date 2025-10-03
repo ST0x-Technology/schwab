@@ -75,9 +75,12 @@ pub(crate) async fn run_market_hours_loop(
                 "Failed to start conductor: {e}, retrying in {} seconds",
                 RERUN_DELAY_SECS
             );
+
             tokio::time::sleep(std::time::Duration::from_secs(RERUN_DELAY_SECS)).await;
+
             let new_refresher =
                 spawn_automatic_token_refresh(pool.clone(), env.schwab_auth.clone());
+
             return Box::pin(run_market_hours_loop(controller, env, pool, new_refresher)).await;
         }
     };
@@ -102,27 +105,49 @@ pub(crate) async fn run_market_hours_loop(
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("JoinHandle already consumed from AbortOnDrop")]
+struct AbortOnDropConsumed;
+
+struct AbortOnDrop(Option<JoinHandle<()>>);
+
+impl AbortOnDrop {
+    fn into_inner(mut self) -> Result<JoinHandle<()>, AbortOnDropConsumed> {
+        let handle = self.0.take().ok_or(AbortOnDropConsumed)?;
+        std::mem::forget(self);
+        Ok(handle)
+    }
+}
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        if let Some(handle) = &self.0 {
+            handle.abort();
+        }
+    }
+}
+
 impl Conductor {
     pub(crate) async fn start(
         env: &Env,
         pool: &SqlitePool,
         token_refresher: JoinHandle<()>,
     ) -> anyhow::Result<Self> {
+        let token_refresher = AbortOnDrop(Some(token_refresher));
+
         debug!("Validating Schwab tokens...");
-        match SchwabTokens::refresh_if_needed(pool, &env.schwab_auth).await {
-            Err(SchwabError::RefreshTokenExpired) => {
-                warn!("Refresh token expired, waiting for manual authentication via API");
-                token_refresher.abort();
-                return Err(anyhow::anyhow!("RefreshTokenExpired"));
-            }
-            Err(e) => {
-                token_refresher.abort();
-                return Err(anyhow::anyhow!("Token validation failed: {}", e));
-            }
-            Ok(_) => {
-                info!("Token validation successful");
-            }
-        }
+
+        SchwabTokens::refresh_if_needed(pool, &env.schwab_auth)
+            .await
+            .map_err(|e| match e {
+                SchwabError::RefreshTokenExpired => {
+                    warn!("Refresh token expired, waiting for manual authentication via API");
+                    anyhow::anyhow!("RefreshTokenExpired")
+                }
+                e => anyhow::anyhow!("Token validation failed: {}", e),
+            })?;
+
+        info!("Token validation successful");
 
         let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
         let provider = ProviderBuilder::new().connect_ws(ws).await?;
@@ -139,7 +164,7 @@ impl Conductor {
 
         Ok(
             ConductorBuilder::new(env.clone(), pool.clone(), cache, provider)
-                .with_token_refresher(token_refresher)
+                .with_token_refresher(token_refresher.into_inner()?)
                 .with_dex_event_streams(clear_stream, take_stream)
                 .spawn(),
         )
