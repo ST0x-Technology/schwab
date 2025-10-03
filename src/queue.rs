@@ -200,6 +200,26 @@ pub(crate) async fn count_unprocessed(pool: &SqlitePool) -> Result<i64, EventQue
     Ok(row.count)
 }
 
+/// Gets the highest processed block number from the event queue
+pub(crate) async fn get_max_processed_block(
+    pool: &SqlitePool,
+) -> Result<Option<u64>, EventQueueError> {
+    let row =
+        sqlx::query!("SELECT MAX(block_number) as max_block FROM event_queue WHERE processed = 1")
+            .fetch_one(pool)
+            .await?;
+
+    let Some(block) = row.max_block else {
+        return Ok(None);
+    };
+
+    let block_u64 = u64::try_from(block).map_err(|_| {
+        EventQueueError::Processing(format!("Block number {block} conversion failed"))
+    })?;
+
+    Ok(Some(block_u64))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,5 +464,118 @@ mod tests {
 
         let count = count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_max_processed_block_empty_queue() {
+        let pool = setup_test_db().await;
+
+        let result = get_max_processed_block(&pool).await.unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn test_get_max_processed_block_only_unprocessed() {
+        let pool = setup_test_db().await;
+
+        sqlx::query!(
+            r#"
+            INSERT INTO event_queue (tx_hash, log_index, block_number, event_data, processed)
+            VALUES
+                ('0x1111111111111111111111111111111111111111111111111111111111111111', 0, 100, '{}', 0),
+                ('0x2222222222222222222222222222222222222222222222222222222222222222', 0, 150, '{}', 0)
+            "#
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = get_max_processed_block(&pool).await.unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn test_get_max_processed_block_only_processed() {
+        let pool = setup_test_db().await;
+
+        sqlx::query!(
+            r#"
+            INSERT INTO event_queue (tx_hash, log_index, block_number, event_data, processed)
+            VALUES
+                ('0x1111111111111111111111111111111111111111111111111111111111111111', 0, 100, '{}', 1),
+                ('0x2222222222222222222222222222222222222222222222222222222222222222', 0, 150, '{}', 1),
+                ('0x3333333333333333333333333333333333333333333333333333333333333333', 0, 75, '{}', 1)
+            "#
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = get_max_processed_block(&pool).await.unwrap();
+        assert_eq!(result, Some(150));
+    }
+
+    #[tokio::test]
+    async fn test_get_max_processed_block_mixed_states() {
+        let pool = setup_test_db().await;
+
+        sqlx::query!(
+            r#"
+            INSERT INTO event_queue (tx_hash, log_index, block_number, event_data, processed)
+            VALUES
+                ('0x1111111111111111111111111111111111111111111111111111111111111111', 0, 100, '{}', 1),
+                ('0x2222222222222222222222222222222222222222222222222222222222222222', 0, 150, '{}', 1),
+                ('0x3333333333333333333333333333333333333333333333333333333333333333', 0, 200, '{}', 0),
+                ('0x4444444444444444444444444444444444444444444444444444444444444444', 0, 175, '{}', 0)
+            "#
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = get_max_processed_block(&pool).await.unwrap();
+        assert_eq!(result, Some(150));
+    }
+
+    #[tokio::test]
+    async fn test_get_max_processed_block_zero_block() {
+        let pool = setup_test_db().await;
+
+        sqlx::query!(
+            r#"
+            INSERT INTO event_queue (tx_hash, log_index, block_number, event_data, processed)
+            VALUES
+                ('0x1111111111111111111111111111111111111111111111111111111111111111', 0, 0, '{}', 1),
+                ('0x2222222222222222222222222222222222222222222222222222222222222222', 0, 50, '{}', 0)
+            "#
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = get_max_processed_block(&pool).await.unwrap();
+        assert_eq!(result, Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_get_max_processed_block_large_numbers() {
+        let pool = setup_test_db().await;
+
+        let large_block: i64 = 999_999_999;
+
+        sqlx::query!(
+            r#"
+            INSERT INTO event_queue (tx_hash, log_index, block_number, event_data, processed)
+            VALUES
+                ('0x1111111111111111111111111111111111111111111111111111111111111111', 0, ?1, '{}', 1)
+            "#,
+            large_block
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = get_max_processed_block(&pool).await.unwrap();
+        assert_eq!(result, Some(999_999_999));
     }
 }
