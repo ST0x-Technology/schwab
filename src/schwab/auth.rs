@@ -1,3 +1,4 @@
+use alloy::primitives::FixedBytes;
 use backon::{ExponentialBuilder, Retryable};
 use base64::prelude::*;
 use chrono::Utc;
@@ -7,7 +8,8 @@ use serde::Deserialize;
 use sqlx::SqlitePool;
 use tracing::{debug, info};
 
-use super::{SchwabError, tokens::SchwabTokens};
+use super::SchwabError;
+use super::tokens::SchwabTokens;
 
 #[derive(Parser, Debug, Clone)]
 pub struct SchwabAuthEnv {
@@ -21,6 +23,8 @@ pub struct SchwabAuthEnv {
     pub base_url: String,
     #[clap(long, env, default_value = "0")]
     pub account_index: usize,
+    #[clap(long, env)]
+    pub token_encryption_key: FixedBytes<32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -242,9 +246,12 @@ impl SchwabAuthEnv {
 mod tests {
     use super::*;
     use crate::test_utils::setup_test_db;
+    use alloy::primitives::FixedBytes;
     use chrono::{Duration, Utc};
     use httpmock::prelude::*;
     use serde_json::json;
+
+    const TEST_ENCRYPTION_KEY: FixedBytes<32> = FixedBytes::ZERO;
 
     fn create_test_env() -> SchwabAuthEnv {
         SchwabAuthEnv {
@@ -253,6 +260,7 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: "https://api.schwabapi.com".to_string(),
             account_index: 0,
+            token_encryption_key: TEST_ENCRYPTION_KEY,
         }
     }
 
@@ -263,6 +271,7 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: mock_server.base_url(),
             account_index: 0,
+            token_encryption_key: TEST_ENCRYPTION_KEY,
         }
     }
 
@@ -281,6 +290,7 @@ mod tests {
             redirect_uri: "https://custom.redirect.com".to_string(),
             base_url: "https://custom.api.com".to_string(),
             account_index: 0,
+            token_encryption_key: TEST_ENCRYPTION_KEY,
         };
         let expected_url = "https://custom.api.com/v1/oauth/authorize?client_id=custom_key&redirect_uri=https%3A%2F%2Fcustom.redirect.com";
         assert_eq!(env.get_auth_url(), expected_url);
@@ -294,6 +304,7 @@ mod tests {
             redirect_uri: "https://example.com/callback?param=value&other=test".to_string(),
             base_url: "https://api.schwabapi.com".to_string(),
             account_index: 0,
+            token_encryption_key: TEST_ENCRYPTION_KEY,
         };
         let expected_url = "https://api.schwabapi.com/v1/oauth/authorize?client_id=test%20key%20with%20spaces%20%26%20symbols%21&redirect_uri=https%3A%2F%2Fexample.com%2Fcallback%3Fparam%3Dvalue%26other%3Dtest";
         assert_eq!(env.get_auth_url(), expected_url);
@@ -567,6 +578,7 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: "https://api.schwabapi.com".to_string(),
             account_index: 0,
+            token_encryption_key: TEST_ENCRYPTION_KEY,
         };
 
         assert_eq!(env.redirect_uri, "https://127.0.0.1");
@@ -578,7 +590,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let mock_response = json!([
             {
@@ -613,7 +625,7 @@ mod tests {
         let mut env = create_test_env_with_mock_server(&server);
         env.account_index = 1;
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let mock_response = json!([
             {
@@ -648,7 +660,7 @@ mod tests {
         let mut env = create_test_env_with_mock_server(&server);
         env.account_index = 2;
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let mock_response = json!([
             {
@@ -678,7 +690,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let mock = server.mock(|when, then| {
             when.method(GET).path("/trader/v1/accounts/accountNumbers");
@@ -715,13 +727,13 @@ mod tests {
         }
     }
 
-    async fn setup_test_tokens(pool: &SqlitePool) {
+    async fn setup_test_tokens(pool: &SqlitePool, env: &SchwabAuthEnv) {
         let tokens = crate::schwab::tokens::SchwabTokens {
             access_token: "test_access_token".to_string(),
             access_token_fetched_at: Utc::now(),
             refresh_token: "test_refresh_token".to_string(),
             refresh_token_fetched_at: Utc::now(),
         };
-        tokens.store(pool).await.unwrap();
+        tokens.store(pool, env).await.unwrap();
     }
 }

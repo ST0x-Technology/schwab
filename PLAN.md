@@ -48,6 +48,35 @@ prevent unauthorized access.
 
 ## Implementation Steps
 
+## Current Progress
+
+- ✅ Section 1: Add Dependencies (completed)
+- ✅ Section 2: Create Encryption Module (completed)
+- ✅ Section 3: Update Error Types (completed)
+- ✅ Section 4: Update Environment Configuration - partially complete (needs
+  deployment workflow updates)
+- ⏸️ Section 5: Database Migration (blocked - need to address deployment)
+- ⏸️ Remaining sections (pending)
+
+## Deployment Considerations
+
+The `.env.example` file is used by the GitHub Actions deployment workflow as a
+template. The workflow:
+
+1. Base64 encodes `.env.example`
+2. Sends it to the droplet
+3. Uses `envsubst` to substitute environment variables
+4. Creates the production `.env` file
+
+**Required Changes:**
+
+1. Add `TOKEN_ENCRYPTION_KEY` as GitHub Actions secret
+2. Update deployment workflow to pass `TOKEN_ENCRYPTION_KEY` through
+3. Update `.env.example` to use `$TOKEN_ENCRYPTION_KEY` for `envsubst`
+   substitution
+
+---
+
 ### Section 1: Add Dependencies
 
 Add AES-GCM encryption crate.
@@ -139,11 +168,11 @@ Add encryption errors to `SchwabError`.
 
 **Why:** Proper error propagation with context.
 
-### Section 4: Update Environment Configuration
+### Section 4: Update Environment Configuration and Deployment
 
-Add encryption key to `SchwabAuthEnv`.
+Add encryption key to `SchwabAuthEnv` and deployment workflow.
 
-- [ ] Update `src/schwab/auth.rs`:
+- [x] Update `src/schwab/auth.rs` (completed):
   ```rust
   #[derive(Parser, Debug, Clone)]
   pub struct SchwabAuthEnv {
@@ -162,14 +191,29 @@ Add encryption key to `SchwabAuthEnv`.
   }
   ```
 
-- [ ] Update `.env.example`:
+- [ ] Fix `.env.example` to use envsubst variable format:
   ```bash
   # Token encryption key (32 bytes as 64 hex characters)
   # Generate with: openssl rand -hex 32
-  TOKEN_ENCRYPTION_KEY=
+  TOKEN_ENCRYPTION_KEY=$TOKEN_ENCRYPTION_KEY
   ```
 
-**Why:** Environment variable keeps key out of code.
+- [ ] Update `.github/workflows/deploy.yaml`:
+  - Add `TOKEN_ENCRYPTION_KEY` to the `envs` list in the "Deploy to Droplet"
+    step (line 73)
+  - Add `TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}` to the `env`
+    section at the bottom (after line 194)
+
+- [ ] Document in PLAN.md that the following manual steps are required for
+      deployment:
+  1. Generate encryption key: `openssl rand -hex 32`
+  2. Add `TOKEN_ENCRYPTION_KEY` as a GitHub Actions secret in the repository
+     settings
+  3. After deployment, manually run `cargo run --bin cli -- auth` on the droplet
+     to re-authenticate
+
+**Why:** Environment variable keeps key out of code. Deployment workflow needs
+to pass the secret through to the droplet for envsubst substitution.
 
 ### Section 5: Database Migration
 
@@ -457,9 +501,63 @@ Verify implementation before completion.
 
 **Why:** Final checks catch issues before production.
 
+## Deployment Guide
+
+### Pre-Deployment Setup
+
+1. **Generate Encryption Key:**
+   ```bash
+   openssl rand -hex 32
+   ```
+   Save this key securely - it will be needed for both GitHub Actions and manual
+   operations.
+
+2. **Add GitHub Secret:**
+   - Go to repository Settings → Secrets and variables → Actions
+   - Click "New repository secret"
+   - Name: `TOKEN_ENCRYPTION_KEY`
+   - Value: The 64-character hex key from step 1
+
+### Deployment Process
+
+1. **Merge and Deploy:**
+   - Merge the encryption changes to master
+   - Trigger the deployment workflow (automatic or manual)
+   - The workflow will fail to start the bot because there are no tokens yet -
+     this is expected
+
+2. **Re-authenticate on Droplet:**
+   ```bash
+   ssh root@droplet
+   cd /mnt/volume_nyc3_01
+   docker compose run --rm schwarbot /app/cli auth
+   ```
+   Follow the OAuth flow to authenticate and store encrypted tokens.
+
+3. **Restart Services:**
+   ```bash
+   docker compose up -d
+   ```
+
+4. **Verify:**
+   - Check logs: `docker compose logs -f schwarbot`
+   - Verify bot is trading
+   - Check database encryption:
+     `sqlite3 /mnt/volume_nyc3_01/schwab.db "SELECT length(access_token) FROM schwab_auth;"`
+     - Should return a number > 64 (encrypted data is larger than plaintext)
+
+### Rollback Plan
+
+If issues occur:
+
+1. Revert code changes
+2. Tokens are already encrypted in DB - will need to re-authenticate regardless
+3. Remove `TOKEN_ENCRYPTION_KEY` requirement once rolled back
+
 ## Summary
 
 This implementation encrypts Schwab OAuth tokens using AES-256-GCM. The
 hard-switch approach requires re-authentication but simplifies the codebase. The
-encryption key is managed via environment variables, providing a secure MVP
-solution.
+encryption key is managed via environment variables and GitHub Secrets,
+providing a secure MVP solution that integrates with the existing deployment
+pipeline.

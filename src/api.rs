@@ -8,13 +8,13 @@ use crate::env::Env;
 use crate::schwab::extract_code_from_url;
 
 #[derive(Serialize, Deserialize)]
-pub struct HealthResponse {
-    pub status: String,
-    pub timestamp: DateTime<Utc>,
+struct HealthResponse {
+    status: String,
+    timestamp: DateTime<Utc>,
 }
 
 #[get("/health")]
-pub fn health() -> Json<HealthResponse> {
+fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "healthy".to_string(),
         timestamp: Utc::now(),
@@ -22,13 +22,13 @@ pub fn health() -> Json<HealthResponse> {
 }
 
 #[derive(Deserialize, Serialize)]
-pub struct AuthRefreshRequest {
-    pub redirect_url: String,
+struct AuthRefreshRequest {
+    redirect_url: String,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "success")]
-pub enum AuthRefreshResponse {
+enum AuthRefreshResponse {
     #[serde(rename = "true")]
     Success { message: String },
     #[serde(rename = "false")]
@@ -36,7 +36,7 @@ pub enum AuthRefreshResponse {
 }
 
 #[post("/auth/refresh", format = "json", data = "<request>")]
-pub async fn auth_refresh(
+async fn auth_refresh(
     request: Json<AuthRefreshRequest>,
     pool: &State<SqlitePool>,
     env: &State<Env>,
@@ -59,7 +59,7 @@ pub async fn auth_refresh(
         }
     };
 
-    if let Err(e) = tokens.store(pool.inner()).await {
+    if let Err(e) = tokens.store(pool.inner(), &env.schwab_auth).await {
         return Json(AuthRefreshResponse::Error {
             error: format!("Failed to store tokens: {e}"),
         });
@@ -70,14 +70,13 @@ pub async fn auth_refresh(
     })
 }
 
-// Route Configuration
-pub fn routes() -> Vec<Route> {
+pub(crate) fn routes() -> Vec<Route> {
     routes![health, auth_refresh]
 }
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::address;
+    use alloy::primitives::{FixedBytes, address};
     use httpmock::MockServer;
     use rocket::http::{ContentType, Status};
     use rocket::local::asynchronous::Client;
@@ -90,6 +89,8 @@ mod tests {
     use crate::schwab::SchwabAuthEnv;
     use crate::test_utils::setup_test_db;
 
+    const TEST_ENCRYPTION_KEY: FixedBytes<32> = FixedBytes::ZERO;
+
     fn create_test_env_with_mock_server(mock_server: &MockServer) -> Env {
         Env {
             database_url: ":memory:".to_string(),
@@ -101,6 +102,7 @@ mod tests {
                 redirect_uri: "https://127.0.0.1".to_string(),
                 base_url: mock_server.base_url(),
                 account_index: 0,
+                token_encryption_key: TEST_ENCRYPTION_KEY,
             },
             evm_env: EvmEnv {
                 ws_rpc_url: Url::parse("ws://localhost:8545").unwrap(),

@@ -511,7 +511,7 @@ mod tests {
     use crate::tokenized_symbol;
     use crate::{onchain::EvmEnv, schwab::SchwabAuthEnv};
     use alloy::hex;
-    use alloy::primitives::{IntoLogData, U256, address, fixed_bytes};
+    use alloy::primitives::{FixedBytes, IntoLogData, U256, address, fixed_bytes};
     use alloy::providers::mock::Asserter;
     use alloy::sol_types::{SolCall, SolEvent};
     use chrono::{Duration, Utc};
@@ -520,12 +520,14 @@ mod tests {
     use serde_json::json;
     use std::str::FromStr;
 
+    const TEST_ENCRYPTION_KEY: FixedBytes<32> = FixedBytes::ZERO;
+
     #[tokio::test]
     async fn test_run_buy_order() {
         let server = MockServer::start();
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env.schwab_auth).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -568,7 +570,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env.schwab_auth).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -611,7 +613,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env.schwab_auth).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -652,17 +654,15 @@ mod tests {
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
 
-        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+        let expired_tokens = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: Utc::now() - Duration::minutes(35),
             refresh_token: "expired_refresh_token".to_string(),
             refresh_token_fetched_at: Utc::now() - Duration::days(8),
         };
-        expired_tokens.store(&pool).await.unwrap();
+        expired_tokens.store(&pool, &env.schwab_auth).await.unwrap();
 
-        let result =
-            crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
-                .await;
+        let result = SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth).await;
 
         assert!(matches!(
             result.unwrap_err(),
@@ -676,13 +676,16 @@ mod tests {
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
 
-        let tokens_needing_refresh = crate::schwab::tokens::SchwabTokens {
+        let tokens_needing_refresh = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: Utc::now() - Duration::minutes(35),
             refresh_token: "valid_refresh_token".to_string(),
             refresh_token_fetched_at: Utc::now() - Duration::days(1),
         };
-        tokens_needing_refresh.store(&pool).await.unwrap();
+        tokens_needing_refresh
+            .store(&pool, &env.schwab_auth)
+            .await
+            .unwrap();
 
         let refresh_mock = server.mock(|when, then| {
             when.method(httpmock::Method::POST)
@@ -716,10 +719,9 @@ mod tests {
                 .header("location", "/trader/v1/accounts/ABC123DEF456/orders/12345");
         });
 
-        let access_token =
-            crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
-                .await
-                .unwrap();
+        let access_token = SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
+            .await
+            .unwrap();
         assert_eq!(access_token, "refreshed_access_token");
 
         execute_order_with_writers(
@@ -737,9 +739,7 @@ mod tests {
         account_mock.assert();
         order_mock.assert();
 
-        let stored_tokens = crate::schwab::tokens::SchwabTokens::load(&pool)
-            .await
-            .unwrap();
+        let stored_tokens = SchwabTokens::load(&pool, &env.schwab_auth).await.unwrap();
         assert_eq!(stored_tokens.access_token, "refreshed_access_token");
         assert_eq!(stored_tokens.refresh_token, "new_refresh_token");
     }
@@ -749,7 +749,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env.schwab_auth).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -784,9 +784,7 @@ mod tests {
         account_mock.assert();
         order_mock.assert();
 
-        let stored_tokens = crate::schwab::tokens::SchwabTokens::load(&pool)
-            .await
-            .unwrap();
+        let stored_tokens = SchwabTokens::load(&pool, &env.schwab_auth).await.unwrap();
         assert_eq!(stored_tokens.access_token, "test_access_token");
     }
 
@@ -795,7 +793,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env.schwab_auth).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -844,7 +842,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env.schwab_auth).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -891,17 +889,15 @@ mod tests {
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
 
-        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+        let expired_tokens = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: Utc::now() - Duration::minutes(35),
             refresh_token: "expired_refresh_token".to_string(),
             refresh_token_fetched_at: Utc::now() - Duration::days(8),
         };
-        expired_tokens.store(&pool).await.unwrap();
+        expired_tokens.store(&pool, &env.schwab_auth).await.unwrap();
 
-        let result =
-            crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
-                .await;
+        let result = SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth).await;
 
         assert!(matches!(
             result.unwrap_err(),
@@ -957,6 +953,7 @@ mod tests {
                 redirect_uri: "https://127.0.0.1".to_string(),
                 base_url: mock_server.base_url(),
                 account_index: 0,
+                token_encryption_key: TEST_ENCRYPTION_KEY,
             },
             evm_env: EvmEnv {
                 ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
@@ -970,14 +967,14 @@ mod tests {
         }
     }
 
-    async fn setup_test_tokens(pool: &SqlitePool) {
-        let tokens = crate::schwab::tokens::SchwabTokens {
+    async fn setup_test_tokens(pool: &SqlitePool, env: &SchwabAuthEnv) {
+        let tokens = SchwabTokens {
             access_token: "test_access_token".to_string(),
             access_token_fetched_at: chrono::Utc::now(),
             refresh_token: "test_refresh_token".to_string(),
             refresh_token_fetched_at: chrono::Utc::now(),
         };
-        tokens.store(pool).await.unwrap();
+        tokens.store(pool, env).await.unwrap();
     }
 
     struct MockBlockchainData {
@@ -1210,7 +1207,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env.schwab_auth).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1258,7 +1255,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env.schwab_auth).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1308,13 +1305,13 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Set up expired access token but valid refresh token that will trigger a refresh attempt
-        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+        let expired_tokens = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: chrono::Utc::now() - chrono::Duration::minutes(35),
             refresh_token: "valid_but_rejected_refresh_token".to_string(),
             refresh_token_fetched_at: chrono::Utc::now() - chrono::Duration::days(1), // Valid refresh token
         };
-        expired_tokens.store(&pool).await.unwrap();
+        expired_tokens.store(&pool, &env.schwab_auth).await.unwrap();
 
         // Mock the token refresh to fail
         let token_refresh_mock = server.mock(|when, then| {
@@ -1362,13 +1359,13 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Set up expired tokens
-        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+        let expired_tokens = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: chrono::Utc::now() - chrono::Duration::minutes(35),
             refresh_token: "valid_refresh_token".to_string(),
             refresh_token_fetched_at: chrono::Utc::now() - chrono::Duration::days(1),
         };
-        expired_tokens.store(&pool).await.unwrap();
+        expired_tokens.store(&pool, &env.schwab_auth).await.unwrap();
 
         let token_refresh_mock = server.mock(|when, then| {
             when.method(httpmock::Method::POST)
@@ -1427,9 +1424,7 @@ mod tests {
         order_mock.assert();
 
         // Verify that new tokens were stored in database
-        let stored_tokens = crate::schwab::tokens::SchwabTokens::load(&pool)
-            .await
-            .unwrap();
+        let stored_tokens = SchwabTokens::load(&pool, &env.schwab_auth).await.unwrap();
         assert_eq!(stored_tokens.access_token, "new_access_token");
         assert_eq!(stored_tokens.refresh_token, "new_refresh_token");
     }
@@ -1462,7 +1457,7 @@ mod tests {
         );
 
         // Now add tokens and verify database integration works
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env.schwab_auth).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1507,7 +1502,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env.schwab_auth).await;
 
         // Mock network timeout/connection error
         let account_mock = server.mock(|when, then| {
@@ -1576,7 +1571,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env.schwab_auth).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1632,7 +1627,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env.schwab_auth).await;
 
         let tx_hash =
             fixed_bytes!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
@@ -1714,7 +1709,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env.schwab_auth).await;
 
         let tx_hash =
             fixed_bytes!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
@@ -1868,7 +1863,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env.schwab_auth).await;
 
         let mock_response = json!({
             "equity": {
@@ -1922,7 +1917,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env.schwab_auth).await;
 
         let mock_response = json!({
             "equity": {
@@ -1997,7 +1992,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env.schwab_auth).await;
 
         let mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
