@@ -100,8 +100,12 @@ impl OnchainTrade {
 
         if let Ok(Some(ref trade)) = result {
             info!(
-                "ClearV2 trade created successfully: tx_hash={:?}, log_index={}, symbol={}, amount={}, owner={:?}",
-                trade.tx_hash, trade.log_index, trade.symbol, trade.amount, trade.direction
+                "ClearV2 trade created successfully: tx_hash={tx_hash:?}, log_index={log_index}, symbol={symbol}, amount={amount}, direction={direction:?}",
+                tx_hash = trade.tx_hash,
+                log_index = trade.log_index,
+                symbol = trade.symbol,
+                amount = trade.amount,
+                direction = trade.direction
             );
         }
 
