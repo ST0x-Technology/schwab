@@ -1,9 +1,8 @@
 name: Build and deploy
 
 on:
-  # TODO: uncomment once the merged version catches up with the deployed version
-  # push:
-  #   branches: [master]
+  push:
+    branches: [master]
   workflow_dispatch:
 
 concurrency:
@@ -16,7 +15,7 @@ permissions:
 env:
   DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
   ORDERBOOK: "0x881cf4c0764e733d9C387f3858eE87CcA04AFFe0"
-  ORDER_OWNER: "0xfCc6238CeB129C6308a567712eDc8F8D36dB2754"
+  ORDER_OWNER: "0x71b94911FD1CE621FC40970450004c544e5287a8"
   DEPLOYMENT_BLOCK: 34844164
   REGISTRY_NAME: stox
 

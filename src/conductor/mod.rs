@@ -1,125 +1,247 @@
-use alloy::providers::Provider;
+mod builder;
+
+use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use alloy::rpc::types::Log;
 use alloy::sol_types;
 use futures_util::{Stream, StreamExt};
 use sqlx::SqlitePool;
 use std::time::Duration;
-use tokio::sync::{mpsc::UnboundedSender, watch};
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
-use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
+use crate::bindings::IOrderBookV4::{ClearV2, IOrderBookV4Instance, TakeOrderV2};
 use crate::env::Env;
 use crate::error::EventProcessingError;
 use crate::onchain::accumulator::check_all_accumulated_positions;
+use crate::onchain::backfill::backfill_events;
 use crate::onchain::trade::TradeEvent;
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
 use crate::queue::{QueuedEvent, enqueue, get_next_unprocessed_event, mark_event_processed};
 use crate::schwab::broker::{Broker, DynBroker};
+use crate::schwab::tokens::{SchwabTokens, spawn_automatic_token_refresh};
 use crate::schwab::{
-    OrderStatusPoller,
+    OrderStatusPoller, SchwabError,
     execution::{SchwabExecution, find_execution_by_id},
 };
 use crate::symbol::cache::SymbolCache;
 use crate::symbol::lock::get_symbol_lock;
+use crate::trading_hours_controller::TradingHoursController;
 
-pub(crate) struct BackgroundTasksBuilder<P> {
-    env: Env,
-    pool: SqlitePool,
-    cache: SymbolCache,
-    provider: P,
-    shutdown_rx: watch::Receiver<bool>,
-}
+pub(crate) use builder::ConductorBuilder;
 
-impl<P: Provider + Clone + Send + 'static> BackgroundTasksBuilder<P> {
-    pub(crate) fn new(
-        env: Env,
-        pool: SqlitePool,
-        cache: SymbolCache,
-        provider: P,
-        shutdown_rx: watch::Receiver<bool>,
-    ) -> Self {
-        Self {
-            env,
-            pool,
-            cache,
-            provider,
-            shutdown_rx,
-        }
-    }
-
-    pub(crate) fn spawn(
-        self,
-        event_sender: UnboundedSender<(TradeEvent, Log)>,
-        clear_stream: impl Stream<Item = Result<(ClearV2, Log), sol_types::Error>>
-        + Unpin
-        + Send
-        + 'static,
-        take_stream: impl Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>>
-        + Unpin
-        + Send
-        + 'static,
-    ) -> BackgroundTasks {
-        let token_refresher = {
-            info!("Starting token refresh service");
-            crate::schwab::tokens::spawn_automatic_token_refresh(
-                self.pool.clone(),
-                self.env.schwab_auth.clone(),
-                self.shutdown_rx.clone(),
-            )
-        };
-        let broker = self.env.get_broker();
-        let order_poller =
-            spawn_order_poller(&self.env, &self.pool, &self.shutdown_rx, broker.clone());
-        let event_receiver = spawn_onchain_event_receiver(event_sender, clear_stream, take_stream);
-        let position_checker =
-            spawn_position_checker(broker.clone(), &self.env, &self.pool, &self.shutdown_rx);
-        let queue_processor = spawn_queue_processor(
-            broker,
-            &self.env,
-            &self.pool,
-            &self.cache,
-            self.provider,
-            &self.shutdown_rx,
-        );
-
-        BackgroundTasks {
-            token_refresher,
-            order_poller,
-            event_receiver,
-            position_checker,
-            queue_processor,
-        }
-    }
-}
-
-pub(crate) struct BackgroundTasks {
+pub(crate) struct Conductor {
     pub(crate) token_refresher: JoinHandle<()>,
     pub(crate) order_poller: JoinHandle<()>,
-    pub(crate) event_receiver: JoinHandle<()>,
+    pub(crate) dex_event_receiver: JoinHandle<()>,
+    pub(crate) event_processor: JoinHandle<()>,
     pub(crate) position_checker: JoinHandle<()>,
     pub(crate) queue_processor: JoinHandle<()>,
 }
 
-fn spawn_order_poller(
-    env: &Env,
-    pool: &SqlitePool,
-    shutdown_rx: &watch::Receiver<bool>,
-    broker: DynBroker,
-) -> JoinHandle<()> {
+pub(crate) async fn run_market_hours_loop(
+    controller: TradingHoursController,
+    env: Env,
+    pool: SqlitePool,
+    token_refresher: JoinHandle<()>,
+) -> anyhow::Result<()> {
+    const RERUN_DELAY_SECS: u64 = 10;
+
+    controller.wait_until_market_open().await?;
+
+    let Some(time_until_close) = controller.time_until_market_close().await? else {
+        warn!("Market already closed, waiting for next open");
+        return Box::pin(run_market_hours_loop(
+            controller,
+            env,
+            pool,
+            token_refresher,
+        ))
+        .await;
+    };
+
+    let timeout = time_until_close.to_std()?;
+
+    info!(
+        "Market is open, starting conductor (will timeout in {} minutes)",
+        timeout.as_secs() / 60
+    );
+
+    let mut conductor = match Conductor::start(&env, &pool, token_refresher).await {
+        Ok(c) => c,
+        Err(e) => {
+            error!(
+                "Failed to start conductor: {e}, retrying in {} seconds",
+                RERUN_DELAY_SECS
+            );
+
+            tokio::time::sleep(std::time::Duration::from_secs(RERUN_DELAY_SECS)).await;
+
+            let new_refresher =
+                spawn_automatic_token_refresh(pool.clone(), env.schwab_auth.clone());
+
+            return Box::pin(run_market_hours_loop(controller, env, pool, new_refresher)).await;
+        }
+    };
+
+    info!("Market opened, conductor running");
+
+    tokio::select! {
+        result = conductor.wait_for_completion() => {
+            info!("Conductor completed");
+            conductor.abort_all();
+            result?;
+            info!("Conductor completed successfully, continuing to next market session");
+            Ok(())
+        }
+        () = tokio::time::sleep(timeout) => {
+            info!("Market closed, shutting down trading tasks");
+            conductor.abort_trading_tasks();
+            let next_refresher = conductor.token_refresher;
+            info!("Trading tasks shutdown, DEX events buffering");
+            Box::pin(run_market_hours_loop(controller, env, pool, next_refresher)).await
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("JoinHandle already consumed from AbortOnDrop")]
+struct AbortOnDropConsumed;
+
+struct AbortOnDrop(Option<JoinHandle<()>>);
+
+impl AbortOnDrop {
+    fn into_inner(mut self) -> Result<JoinHandle<()>, AbortOnDropConsumed> {
+        let handle = self.0.take().ok_or(AbortOnDropConsumed)?;
+        std::mem::forget(self);
+        Ok(handle)
+    }
+}
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        if let Some(handle) = &self.0 {
+            handle.abort();
+        }
+    }
+}
+
+impl Conductor {
+    pub(crate) async fn start(
+        env: &Env,
+        pool: &SqlitePool,
+        token_refresher: JoinHandle<()>,
+    ) -> anyhow::Result<Self> {
+        let token_refresher = AbortOnDrop(Some(token_refresher));
+
+        debug!("Validating Schwab tokens...");
+
+        SchwabTokens::refresh_if_needed(pool, &env.schwab_auth)
+            .await
+            .map_err(|e| match e {
+                SchwabError::RefreshTokenExpired => {
+                    warn!("Refresh token expired, waiting for manual authentication via API");
+                    anyhow::anyhow!("RefreshTokenExpired")
+                }
+                e => anyhow::anyhow!("Token validation failed: {}", e),
+            })?;
+
+        info!("Token validation successful");
+
+        let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
+        let provider = ProviderBuilder::new().connect_ws(ws).await?;
+        let cache = SymbolCache::default();
+        let orderbook = IOrderBookV4Instance::new(env.evm_env.orderbook, &provider);
+
+        let mut clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
+        let mut take_stream = orderbook.TakeOrderV2_filter().watch().await?.into_stream();
+
+        let cutoff_block =
+            get_cutoff_block(&mut clear_stream, &mut take_stream, &provider, pool).await?;
+
+        backfill_events(pool, &provider, &env.evm_env, cutoff_block - 1).await?;
+
+        Ok(
+            ConductorBuilder::new(env.clone(), pool.clone(), cache, provider)
+                .with_token_refresher(token_refresher.into_inner()?)
+                .with_dex_event_streams(clear_stream, take_stream)
+                .spawn(),
+        )
+    }
+
+    pub(crate) async fn wait_for_completion(&mut self) -> Result<(), anyhow::Error> {
+        let (
+            token_result,
+            poller_result,
+            dex_receiver_result,
+            processor_result,
+            position_result,
+            queue_result,
+        ) = tokio::join!(
+            &mut self.token_refresher,
+            &mut self.order_poller,
+            &mut self.dex_event_receiver,
+            &mut self.event_processor,
+            &mut self.position_checker,
+            &mut self.queue_processor
+        );
+
+        if let Err(e) = token_result {
+            error!("Token refresher task panicked: {e}");
+        }
+        if let Err(e) = poller_result {
+            error!("Order poller task panicked: {e}");
+        }
+        if let Err(e) = dex_receiver_result {
+            error!("DEX event receiver task panicked: {e}");
+        }
+        if let Err(e) = processor_result {
+            error!("Event processor task panicked: {e}");
+        }
+        if let Err(e) = position_result {
+            error!("Position checker task panicked: {e}");
+        }
+        if let Err(e) = queue_result {
+            error!("Queue processor task panicked: {e}");
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn abort_trading_tasks(&self) {
+        info!("Aborting trading tasks (keeping token refresh and DEX event receiver alive)");
+
+        self.order_poller.abort();
+        self.event_processor.abort();
+        self.position_checker.abort();
+        self.queue_processor.abort();
+
+        info!("Trading tasks aborted successfully (DEX events will continue buffering)");
+    }
+
+    pub(crate) fn abort_all(self) {
+        info!("Aborting all background tasks");
+
+        self.token_refresher.abort();
+        self.order_poller.abort();
+        self.dex_event_receiver.abort();
+        self.event_processor.abort();
+        self.position_checker.abort();
+        self.queue_processor.abort();
+
+        info!("All background tasks aborted successfully");
+    }
+}
+
+fn spawn_order_poller(env: &Env, pool: &SqlitePool, broker: DynBroker) -> JoinHandle<()> {
     let config = env.get_order_poller_config();
     info!(
         "Starting order status poller with interval: {:?}, max jitter: {:?}",
         config.polling_interval, config.max_jitter
     );
-    let poller = OrderStatusPoller::new(
-        config,
-        env.schwab_auth.clone(),
-        pool.clone(),
-        shutdown_rx.clone(),
-        broker,
-    );
+
+    let poller = OrderStatusPoller::new(config, env.schwab_auth.clone(), pool.clone(), broker);
     tokio::spawn(async move {
         if let Err(e) = poller.run().await {
             error!("Order poller failed: {e}");
@@ -145,19 +267,23 @@ fn spawn_onchain_event_receiver(
     ))
 }
 
-fn spawn_position_checker(
-    broker: DynBroker,
-    env: &Env,
-    pool: &SqlitePool,
-    shutdown_rx: &watch::Receiver<bool>,
+fn spawn_event_processor(
+    pool: SqlitePool,
+    mut event_receiver: tokio::sync::mpsc::UnboundedReceiver<(TradeEvent, Log)>,
 ) -> JoinHandle<()> {
-    info!("Starting periodic accumulated position checker");
-    tokio::spawn(periodic_accumulated_position_check(
-        broker,
-        env.clone(),
-        pool.clone(),
-        shutdown_rx.clone(),
-    ))
+    info!("Starting event processor");
+    tokio::spawn(async move {
+        while let Some((event, log)) = event_receiver.recv().await {
+            trace!(
+                "Processing live event: tx_hash={:?}, log_index={:?}",
+                log.transaction_hash, log.log_index
+            );
+            if let Err(e) = process_live_event(&pool, event, log).await {
+                error!("Failed to process live event: {e}");
+            }
+        }
+        info!("Event processing loop ended");
+    })
 }
 
 fn spawn_queue_processor<P: Provider + Clone + Send + 'static>(
@@ -166,87 +292,38 @@ fn spawn_queue_processor<P: Provider + Clone + Send + 'static>(
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: P,
-    shutdown_rx: &watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     info!("Starting queue processor service");
     let env_clone = env.clone();
     let pool_clone = pool.clone();
     let cache_clone = cache.clone();
-    let shutdown_rx_clone = shutdown_rx.clone();
 
     tokio::spawn(async move {
-        if let Err(e) = run_queue_processor(
-            &broker,
-            &env_clone,
-            &pool_clone,
-            &cache_clone,
-            provider,
-            shutdown_rx_clone,
-        )
-        .await
-        {
-            error!("Queue processor service failed: {e}");
-        }
+        run_queue_processor(&broker, &env_clone, &pool_clone, &cache_clone, provider).await;
     })
 }
 
-impl BackgroundTasks {
-    pub(crate) async fn wait_for_completion(self) -> Result<(), anyhow::Error> {
-        let (token_result, poller_result, receiver_result, position_result, queue_result) = tokio::join!(
-            self.token_refresher,
-            self.order_poller,
-            self.event_receiver,
-            self.position_checker,
-            self.queue_processor
-        );
-
-        if let Err(e) = token_result {
-            error!("Token refresher task panicked: {e}");
-        }
-        if let Err(e) = poller_result {
-            error!("Order poller task panicked: {e}");
-        }
-        if let Err(e) = receiver_result {
-            error!("Event receiver task panicked: {e}");
-        }
-        if let Err(e) = position_result {
-            error!("Position checker task panicked: {e}");
-        }
-        if let Err(e) = queue_result {
-            error!("Queue processor task panicked: {e}");
-        }
-
-        Ok(())
-    }
-}
-
-async fn periodic_accumulated_position_check(
+fn spawn_periodic_accumulated_position_check(
     broker: DynBroker,
     env: Env,
     pool: SqlitePool,
-    mut shutdown_rx: watch::Receiver<bool>,
-) {
-    const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+) -> JoinHandle<()> {
+    info!("Starting periodic accumulated position checker");
 
-    let mut interval = tokio::time::interval(CHECK_INTERVAL);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tokio::spawn(async move {
+        const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
-    loop {
-        tokio::select! {
-            _ = interval.tick() => {
-                debug!("Running periodic accumulated position check");
-                if let Err(e) = check_and_execute_accumulated_positions(&broker, &env, &pool).await {
-                    error!("Periodic accumulated position check failed: {e}");
-                }
-            }
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
-                    info!("Shutting down periodic accumulated position checker");
-                    break;
-                }
+        let mut interval = tokio::time::interval(CHECK_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            interval.tick().await;
+            debug!("Running periodic accumulated position check");
+            if let Err(e) = check_and_execute_accumulated_positions(&broker, &env, &pool).await {
+                error!("Periodic accumulated position check failed: {e}");
             }
         }
-    }
+    })
 }
 
 async fn receive_blockchain_events<S1, S2>(
@@ -324,52 +401,6 @@ where
     Ok(block_number)
 }
 
-pub(crate) async fn run_live<P, S1, S2>(
-    env: Env,
-    pool: SqlitePool,
-    cache: SymbolCache,
-    provider: P,
-    clear_stream: S1,
-    take_stream: S2,
-) -> anyhow::Result<()>
-where
-    P: Provider + Clone + Send + 'static,
-    S1: Stream<Item = Result<(ClearV2, Log), sol_types::Error>> + Unpin + Send + 'static,
-    S2: Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin + Send + 'static,
-{
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let (event_sender, mut event_receiver) =
-        tokio::sync::mpsc::unbounded_channel::<(TradeEvent, Log)>();
-
-    let background_tasks = BackgroundTasksBuilder::new(
-        env.clone(),
-        pool.clone(),
-        cache.clone(),
-        provider,
-        shutdown_rx.clone(),
-    )
-    .spawn(event_sender, clear_stream, take_stream);
-
-    while let Some((event, log)) = event_receiver.recv().await {
-        trace!(
-            "Processing live event: tx_hash={:?}, log_index={:?}",
-            log.transaction_hash, log.log_index
-        );
-        if let Err(e) = process_live_event(&pool, event, log).await {
-            error!("Failed to process live event: {e}");
-        }
-    }
-
-    info!("Event processing loop ended, shutting down background tasks");
-    if let Err(e) = shutdown_tx.send(true) {
-        error!("Failed to send shutdown signal: {e}");
-    }
-
-    background_tasks.wait_for_completion().await?;
-    info!("All background tasks completed");
-    Ok(())
-}
-
 async fn process_live_event(
     pool: &SqlitePool,
     event: TradeEvent,
@@ -409,31 +440,23 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: P,
-    mut shutdown_rx: watch::Receiver<bool>,
-) -> Result<(), EventProcessingError> {
+) {
     info!("Starting queue processor service");
 
     // Log initial unprocessed event count
-    let unprocessed_count = crate::queue::count_unprocessed(pool)
-        .await
-        .map_err(EventProcessingError::Queue)?;
-
-    if unprocessed_count > 0 {
-        info!(
-            "Found {} unprocessed events from previous sessions to process",
-            unprocessed_count
-        );
-    } else {
-        info!("No unprocessed events found, starting fresh");
+    match crate::queue::count_unprocessed(pool).await {
+        Ok(count) if count > 0 => {
+            info!("Found {count} unprocessed events from previous sessions to process");
+        }
+        Ok(_) => {
+            info!("No unprocessed events found, starting fresh");
+        }
+        Err(e) => {
+            error!("Failed to count unprocessed events: {e}");
+        }
     }
 
     loop {
-        // Check for shutdown signal
-        if *shutdown_rx.borrow_and_update() {
-            info!("Queue processor received shutdown signal, exiting");
-            break;
-        }
-
         match process_next_queued_event(env, pool, cache, &provider).await {
             Ok(Some(execution)) => {
                 if let Some(exec_id) = execution.id {
@@ -453,8 +476,6 @@ pub(crate) async fn run_queue_processor<P: Provider + Clone>(
             }
         }
     }
-
-    Ok(())
 }
 
 /// Processes the next unprocessed event from the queue.
@@ -1559,5 +1580,121 @@ mod tests {
         let result = execute_pending_schwab_execution(&broker, &env, &pool, 99999).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_conductor_abort_all() {
+        let pool = setup_test_db().await;
+        let env = create_test_env();
+        let cache = SymbolCache::default();
+        let asserter = Asserter::new();
+        let provider = alloy::providers::ProviderBuilder::new().connect_mocked_client(asserter);
+
+        let clear_stream = stream::empty();
+        let take_stream = stream::empty();
+
+        let token_refresher = tokio::spawn(async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            }
+        });
+
+        let conductor = ConductorBuilder::new(env, pool, cache, provider)
+            .with_token_refresher(token_refresher)
+            .with_dex_event_streams(clear_stream, take_stream)
+            .spawn();
+
+        assert!(!conductor.token_refresher.is_finished());
+        assert!(!conductor.order_poller.is_finished());
+        assert!(!conductor.event_processor.is_finished());
+        assert!(!conductor.position_checker.is_finished());
+        assert!(!conductor.queue_processor.is_finished());
+
+        conductor.abort_all();
+
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    #[tokio::test]
+    async fn test_conductor_individual_abort() {
+        let pool = setup_test_db().await;
+        let env = create_test_env();
+        let cache = SymbolCache::default();
+        let asserter = Asserter::new();
+        let provider = alloy::providers::ProviderBuilder::new().connect_mocked_client(asserter);
+
+        let clear_stream = stream::empty();
+        let take_stream = stream::empty();
+
+        let token_refresher = tokio::spawn(async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            }
+        });
+
+        let conductor = ConductorBuilder::new(env, pool, cache, provider)
+            .with_token_refresher(token_refresher)
+            .with_dex_event_streams(clear_stream, take_stream)
+            .spawn();
+
+        let token_handle = conductor.token_refresher;
+        let order_handle = conductor.order_poller;
+        let event_handle = conductor.event_processor;
+        let position_handle = conductor.position_checker;
+        let queue_handle = conductor.queue_processor;
+
+        assert!(!token_handle.is_finished());
+        assert!(!order_handle.is_finished());
+        assert!(!event_handle.is_finished());
+        assert!(!position_handle.is_finished());
+        assert!(!queue_handle.is_finished());
+
+        token_handle.abort();
+        order_handle.abort();
+        event_handle.abort();
+        position_handle.abort();
+        queue_handle.abort();
+
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        assert!(token_handle.is_finished());
+        assert!(order_handle.is_finished());
+        assert!(event_handle.is_finished());
+        assert!(position_handle.is_finished());
+        assert!(queue_handle.is_finished());
+    }
+
+    #[tokio::test]
+    async fn test_conductor_builder_returns_immediately() {
+        let pool = setup_test_db().await;
+        let env = create_test_env();
+        let cache = SymbolCache::default();
+        let asserter = Asserter::new();
+        let provider = alloy::providers::ProviderBuilder::new().connect_mocked_client(asserter);
+
+        let clear_stream = stream::empty();
+        let take_stream = stream::empty();
+
+        let start_time = std::time::Instant::now();
+
+        let token_refresher = tokio::spawn(async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            }
+        });
+
+        let conductor = ConductorBuilder::new(env, pool, cache, provider)
+            .with_token_refresher(token_refresher)
+            .with_dex_event_streams(clear_stream, take_stream)
+            .spawn();
+
+        let elapsed = start_time.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "ConductorBuilder should return quickly, took: {elapsed:?}"
+        );
+
+        conductor.abort_all();
     }
 }
