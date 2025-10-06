@@ -144,6 +144,7 @@ mod tests {
     use crate::symbol::cache::SymbolCache;
     use crate::test_utils::{get_test_log, get_test_order};
     use crate::tokenized_symbol;
+    use alloy::hex;
     use alloy::primitives::{IntoLogData, U256, address, fixed_bytes};
     use alloy::providers::{ProviderBuilder, mock::Asserter};
     use alloy::rpc::types::Log;
@@ -189,6 +190,24 @@ mod tests {
                 bobInput: U256::from_str("9000000000000000000").unwrap(),    // 9 shares (18 dps)
             },
         }
+    }
+
+    fn mocked_receipt_hex(tx_hash: alloy::primitives::FixedBytes<32>) -> serde_json::Value {
+        json!({
+            "transactionHash": hex::encode_prefixed(tx_hash),
+            "transactionIndex": "0x1",
+            "blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234",
+            "blockNumber": "0x1",
+            "from": "0x1234567890123456789012345678901234567890",
+            "to": "0x5678901234567890123456789012345678901234",
+            "gasUsed": "0x5208",
+            "effectiveGasPrice": "0x77359400",
+            "cumulativeGasUsed": "0x5208",
+            "status": "0x1",
+            "type": "0x2",
+            "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+            "logs": []
+        })
     }
 
     #[tokio::test]
@@ -240,23 +259,7 @@ mod tests {
 
         let asserter = Asserter::new();
         asserter.push_success(&json!([after_clear_log]));
-        // Add mock transaction receipt for gas tracking
-        let receipt_json = json!({
-            "transactionHash": tx_hash,
-            "transactionIndex": "0x1",
-            "blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234",
-            "blockNumber": "0x1",
-            "from": "0x1234567890123456789012345678901234567890",
-            "to": "0x5678901234567890123456789012345678901234",
-            "gasUsed": "0x5208", // 21000 gas units
-            "effectiveGasPrice": "0x77359400", // 2 gwei in wei
-            "cumulativeGasUsed": "0x5208",
-            "status": "0x1",
-            "type": "0x2", // EIP-1559 transaction
-            "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-            "logs": []
-        });
-        asserter.push_success(&receipt_json);
+        asserter.push_success(&mocked_receipt_hex(tx_hash));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
         ));
@@ -332,23 +335,7 @@ mod tests {
 
         let asserter = Asserter::new();
         asserter.push_success(&json!([after_clear_log]));
-        // Add mock transaction receipt for gas tracking
-        let receipt_json = json!({
-            "transactionHash": tx_hash,
-            "transactionIndex": "0x1",
-            "blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234",
-            "blockNumber": "0x1",
-            "from": "0x1234567890123456789012345678901234567890",
-            "to": "0x5678901234567890123456789012345678901234",
-            "gasUsed": "0x5208", // 21000 gas units
-            "effectiveGasPrice": "0x77359400", // 2 gwei in wei
-            "cumulativeGasUsed": "0x5208",
-            "status": "0x1",
-            "type": "0x2", // EIP-1559 transaction
-            "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-            "logs": []
-        });
-        asserter.push_success(&receipt_json);
+        asserter.push_success(&mocked_receipt_hex(tx_hash));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"AAPL0x".to_string(),
         ));
@@ -683,23 +670,7 @@ mod tests {
 
         let asserter = Asserter::new();
         asserter.push_success(&json!([after_clear_log]));
-        // Add mock transaction receipt for gas tracking
-        let receipt_json = json!({
-            "transactionHash": tx_hash,
-            "transactionIndex": "0x1",
-            "blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234",
-            "blockNumber": "0x1",
-            "from": "0x1234567890123456789012345678901234567890",
-            "to": "0x5678901234567890123456789012345678901234",
-            "gasUsed": "0x5208", // 21000 gas units
-            "effectiveGasPrice": "0x77359400", // 2 gwei in wei
-            "cumulativeGasUsed": "0x5208",
-            "status": "0x1",
-            "type": "0x2", // EIP-1559 transaction
-            "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-            "logs": []
-        });
-        asserter.push_success(&receipt_json);
+        asserter.push_success(&mocked_receipt_hex(tx_hash));
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
         ));

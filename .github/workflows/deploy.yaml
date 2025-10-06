@@ -1,9 +1,8 @@
 name: Build and deploy
 
 on:
-  # TODO: uncomment once the merged version catches up with the deployed version
-  # push:
-  #   branches: [master]
+  push:
+    branches: [master]
   workflow_dispatch:
 
 concurrency:
