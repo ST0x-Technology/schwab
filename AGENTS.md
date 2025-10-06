@@ -8,6 +8,7 @@ This file provides guidance to AI agents working with code in this repository.
 
 - Write a comprehensive step-by-step plan to PLAN.md with each task having a
   corresponding section and a list of subtasks as checkboxes inside of it
+- The task sections should follow the format `## Task N. <TASK NAME>`
 - The plan should be a detailed implementation plan and the reasoning behind the
   design decisions
 - Do not include timelines in the plan as they tend to be inaccurate
@@ -260,6 +261,204 @@ Environment variables (can be set via `.env` file):
   codebase easier to navigate and understand by making the relevance scope
   explicit
 
+### CRITICAL: Financial Data Integrity
+
+**This is a mission-critical financial application. The following patterns are
+STRICTLY FORBIDDEN and can result in catastrophic financial losses:**
+
+**NEVER** write code that silently provides wrong values, hides conversion
+errors, or masks failures in any way. This includes but is not limited to:
+
+- Defensive value capping that hides overflow/underflow
+- Fallback to default values on conversion failure
+- Silent truncation of precision
+- Using `unwrap_or(default_value)` on financial calculations
+- Using `unwrap_or_default()` on monetary values
+- Conversion functions that "gracefully degrade" instead of failing
+
+**ALL financial operations must use explicit error handling with proper error
+propagation. Here are examples of forbidden patterns and their correct
+alternatives:**
+
+#### Numeric Conversions
+
+```rust
+// ❌ CATASTROPHICALLY DANGEROUS - Silent data corruption
+const fn shares_to_db_i64(value: u64) -> i64 {
+    if value > i64::MAX as u64 {
+        i64::MAX  // WRONG: Silently caps at wrong value
+    } else {
+        value as i64
+    }
+}
+
+// ✅ CORRECT - Explicit conversion with proper error handling
+fn shares_to_db_i64(value: u64) -> Result<i64, ConversionError> {
+    value.try_into()
+        .map_err(|_| ConversionError::ValueTooLarge {
+            value,
+            max_allowed: i64::MAX as u64
+        })
+}
+```
+
+#### String Parsing
+
+```rust
+// ❌ DANGEROUS - Hides conversion errors
+fn parse_price(input: &str) -> f64 {
+    input.parse().unwrap_or(0.0)  // WRONG: 0.0 is not a safe fallback for prices
+}
+
+// ✅ CORRECT - Parse with explicit error
+fn parse_price(input: &str) -> Result<Decimal, ParseError> {
+    Decimal::from_str(input)
+        .map_err(|e| ParseError::InvalidPrice {
+            input: input.to_string(),
+            source: e
+        })
+}
+```
+
+#### Precision-Critical Arithmetic
+
+```rust
+// ❌ DANGEROUS - Silent precision loss
+fn convert_to_cents(dollars: f64) -> i64 {
+    (dollars * 100.0) as i64  // WRONG: Truncates fractional cents
+}
+
+// ✅ CORRECT - Checked arithmetic for precision-critical operations
+fn convert_to_cents(dollars: Decimal) -> Result<i64, ArithmeticError> {
+    let cents = dollars.checked_mul(Decimal::from(100))
+        .ok_or(ArithmeticError::Overflow)?;
+
+    if cents.fract() != Decimal::ZERO {
+        return Err(ArithmeticError::FractionalCents { value: cents });
+    }
+
+    cents.to_i64()
+        .ok_or(ArithmeticError::ConversionFailed { value: cents })
+}
+```
+
+#### Database Constraints
+
+```rust
+// ❌ DANGEROUS - Masks database constraint violations
+async fn save_trade_amount(amount: Decimal, pool: &Pool) -> Result<(), Error> {
+    let safe_amount = amount.min(Decimal::MAX).max(Decimal::ZERO);  // WRONG
+    sqlx::query!("INSERT INTO trades (amount) VALUES (?)", safe_amount)
+        .execute(pool).await?;
+    Ok(())
+}
+
+// ✅ CORRECT - Let database constraints fail naturally
+async fn save_trade_amount(amount: Decimal, pool: &Pool) -> Result<(), DatabaseError> {
+    sqlx::query!("INSERT INTO trades (amount) VALUES (?)", amount)
+        .execute(pool)
+        .await
+        .map_err(DatabaseError::from)?;
+    Ok(())
+}
+```
+
+#### Error Categories That Must Fail Fast
+
+1. **Numeric Conversions**: Any conversion between numeric types must use
+   `try_into()` or equivalent
+2. **Precision Loss**: Operations that could lose precision must be explicit
+   about it
+3. **Range Violations**: Values outside expected ranges must error, not clamp
+4. **Parse Failures**: String-to-number parsing must propagate parse errors
+5. **Arithmetic Operations**: Use checked arithmetic for all financial
+   calculations
+6. **Database Constraints**: Let database constraints fail rather than masking
+   violations
+
+#### Required Error Types
+
+Every financial operation must have proper error types that preserve context:
+
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum FinancialError {
+    #[error("Value {value} exceeds maximum allowed {max_allowed}")]
+    ValueTooLarge { value: u64, max_allowed: u64 },
+
+    #[error("Arithmetic overflow in operation: {operation}")]
+    ArithmeticOverflow { operation: String },
+
+    #[error("Precision loss detected: {original} -> {converted}")]
+    PrecisionLoss { original: String, converted: String },
+
+    #[error("Invalid price format: '{input}'")]
+    InvalidPrice { input: String, #[source] source: DecimalError },
+}
+```
+
+**Remember: In financial applications, it is ALWAYS better for the system to
+fail fast with a clear error than to continue with potentially corrupted data.
+Silent data corruption in financial systems can lead to massive losses,
+regulatory violations, and complete system failure.**
+
+### CRITICAL: Security and Secrets Management
+
+**NEVER read files containing secrets, credentials, or sensitive configuration
+without explicit user permission.**
+
+This project handles financial transactions and sensitive API credentials.
+Unauthorized access to secrets can lead to:
+
+- Account compromise
+- Financial losses
+- Security breaches
+
+#### Files That Require Explicit Permission
+
+The following files MUST NOT be read without explicit user permission:
+
+- `.env` - Environment variables containing API keys, secrets, and credentials
+- `.env.*` - Environment-specific configuration files (`.env.local`,
+  `.env.production`, etc.)
+- `credentials.json` - Credential storage files
+- `*.key`, `*.pem` - Private keys and certificates
+- `*.p12`, `*.pfx` - Certificate bundles
+- Database files containing sensitive data (unless necessary for debugging with
+  permission)
+- Any file that may contain API keys, tokens, passwords, or other secrets
+
+#### Required Practice
+
+**Before reading any file that may contain secrets:**
+
+1. **Ask the user explicitly** for permission to read the file
+2. **Explain why** you need to read it
+3. **Wait for confirmation** before proceeding
+
+**Example of correct behavior:**
+
+```
+User: "Why isn't the bot connecting to Schwab?"
+Assistant: "I can help debug this. To check the configuration, I would need to
+read your .env file which contains sensitive credentials. May I have permission
+to read it?"
+```
+
+#### Alternative Approaches
+
+When debugging configuration issues, prefer these approaches:
+
+1. **Ask the user** to verify specific environment variables are set
+2. **Request sanitized output** where sensitive values are redacted
+3. **Check example files** like `.env.example` instead of the actual `.env`
+4. **Review code** that uses the configuration rather than the configuration
+   itself
+
+**Remember: Protecting secrets is critical for application security. Always
+respect the sensitivity of credential files and never access them without
+explicit permission.**
+
 ### Testing Strategy
 
 - **Mock Blockchain Interactions**: Uses `alloy::providers::mock::Asserter` for
@@ -380,6 +579,25 @@ fn save_data(data: &Data) -> Result<(), Error> {
 2. Refactor the code to address the underlying problem
 3. If you believe a lint is incorrect, ask for permission before suppressing it
 4. Document your reasoning if given permission to suppress a specific lint
+
+**Exception for third-party macro-generated code:**
+
+When using third-party macros, such as `sol!` to generate Rust code , lint
+suppression is acceptable for issues that originate from the contract's function
+signatures, which we cannot control.
+
+For example, to deal with a function generated from a smart contract's ABI, we
+can add `allow` inside the `sol!` macro invocation.
+
+```rust
+// ✅ CORRECT - Suppressing lint for third-party ABI generated code
+sol!(
+    #![sol(all_derives = true, rpc)]
+    #[allow(clippy::too_many_arguments)]
+    #[derive(serde::Serialize, serde::Deserialize)]
+    IPyth, "node_modules/@pythnetwork/pyth-sdk-solidity/abis/IPyth.json"
+);
+```
 
 This policy ensures code quality remains high and prevents technical debt
 accumulation through lint suppression.

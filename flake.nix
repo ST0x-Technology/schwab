@@ -14,11 +14,14 @@
         in rainixPkgs // {
           prepSolArtifacts = rainix.mkTask.${system} {
             name = "prep-sol-artifacts";
-            additionalBuildInputs = rainix.sol-build-inputs.${system};
+            additionalBuildInputs = rainix.sol-build-inputs.${system}
+              ++ [ pkgs.nodejs ];
             body = ''
               set -euxo pipefail
+              npm install
               (cd lib/rain.orderbook.interface/ && forge build)
               (cd lib/forge-std/ && forge build)
+              (cd node_modules/@pythnetwork/pyth-sdk-solidity/ && forge build)
             '';
           };
 
@@ -39,6 +42,7 @@
             [
               bacon
               sqlx-cli
+              cargo-expand
               cargo-tarpaulin
               cargo-chef
               packages.prepSolArtifacts
