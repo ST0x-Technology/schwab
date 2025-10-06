@@ -2,7 +2,6 @@ use chrono::Utc;
 use rand::Rng;
 use sqlx::SqlitePool;
 use std::time::Duration;
-use tokio::sync::watch;
 use tokio::time::{Interval, interval};
 use tracing::{debug, error, info};
 
@@ -34,7 +33,6 @@ pub(crate) struct OrderStatusPoller<B: Broker> {
     env: SchwabAuthEnv,
     pool: SqlitePool,
     interval: Interval,
-    shutdown_rx: watch::Receiver<bool>,
     broker: B,
 }
 
@@ -43,7 +41,6 @@ impl<B: Broker> OrderStatusPoller<B> {
         config: OrderPollerConfig,
         env: SchwabAuthEnv,
         pool: SqlitePool,
-        shutdown_rx: watch::Receiver<bool>,
         broker: B,
     ) -> Self {
         let interval = interval(config.polling_interval);
@@ -53,7 +50,6 @@ impl<B: Broker> OrderStatusPoller<B> {
             env,
             pool,
             interval,
-            shutdown_rx,
             broker,
         }
     }
@@ -67,22 +63,11 @@ impl<B: Broker> OrderStatusPoller<B> {
         );
 
         loop {
-            tokio::select! {
-                _ = self.interval.tick() => {
-                    if let Err(e) = self.poll_pending_orders().await {
-                        error!("Polling cycle failed: {e}");
-                    }
-                }
-                _ = self.shutdown_rx.changed() => {
-                    if *self.shutdown_rx.borrow() {
-                        info!("Received shutdown signal, stopping order poller");
-                        break;
-                    }
-                }
+            self.interval.tick().await;
+            if let Err(e) = self.poll_pending_orders().await {
+                error!("Polling cycle failed: {e}");
             }
         }
-
-        Ok(())
     }
 
     async fn poll_pending_orders(&self) -> Result<(), SchwabError> {
@@ -106,11 +91,6 @@ impl<B: Broker> OrderStatusPoller<B> {
         info!("Polling {} submitted orders", submitted_executions.len());
 
         for execution in submitted_executions {
-            if *self.shutdown_rx.borrow() {
-                info!("Shutdown signal received, stopping polling");
-                break;
-            }
-
             let Some(execution_id) = execution.id else {
                 continue;
             };
@@ -345,7 +325,6 @@ mod tests {
     use httpmock::Mock;
     use httpmock::prelude::*;
     use serde_json::json;
-    use tokio::sync::watch;
 
     #[tokio::test]
     async fn test_order_poller_config_default() {
@@ -365,9 +344,8 @@ mod tests {
             account_index: 0,
         };
         let pool = setup_test_db().await;
-        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        let poller = OrderStatusPoller::new(config.clone(), env, pool, shutdown_rx, Schwab);
+        let poller = OrderStatusPoller::new(config.clone(), env, pool, Schwab);
         assert_eq!(poller.config.polling_interval, config.polling_interval);
         assert_eq!(poller.config.max_jitter, config.max_jitter);
     }
@@ -383,9 +361,8 @@ mod tests {
             account_index: 0,
         };
         let pool = setup_test_db().await;
-        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        let poller = OrderStatusPoller::new(config, env, pool, shutdown_rx, Schwab);
+        let poller = OrderStatusPoller::new(config, env, pool, Schwab);
 
         let result = poller.poll_pending_orders().await;
         assert!(result.is_ok());
@@ -402,7 +379,6 @@ mod tests {
             account_index: 0,
         };
         let pool = setup_test_db().await;
-        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 
         let execution = SchwabExecution {
             id: None,
@@ -416,7 +392,7 @@ mod tests {
         let execution_id = execution.save_within_transaction(&mut tx).await.unwrap();
         tx.commit().await.unwrap();
 
-        let poller = OrderStatusPoller::new(config, env, pool.clone(), shutdown_rx, Schwab);
+        let poller = OrderStatusPoller::new(config, env, pool.clone(), Schwab);
 
         // Fetch the execution to pass to poll_execution_status
         let execution = find_execution_by_id(&pool, execution_id)
@@ -526,8 +502,7 @@ mod tests {
 
         // Step 4: Poll for status and let the poller find it's filled
         let config = OrderPollerConfig::default();
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let poller = OrderStatusPoller::new(config, env.clone(), pool.clone(), shutdown_rx, Schwab);
+        let poller = OrderStatusPoller::new(config, env.clone(), pool.clone(), Schwab);
 
         // Step 5: Poll for status and verify order gets updated to FILLED with actual price
         let execution = find_execution_by_id(&pool, execution_id)
@@ -601,9 +576,6 @@ mod tests {
         // Verify all mocks were called as expected
         account_mock.assert_hits(1); // Called during polling
         order_status_mock.assert();
-
-        // Trigger shutdown for clean test completion
-        shutdown_tx.send(true).unwrap();
     }
 
     #[tokio::test]
@@ -709,8 +681,7 @@ mod tests {
             max_jitter: std::time::Duration::from_millis(10),
         };
 
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let poller = OrderStatusPoller::new(config, env, pool.clone(), shutdown_rx, Schwab);
+        let poller = OrderStatusPoller::new(config, env, pool.clone(), Schwab);
 
         // Measure performance of concurrent polling
         let start_time = Instant::now();
@@ -761,9 +732,6 @@ mod tests {
 
         // Verify mocks were called appropriately
         account_mock.assert_hits(num_orders); // Called once per order status check
-
-        // Trigger shutdown for clean test completion
-        shutdown_tx.send(true).unwrap();
     }
 
     async fn setup_failed_order_test() -> (MockServer, SqlitePool, SchwabAuthEnv, i64) {
@@ -901,8 +869,7 @@ mod tests {
         assert_eq!(row.pending_execution_id, Some(execution_id));
 
         let config = OrderPollerConfig::default();
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let poller = OrderStatusPoller::new(config, env, pool.clone(), shutdown_rx, Schwab);
+        let poller = OrderStatusPoller::new(config, env, pool.clone(), Schwab);
 
         let execution = find_execution_by_id(&pool, execution_id)
             .await
@@ -915,6 +882,5 @@ mod tests {
 
         account_mock.assert();
         order_status_mock.assert();
-        shutdown_tx.send(true).unwrap();
     }
 }
