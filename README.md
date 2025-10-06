@@ -5,7 +5,7 @@ trades with Charles Schwab brokerage executions.
 
 ## Overview
 
-Schwad monitors onchain tokenized equity trades and executes offsetting trades
+Schwab monitors onchain tokenized equity trades and executes offsetting trades
 on Charles Schwab to maintain market-neutral positions while capturing spread
 differentials. The bot helps establish price discovery in early-stage onchain
 equity markets by arbitraging discrepancies between onchain prices and

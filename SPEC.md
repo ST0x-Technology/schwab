@@ -78,7 +78,7 @@ Example (Offchain Batching):
   rebalance equity positions on/offchain
 - Move stablecoins/USD as needed to maintain adequate trading capital
 - Maintain sufficient offchain equity positions to match potential onchain sales
-  and viceversa
+  and vice versa
 
 ## **Bot Implementation Specification**
 
