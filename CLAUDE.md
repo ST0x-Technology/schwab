@@ -226,6 +226,10 @@ Environment variables (can be set via `.env` file):
 - `ORDERBOOK`: Raindex orderbook contract address
 - `ORDER_OWNER`: Owner address of orders to monitor for trades
 - `APP_KEY`, `APP_SECRET`: Charles Schwab API credentials
+- `TOKEN_ENCRYPTION_KEY`: AES-256 encryption key (32 bytes as 64 hex chars)
+  - Generate: `openssl rand -hex 32`
+  - Required for token encryption/decryption
+  - Must be passed via environment variable (not written to .env file)
 - `REDIRECT_URI`: OAuth redirect URI (default: https://127.0.0.1)
 - `BASE_URL`: Schwab API base URL (default: https://api.schwabapi.com)
 
@@ -360,6 +364,10 @@ expected bounds.
   - Run clippy next, as fixing linting errors can break formatting
   - Deny warnings when running clippy
   - Always run `cargo fmt` last to ensure clean code formatting
+- **Never use `--release` flag during development**
+  - Release builds take significantly longer to compile
+  - Use release builds only for production deployments
+  - Development and testing should always use debug builds
 
 #### CRITICAL: Lint Policy
 

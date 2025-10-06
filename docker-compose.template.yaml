@@ -4,7 +4,7 @@ services:
     container_name: schwarbot
     environment:
       - OTEL_METRICS_EXPORTER_ENDPOINT=http://grafana:4318
-      - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY}
+      - TOKEN_ENCRYPTION_KEY
     env_file:
       - .env
     volumes:

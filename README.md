@@ -186,6 +186,35 @@ defined in `migrations/20250703115746_trades.sql`.
 - Environment-based configuration injection
 - Resource limits and restart policies for production deployment
 
+## **Security**
+
+### **Token Encryption**
+
+OAuth tokens (access tokens and refresh tokens) are encrypted at rest using
+AES-256-GCM authenticated encryption. This prevents unauthorized access to
+sensitive authentication credentials stored in the database.
+
+**Generating an encryption key:**
+
+```bash
+openssl rand -hex 32
+```
+
+This generates a 32-byte (256-bit) key encoded as 64 hexadecimal characters.
+
+**Setting the encryption key:**
+
+The encryption key must be provided via the `TOKEN_ENCRYPTION_KEY` environment
+variable. The key is never written to disk in plain text.
+
+```bash
+export TOKEN_ENCRYPTION_KEY=your_64_char_hex_key
+```
+
+For production deployments, the key should be stored as a secret in your
+deployment system (e.g., GitHub Actions secrets) and passed directly to the
+container environment.
+
 ## **System Risks**
 
 The following risks are known for v1 but will not be addressed in the initial

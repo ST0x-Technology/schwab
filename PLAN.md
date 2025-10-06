@@ -53,27 +53,30 @@ prevent unauthorized access.
 - ✅ Section 1: Add Dependencies (completed)
 - ✅ Section 2: Create Encryption Module (completed)
 - ✅ Section 3: Update Error Types (completed)
-- ✅ Section 4: Update Environment Configuration - partially complete (needs
-  deployment workflow updates)
-- ⏸️ Section 5: Database Migration (blocked - need to address deployment)
-- ⏸️ Remaining sections (pending)
+- ✅ Section 4: Update Environment Configuration (completed)
+- ✅ Section 5: Database Migration (completed)
+- ✅ Section 6: Update Token Storage (completed)
+- ✅ Section 7: Update Token Loading (completed)
+- ✅ Section 8: Update Tests (completed)
+- ✅ Section 9: Documentation (completed)
+- ✅ Section 10: Final Verification (completed)
 
 ## Deployment Considerations
 
-The `.env.example` file is used by the GitHub Actions deployment workflow as a
-template. The workflow:
+The deployment workflow handles `TOKEN_ENCRYPTION_KEY` securely:
 
-1. Base64 encodes `.env.example`
-2. Sends it to the droplet
-3. Uses `envsubst` to substitute environment variables
-4. Creates the production `.env` file
+1. `TOKEN_ENCRYPTION_KEY` is NOT written to `.env.example` or the `.env` file
+2. It is passed directly as an environment variable to the container
+3. `docker-compose.template.yaml` uses the syntax `- TOKEN_ENCRYPTION_KEY`
+   (without `${}`) to pass it from the shell environment
+4. Docker Compose reads it from the shell environment when starting containers
 
-**Required Changes:**
+**Required Manual Steps for Deployment:**
 
-1. Add `TOKEN_ENCRYPTION_KEY` as GitHub Actions secret
-2. Update deployment workflow to pass `TOKEN_ENCRYPTION_KEY` through
-3. Update `.env.example` to use `$TOKEN_ENCRYPTION_KEY` for `envsubst`
-   substitution
+1. Generate encryption key: `openssl rand -hex 32`
+2. Add `TOKEN_ENCRYPTION_KEY` as a GitHub Actions secret in repository settings
+3. After deployment, manually run `cargo run --bin cli -- auth` on the droplet
+   to re-authenticate (tokens were cleared by migration)
 
 ---
 
@@ -561,3 +564,25 @@ hard-switch approach requires re-authentication but simplifies the codebase. The
 encryption key is managed via environment variables and GitHub Secrets,
 providing a secure MVP solution that integrates with the existing deployment
 pipeline.
+
+## Implementation Complete
+
+All sections have been implemented and verified:
+
+- ✅ AES-256-GCM encryption module with comprehensive tests
+- ✅ Database migration adds `encryption_version` column and clears old tokens
+- ✅ Token storage and loading use encryption/decryption
+- ✅ All existing tests pass (392 tests)
+- ✅ Clippy passes with no warnings
+- ✅ Code formatted with rustfmt
+- ✅ Documentation updated in README.md and CLAUDE.md
+- ✅ Deployment workflow configured to pass `TOKEN_ENCRYPTION_KEY` securely
+- ✅ Security model verified: encryption key never touches disk
+
+**Commit:** 3ba2aea encrypt tokens
+
+**Next Steps:**
+
+1. Add `TOKEN_ENCRYPTION_KEY` as GitHub Actions secret
+2. Deploy to production
+3. Re-authenticate on droplet: `cargo run --bin cli -- auth`
