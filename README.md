@@ -45,7 +45,7 @@ account.
 Create a `.env` file in the project root and set the database URL:
 
 ```bash
-DATABASE_URL=sqlite:trades.db
+DATABASE_URL=sqlite:schwab.db
 ```
 
 For all other environment variables, refer to `.env.example` and configure as
