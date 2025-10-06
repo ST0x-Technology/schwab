@@ -207,15 +207,6 @@ Environment variables (can be set via `.env` file):
 - `REDIRECT_URI`: OAuth redirect URI (default: https://127.0.0.1)
 - `BASE_URL`: Schwab API base URL (default: https://api.schwabapi.com)
 
-### Charles Schwab Setup Process
-
-1. Create Charles Schwab brokerage account (Charles Schwab International if
-   outside US)
-2. Register developer account at https://developer.schwab.com/
-3. Set up as Individual Developer and request Trader API access
-4. Include your Charles Schwab account number in the API access request
-5. Wait 3-5 days for account linking approval
-
 ### Code Quality & Best Practices
 
 - **Event-Driven Architecture**: Each trade spawns independent async task for
