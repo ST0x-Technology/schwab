@@ -321,7 +321,7 @@ fn parse_datetime(datetime_str: &str, date: NaiveDate) -> Result<DateTime<Utc>, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::setup_test_db;
+    use crate::test_utils::{setup_test_db, setup_test_tokens};
     use alloy::primitives::FixedBytes;
     use chrono::TimeZone;
     use httpmock::prelude::*;
@@ -336,18 +336,8 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: mock_server.base_url(),
             account_index: 0,
-            token_encryption_key: TEST_ENCRYPTION_KEY,
+            encryption_key: TEST_ENCRYPTION_KEY,
         }
-    }
-
-    async fn setup_test_tokens(pool: &SqlitePool, env: &SchwabAuthEnv) {
-        let tokens = SchwabTokens {
-            access_token: "test_access_token".to_string(),
-            access_token_fetched_at: Utc::now(),
-            refresh_token: "test_refresh_token".to_string(),
-            refresh_token_fetched_at: Utc::now(),
-        };
-        tokens.store(pool, env).await.unwrap();
     }
 
     #[tokio::test]

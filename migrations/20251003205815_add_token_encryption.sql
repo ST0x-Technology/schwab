@@ -1,3 +1,8 @@
+-- ⚠️ IRREVERSIBLE MIGRATION ⚠️
+-- This migration cannot be rolled back automatically.
+-- It deletes all existing authentication tokens and forces re-authentication.
+-- Rollback requires manual database restore from backup.
+--
 -- Add encryption version column to track encryption format
 -- Version 1 = AES-256-GCM encrypted tokens
 ALTER TABLE schwab_auth

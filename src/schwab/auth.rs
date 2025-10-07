@@ -24,7 +24,7 @@ pub struct SchwabAuthEnv {
     #[clap(long, env, default_value = "0")]
     pub account_index: usize,
     #[clap(long, env)]
-    pub token_encryption_key: FixedBytes<32>,
+    pub encryption_key: FixedBytes<32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -245,7 +245,7 @@ impl SchwabAuthEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::setup_test_db;
+    use crate::test_utils::{setup_test_db, setup_test_tokens};
     use alloy::primitives::FixedBytes;
     use chrono::{Duration, Utc};
     use httpmock::prelude::*;
@@ -260,7 +260,7 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: "https://api.schwabapi.com".to_string(),
             account_index: 0,
-            token_encryption_key: TEST_ENCRYPTION_KEY,
+            encryption_key: TEST_ENCRYPTION_KEY,
         }
     }
 
@@ -271,7 +271,7 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: mock_server.base_url(),
             account_index: 0,
-            token_encryption_key: TEST_ENCRYPTION_KEY,
+            encryption_key: TEST_ENCRYPTION_KEY,
         }
     }
 
@@ -290,7 +290,7 @@ mod tests {
             redirect_uri: "https://custom.redirect.com".to_string(),
             base_url: "https://custom.api.com".to_string(),
             account_index: 0,
-            token_encryption_key: TEST_ENCRYPTION_KEY,
+            encryption_key: TEST_ENCRYPTION_KEY,
         };
         let expected_url = "https://custom.api.com/v1/oauth/authorize?client_id=custom_key&redirect_uri=https%3A%2F%2Fcustom.redirect.com";
         assert_eq!(env.get_auth_url(), expected_url);
@@ -304,7 +304,7 @@ mod tests {
             redirect_uri: "https://example.com/callback?param=value&other=test".to_string(),
             base_url: "https://api.schwabapi.com".to_string(),
             account_index: 0,
-            token_encryption_key: TEST_ENCRYPTION_KEY,
+            encryption_key: TEST_ENCRYPTION_KEY,
         };
         let expected_url = "https://api.schwabapi.com/v1/oauth/authorize?client_id=test%20key%20with%20spaces%20%26%20symbols%21&redirect_uri=https%3A%2F%2Fexample.com%2Fcallback%3Fparam%3Dvalue%26other%3Dtest";
         assert_eq!(env.get_auth_url(), expected_url);
@@ -578,7 +578,7 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: "https://api.schwabapi.com".to_string(),
             account_index: 0,
-            token_encryption_key: TEST_ENCRYPTION_KEY,
+            encryption_key: TEST_ENCRYPTION_KEY,
         };
 
         assert_eq!(env.redirect_uri, "https://127.0.0.1");
@@ -725,15 +725,5 @@ mod tests {
             }
             other => panic!("Expected RequestFailed error, got: {other:?}"),
         }
-    }
-
-    async fn setup_test_tokens(pool: &SqlitePool, env: &SchwabAuthEnv) {
-        let tokens = crate::schwab::tokens::SchwabTokens {
-            access_token: "test_access_token".to_string(),
-            access_token_fetched_at: Utc::now(),
-            refresh_token: "test_refresh_token".to_string(),
-            refresh_token_fetched_at: Utc::now(),
-        };
-        tokens.store(pool, env).await.unwrap();
     }
 }

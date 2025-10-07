@@ -100,7 +100,6 @@ jobs:
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating configuration files from templates" | tee -a "${DEPLOY_LOG}"
 
             # Create docker-compose.yaml from template using envsubst
-            # Note: TOKEN_ENCRYPTION_KEY is NOT substituted here - it will be read from environment at runtime
             export DATA_VOLUME_PATH="/mnt/volume_nyc3_01"
             echo "$DOCKER_COMPOSE_TEMPLATE" | base64 -d | envsubst '$DATA_VOLUME_PATH $SHORT_SHA $REGISTRY_NAME' > /mnt/volume_nyc3_01/docker-compose.yaml
 

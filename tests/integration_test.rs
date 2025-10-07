@@ -41,8 +41,8 @@ fn create_test_env_with_mock_server(server: &MockServer, server_port: u16) -> En
         &base_url,
         "--account-index",
         "0",
-        "--token-encryption-key",
-        "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "--encryption-key",
+        "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     ];
 
     Env::try_parse_from(args).expect("Failed to parse test environment")

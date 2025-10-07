@@ -59,7 +59,10 @@ async fn auth_refresh(
         }
     };
 
-    if let Err(e) = tokens.store(pool.inner(), &env.schwab_auth).await {
+    if let Err(e) = tokens
+        .store(pool.inner(), &env.schwab_auth.encryption_key)
+        .await
+    {
         return Json(AuthRefreshResponse::Error {
             error: format!("Failed to store tokens: {e}"),
         });
@@ -102,7 +105,7 @@ mod tests {
                 redirect_uri: "https://127.0.0.1".to_string(),
                 base_url: mock_server.base_url(),
                 account_index: 0,
-                token_encryption_key: TEST_ENCRYPTION_KEY,
+                encryption_key: TEST_ENCRYPTION_KEY,
             },
             evm_env: EvmEnv {
                 ws_rpc_url: Url::parse("ws://localhost:8545").unwrap(),

@@ -116,7 +116,7 @@ pub mod tests {
                 redirect_uri: "https://127.0.0.1".to_string(),
                 base_url: "https://test.com".to_string(),
                 account_index: 0,
-                token_encryption_key: TEST_ENCRYPTION_KEY,
+                encryption_key: TEST_ENCRYPTION_KEY,
             },
             evm_env: EvmEnv {
                 ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),

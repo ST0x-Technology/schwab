@@ -345,7 +345,7 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: "https://api.schwabapi.com".to_string(),
             account_index: 0,
-            token_encryption_key: TEST_ENCRYPTION_KEY,
+            encryption_key: TEST_ENCRYPTION_KEY,
         };
         let pool = setup_test_db().await;
 
@@ -363,7 +363,7 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: "https://api.schwabapi.com".to_string(),
             account_index: 0,
-            token_encryption_key: TEST_ENCRYPTION_KEY,
+            encryption_key: TEST_ENCRYPTION_KEY,
         };
         let pool = setup_test_db().await;
 
@@ -382,7 +382,7 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: "https://api.schwabapi.com".to_string(),
             account_index: 0,
-            token_encryption_key: TEST_ENCRYPTION_KEY,
+            encryption_key: TEST_ENCRYPTION_KEY,
         };
         let pool = setup_test_db().await;
 
@@ -422,7 +422,7 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: server.base_url(),
             account_index: 0,
-            token_encryption_key: TEST_ENCRYPTION_KEY,
+            encryption_key: TEST_ENCRYPTION_KEY,
         };
 
         // Setup test tokens in database
@@ -432,7 +432,7 @@ mod tests {
             refresh_token: "test_refresh_token".to_string(),
             refresh_token_fetched_at: chrono::Utc::now(),
         };
-        tokens.store(&pool, &env).await.unwrap();
+        tokens.store(&pool, &env.encryption_key).await.unwrap();
 
         // Mock account hash endpoint
         let account_mock = server.mock(|when, then| {
@@ -601,7 +601,7 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: server.base_url(),
             account_index: 0,
-            token_encryption_key: TEST_ENCRYPTION_KEY,
+            encryption_key: TEST_ENCRYPTION_KEY,
         };
 
         // Setup test tokens
@@ -611,7 +611,7 @@ mod tests {
             refresh_token: "test_refresh_token".to_string(),
             refresh_token_fetched_at: chrono::Utc::now(),
         };
-        tokens.store(&pool, &env).await.unwrap();
+        tokens.store(&pool, &env.encryption_key).await.unwrap();
 
         // Mock account hash endpoint
         let account_mock = server.mock(|when, then| {
@@ -752,7 +752,7 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: server.base_url(),
             account_index: 0,
-            token_encryption_key: TEST_ENCRYPTION_KEY,
+            encryption_key: TEST_ENCRYPTION_KEY,
         };
 
         let tokens = crate::schwab::SchwabTokens {
@@ -761,7 +761,7 @@ mod tests {
             refresh_token: "test_refresh_token".to_string(),
             refresh_token_fetched_at: chrono::Utc::now(),
         };
-        tokens.store(&pool, &env).await.unwrap();
+        tokens.store(&pool, &env.encryption_key).await.unwrap();
 
         let execution = SchwabExecution {
             id: None,

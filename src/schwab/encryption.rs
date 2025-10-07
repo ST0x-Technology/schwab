@@ -11,6 +11,11 @@ pub(crate) fn encrypt_token(
     key: &EncryptionKey,
     plaintext: &str,
 ) -> Result<Vec<u8>, EncryptionError> {
+    #[cfg(not(test))]
+    if key == &FixedBytes::ZERO {
+        return Err(EncryptionError::InvalidKey);
+    }
+
     let cipher = Aes256Gcm::new(key.as_slice().into());
 
     let mut nonce_bytes = [0u8; NONCE_SIZE];
@@ -64,6 +69,9 @@ pub(crate) enum EncryptionError {
     Utf8Error(String),
     #[error("Hex decoding error: {0}")]
     Hex(#[from] alloy::hex::FromHexError),
+    #[cfg(not(test))]
+    #[error("Encryption key must not be all zeros")]
+    InvalidKey,
 }
 
 #[cfg(test)]

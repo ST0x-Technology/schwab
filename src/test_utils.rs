@@ -1,9 +1,12 @@
 use crate::bindings::IOrderBookV4::{EvaluableV3, IO, OrderV3};
 use crate::onchain::OnchainTrade;
 use crate::onchain::io::TokenizedEquitySymbol;
+use crate::schwab::auth::SchwabAuthEnv;
+use crate::schwab::tokens::SchwabTokens;
 use crate::schwab::{Direction, TradeState, execution::SchwabExecution};
 use alloy::primitives::{LogData, U256, address, bytes, fixed_bytes};
 use alloy::rpc::types::Log;
+use chrono::Utc;
 use sqlx::SqlitePool;
 
 /// Returns a test `OrderV3` instance that is shared across multiple
@@ -78,6 +81,18 @@ pub(crate) async fn setup_test_db() -> SqlitePool {
     let pool = SqlitePool::connect(":memory:").await.unwrap();
     sqlx::migrate!().run(&pool).await.unwrap();
     pool
+}
+
+/// Centralized test token setup to eliminate duplication across test files.
+/// Creates and stores test tokens in the database for Schwab API authentication.
+pub(crate) async fn setup_test_tokens(pool: &SqlitePool, env: &SchwabAuthEnv) {
+    let tokens = SchwabTokens {
+        access_token: "test_access_token".to_string(),
+        access_token_fetched_at: Utc::now(),
+        refresh_token: "test_refresh_token".to_string(),
+        refresh_token_fetched_at: Utc::now(),
+    };
+    tokens.store(pool, &env.encryption_key).await.unwrap();
 }
 
 /// Builder for creating OnchainTrade test instances with sensible defaults.

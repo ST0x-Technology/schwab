@@ -153,7 +153,7 @@ pub(crate) async fn run_oauth_flow(
     println!("Extracted code: {code}");
 
     let tokens = env.get_tokens_from_code(&code).await?;
-    tokens.store(pool, env).await?;
+    tokens.store(pool, &env.encryption_key).await?;
 
     Ok(())
 }
@@ -209,7 +209,7 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: mock_server.base_url(),
             account_index: 0,
-            token_encryption_key: TEST_ENCRYPTION_KEY,
+            encryption_key: TEST_ENCRYPTION_KEY,
         }
     }
 
@@ -241,7 +241,7 @@ mod tests {
         });
 
         let tokens = env.get_tokens_from_code("test_code").await.unwrap();
-        tokens.store(&pool, &env).await.unwrap();
+        tokens.store(&pool, &env.encryption_key).await.unwrap();
 
         mock.assert();
     }

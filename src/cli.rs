@@ -563,6 +563,7 @@ mod tests {
     use crate::schwab::execution::find_executions_by_symbol_and_status;
     use crate::test_utils::get_test_order;
     use crate::test_utils::setup_test_db;
+    use crate::test_utils::setup_test_tokens;
     use crate::tokenized_symbol;
     use crate::{onchain::EvmEnv, schwab::SchwabAuthEnv};
     use alloy::hex;
@@ -715,7 +716,10 @@ mod tests {
             refresh_token: "expired_refresh_token".to_string(),
             refresh_token_fetched_at: Utc::now() - Duration::days(8),
         };
-        expired_tokens.store(&pool, &env.schwab_auth).await.unwrap();
+        expired_tokens
+            .store(&pool, &env.schwab_auth.encryption_key)
+            .await
+            .unwrap();
 
         let result = SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth).await;
 
@@ -738,7 +742,7 @@ mod tests {
             refresh_token_fetched_at: Utc::now() - Duration::days(1),
         };
         tokens_needing_refresh
-            .store(&pool, &env.schwab_auth)
+            .store(&pool, &env.schwab_auth.encryption_key)
             .await
             .unwrap();
 
@@ -794,7 +798,9 @@ mod tests {
         account_mock.assert();
         order_mock.assert();
 
-        let stored_tokens = SchwabTokens::load(&pool, &env.schwab_auth).await.unwrap();
+        let stored_tokens = SchwabTokens::load(&pool, &env.schwab_auth.encryption_key)
+            .await
+            .unwrap();
         assert_eq!(stored_tokens.access_token, "refreshed_access_token");
         assert_eq!(stored_tokens.refresh_token, "new_refresh_token");
     }
@@ -839,7 +845,9 @@ mod tests {
         account_mock.assert();
         order_mock.assert();
 
-        let stored_tokens = SchwabTokens::load(&pool, &env.schwab_auth).await.unwrap();
+        let stored_tokens = SchwabTokens::load(&pool, &env.schwab_auth.encryption_key)
+            .await
+            .unwrap();
         assert_eq!(stored_tokens.access_token, "test_access_token");
     }
 
@@ -950,7 +958,10 @@ mod tests {
             refresh_token: "expired_refresh_token".to_string(),
             refresh_token_fetched_at: Utc::now() - Duration::days(8),
         };
-        expired_tokens.store(&pool, &env.schwab_auth).await.unwrap();
+        expired_tokens
+            .store(&pool, &env.schwab_auth.encryption_key)
+            .await
+            .unwrap();
 
         let result = SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth).await;
 
@@ -1008,7 +1019,7 @@ mod tests {
                 redirect_uri: "https://127.0.0.1".to_string(),
                 base_url: mock_server.base_url(),
                 account_index: 0,
-                token_encryption_key: TEST_ENCRYPTION_KEY,
+                encryption_key: TEST_ENCRYPTION_KEY,
             },
             evm_env: EvmEnv {
                 ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
@@ -1020,16 +1031,6 @@ mod tests {
             order_polling_max_jitter: 5,
             dry_run: false,
         }
-    }
-
-    async fn setup_test_tokens(pool: &SqlitePool, env: &SchwabAuthEnv) {
-        let tokens = SchwabTokens {
-            access_token: "test_access_token".to_string(),
-            access_token_fetched_at: chrono::Utc::now(),
-            refresh_token: "test_refresh_token".to_string(),
-            refresh_token_fetched_at: chrono::Utc::now(),
-        };
-        tokens.store(pool, env).await.unwrap();
     }
 
     struct MockBlockchainData {
@@ -1366,7 +1367,10 @@ mod tests {
             refresh_token: "valid_but_rejected_refresh_token".to_string(),
             refresh_token_fetched_at: chrono::Utc::now() - chrono::Duration::days(1), // Valid refresh token
         };
-        expired_tokens.store(&pool, &env.schwab_auth).await.unwrap();
+        expired_tokens
+            .store(&pool, &env.schwab_auth.encryption_key)
+            .await
+            .unwrap();
 
         // Mock the token refresh to fail
         let token_refresh_mock = server.mock(|when, then| {
@@ -1420,7 +1424,10 @@ mod tests {
             refresh_token: "valid_refresh_token".to_string(),
             refresh_token_fetched_at: chrono::Utc::now() - chrono::Duration::days(1),
         };
-        expired_tokens.store(&pool, &env.schwab_auth).await.unwrap();
+        expired_tokens
+            .store(&pool, &env.schwab_auth.encryption_key)
+            .await
+            .unwrap();
 
         let token_refresh_mock = server.mock(|when, then| {
             when.method(httpmock::Method::POST)
@@ -1479,7 +1486,9 @@ mod tests {
         order_mock.assert();
 
         // Verify that new tokens were stored in database
-        let stored_tokens = SchwabTokens::load(&pool, &env.schwab_auth).await.unwrap();
+        let stored_tokens = SchwabTokens::load(&pool, &env.schwab_auth.encryption_key)
+            .await
+            .unwrap();
         assert_eq!(stored_tokens.access_token, "new_access_token");
         assert_eq!(stored_tokens.refresh_token, "new_refresh_token");
     }
