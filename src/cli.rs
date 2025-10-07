@@ -6,6 +6,7 @@ use tracing::{error, info};
 
 use crate::env::{Env, LogLevel};
 use crate::error::OnChainError;
+use crate::onchain::pyth::{FeedIdCache, extract_pyth_price};
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
 use crate::symbol::cache::SymbolCache;
 use alloy::primitives::B256;
@@ -70,6 +71,15 @@ pub enum Commands {
         /// Date to check market hours for (format: YYYY-MM-DD, defaults to current day)
         #[arg(long = "date")]
         date: Option<String>,
+    },
+    /// Extract Pyth oracle price from transaction trace
+    GetPythPrice {
+        /// Transaction hash (0x prefixed, 64 hex characters)
+        #[arg(long = "tx-hash")]
+        tx_hash: B256,
+        /// Symbol to validate price feed (e.g., AAPL, TSLA) - required to ensure correct price extraction
+        #[arg(long = "symbol")]
+        symbol: String,
     },
 }
 
@@ -224,9 +234,53 @@ async fn run_command_with_writers<W: Write>(
             ensure_authentication(pool, &env.schwab_auth, stdout).await?;
             display_market_status(&env, pool, date.as_deref(), stdout).await?;
         }
+        Commands::GetPythPrice { tx_hash, symbol } => {
+            info!("Extracting Pyth price for transaction: {tx_hash}, symbol: {symbol}");
+            get_pyth_price(tx_hash, &symbol, &env, stdout).await?;
+        }
     }
 
     info!("CLI operation completed successfully");
+    Ok(())
+}
+
+async fn get_pyth_price<W: Write>(
+    tx_hash: B256,
+    symbol: &str,
+    env: &Env,
+    stdout: &mut W,
+) -> anyhow::Result<()> {
+    writeln!(stdout, "🔍 Extracting Pyth price from tx: {tx_hash}")?;
+    writeln!(stdout, "   Filtering for symbol: {symbol}")?;
+    writeln!(stdout)?;
+
+    let ws_url = &env.evm_env.ws_rpc_url;
+    let ws = WsConnect::new(ws_url.as_str());
+    let provider = ProviderBuilder::new().connect_ws(ws).await?;
+
+    let cache = FeedIdCache::new();
+
+    let price = extract_pyth_price(tx_hash, &provider, symbol, &cache)
+        .await
+        .map_err(|e| anyhow::Error::new(e).context("extracting Pyth price"))?;
+
+    writeln!(stdout, "✅ Successfully extracted Pyth price:")?;
+    writeln!(stdout, "   Raw price value: {}", price.price)?;
+    writeln!(stdout, "   Exponent: {}", price.expo)?;
+    writeln!(stdout, "   Confidence: {}", price.conf)?;
+    writeln!(stdout, "   Publish time: {}", price.publishTime)?;
+
+    match price.to_decimal() {
+        Ok(decimal_price) => {
+            writeln!(stdout, "   Decimal price: {decimal_price}")?;
+        }
+        Err(e) => {
+            writeln!(stdout, "   ⚠️  Failed to convert to decimal: {e}")?;
+        }
+    }
+
+    writeln!(stdout)?;
+
     Ok(())
 }
 
@@ -424,8 +478,9 @@ async fn process_tx_with_provider<W: Write, P: Provider + Clone>(
     cache: &SymbolCache,
 ) -> anyhow::Result<()> {
     let evm_env = &env.evm_env;
+    let feed_id_cache = FeedIdCache::default();
 
-    match OnchainTrade::try_from_tx_hash(tx_hash, provider, cache, evm_env).await {
+    match OnchainTrade::try_from_tx_hash(tx_hash, provider, cache, evm_env, &feed_id_cache).await {
         Ok(Some(onchain_trade)) => {
             process_found_trade(onchain_trade, env, pool, stdout).await?;
         }
@@ -1145,8 +1200,11 @@ mod tests {
         output_symbol: &str,
     ) -> impl Provider + Clone {
         let asserter = Asserter::new();
+        // Add mock transaction receipt for gas tracking - first call from try_from_tx_hash
         asserter.push_success(&mock_data.receipt_json);
         asserter.push_success(&json!([mock_data.after_clear_log]));
+        // Add mock transaction receipt for gas tracking - second call from try_from_order_and_fill_details
+        asserter.push_success(&mock_data.receipt_json);
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &input_symbol.to_string(),
         ));
@@ -1818,8 +1876,11 @@ mod tests {
 
         // Set up the mock provider for first call
         let asserter1 = Asserter::new();
+        // Add mock transaction receipt for gas tracking - first call from try_from_tx_hash
         asserter1.push_success(&mock_data.receipt_json);
         asserter1.push_success(&json!([mock_data.after_clear_log]));
+        // Add mock transaction receipt for gas tracking - second call from try_from_order_and_fill_details
+        asserter1.push_success(&mock_data.receipt_json);
         asserter1.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
         ));
@@ -1852,8 +1913,11 @@ mod tests {
         // Note: We still need to mock the provider responses because the function will still
         // fetch the transaction data, but it should detect the duplicate in the database
         let asserter2 = Asserter::new();
+        // Add mock transaction receipt for gas tracking - first call from try_from_tx_hash
         asserter2.push_success(&mock_data.receipt_json);
         asserter2.push_success(&json!([mock_data.after_clear_log]));
+        // Add mock transaction receipt for gas tracking - second call from try_from_order_and_fill_details
+        asserter2.push_success(&mock_data.receipt_json);
         asserter2.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
         ));
@@ -2094,7 +2158,14 @@ mod tests {
             amount: 2.5,
             direction: Direction::Buy,
             price_usdc: 20000.0,
+            block_timestamp: None,
             created_at: None,
+            gas_used: None,
+            effective_gas_price: None,
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let trade2 = trade1.clone();

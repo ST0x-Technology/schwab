@@ -1,0 +1,197 @@
+name: Build and deploy
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.ref }}-deploy
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+permissions:
+  contents: read
+
+env:
+  DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+  ORDERBOOK: "0x881cf4c0764e733d9C387f3858eE87CcA04AFFe0"
+  ORDER_OWNER: "0x71b94911FD1CE621FC40970450004c544e5287a8"
+  DEPLOYMENT_BLOCK: 34844164
+  REGISTRY_NAME: stox
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ env.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Build Docker image
+        run: |
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          echo "SHORT_SHA=$SHORT_SHA" >> $GITHUB_ENV
+
+          docker build \
+            -t registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:$SHORT_SHA \
+            -t registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:latest .
+
+      - name: Log in to DO Container Registry
+        run: doctl registry login --expiry-seconds 1200
+
+      - name: Verify required files exist
+        run: |
+          echo "Checking for required files..."
+          ls -la .env.example docker-compose.template.yaml Dockerfile.grafana grafana-datasource.yaml
+          echo "File verification complete"
+
+      - name: Encode file contents
+        run: |
+          echo "ENV_TEMPLATE=$(base64 -w 0 .env.example)" >> $GITHUB_ENV
+          echo "DOCKER_COMPOSE_TEMPLATE=$(base64 -w 0 docker-compose.template.yaml)" >> $GITHUB_ENV
+          echo "GRAFANA_DOCKERFILE=$(base64 -w 0 Dockerfile.grafana)" >> $GITHUB_ENV
+          echo "GRAFANA_DATASOURCE_YAML=$(base64 -w 0 grafana-datasource.yaml)" >> $GITHUB_ENV
+
+      - name: Push image to DO Registry
+        run: |
+          docker push registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:${{ env.SHORT_SHA }}
+          docker push registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:latest
+
+      - name: Deploy to Droplet
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: root
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_OWNER,DEPLOYMENT_BLOCK,APP_KEY,APP_SECRET,ENV_TEMPLATE,DOCKER_COMPOSE_TEMPLATE,GRAFANA_DOCKERFILE,GRAFANA_DATASOURCE_YAML,GRAFANA_ADMIN_PASSWORD
+          script: |
+            set -euo pipefail
+
+            # Create log directory and setup logging
+            mkdir -p /var/log/schwarbot
+            TIMESTAMP=$(date +%Y-%m-%d-%H%M%S)
+            DEPLOY_LOG="/var/log/schwarbot/deploy-${TIMESTAMP}.log"
+            DOCKER_LOG="/var/log/schwarbot/docker-${TIMESTAMP}.log"
+
+            # Function to log and execute commands
+            log_exec() {
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - $*" | tee -a "${DEPLOY_LOG}"
+              "$@" 2>&1 | tee -a "${DEPLOY_LOG}"
+              return ${PIPESTATUS[0]}
+            }
+
+            # Start deployment logging
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting deployment of schwarbot:${SHORT_SHA}" | tee "${DEPLOY_LOG}"
+            echo "Deployment logs: ${DEPLOY_LOG}" | tee -a "${DEPLOY_LOG}"
+            echo "Container logs will be saved to: ${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}"
+
+            # Docker login
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Logging into Docker registry" | tee -a "${DEPLOY_LOG}"
+            echo "${DIGITALOCEAN_ACCESS_TOKEN}" | \
+              docker login registry.digitalocean.com -u unused --password-stdin 2>&1 | tee -a "${DEPLOY_LOG}"
+
+            # Decode and create files from base64-encoded content
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating configuration files from templates" | tee -a "${DEPLOY_LOG}"
+
+            # Create docker-compose.yaml from template using envsubst
+            export DATA_VOLUME_PATH="/mnt/volume_nyc3_01"
+            echo "$DOCKER_COMPOSE_TEMPLATE" | base64 -d | envsubst > /mnt/volume_nyc3_01/docker-compose.yaml
+
+            # Create Grafana files needed for custom image build
+            echo "$GRAFANA_DOCKERFILE" | base64 -d > /mnt/volume_nyc3_01/Dockerfile.grafana
+            echo "$GRAFANA_DATASOURCE_YAML" | base64 -d > /mnt/volume_nyc3_01/grafana-datasource.yaml
+
+            # Pull images and stop existing services
+            cd /mnt/volume_nyc3_01
+            log_exec docker compose pull
+            log_exec docker compose down || true
+
+            # Ensure database directory exists and has proper permissions
+            log_exec chmod 755 /mnt/volume_nyc3_01
+
+            # Create .env file for container configuration using .env.example as template
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating .env file from template" | tee -a "${DEPLOY_LOG}"
+
+            # Set deployment-specific values
+            export DATABASE_URL="sqlite:///data/schwab.db"
+            export RUST_LOG="rain_schwab=debug"
+            export OTEL_METRICS_EXPORTER_ENDPOINT="http://grafana:4318"
+            export GRAFANA_ADMIN_PASSWORD="${GRAFANA_ADMIN_PASSWORD}"
+
+            # Create .env file using template with envsubst
+            echo "$ENV_TEMPLATE" | base64 -d | envsubst > /mnt/volume_nyc3_01/.env
+            chmod 600 /mnt/volume_nyc3_01/.env
+
+            # Start services with docker-compose
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting services with docker-compose" | tee -a "${DEPLOY_LOG}"
+            docker compose up -d 2>&1 | tee -a "${DEPLOY_LOG}"
+
+            # Wait for containers to fully start
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Waiting for containers to start..." | tee -a "${DEPLOY_LOG}"
+            sleep 15
+
+            # Check if services are running - use docker ps as primary check
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Checking container status..." | tee -a "${DEPLOY_LOG}"
+
+            # Debug: show what containers are actually running
+            docker ps --format "table {{.Names}}\t{{.Status}}" | tee -a "${DEPLOY_LOG}"
+
+            if ! docker ps --format "{{.Names}}" | grep -q "^schwarbot$"; then
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - Schwarbot container not found in docker ps" | tee -a "${DEPLOY_LOG}" >&2
+              docker compose logs schwarbot 2>&1 | tee "${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}"
+              echo "Full container logs saved to: ${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}" >&2
+              exit 1
+            fi
+
+            if ! docker ps --format "{{.Names}}" | grep -q "^grafana$"; then
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - Grafana container not found in docker ps" | tee -a "${DEPLOY_LOG}" >&2
+              docker compose logs grafana 2>&1 | tee -a "${DEPLOY_LOG}"
+              exit 1
+            fi
+
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Both containers confirmed running" | tee -a "${DEPLOY_LOG}"
+
+            # Capture initial container logs
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Services started successfully, capturing logs..." | tee -a "${DEPLOY_LOG}"
+            docker compose logs schwarbot 2>&1 | tee "${DOCKER_LOG}"
+
+            # Check for errors in schwarbot logs
+            if docker compose logs schwarbot 2>&1 | grep -q "error\|panic\|failed"; then
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - Application errors detected in logs" | tee -a "${DEPLOY_LOG}" >&2
+              docker compose logs --tail 20 schwarbot 2>&1 | tee -a "${DEPLOY_LOG}"
+              echo "Full container logs saved to: ${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}" >&2
+              exit 1
+            fi
+
+            # Cleanup old images
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Cleaning up old images..." | tee -a "${DEPLOY_LOG}"
+            log_exec docker image prune -f
+            docker images "registry.digitalocean.com/${REGISTRY_NAME}/schwarbot" \
+              --format "table {{.Repository}}\t{{.Tag}}\t{{.CreatedAt}}" | \
+              tail -n +2 | head -n -3 | awk '{print $1":"$2}' | \
+              xargs -r docker rmi 2>&1 | tee -a "${DEPLOY_LOG}" || true
+
+            # Cleanup old logs (keep last 10 deployments)
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Cleaning up old deployment logs..." | tee -a "${DEPLOY_LOG}"
+            cd /var/log/schwarbot
+            ls -t deploy-*.log 2>/dev/null | tail -n +11 | xargs -r rm -f || true
+            ls -t docker-*.log 2>/dev/null | tail -n +11 | xargs -r rm -f || true
+
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Deployment completed successfully!" | tee -a "${DEPLOY_LOG}"
+            echo "Deployment logs: ${DEPLOY_LOG}"
+            echo "Container logs: ${DOCKER_LOG}"
+        env:
+          WS_RPC_URL: ${{ secrets.WS_RPC_URL }}
+          APP_KEY: ${{ secrets.APP_KEY }}
+          APP_SECRET: ${{ secrets.APP_SECRET }}
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          ENV_TEMPLATE: ${{ env.ENV_TEMPLATE }}
+          DOCKER_COMPOSE_TEMPLATE: ${{ env.DOCKER_COMPOSE_TEMPLATE }}
+          GRAFANA_DOCKERFILE: ${{ env.GRAFANA_DOCKERFILE }}
+          GRAFANA_DATASOURCE_YAML: ${{ env.GRAFANA_DATASOURCE_YAML }}

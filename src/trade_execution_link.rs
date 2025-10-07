@@ -324,7 +324,14 @@ mod tests {
             amount: 1.5,
             direction: Direction::Sell,
             price_usdc: 150.0,
+            block_timestamp: None,
             created_at: None,
+            gas_used: None,
+            effective_gas_price: None,
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let execution = OffchainExecution {
@@ -383,7 +390,14 @@ mod tests {
                 amount: 0.5,
                 direction: Direction::Buy,
                 price_usdc: 300.0,
+                block_timestamp: None,
                 created_at: None,
+                gas_used: None,
+                effective_gas_price: None,
+                pyth_price: None,
+                pyth_confidence: None,
+                pyth_exponent: None,
+                pyth_publish_time: None,
             },
             OnchainTrade {
                 id: None,
@@ -395,7 +409,14 @@ mod tests {
                 amount: 0.8,
                 direction: Direction::Buy,
                 price_usdc: 305.0,
+                block_timestamp: None,
                 created_at: None,
+                gas_used: None,
+                effective_gas_price: None,
+                pyth_price: None,
+                pyth_confidence: None,
+                pyth_exponent: None,
+                pyth_publish_time: None,
             },
         ];
 
@@ -473,7 +494,14 @@ mod tests {
                 amount,
                 direction: Direction::Sell,
                 price_usdc: 150.0,
+                block_timestamp: None,
                 created_at: None,
+                gas_used: None,
+                effective_gas_price: None,
+                pyth_price: None,
+                pyth_confidence: None,
+                pyth_exponent: None,
+                pyth_publish_time: None,
             };
             let trade_id = trade.save_within_transaction(&mut sql_tx).await.unwrap();
             trade_ids.push(trade_id);
@@ -525,7 +553,14 @@ mod tests {
             amount: 1.0,
             direction: Direction::Buy,
             price_usdc: 150.0,
+            block_timestamp: None,
             created_at: None,
+            gas_used: None,
+            effective_gas_price: None,
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let execution = OffchainExecution {

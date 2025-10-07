@@ -3,6 +3,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
+use tokio::task::JoinHandle;
 use tracing::warn;
 
 use crate::{
@@ -124,11 +125,7 @@ impl Broker for TestBroker {
         Ok(order_id_str.to_string())
     }
 
-    async fn run_broker_maintenance(
-        &self,
-        _shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    ) -> Option<tokio::task::JoinHandle<Result<(), Self::Error>>> {
-        // TestBroker has no maintenance tasks needed
+    async fn run_broker_maintenance(&self) -> Option<JoinHandle<anyhow::Result<()>>> {
         None
     }
 }

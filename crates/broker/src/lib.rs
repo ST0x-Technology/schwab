@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use std::fmt::{Debug, Display};
+use tokio::task::JoinHandle;
 
 pub mod error;
 pub mod order;
@@ -210,10 +211,8 @@ pub trait Broker: Send + Sync + 'static {
 
     /// Run broker-specific maintenance tasks (token refresh, connection health, etc.)
     /// Returns None if no maintenance needed, Some(handle) if maintenance task spawned
-    async fn run_broker_maintenance(
-        &self,
-        shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    ) -> Option<tokio::task::JoinHandle<Result<(), Self::Error>>>;
+    /// Tasks should run indefinitely and be aborted by the caller when shutdown is needed
+    async fn run_broker_maintenance(&self) -> Option<JoinHandle<anyhow::Result<()>>>;
 }
 
 #[cfg(test)]

@@ -1,8 +1,6 @@
-use alloy::providers::{ProviderBuilder, WsConnect};
-use futures_util::Stream;
 use rocket::Config;
 use sqlx::SqlitePool;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 pub mod api;
 mod bindings;
@@ -17,20 +15,16 @@ mod onchain;
 mod queue;
 mod symbol;
 mod trade_execution_link;
+mod trading_hours_controller;
 
 #[cfg(test)]
 pub mod test_utils;
 
-use crate::conductor::get_cutoff_block;
 use crate::env::Env;
-use crate::symbol::cache::SymbolCache;
-use bindings::IOrderBookV4::IOrderBookV4Instance;
-use st0x_broker::Broker;
 
 pub async fn launch(env: Env) -> anyhow::Result<()> {
     let pool = env.get_sqlite_pool().await?;
 
-    // Run database migrations to ensure all tables exist
     sqlx::migrate!().run(&pool).await?;
 
     let config = Config::figment()
@@ -77,109 +71,17 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
 }
 
 async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
-    const RERUN_DELAY_SECS: u64 = 10;
-
-    loop {
-        let result = run_bot_session(&env, &pool).await;
-
-        match result {
-            Ok(()) => {
-                info!("Bot session completed successfully");
-                break Ok(());
-            }
-            Err(e) if e.to_string().contains("RefreshTokenExpired") => {
-                warn!(
-                    "Refresh token expired, retrying in {} seconds",
-                    RERUN_DELAY_SECS
-                );
-                tokio::time::sleep(std::time::Duration::from_secs(RERUN_DELAY_SECS)).await;
-            }
-            Err(e) => {
-                error!("Bot session failed: {e}");
-                return Err(e);
-            }
-        }
-    }
-}
-
-async fn run_bot_session(env: &Env, pool: &SqlitePool) -> anyhow::Result<()> {
     if env.dry_run {
         info!("Initializing test broker for dry-run mode");
         let broker = env.get_test_broker().await?;
-        run_with_broker(env.clone(), pool.clone(), broker).await
+        conductor::Conductor::start(&env, &pool, broker).await?;
     } else {
         info!("Initializing Schwab broker");
         let broker = env.get_schwab_broker(pool.clone()).await?;
-        run_with_broker(env.clone(), pool.clone(), broker).await
-    }
-}
-
-async fn run_with_broker<B: Broker + Clone>(
-    env: Env,
-    pool: SqlitePool,
-    broker: B,
-) -> anyhow::Result<()> {
-    if let Some(wait_duration) = broker
-        .wait_until_market_open()
-        .await
-        .map_err(|e| anyhow::anyhow!("Market hours check failed: {}", e))?
-    {
-        info!(
-            "Market is closed, waiting {} minutes until market opens",
-            wait_duration.as_secs() / 60
-        );
-        tokio::time::sleep(wait_duration).await;
+        conductor::Conductor::start(&env, &pool, broker).await?;
     }
 
-    info!("Market is open, starting bot session");
-
-    let (provider, cache, mut clear_stream, mut take_stream) =
-        initialize_event_streams(env.clone()).await?;
-
-    let cutoff_block =
-        get_cutoff_block(&mut clear_stream, &mut take_stream, &provider, &pool).await?;
-
-    onchain::backfill::backfill_events(&pool, &provider, &env.evm_env, cutoff_block - 1).await?;
-
-    conductor::run_live(
-        env.clone(),
-        pool.clone(),
-        cache,
-        provider,
-        broker,
-        clear_stream,
-        take_stream,
-    )
-    .await
-}
-
-async fn initialize_event_streams(
-    env: Env,
-) -> anyhow::Result<(
-    impl alloy::providers::Provider + Clone,
-    SymbolCache,
-    impl Stream<
-        Item = Result<
-            (bindings::IOrderBookV4::ClearV2, alloy::rpc::types::Log),
-            alloy::sol_types::Error,
-        >,
-    >,
-    impl Stream<
-        Item = Result<
-            (bindings::IOrderBookV4::TakeOrderV2, alloy::rpc::types::Log),
-            alloy::sol_types::Error,
-        >,
-    >,
-)> {
-    let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
-    let provider = ProviderBuilder::new().connect_ws(ws).await?;
-    let cache = SymbolCache::default();
-    let orderbook = IOrderBookV4Instance::new(env.evm_env.orderbook, &provider);
-
-    let clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
-    let take_stream = orderbook.TakeOrderV2_filter().watch().await?.into_stream();
-
-    Ok((provider, cache, clear_stream, take_stream))
+    Ok(())
 }
 
 #[cfg(test)]

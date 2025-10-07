@@ -1,10 +1,11 @@
 use async_trait::async_trait;
 use sqlx::SqlitePool;
+use tokio::task::JoinHandle;
 use tracing::info;
 
 use crate::schwab::auth::SchwabAuthEnv;
 use crate::schwab::market_hours::{MarketStatus, fetch_market_hours};
-use crate::schwab::tokens::SchwabTokens;
+use crate::schwab::tokens::{SchwabTokens, spawn_automatic_token_refresh};
 use crate::{
     Broker, BrokerError, MarketOrder, OrderPlacement, OrderState, OrderUpdate, Shares, Symbol,
 };
@@ -217,22 +218,18 @@ impl Broker for SchwabBroker {
         Ok(order_id_str.to_string())
     }
 
-    async fn run_broker_maintenance(
-        &self,
-        shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    ) -> Option<tokio::task::JoinHandle<Result<(), Self::Error>>> {
-        // Schwab broker needs token refresh maintenance
+    async fn run_broker_maintenance(&self) -> Option<JoinHandle<anyhow::Result<()>>> {
         let pool_clone = self.pool.clone();
         let auth_clone = self.auth.clone();
 
         let handle = tokio::spawn(async move {
-            crate::schwab::tokens::SchwabTokens::start_automatic_token_refresh_loop(
-                pool_clone,
-                auth_clone,
-                shutdown_rx,
-            )
-            .await
-            .map_err(BrokerError::Schwab)
+            let refresh_handle = spawn_automatic_token_refresh(pool_clone, auth_clone);
+
+            match refresh_handle.await {
+                Ok(()) => Ok(()),
+                Err(e) if e.is_cancelled() => Ok(()),
+                Err(e) => Err(anyhow::anyhow!("Token refresh task panicked: {e}")),
+            }
         });
 
         Some(handle)

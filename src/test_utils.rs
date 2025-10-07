@@ -107,7 +107,14 @@ impl OnchainTradeBuilder {
                 amount: 1.0,
                 direction: Direction::Buy,
                 price_usdc: 150.0,
+                block_timestamp: None,
                 created_at: None,
+                gas_used: None,
+                effective_gas_price: None,
+                pyth_price: None,
+                pyth_confidence: None,
+                pyth_exponent: None,
+                pyth_publish_time: None,
             },
         }
     }
