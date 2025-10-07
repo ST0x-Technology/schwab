@@ -1,7 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 use sqlx::SqlitePool;
-use tokio::sync::watch;
+use tokio::task::JoinHandle;
 use tokio::time::{Duration as TokioDuration, interval};
 use tracing::{error, info, warn};
 
@@ -175,10 +175,10 @@ impl SchwabTokens {
 pub(crate) fn spawn_automatic_token_refresh(
     pool: SqlitePool,
     env: SchwabAuthEnv,
-    shutdown_rx: watch::Receiver<bool>,
-) -> tokio::task::JoinHandle<()> {
+) -> JoinHandle<()> {
+    info!("Starting token refresh service");
     tokio::spawn(async move {
-        if let Err(e) = start_automatic_token_refresh_loop(pool, env, shutdown_rx).await {
+        if let Err(e) = start_automatic_token_refresh_loop(pool, env).await {
             error!("Token refresh task failed: {e:?}");
         }
     })
@@ -187,7 +187,6 @@ pub(crate) fn spawn_automatic_token_refresh(
 async fn start_automatic_token_refresh_loop(
     pool: SqlitePool,
     env: SchwabAuthEnv,
-    mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), SchwabError> {
     let refresh_interval_secs = (ACCESS_TOKEN_DURATION_MINUTES - 1) * 60;
     let refresh_interval_u64 = refresh_interval_secs.try_into().map_err(|_| {
@@ -196,19 +195,9 @@ async fn start_automatic_token_refresh_loop(
     let mut interval_timer = interval(TokioDuration::from_secs(refresh_interval_u64));
 
     loop {
-        tokio::select! {
-            _ = interval_timer.tick() => {
-                handle_token_refresh(&pool, &env).await?;
-            }
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
-                    info!("Token refresh service received shutdown signal, exiting");
-                    break;
-                }
-            }
-        }
+        interval_timer.tick().await;
+        handle_token_refresh(&pool, &env).await?;
     }
-    Ok(())
 }
 
 async fn handle_token_refresh(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<(), SchwabError> {
@@ -737,11 +726,9 @@ mod tests {
         let handle = thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
-                // Create a dummy shutdown receiver for the test
-                let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
                 tokio::time::timeout(
                     TokioDuration::from_secs(5),
-                    start_automatic_token_refresh_loop(pool_clone, env_clone, shutdown_rx),
+                    start_automatic_token_refresh_loop(pool_clone, env_clone),
                 )
                 .await
             })

@@ -21,7 +21,7 @@ pub(crate) enum TradeValidationError {
     #[error("No output found at index: {0}")]
     NoOutputAtIndex(usize),
     #[error(
-        "Expected IO to contain USDC and one tokenized equity (0x or s1 suffix) but got {0} and {1}"
+        "Expected IO to contain USDC and one tokenized equity (t prefix, 0x or s1 suffix) but got {0} and {1}"
     )]
     InvalidSymbolConfiguration(String, String),
     #[error(
@@ -41,7 +41,9 @@ pub(crate) enum TradeValidationError {
     NegativeShares(f64),
     #[error("Negative USDC amount: {0}")]
     NegativeUsdc(f64),
-    #[error("Symbol '{0}' is not a tokenized equity (must end with '0x' or 's1')")]
+    #[error(
+        "Symbol '{0}' is not a tokenized equity (must start with 't' or end with '0x' or 's1')"
+    )]
     NotTokenizedEquity(String),
 }
 
@@ -108,6 +110,8 @@ pub(crate) enum OnChainError {
     Persistence(#[from] PersistenceError),
     #[error("Alloy error: {0}")]
     Alloy(#[from] AlloyError),
+    #[error("Event queue error: {0}")]
+    EventQueue(#[from] EventQueueError),
 }
 
 impl From<sqlx::Error> for OnChainError {

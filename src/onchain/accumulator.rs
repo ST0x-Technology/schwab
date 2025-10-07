@@ -266,29 +266,34 @@ async fn create_trade_execution_linkages(
         AccumulationBucket::LongExposure => Direction::Buy,   // Long exposure from buying onchain
     };
 
-    // Get all trades for this base symbol/direction, regardless of tokenized suffix
+    // Get all trades for this base symbol/direction, regardless of tokenized marker
     let direction_str = match trade_direction {
         Direction::Sell => "SELL",
         Direction::Buy => "BUY",
     };
 
-    // Match all tokenized variants of this base symbol using LIKE pattern
-    let base_symbol_pattern = format!("{base_symbol}%");
+    // Match all tokenized variants of this base symbol (prefix and suffix patterns)
+    let base_str = base_symbol.as_str();
+    let t_prefix = format!("t{base_str}");
+    let zerox_suffix = format!("{base_str}0x");
+    let s1_suffix = format!("{base_str}s1");
 
     let trade_rows = sqlx::query!(
         r#"
-        SELECT 
+        SELECT
             ot.id as trade_id,
             ot.amount as trade_amount,
             COALESCE(SUM(tel.contributed_shares), 0.0) as "already_allocated: f64"
         FROM onchain_trades ot
         LEFT JOIN trade_execution_links tel ON ot.id = tel.trade_id
-        WHERE ot.symbol LIKE ?1 AND ot.direction = ?2
+        WHERE (ot.symbol = ?1 OR ot.symbol = ?2 OR ot.symbol = ?3) AND ot.direction = ?4
         GROUP BY ot.id, ot.amount, ot.created_at
         HAVING (ot.amount - COALESCE(SUM(tel.contributed_shares), 0.0)) > 0.001  -- Has remaining allocation
         ORDER BY ot.created_at ASC
         "#,
-        base_symbol_pattern,
+        t_prefix,
+        zerox_suffix,
+        s1_suffix,
         direction_str
     )
     .fetch_all(&mut **sql_tx)
@@ -303,7 +308,8 @@ async fn create_trade_execution_linkages(
             break; // Execution fully allocated
         }
 
-        let available_amount = row.trade_amount - row.already_allocated;
+        let already_allocated = row.already_allocated.unwrap_or(0.0);
+        let available_amount = row.trade_amount - already_allocated;
         if available_amount <= 0.001 {
             continue; // Trade fully allocated to previous executions
         }
@@ -591,6 +597,10 @@ mod tests {
             created_at: None,
             gas_used: Some(45000),
             effective_gas_price: Some(1_200_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let result = process_trade_with_tx(&pool, trade).await.unwrap();
@@ -623,6 +633,10 @@ mod tests {
             created_at: None,
             gas_used: Some(52000),
             effective_gas_price: Some(1_800_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let execution = process_trade_with_tx(&pool, trade).await.unwrap().unwrap();
@@ -657,6 +671,10 @@ mod tests {
             created_at: None,
             gas_used: Some(43000),
             effective_gas_price: Some(1_100_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let result1 = process_trade_with_tx(&pool, trade1).await.unwrap();
@@ -676,6 +694,10 @@ mod tests {
             created_at: None,
             gas_used: Some(44000),
             effective_gas_price: Some(1_250_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let result2 = process_trade_with_tx(&pool, trade2).await.unwrap();
@@ -695,6 +717,10 @@ mod tests {
             created_at: None,
             gas_used: Some(46000),
             effective_gas_price: Some(1_300_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let result3 = process_trade_with_tx(&pool, trade3).await.unwrap();
@@ -730,6 +756,10 @@ mod tests {
             created_at: None,
             gas_used: Some(48000),
             effective_gas_price: Some(1_400_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let result = process_trade_with_tx(&pool, trade).await;
@@ -755,6 +785,10 @@ mod tests {
             created_at: None,
             gas_used: Some(47000),
             effective_gas_price: Some(1_350_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let execution = process_trade_with_tx(&pool, trade).await.unwrap().unwrap();
@@ -782,6 +816,10 @@ mod tests {
             created_at: None,
             gas_used: Some(49000),
             effective_gas_price: Some(1_450_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let execution = process_trade_with_tx(&pool, trade).await.unwrap().unwrap();
@@ -825,6 +863,10 @@ mod tests {
             created_at: None,
             gas_used: Some(51000),
             effective_gas_price: Some(1_600_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         // Attempt to add trade - should fail when trying to save execution due to unique constraint
@@ -876,6 +918,10 @@ mod tests {
             created_at: None,
             gas_used: Some(42000),
             effective_gas_price: Some(1_050_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let trade2 = OnchainTrade {
@@ -892,6 +938,10 @@ mod tests {
             created_at: None,
             gas_used: Some(43500),
             effective_gas_price: Some(1_150_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         // Add first trade (should not trigger execution)
@@ -927,105 +977,58 @@ mod tests {
         assert_eq!(execution_count, 1);
     }
 
-    #[tokio::test]
-    async fn test_concurrent_trade_processing_prevents_duplicate_executions() {
-        let pool = setup_test_db().await;
-
-        // Create two identical trades that should be processed concurrently
-        // Both trades are for 0.8 AAPL shares, which when combined (1.6 shares) should trigger only one execution of 1 share
-        let trade1 = OnchainTrade {
-            id: None,
-            tx_hash: fixed_bytes!(
-                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            ),
-            log_index: 1,
-            symbol: tokenized_symbol!("AAPL0x"),
-            amount: 0.8,
-            direction: Direction::Sell,
-            price_usdc: 15000.0,
-            block_timestamp: None,
-            created_at: None,
-            gas_used: Some(44500),
-            effective_gas_price: Some(1_220_000_000),
-        };
-
-        let trade2 = OnchainTrade {
-            id: None,
-            tx_hash: fixed_bytes!(
-                "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-            ),
-            log_index: 1,
-            symbol: tokenized_symbol!("AAPL0x"), // Same symbol to test race condition
-            amount: 0.8,
-            direction: Direction::Sell,
-            price_usdc: 15000.0,
-            block_timestamp: None,
-            created_at: None,
-            gas_used: Some(45500),
-            effective_gas_price: Some(1_280_000_000),
-        };
-
-        // Helper function to process trades with retry on deadlock
-        async fn process_with_retry(
-            pool: &SqlitePool,
-            trade: OnchainTrade,
-        ) -> Result<Option<SchwabExecution>, OnChainError> {
-            for attempt in 0..3 {
-                match process_trade_with_tx(pool, trade.clone()).await {
-                    Ok(result) => return Ok(result),
-                    Err(OnChainError::Persistence(crate::error::PersistenceError::Database(
-                        sqlx::Error::Database(db_err),
-                    ))) if db_err.message().contains("database is deadlocked") => {
-                        if attempt < 2 {
-                            // Exponential backoff: 10ms, 20ms
-                            tokio::time::sleep(std::time::Duration::from_millis(
-                                10 * (1 << attempt),
-                            ))
+    async fn process_with_retry(
+        pool: &SqlitePool,
+        trade: OnchainTrade,
+    ) -> Result<Option<SchwabExecution>, OnChainError> {
+        for attempt in 0..3 {
+            match process_trade_with_tx(pool, trade.clone()).await {
+                Ok(result) => return Ok(result),
+                Err(OnChainError::Persistence(crate::error::PersistenceError::Database(
+                    sqlx::Error::Database(db_err),
+                ))) if db_err.message().contains("database is deadlocked") => {
+                    if attempt < 2 {
+                        // Exponential backoff: 10ms, 20ms
+                        tokio::time::sleep(std::time::Duration::from_millis(10 * (1 << attempt)))
                             .await;
-                            continue;
-                        }
-                        return Err(OnChainError::Persistence(
-                            crate::error::PersistenceError::Database(sqlx::Error::Database(db_err)),
-                        ));
+                        continue;
                     }
-                    Err(e) => return Err(e),
+                    return Err(OnChainError::Persistence(
+                        crate::error::PersistenceError::Database(sqlx::Error::Database(db_err)),
+                    ));
                 }
+                Err(e) => return Err(e),
             }
-            unreachable!()
         }
+        unreachable!()
+    }
 
-        // Process both trades concurrently to simulate race condition scenario
-        let pool_clone1 = pool.clone();
-        let pool_clone2 = pool.clone();
+    fn create_test_trade(tx_hash_byte: u8, symbol: &str, amount: f64) -> OnchainTrade {
+        OnchainTrade {
+            id: None,
+            tx_hash: alloy::primitives::B256::repeat_byte(tx_hash_byte),
+            log_index: 1,
+            symbol: tokenized_symbol!(symbol),
+            amount,
+            direction: Direction::Sell,
+            price_usdc: 15000.0,
+            block_timestamp: None,
+            created_at: None,
+            gas_used: None,
+            effective_gas_price: None,
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
+        }
+    }
 
-        let (result1, result2) = tokio::join!(
-            process_with_retry(&pool_clone1, trade1),
-            process_with_retry(&pool_clone2, trade2)
-        );
-
-        // Both should succeed without error
-        let execution1 = result1.unwrap();
-        let execution2 = result2.unwrap();
-
-        // Exactly one of them should have triggered an execution (for 1 share)
-        let executions_created = match (execution1, execution2) {
-            (Some(_), None) | (None, Some(_)) => 1,
-            (Some(_), Some(_)) => 2, // This would be the bug we're preventing
-            (None, None) => 0,
-        };
-
-        // Per-symbol lease mechanism should prevent duplicate executions
-        assert_eq!(
-            executions_created, 1,
-            "Per-symbol lease should prevent duplicate executions, but got {executions_created}"
-        );
-
-        // Verify database state: 2 trades saved, 1 execution created
-        let trade_count = super::OnchainTrade::db_count(&pool).await.unwrap();
+    async fn verify_concurrent_execution_state(pool: &SqlitePool, expected_short: f64) {
+        let trade_count = super::OnchainTrade::db_count(pool).await.unwrap();
         assert_eq!(trade_count, 2, "Expected 2 trades to be saved");
 
         let execution_count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
-            .fetch_one(&pool)
+            .fetch_one(pool)
             .await
             .unwrap()
             .count;
@@ -1034,22 +1037,45 @@ mod tests {
             "Expected exactly 1 execution to prevent duplicate orders"
         );
 
-        // Verify the accumulator state shows the remaining fractional amount
-        let accumulator_result = find_by_symbol(&pool, symbol!("AAPL").as_str())
+        let (calculator, _) = find_by_symbol(pool, symbol!("AAPL").as_str())
             .await
-            .unwrap();
-        assert!(
-            accumulator_result.is_some(),
-            "Accumulator should exist for AAPL"
-        );
+            .unwrap()
+            .expect("Accumulator should exist for AAPL");
 
-        let (calculator, _) = accumulator_result.unwrap();
-        // Total 1.6 shares accumulated (short exposure), 1.0 executed, should have 0.6 remaining
         assert!(
-            (calculator.accumulated_short - 0.6).abs() < f64::EPSILON,
-            "Expected 0.6 accumulated_short remaining, got {}",
+            (calculator.accumulated_short - expected_short).abs() < f64::EPSILON,
+            "Expected {expected_short} accumulated_short remaining, got {}",
             calculator.accumulated_short
         );
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_trade_processing_prevents_duplicate_executions() {
+        let pool = setup_test_db().await;
+
+        let trade1 = create_test_trade(0xaa, "AAPL0x", 0.8);
+        let trade2 = create_test_trade(0xbb, "AAPL0x", 0.8);
+
+        let (result1, result2) = tokio::join!(
+            process_with_retry(&pool, trade1),
+            process_with_retry(&pool, trade2)
+        );
+
+        let execution1 = result1.unwrap();
+        let execution2 = result2.unwrap();
+
+        let executions_created = match (execution1, execution2) {
+            (Some(_), None) | (None, Some(_)) => 1,
+            (Some(_), Some(_)) => 2,
+            (None, None) => 0,
+        };
+
+        assert_eq!(
+            executions_created, 1,
+            "Per-symbol lease should prevent duplicate executions, but got {executions_created}"
+        );
+
+        verify_concurrent_execution_state(&pool, 0.6).await;
     }
 
     #[tokio::test]
@@ -1070,6 +1096,10 @@ mod tests {
             created_at: None,
             gas_used: Some(46500),
             effective_gas_price: Some(1_320_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let execution = process_trade_with_tx(&pool, trade).await.unwrap().unwrap();
@@ -1110,6 +1140,10 @@ mod tests {
                 created_at: None,
                 gas_used: Some(41000),
                 effective_gas_price: Some(1_000_000_000),
+                pyth_price: None,
+                pyth_confidence: None,
+                pyth_exponent: None,
+                pyth_publish_time: None,
             },
             OnchainTrade {
                 id: None,
@@ -1125,6 +1159,10 @@ mod tests {
                 created_at: None,
                 gas_used: Some(42500),
                 effective_gas_price: Some(1_080_000_000),
+                pyth_price: None,
+                pyth_confidence: None,
+                pyth_exponent: None,
+                pyth_publish_time: None,
             },
             OnchainTrade {
                 id: None,
@@ -1140,6 +1178,10 @@ mod tests {
                 created_at: None,
                 gas_used: Some(44000),
                 effective_gas_price: Some(1_180_000_000),
+                pyth_price: None,
+                pyth_confidence: None,
+                pyth_exponent: None,
+                pyth_publish_time: None,
             },
         ];
 
@@ -1204,6 +1246,10 @@ mod tests {
                 created_at: None,
                 gas_used: Some(40000),
                 effective_gas_price: Some(950_000_000),
+                pyth_price: None,
+                pyth_confidence: None,
+                pyth_exponent: None,
+                pyth_publish_time: None,
             },
             OnchainTrade {
                 id: None,
@@ -1219,6 +1265,10 @@ mod tests {
                 created_at: None,
                 gas_used: Some(41500),
                 effective_gas_price: Some(1_020_000_000),
+                pyth_price: None,
+                pyth_confidence: None,
+                pyth_exponent: None,
+                pyth_publish_time: None,
             },
         ];
 
@@ -1283,6 +1333,10 @@ mod tests {
             created_at: None,
             gas_used: Some(47500),
             effective_gas_price: Some(1_380_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         // Add trade and trigger execution
@@ -1328,6 +1382,10 @@ mod tests {
             created_at: None,
             gas_used: Some(48500),
             effective_gas_price: Some(1_420_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let sell_trade = OnchainTrade {
@@ -1344,6 +1402,10 @@ mod tests {
             created_at: None,
             gas_used: Some(49500),
             effective_gas_price: Some(1_480_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         // Execute both trades
@@ -1433,6 +1495,10 @@ mod tests {
             created_at: None,
             gas_used: Some(50000),
             effective_gas_price: Some(1_500_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let result = process_trade_with_tx(&pool, trade).await.unwrap();
@@ -1643,6 +1709,10 @@ mod tests {
             created_at: None,
             gas_used: Some(43200),
             effective_gas_price: Some(1_120_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let result = process_trade_with_tx(&pool, aapl_trade).await.unwrap();
@@ -1728,10 +1798,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_trades_with_different_suffixes_accumulate_together() {
+    async fn test_trades_with_different_markers_accumulate_together() {
         let pool = setup_test_db().await;
 
-        // Create two trades with different suffixes but same base symbol (GME)
+        // Create three trades with different markers but same base symbol (GME)
         let trade_0x = OnchainTrade {
             id: None,
             tx_hash: fixed_bytes!(
@@ -1746,6 +1816,10 @@ mod tests {
             created_at: None,
             gas_used: Some(39000),
             effective_gas_price: Some(900_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let trade_s1 = OnchainTrade {
@@ -1755,13 +1829,37 @@ mod tests {
             ),
             log_index: 1,
             symbol: tokenized_symbol!("GMEs1"),
-            amount: 0.5,
+            amount: 0.3,
             direction: Direction::Sell,
             price_usdc: 100.0,
             block_timestamp: None,
             created_at: None,
             gas_used: Some(40500),
             effective_gas_price: Some(980_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
+        };
+
+        let trade_t = OnchainTrade {
+            id: None,
+            tx_hash: fixed_bytes!(
+                "0xcccc333333333333333333333333333333333333333333333333333333333333"
+            ),
+            log_index: 1,
+            symbol: tokenized_symbol!("tGME"),
+            amount: 0.2,
+            direction: Direction::Sell,
+            price_usdc: 110.0,
+            block_timestamp: None,
+            created_at: None,
+            gas_used: Some(41000),
+            effective_gas_price: Some(1_000_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         // Process first trade (GME0x) - should not trigger execution
@@ -1777,20 +1875,33 @@ mod tests {
         assert!((calculator.accumulated_long - 0.0).abs() < f64::EPSILON);
         assert_eq!(pending, None);
 
-        // Process second trade (GMEs1) - should trigger execution since total is 1.1 shares
+        // Process second trade (GMEs1) - should not trigger execution yet
         let result2 = process_trade_with_tx(&pool, trade_s1).await.unwrap();
-        assert!(result2.is_some());
+        assert!(result2.is_none());
 
-        let execution = result2.unwrap();
+        // Verify accumulation increased
+        let (calculator2, pending2) = find_by_symbol(&pool, symbol!("GME").as_str())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!((calculator2.accumulated_short - 0.9).abs() < f64::EPSILON);
+        assert!((calculator2.accumulated_long - 0.0).abs() < f64::EPSILON);
+        assert_eq!(pending2, None);
+
+        // Process third trade (tGME) - should trigger execution since total is 1.1 shares
+        let result3 = process_trade_with_tx(&pool, trade_t).await.unwrap();
+        assert!(result3.is_some());
+
+        let execution = result3.unwrap();
         assert_eq!(execution.symbol, "GME"); // Base symbol used for execution
         assert_eq!(execution.shares, 1); // 1 whole share executed
         assert_eq!(execution.direction, Direction::Buy); // Buy to offset short exposure
 
-        // Verify both trades contributed to the same execution
+        // Verify all three trades contributed to the same execution
         let links = TradeExecutionLink::find_trades_for_execution(&pool, execution.id.unwrap())
             .await
             .unwrap();
-        assert_eq!(links.len(), 2);
+        assert_eq!(links.len(), 3);
 
         // Verify the allocation amounts
         let total_contributed: f64 = links.iter().map(|l| l.contributed_shares).sum();
@@ -1801,17 +1912,17 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!((final_calc.accumulated_short - 0.1).abs() < f64::EPSILON); // 0.6 + 0.5 - 1.0 = 0.1 remaining
+        assert!((final_calc.accumulated_short - 0.1).abs() < f64::EPSILON); // 0.6 + 0.3 + 0.2 - 1.0 = 0.1 remaining
         assert!((final_calc.accumulated_long - 0.0).abs() < f64::EPSILON);
         assert_eq!(final_pending, execution.id); // Has pending execution
 
-        // Verify audit trail shows both symbol types
+        // Verify audit trail shows all three marker types
         let tokenized_gme_0x = tokenized_symbol!("GME0x");
         let audit_trail = TradeExecutionLink::get_symbol_audit_trail(&pool, &tokenized_gme_0x)
             .await
             .unwrap();
 
-        // Should include both trades in the audit trail
-        assert_eq!(audit_trail.len(), 2);
+        // Should include all three trades in the audit trail
+        assert_eq!(audit_trail.len(), 3);
     }
 }

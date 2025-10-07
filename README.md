@@ -151,6 +151,19 @@ defined in `migrations/20250703115746_trades.sql`.
 - Maintain complete audit trail linking onchain trades to Schwab executions
 - Handle concurrent database writes safely with per-symbol locking
 
+**Pyth Price Extraction:**
+
+- Extracts exact oracle prices used during trade execution from transaction
+  traces
+- Uses `debug_traceTransaction` RPC method to analyze transaction execution
+- Parses Pyth oracle contract calls to retrieve precise price data including
+  price value, confidence interval, exponent, and publish timestamp
+- Prices are stored in the `onchain_trades` table alongside trade records
+- NULL price values indicate extraction failed (e.g., no Pyth call in trace, RPC
+  errors)
+- CLI command for testing: `cargo run --bin cli get-pyth-price <TX_HASH>`
+- Trade processing continues normally even if price extraction fails
+
 **Reporting and Analysis:**
 
 - Calculate profit/loss for each trade pair using actual executed amounts
