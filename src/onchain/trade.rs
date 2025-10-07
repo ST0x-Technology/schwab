@@ -59,11 +59,8 @@ impl OnchainTrade {
         let symbol_str = self.symbol.to_string();
         let block_timestamp_naive = self.block_timestamp.map(|dt| dt.naive_utc());
 
-        // Convert gas fields for database storage using safe casting
-        #[allow(clippy::cast_possible_wrap)]
-        let gas_used_i64 = self.gas_used.map(|g| g as i64);
-        #[allow(clippy::cast_possible_truncation)]
-        let effective_gas_price_i64 = self.effective_gas_price.map(|p| p as i64);
+        let gas_used_i64 = self.gas_used.and_then(|g| i64::try_from(g).ok());
+        let effective_gas_price_i64 = self.effective_gas_price.and_then(|p| i64::try_from(p).ok());
 
         let result = sqlx::query!(
             r#"
@@ -114,25 +111,24 @@ impl OnchainTrade {
         #[allow(clippy::cast_possible_wrap)]
         let log_index_i64 = log_index as i64;
         let row = sqlx::query!(
-            "
-SELECT
-    id,
-    tx_hash,
-    log_index,
-    symbol,
-    amount,
-    direction,
-    price_usdc,
-    created_at,
-    block_timestamp,
-    gas_used,
-    effective_gas_price,
-    pyth_price,
-    pyth_confidence,
-    pyth_exponent,
-    pyth_publish_time
-FROM onchain_trades
-WHERE tx_hash = ?1 AND log_index = ?2",
+            "SELECT
+                id,
+                tx_hash,
+                log_index,
+                symbol,
+                amount,
+                direction,
+                price_usdc,
+                created_at,
+                block_timestamp,
+                gas_used,
+                effective_gas_price,
+                pyth_price,
+                pyth_confidence,
+                pyth_exponent,
+                pyth_publish_time
+            FROM onchain_trades
+            WHERE tx_hash = ?1 AND log_index = ?2",
             tx_hash_str,
             log_index_i64
         )
@@ -168,10 +164,8 @@ WHERE tx_hash = ?1 AND log_index = ?2",
             created_at: row
                 .created_at
                 .map(|naive_dt| DateTime::from_naive_utc_and_offset(naive_dt, Utc)),
-            #[allow(clippy::cast_sign_loss)]
-            gas_used: row.gas_used.map(|g| g as u64),
-            #[allow(clippy::cast_sign_loss)]
-            effective_gas_price: row.effective_gas_price.map(|p| p as u128),
+            gas_used: row.gas_used.and_then(|g| u64::try_from(g).ok()),
+            effective_gas_price: row.effective_gas_price.and_then(|p| u128::try_from(p).ok()),
             pyth_price: row.pyth_price,
             pyth_confidence: row.pyth_confidence,
             #[allow(clippy::cast_possible_truncation)]
