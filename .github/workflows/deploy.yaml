@@ -1,19 +1,24 @@
 name: Build and deploy
+
 on:
   push:
     branches: [master]
   workflow_dispatch:
+
 concurrency:
   group: ${{ github.ref }}-deploy
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
 permissions:
   contents: read
+
 env:
   DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
   ORDERBOOK: "0x881cf4c0764e733d9C387f3858eE87CcA04AFFe0"
   ORDER_OWNER: "0x71b94911FD1CE621FC40970450004c544e5287a8"
   DEPLOYMENT_BLOCK: 34844164
   REGISTRY_NAME: stox
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -22,10 +27,12 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
+
       - name: Install doctl
         uses: digitalocean/action-doctl@v2
         with:
           token: ${{ env.DIGITALOCEAN_ACCESS_TOKEN }}
+
       - name: Build Docker image
         run: |
           SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
@@ -34,23 +41,28 @@ jobs:
           docker build \
             -t registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:$SHORT_SHA \
             -t registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:latest .
+
       - name: Log in to DO Container Registry
         run: doctl registry login --expiry-seconds 1200
+
       - name: Verify required files exist
         run: |
           echo "Checking for required files..."
           ls -la .env.example docker-compose.template.yaml Dockerfile.grafana grafana-datasource.yaml
           echo "File verification complete"
+
       - name: Encode file contents
         run: |
           echo "ENV_TEMPLATE=$(base64 -w 0 .env.example)" >> $GITHUB_ENV
           echo "DOCKER_COMPOSE_TEMPLATE=$(base64 -w 0 docker-compose.template.yaml)" >> $GITHUB_ENV
           echo "GRAFANA_DOCKERFILE=$(base64 -w 0 Dockerfile.grafana)" >> $GITHUB_ENV
           echo "GRAFANA_DATASOURCE_YAML=$(base64 -w 0 grafana-datasource.yaml)" >> $GITHUB_ENV
+
       - name: Push image to DO Registry
         run: |
           docker push registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:${{ env.SHORT_SHA }}
           docker push registry.digitalocean.com/${{ env.REGISTRY_NAME }}/schwarbot:latest
+
       - name: Deploy to Droplet
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -122,6 +134,10 @@ jobs:
 
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting services with docker-compose" | tee -a "${DEPLOY_LOG}"
             docker compose up -d 2>&1 | tee -a "${DEPLOY_LOG}"
+
+            # Unset sensitive variables after use
+            unset TOKEN_ENCRYPTION_KEY
+            unset GRAFANA_ADMIN_PASSWORD
 
             # Wait for containers to fully start
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Waiting for containers to start..." | tee -a "${DEPLOY_LOG}"
