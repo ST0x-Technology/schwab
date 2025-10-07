@@ -87,11 +87,11 @@ This generates a 32-byte (256-bit) key encoded as 64 hexadecimal characters.
 
 **Setting the encryption key:**
 
-The encryption key must be provided via the `TOKEN_ENCRYPTION_KEY` environment
+The encryption key must be provided via the `ENCRYPTION_KEY` environment
 variable. The key is never written to disk in plain text.
 
 ```bash
-export TOKEN_ENCRYPTION_KEY=your_64_char_hex_key
+export ENCRYPTION_KEY=your_64_char_hex_key
 ```
 
 For production deployments, the key should be stored as a secret in your

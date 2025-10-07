@@ -69,7 +69,7 @@ jobs:
           host: ${{ secrets.DROPLET_HOST }}
           username: root
           key: ${{ secrets.DROPLET_SSH_KEY }}
-          envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_OWNER,DEPLOYMENT_BLOCK,APP_KEY,APP_SECRET,TOKEN_ENCRYPTION_KEY,ENV_TEMPLATE,DOCKER_COMPOSE_TEMPLATE,GRAFANA_DOCKERFILE,GRAFANA_DATASOURCE_YAML,GRAFANA_ADMIN_PASSWORD
+          envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_OWNER,DEPLOYMENT_BLOCK,APP_KEY,APP_SECRET,ENCRYPTION_KEY,ENV_TEMPLATE,DOCKER_COMPOSE_TEMPLATE,GRAFANA_DOCKERFILE,GRAFANA_DATASOURCE_YAML,GRAFANA_ADMIN_PASSWORD
           script: |
             set -euo pipefail
 
@@ -128,14 +128,14 @@ jobs:
 
             # Start services with docker-compose
             # Export sensitive variables so docker-compose can read them from environment
-            export TOKEN_ENCRYPTION_KEY="${TOKEN_ENCRYPTION_KEY}"
+            export ENCRYPTION_KEY="${ENCRYPTION_KEY}"
             export GRAFANA_ADMIN_PASSWORD="${GRAFANA_ADMIN_PASSWORD}"
 
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting services with docker-compose" | tee -a "${DEPLOY_LOG}"
             docker compose up -d 2>&1 | tee -a "${DEPLOY_LOG}"
 
             # Unset sensitive variables after use
-            unset TOKEN_ENCRYPTION_KEY
+            unset ENCRYPTION_KEY
             unset GRAFANA_ADMIN_PASSWORD
 
             # Wait for containers to fully start
@@ -196,7 +196,7 @@ jobs:
           WS_RPC_URL: ${{ secrets.WS_RPC_URL }}
           APP_KEY: ${{ secrets.APP_KEY }}
           APP_SECRET: ${{ secrets.APP_SECRET }}
-          TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
+          ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
           ENV_TEMPLATE: ${{ env.ENV_TEMPLATE }}
           DOCKER_COMPOSE_TEMPLATE: ${{ env.DOCKER_COMPOSE_TEMPLATE }}
