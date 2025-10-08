@@ -6,19 +6,12 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub(super) enum PnlError {
-    #[error("Insufficient inventory to consume {requested} shares (only {available} available)")]
-    InsufficientInventory {
-        requested: String,
-        available: String,
-    },
     #[error("Invalid quantity: {0}")]
     InvalidQuantity(String),
     #[error("Invalid price: {0}")]
     InvalidPrice(String),
     #[error("Arithmetic overflow in P&L calculation")]
     ArithmeticOverflow,
-    #[error("Decimal conversion error: {0}")]
-    DecimalConversion(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

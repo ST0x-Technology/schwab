@@ -81,7 +81,7 @@ impl Trade {
         id: i64,
         symbol: String,
         amount: f64,
-        direction: String,
+        direction: &str,
         price_usdc: f64,
         created_at: Option<chrono::NaiveDateTime>,
     ) -> anyhow::Result<Self> {
@@ -114,7 +114,7 @@ impl Trade {
         id: i64,
         symbol: String,
         shares: i64,
-        direction: String,
+        direction: &str,
         price_cents: Option<i64>,
         executed_at: Option<chrono::NaiveDateTime>,
     ) -> anyhow::Result<Self> {
@@ -263,7 +263,7 @@ async fn load_all_trades(pool: &SqlitePool) -> anyhow::Result<Vec<Trade>> {
                 row.id,
                 row.symbol,
                 row.amount,
-                row.direction,
+                &row.direction,
                 row.price_usdc,
                 row.created_at,
             )
@@ -277,7 +277,7 @@ async fn load_all_trades(pool: &SqlitePool) -> anyhow::Result<Vec<Trade>> {
                 row.id,
                 row.symbol,
                 row.shares,
-                row.direction,
+                &row.direction,
                 row.price_cents,
                 row.executed_at,
             )
@@ -443,15 +443,9 @@ mod tests {
     async fn test_trade_from_onchain_row() {
         let naive_dt = DateTime::from_timestamp(0, 0).unwrap().naive_utc();
 
-        let trade = Trade::from_onchain_row(
-            1,
-            "AAPL".to_string(),
-            10.0,
-            "BUY".to_string(),
-            100.0,
-            Some(naive_dt),
-        )
-        .unwrap();
+        let trade =
+            Trade::from_onchain_row(1, "AAPL".to_string(), 10.0, "BUY", 100.0, Some(naive_dt))
+                .unwrap();
 
         assert_eq!(trade.id, 1);
         assert_eq!(trade.symbol.as_str(), "AAPL");
@@ -468,7 +462,7 @@ mod tests {
             2,
             "AAPL".to_string(),
             5,
-            "SELL".to_string(),
+            "SELL",
             Some(10500),
             Some(naive_dt),
         )

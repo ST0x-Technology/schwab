@@ -357,7 +357,6 @@ replay) and ensures correctness if database is manually modified.
 - [x] Implement `rebuild_fifo_state()` to replay trades up to checkpoint
 - [x] Implement `process_new_trades()` to process trades after checkpoint
 - [x] Write metrics_pnl rows in database transactions
-- [ ] Add OTEL metrics emission for observability
 - [x] Handle graceful shutdown (SIGTERM/SIGINT)
 - [x] Integration tests with in-memory SQLite
 
@@ -446,56 +445,61 @@ mounted volume. Both containers built from same Dockerfile.
 
 ### Subtasks
 
-- [ ] Update `docker-compose.template.yaml` to add reporter
-- [ ] Update `Dockerfile` to build reporter binary
-- [ ] Update `.env.example` with REPORTER_PROCESSING_INTERVAL_SECS
-- [ ] Ensure SQLite WAL mode is enabled for concurrent access
-- [ ] Test docker compose build and run locally
+- [x] Update `docker-compose.template.yaml` to add reporter
+- [x] Update `Dockerfile` to build reporter binary
+- [x] Don't update `.env.example` with (use default
+      `REPORTER_PROCESSING_INTERVAL_SECS`)
+- [x] Ensure SQLite WAL mode is enabled for concurrent access
+- [x] Test docker image builds locally
+- [ ] Update `docker-compose.template.yaml` to use `${DOCKER_IMAGE}` variable
+- [ ] Update `Dockerfile` to support `BUILD_PROFILE` arg (debug vs release)
+- [ ] Create `prepDockerCompose` script in `flake.nix` with `--prod` flag
+- [ ] Update `.github/workflows/deploy.yaml` to use new script with `--prod`
+- [ ] Test locally without `--prod` flag (debug build, local paths)
+- [ ] Verify CI/CD will work with `--prod` flag
 
-### Docker Compose Changes
+### Implementation Details
+
+#### `prepDockerCompose` Script Behavior
+
+**Default (no flag) - Local/Debug Mode:**
+
+- Builds Docker image locally with debug profile (faster builds)
+- Sets `DOCKER_IMAGE=schwarbot:local`
+- Sets `DATA_VOLUME_PATH=./data`
+- Generates `docker-compose.yaml` from template using `envsubst`
+- Runs `docker build` with `--build-arg BUILD_PROFILE=debug`
+
+**With `--prod` flag - Production/CI Mode:**
+
+- Uses pre-built registry images
+- Sets
+  `DOCKER_IMAGE=registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}`
+- Sets `DATA_VOLUME_PATH=${DATA_VOLUME_PATH}` (from environment)
+- Generates `docker-compose.yaml` from template using `envsubst`
+- Does NOT build (assumes image already exists in registry)
+
+#### Docker Compose Template Changes
 
 ```yaml
 services:
   schwarbot:
-  # ... existing config ...
+    image: ${DOCKER_IMAGE}
+    # ... rest of config
 
   reporter:
-    image: registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}
-    container_name: reporter
-    command: ["reporter"]
-    environment:
-      - REPORTER_PROCESSING_INTERVAL_SECS=${REPORTER_PROCESSING_INTERVAL_SECS:-30}
-    env_file:
-      - .env
-    volumes:
-      - ${DATA_VOLUME_PATH}:/data
-    depends_on:
-      - grafana
-    restart: unless-stopped
-
-  grafana:
-# ... existing config ...
+    image: ${DOCKER_IMAGE}
+    # ... rest of config
 ```
 
-### Dockerfile Updates
+#### Dockerfile Changes
 
-Ensure reporter binary is built and copied:
+Add `BUILD_PROFILE` argument to support both debug and release builds:
 
 ```dockerfile
-# In builder stage
-RUN cargo build --release --bin reporter
+ARG BUILD_PROFILE=release
 
-# In final stage
-COPY --from=builder /app/target/release/reporter /usr/local/bin/
-```
-
-### Environment Variables
-
-Add to `.env.example`:
-
-```bash
-# Reporter Configuration
-REPORTER_PROCESSING_INTERVAL_SECS=30
+# Conditionally use --release flag in cargo commands based on BUILD_PROFILE
 ```
 
 ---
