@@ -37,7 +37,7 @@ impl TestBroker {
 
     fn generate_order_id(&self) -> String {
         let id = self.order_counter.fetch_add(1, Ordering::SeqCst);
-        format!("TEST_{}", id)
+        format!("TEST_{id}")
     }
 }
 

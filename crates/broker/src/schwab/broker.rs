@@ -108,7 +108,7 @@ impl Broker for SchwabBroker {
             .place(&self.auth, &self.pool)
             .await
             .map_err(|e| {
-                BrokerError::OrderPlacement(format!("Schwab order placement failed: {}", e))
+                BrokerError::OrderPlacement(format!("Schwab order placement failed: {e}"))
             })?;
 
         Ok(OrderPlacement {
@@ -126,7 +126,7 @@ impl Broker for SchwabBroker {
         let order_response =
             crate::schwab::order::Order::get_order_status(order_id, &self.auth, &self.pool)
                 .await
-                .map_err(|e| BrokerError::Network(format!("Failed to get order status: {}", e)))?;
+                .map_err(|e| BrokerError::Network(format!("Failed to get order status: {e}")))?;
 
         if order_response.is_filled() {
             let price_cents = order_response
@@ -211,21 +211,25 @@ impl Broker for SchwabBroker {
 
                         let symbol =
                             Symbol::new(row.symbol).map_err(|e| BrokerError::InvalidOrder {
-                                reason: format!("Invalid symbol in database: {}", e),
+                                reason: format!("Invalid symbol in database: {e}"),
                             })?;
 
-                        let shares = Shares::new(row.shares as u64).map_err(|e| {
-                            BrokerError::InvalidOrder {
-                                reason: format!("Invalid shares in database: {}", e),
-                            }
-                        })?;
+                        let shares_u64 =
+                            u64::try_from(row.shares).map_err(|_| BrokerError::InvalidOrder {
+                                reason: "Invalid negative shares in database".to_string(),
+                            })?;
+
+                        let shares =
+                            Shares::new(shares_u64).map_err(|e| BrokerError::InvalidOrder {
+                                reason: format!("Invalid shares in database: {e}"),
+                            })?;
 
                         let direction =
                             row.direction
                                 .parse()
                                 .map_err(|e: crate::InvalidDirectionError| {
                                     BrokerError::InvalidOrder {
-                                        reason: format!("Invalid direction in database: {}", e),
+                                        reason: format!("Invalid direction in database: {e}"),
                                     }
                                 })?;
 
@@ -243,7 +247,6 @@ impl Broker for SchwabBroker {
                 Err(e) => {
                     // Log error but continue with other orders
                     info!("Failed to get status for order {}: {}", order_id_value, e);
-                    continue;
                 }
             }
         }

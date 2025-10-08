@@ -96,23 +96,23 @@ handling, status mapping, and price extraction.
 
 Implement the complete Broker trait for Alpaca.
 
-- [ ] Create `crates/broker/src/alpaca/broker.rs`
-- [ ] Define `AlpacaBroker` struct with client and configuration
-- [ ] Define `AlpacaConfig` type alias for configuration tuple
-- [ ] Implement `try_from_config()` with credential validation
-- [ ] Implement `wait_until_market_open()` using market hours module
-- [ ] Implement `place_market_order()` using order module
-- [ ] Implement `get_order_status()` using status polling
-- [ ] Implement `poll_pending_orders()` for batch updates
-- [ ] Implement `parse_order_id()` for database compatibility
-- [ ] Implement `to_supported_broker()` returning `SupportedBroker::Alpaca`
-- [ ] Implement `run_broker_maintenance()` (return None - no token refresh
+- [x] Create `crates/broker/src/alpaca/broker.rs`
+- [x] Define `AlpacaBroker` struct with client and configuration
+- [x] Define `AlpacaConfig` type alias for configuration tuple
+- [x] Implement `try_from_config()` with credential validation
+- [x] Implement `wait_until_market_open()` using market hours module
+- [x] Implement `place_market_order()` using order module
+- [x] Implement `get_order_status()` using status polling
+- [x] Implement `poll_pending_orders()` for batch updates
+- [x] Implement `parse_order_id()` for database compatibility
+- [x] Implement `to_supported_broker()` returning `SupportedBroker::Alpaca`
+- [x] Implement `run_broker_maintenance()` (return None - no token refresh
       needed)
-- [ ] Add comprehensive integration tests
+- [x] Add comprehensive integration tests
 
-**Note**: This task will resolve the current dead code warnings for
-`wait_until_market_open`, `place_market_order`, and `get_order_status`
-functions, as they will be used by the `AlpacaBroker` implementation.
+**Status**: ✅ **COMPLETED** - Full AlpacaBroker implementation with
+comprehensive test coverage. All trait methods implemented, delegating to
+existing alpaca modules. Dead code warnings resolved.
 
 ## Task 7: Update Main Application Integration
 

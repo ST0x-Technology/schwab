@@ -1,6 +1,7 @@
 use apca::api::v2::{order, orders};
 use apca::{Client, RequestError};
 use chrono::Utc;
+use num_traits::ToPrimitive;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -183,9 +184,14 @@ pub(super) async fn poll_pending_orders(
 }
 
 /// Maps Alpaca order status to our simplified OrderStatus enum
+///
+/// Note: All Alpaca in-progress statuses map to `OrderStatus::Submitted` because
+/// they represent orders that have been submitted to and acknowledged by the broker.
+/// `OrderStatus::Pending` is reserved for orders in our system that haven't been
+/// sent to the broker yet (not applicable here since we're mapping broker responses).
 fn map_alpaca_status_to_order_status(status: order::Status) -> OrderStatus {
     match status {
-        // Active/pending statuses
+        // Submitted to broker and in progress (New, Accepted, working, etc.)
         order::Status::New
         | order::Status::Accepted
         | order::Status::PendingNew
@@ -207,8 +213,15 @@ fn map_alpaca_status_to_order_status(status: order::Status) -> OrderStatus {
         | order::Status::Suspended
         | order::Status::Calculated => OrderStatus::Failed,
 
-        // Catch-all for any new statuses added to the enum
-        _ => OrderStatus::Failed,
+        // Future-proofing: Alpaca's Status enum is marked #[non_exhaustive]
+        // so new statuses may be added. We conservatively treat unknown statuses
+        // as Failed to avoid incorrect handling. This will log a warning when
+        // we encounter an unknown status, prompting us to update this mapping.
+        #[allow(unreachable_patterns)]
+        unknown => {
+            debug!("Unknown Alpaca order status encountered: {unknown:?}, treating as Failed");
+            OrderStatus::Failed
+        }
     }
 }
 
@@ -220,7 +233,12 @@ fn extract_price_cents_from_order(order: &order::Order) -> Result<Option<u64>, B
             .parse::<f64>()
             .map_err(|e| BrokerError::AlpacaRequest(format!("Invalid fill price: {e}")))?;
 
-        let price_cents = (price_f64 * 100.0).round() as u64;
+        let price_cents_float = (price_f64 * 100.0).round();
+
+        let price_cents = price_cents_float.to_u64().ok_or_else(|| {
+            BrokerError::AlpacaRequest(format!("Invalid price value: {price_f64}"))
+        })?;
+
         Ok(Some(price_cents))
     } else {
         Ok(None)

@@ -11,7 +11,7 @@ pub mod test;
 #[cfg(test)]
 pub mod test_utils;
 
-pub use alpaca::{AlpacaAuthEnv, AlpacaClient};
+pub use alpaca::{AlpacaAuthEnv, AlpacaBroker, AlpacaClient};
 pub use error::PersistenceError;
 pub use order::{MarketOrder, OrderPlacement, OrderState, OrderStatus, OrderUpdate};
 pub use schwab::broker::SchwabBroker;
@@ -49,7 +49,7 @@ impl Display for Symbol {
 ///
 /// Represents whole share quantities with bounds checking.
 /// Values are constrained to 1..=u32::MAX for practical trading limits.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shares(u32);
 
 impl Shares {
@@ -63,14 +63,11 @@ impl Shares {
                 reason: "Shares must be greater than 0".to_string(),
             });
         }
-        if shares > u32::MAX as u64 {
-            return Err(BrokerError::InvalidOrder {
+        u32::try_from(shares)
+            .map(Self)
+            .map_err(|_| BrokerError::InvalidOrder {
                 reason: "Shares exceeds maximum allowed value".to_string(),
-            });
-        }
-
-        let shares_u32 = shares.try_into()?;
-        Ok(Self(shares_u32))
+            })
     }
 
     pub fn value(&self) -> u32 {
@@ -105,9 +102,9 @@ pub enum SupportedBroker {
 impl std::fmt::Display for SupportedBroker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SupportedBroker::Schwab => write!(f, "schwab"),
-            SupportedBroker::Alpaca => write!(f, "alpaca"),
-            SupportedBroker::DryRun => write!(f, "dry_run"),
+            Self::Schwab => write!(f, "schwab"),
+            Self::Alpaca => write!(f, "alpaca"),
+            Self::DryRun => write!(f, "dry_run"),
         }
     }
 }
@@ -186,7 +183,7 @@ pub enum BrokerError {
 
 impl From<apca::Error> for BrokerError {
     fn from(error: apca::Error) -> Self {
-        BrokerError::Alpaca(Box::new(error))
+        Self::Alpaca(Box::new(error))
     }
 }
 

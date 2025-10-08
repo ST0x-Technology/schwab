@@ -18,14 +18,14 @@ pub(super) async fn wait_until_market_open(
 
         if next_open_utc > now {
             let chrono_duration = next_open_utc - now;
-            match chrono_duration.to_std() {
-                Ok(duration) => Ok(Some(duration)),
-                Err(_) => {
+            chrono_duration.to_std().map_or_else(
+                |_| {
                     // Duration is negative or out of range, market should be open
                     debug!("Duration conversion failed, treating as market open");
                     Ok(None)
-                }
-            }
+                },
+                |duration| Ok(Some(duration)),
+            )
         } else {
             Ok(None)
         }

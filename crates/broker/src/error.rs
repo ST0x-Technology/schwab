@@ -21,7 +21,7 @@ impl From<crate::BrokerError> for PersistenceError {
     fn from(err: crate::BrokerError) -> Self {
         match err {
             crate::BrokerError::Database(db_err) => Self::Database(db_err),
-            other => Self::InvalidTradeStatus(format!("BrokerError: {}", other)),
+            other => Self::InvalidTradeStatus(format!("BrokerError: {other}")),
         }
     }
 }

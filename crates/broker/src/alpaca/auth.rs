@@ -38,6 +38,7 @@ impl AlpacaAuthEnv {
 }
 
 /// Alpaca API client wrapper with authentication and configuration
+#[derive(Debug)]
 pub struct AlpacaClient {
     client: Client,
     is_paper_trading: bool,
