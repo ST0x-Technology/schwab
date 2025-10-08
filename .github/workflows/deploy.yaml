@@ -54,6 +54,7 @@ jobs:
       - name: Encode file contents
         run: |
           echo "ENV_TEMPLATE=$(base64 -w 0 .env.example)" >> $GITHUB_ENV
+          echo "PREP_DOCKER_COMPOSE_SCRIPT=$(base64 -w 0 prep-docker-compose.sh)" >> $GITHUB_ENV
           echo "DOCKER_COMPOSE_TEMPLATE=$(base64 -w 0 docker-compose.template.yaml)" >> $GITHUB_ENV
           echo "GRAFANA_DOCKERFILE=$(base64 -w 0 Dockerfile.grafana)" >> $GITHUB_ENV
           echo "GRAFANA_DATASOURCE_YAML=$(base64 -w 0 grafana-datasource.yaml)" >> $GITHUB_ENV
@@ -200,15 +201,24 @@ jobs:
             # Decode and create files from base64-encoded content
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating configuration files from templates" | tee -a "${DEPLOY_LOG}"
 
-            # Create required files in deployment directory
-            echo "$DOCKER_COMPOSE_TEMPLATE" | base64 -d > /mnt/volume_nyc3_01/docker-compose.template.yaml
-            echo "$GRAFANA_DOCKERFILE" | base64 -d > /mnt/volume_nyc3_01/Dockerfile.grafana
-            echo "$GRAFANA_DATASOURCE_YAML" | base64 -d > /mnt/volume_nyc3_01/grafana-datasource.yaml
+            # Create prep-docker-compose.sh script
             echo "$PREP_SCRIPT" | base64 -d > /mnt/volume_nyc3_01/prep-docker-compose.sh
             chmod +x /mnt/volume_nyc3_01/prep-docker-compose.sh
 
+            # Create docker-compose.template.yaml
+            echo "$DOCKER_COMPOSE_TEMPLATE" | base64 -d > /mnt/volume_nyc3_01/docker-compose.template.yaml
+
+            # Create Grafana files needed for custom image build
+            echo "$GRAFANA_DOCKERFILE" | base64 -d > /mnt/volume_nyc3_01/Dockerfile.grafana
+            echo "$GRAFANA_DATASOURCE_YAML" | base64 -d > /mnt/volume_nyc3_01/grafana-datasource.yaml
+
             # Generate docker-compose.yaml using prep script
             log_exec ./prep-docker-compose.sh --prod
+
+            # Run prep-docker-compose.sh in production mode
+            cd /mnt/volume_nyc3_01
+            export DATA_VOLUME_PATH="/mnt/volume_nyc3_01"
+            ./prep-docker-compose.sh --prod 2>&1 | tee -a "${DEPLOY_LOG}"
 
             # Pull images and stop existing services
             log_exec docker compose pull
@@ -324,6 +334,7 @@ jobs:
           ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
           ENV_TEMPLATE: ${{ env.ENV_TEMPLATE }}
+          PREP_DOCKER_COMPOSE_SCRIPT: ${{ env.PREP_DOCKER_COMPOSE_SCRIPT }}
           DOCKER_COMPOSE_TEMPLATE: ${{ env.DOCKER_COMPOSE_TEMPLATE }}
           GRAFANA_DOCKERFILE: ${{ env.GRAFANA_DOCKERFILE }}
           GRAFANA_DATASOURCE_YAML: ${{ env.GRAFANA_DATASOURCE_YAML }}

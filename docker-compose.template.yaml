@@ -3,6 +3,7 @@ services:
     image: ${DOCKER_IMAGE}
     pull_policy: ${PULL_POLICY}
     container_name: schwarbot
+    command: ["server"]
     environment:
       - BROKER=${SCHWAB_BROKER}
       - OTEL_METRICS_EXPORTER_ENDPOINT=http://grafana:4318
@@ -24,6 +25,18 @@ services:
       - BROKER=${ALPACA_BROKER}
       - OTEL_METRICS_EXPORTER_ENDPOINT=http://grafana:4318
       - DATABASE_URL=sqlite:///data/alpaca.db
+    env_file:
+      - .env
+    volumes:
+      - ${DATA_VOLUME_PATH}:/data
+    depends_on:
+      - grafana
+    restart: unless-stopped
+
+  reporter:
+    image: ${DOCKER_IMAGE}
+    container_name: reporter
+    command: ["reporter"]
     env_file:
       - .env
     volumes:
