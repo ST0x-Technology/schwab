@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use tokio::task::JoinHandle;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::{
     Broker, BrokerError, MarketOrder, OrderPlacement, OrderState, OrderUpdate, SupportedBroker,
@@ -58,9 +58,10 @@ impl Broker for TestBroker {
         Ok(Self::new())
     }
 
-    async fn wait_until_market_open(&self) -> Result<Option<std::time::Duration>, Self::Error> {
-        warn!("[TEST] Market hours check - market is always open in test mode");
-        Ok(None) // Market is always open in test mode
+    async fn wait_until_market_open(&self) -> Result<std::time::Duration, Self::Error> {
+        info!("[TEST] Market hours check - market is always open in test mode");
+        // Return a very long duration since test broker has no market hours
+        Ok(std::time::Duration::from_secs(365 * 24 * 3600)) // 1 year
     }
 
     async fn place_market_order(
@@ -125,7 +126,7 @@ impl Broker for TestBroker {
         Ok(order_id_str.to_string())
     }
 
-    async fn run_broker_maintenance(&self) -> Option<JoinHandle<anyhow::Result<()>>> {
+    async fn run_broker_maintenance(&self) -> Option<JoinHandle<()>> {
         None
     }
 }

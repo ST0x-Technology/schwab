@@ -2,6 +2,8 @@ use rocket::Config;
 use sqlx::SqlitePool;
 use tracing::{error, info};
 
+use st0x_broker::Broker;
+
 pub mod api;
 mod bindings;
 pub mod cli;
@@ -15,11 +17,11 @@ mod onchain;
 mod queue;
 mod symbol;
 mod trade_execution_link;
-mod trading_hours_controller;
 
 #[cfg(test)]
 pub mod test_utils;
 
+use crate::conductor::run_market_hours_loop;
 use crate::env::Env;
 
 pub async fn launch(env: Env) -> anyhow::Result<()> {
@@ -72,16 +74,14 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
 
 async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
     if env.dry_run {
-        info!("Initializing test broker for dry-run mode");
         let broker = env.get_test_broker().await?;
-        conductor::Conductor::start(&env, &pool, broker).await?;
+        let broker_maintenance = broker.run_broker_maintenance().await;
+        run_market_hours_loop(broker, env, pool, broker_maintenance).await
     } else {
-        info!("Initializing Schwab broker");
         let broker = env.get_schwab_broker(pool.clone()).await?;
-        conductor::Conductor::start(&env, &pool, broker).await?;
+        let broker_maintenance = broker.run_broker_maintenance().await;
+        run_market_hours_loop(broker, env, pool, broker_maintenance).await
     }
-
-    Ok(())
 }
 
 #[cfg(test)]

@@ -33,7 +33,12 @@ struct CommonFields<P, B> {
 
 pub(crate) struct Initial;
 
+pub(crate) struct WithBrokerMaintenance {
+    broker_maintenance: Option<JoinHandle<()>>,
+}
+
 pub(crate) struct WithDexStreams {
+    broker_maintenance: Option<JoinHandle<()>>,
     clear_stream: ClearStream,
     take_stream: TakeStream,
     event_sender: UnboundedSender<(TradeEvent, Log)>,
@@ -67,6 +72,20 @@ impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
         }
     }
 
+    pub(crate) fn with_broker_maintenance(
+        self,
+        broker_maintenance: Option<JoinHandle<()>>,
+    ) -> ConductorBuilder<P, B, WithBrokerMaintenance> {
+        ConductorBuilder {
+            common: self.common,
+            state: WithBrokerMaintenance { broker_maintenance },
+        }
+    }
+}
+
+impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
+    ConductorBuilder<P, B, WithBrokerMaintenance>
+{
     pub(crate) fn with_dex_event_streams(
         self,
         clear_stream: impl Stream<Item = Result<(ClearV2, Log), sol_types::Error>>
@@ -84,6 +103,7 @@ impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
         ConductorBuilder {
             common: self.common,
             state: WithDexStreams {
+                broker_maintenance: self.state.broker_maintenance,
                 clear_stream: Box::new(clear_stream),
                 take_stream: Box::new(take_stream),
                 event_sender,
@@ -96,10 +116,10 @@ impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
 impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
     ConductorBuilder<P, B, WithDexStreams>
 {
-    pub(crate) async fn spawn(self) -> Conductor {
+    pub(crate) fn spawn(self) -> Conductor {
         info!("Starting conductor orchestration");
 
-        let broker_maintenance = self.common.broker.run_broker_maintenance().await;
+        let broker_maintenance = self.state.broker_maintenance;
 
         if broker_maintenance.is_some() {
             info!("Started broker maintenance tasks");

@@ -9,9 +9,9 @@ use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, trace};
 
-use st0x_broker::{Broker, MarketOrder, Shares, Symbol};
+use st0x_broker::{Broker, MarketOrder, Shares, SupportedBroker, Symbol};
 
 use crate::bindings::IOrderBookV4::{ClearV2, IOrderBookV4Instance, TakeOrderV2};
 use crate::env::Env;
@@ -26,12 +26,11 @@ use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
 use crate::queue::{QueuedEvent, enqueue, get_next_unprocessed_event, mark_event_processed};
 use crate::symbol::cache::SymbolCache;
 use crate::symbol::lock::get_symbol_lock;
-use crate::trading_hours_controller::TradingHoursController;
 
 pub(crate) use builder::ConductorBuilder;
 
 pub(crate) struct Conductor {
-    pub(crate) broker_maintenance: Option<JoinHandle<anyhow::Result<()>>>,
+    pub(crate) broker_maintenance: Option<JoinHandle<()>>,
     pub(crate) order_poller: JoinHandle<()>,
     pub(crate) dex_event_receiver: JoinHandle<()>,
     pub(crate) event_processor: JoinHandle<()>,
@@ -40,40 +39,41 @@ pub(crate) struct Conductor {
 }
 
 pub(crate) async fn run_market_hours_loop<B: Broker + Clone + Send + 'static>(
-    controller: TradingHoursController,
+    broker: B,
     env: Env,
     pool: SqlitePool,
-    broker: B,
+    broker_maintenance: Option<JoinHandle<()>>,
 ) -> anyhow::Result<()> {
     const RERUN_DELAY_SECS: u64 = 10;
 
-    controller.wait_until_market_open().await?;
+    let timeout = broker
+        .wait_until_market_open()
+        .await
+        .map_err(|e| anyhow::anyhow!("Market hours check failed: {e}"))?;
 
-    let Some(time_until_close) = controller.time_until_market_close().await? else {
-        warn!("Market already closed, waiting for next open");
-        return Box::pin(run_market_hours_loop(controller, env, pool, broker)).await;
-    };
+    let timeout_minutes = timeout.as_secs() / 60;
+    if timeout_minutes < 60 * 24 {
+        info!("Market is open, starting conductor (will timeout in {timeout_minutes} minutes)");
+    } else {
+        info!("Starting conductor (no market hours restrictions)");
+    }
 
-    let timeout = time_until_close.to_std()?;
+    let mut conductor =
+        match Conductor::start(&env, &pool, broker.clone(), broker_maintenance).await {
+            Ok(c) => c,
+            Err(e) => {
+                error!(
+                    "Failed to start conductor: {e}, retrying in {} seconds",
+                    RERUN_DELAY_SECS
+                );
 
-    info!(
-        "Market is open, starting conductor (will timeout in {} minutes)",
-        timeout.as_secs() / 60
-    );
+                tokio::time::sleep(std::time::Duration::from_secs(RERUN_DELAY_SECS)).await;
 
-    let mut conductor = match Conductor::start(&env, &pool, broker.clone()).await {
-        Ok(c) => c,
-        Err(e) => {
-            error!(
-                "Failed to start conductor: {e}, retrying in {} seconds",
-                RERUN_DELAY_SECS
-            );
+                let new_maintenance = broker.run_broker_maintenance().await;
 
-            tokio::time::sleep(std::time::Duration::from_secs(RERUN_DELAY_SECS)).await;
-
-            return Box::pin(run_market_hours_loop(controller, env, pool, broker)).await;
-        }
-    };
+                return Box::pin(run_market_hours_loop(broker, env, pool, new_maintenance)).await;
+            }
+        };
 
     info!("Market opened, conductor running");
 
@@ -88,31 +88,9 @@ pub(crate) async fn run_market_hours_loop<B: Broker + Clone + Send + 'static>(
         () = tokio::time::sleep(timeout) => {
             info!("Market closed, shutting down trading tasks");
             conductor.abort_trading_tasks();
-            let next_broker = broker;
+            let next_maintenance = conductor.broker_maintenance;
             info!("Trading tasks shutdown, DEX events buffering");
-            Box::pin(run_market_hours_loop(controller, env, pool, next_broker)).await
-        }
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("JoinHandle already consumed from AbortOnDrop")]
-struct AbortOnDropConsumed;
-
-struct AbortOnDrop(Option<JoinHandle<()>>);
-
-impl AbortOnDrop {
-    fn into_inner(mut self) -> Result<JoinHandle<()>, AbortOnDropConsumed> {
-        let handle = self.0.take().ok_or(AbortOnDropConsumed)?;
-        std::mem::forget(self);
-        Ok(handle)
-    }
-}
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        if let Some(handle) = &self.0 {
-            handle.abort();
+            Box::pin(run_market_hours_loop(broker, env, pool, next_maintenance)).await
         }
     }
 }
@@ -122,16 +100,8 @@ impl Conductor {
         env: &Env,
         pool: &SqlitePool,
         broker: B,
+        broker_maintenance: Option<JoinHandle<()>>,
     ) -> anyhow::Result<Self> {
-        debug!("Validating broker readiness...");
-
-        broker
-            .wait_until_market_open()
-            .await
-            .map_err(|e| anyhow::anyhow!("Broker market readiness check failed: {}", e))?;
-
-        info!("Broker validation successful");
-
         let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
         let provider = ProviderBuilder::new().connect_ws(ws).await?;
         let cache = SymbolCache::default();
@@ -147,9 +117,9 @@ impl Conductor {
 
         Ok(
             ConductorBuilder::new(env.clone(), pool.clone(), cache, provider, broker)
+                .with_broker_maintenance(broker_maintenance)
                 .with_dex_event_streams(clear_stream, take_stream)
-                .spawn()
-                .await,
+                .spawn(),
         )
     }
 
@@ -157,10 +127,9 @@ impl Conductor {
         let maintenance_task = async {
             if let Some(handle) = &mut self.broker_maintenance {
                 match handle.await {
-                    Ok(Ok(())) => info!("Broker maintenance completed successfully"),
-                    Ok(Err(e)) => error!("Broker maintenance failed: {e}"),
+                    Ok(()) => info!("Broker maintenance completed successfully"),
                     Err(e) if e.is_cancelled() => {
-                        info!("Broker maintenance cancelled (expected during shutdown)")
+                        info!("Broker maintenance cancelled (expected during shutdown)");
                     }
                     Err(e) => error!("Broker maintenance task panicked: {e}"),
                 }
@@ -202,7 +171,7 @@ impl Conductor {
         Ok(())
     }
 
-    pub(crate) fn abort_trading_tasks(&mut self) {
+    pub(crate) fn abort_trading_tasks(&self) {
         info!("Aborting trading tasks (keeping broker maintenance and DEX event receiver alive)");
 
         self.order_poller.abort();
@@ -457,8 +426,12 @@ async fn run_queue_processor<P: Provider + Clone, B: Broker + Clone>(
         }
     }
 
+    let broker_type = broker.to_supported_broker();
+
     loop {
-        match process_next_queued_event(env, pool, cache, &provider, &feed_id_cache).await {
+        match process_next_queued_event(broker_type, env, pool, cache, &provider, &feed_id_cache)
+            .await
+        {
             Ok(Some(execution)) => {
                 if let Some(exec_id) = execution.id {
                     if let Err(e) =
@@ -480,6 +453,7 @@ async fn run_queue_processor<P: Provider + Clone, B: Broker + Clone>(
 }
 
 async fn process_next_queued_event<P: Provider + Clone>(
+    broker_type: SupportedBroker,
     env: &Env,
     pool: &SqlitePool,
     cache: &SymbolCache,
@@ -500,7 +474,7 @@ async fn process_next_queued_event<P: Provider + Clone>(
         return handle_filtered_event(pool, &queued_event, event_id).await;
     };
 
-    process_valid_trade(pool, &queued_event, event_id, trade).await
+    process_valid_trade(broker_type, pool, &queued_event, event_id, trade).await
 }
 
 fn extract_event_id(queued_event: &QueuedEvent) -> Result<i64, EventProcessingError> {
@@ -583,6 +557,7 @@ async fn handle_filtered_event(
 }
 
 async fn process_valid_trade(
+    broker_type: SupportedBroker,
     pool: &SqlitePool,
     queued_event: &QueuedEvent,
     event_id: i64,
@@ -608,10 +583,11 @@ async fn process_valid_trade(
         trade.symbol, trade.amount, trade.direction, trade.tx_hash, trade.log_index
     );
 
-    process_trade_within_transaction(pool, queued_event, event_id, trade).await
+    process_trade_within_transaction(broker_type, pool, queued_event, event_id, trade).await
 }
 
 async fn process_trade_within_transaction(
+    broker_type: SupportedBroker,
     pool: &SqlitePool,
     queued_event: &QueuedEvent,
     event_id: i64,
@@ -627,7 +603,7 @@ async fn process_trade_within_transaction(
         event_id, queued_event.tx_hash, queued_event.log_index
     );
 
-    let execution = accumulator::process_onchain_trade(&mut sql_tx, trade)
+    let execution = accumulator::process_onchain_trade(&mut sql_tx, trade, broker_type)
         .await
         .map_err(|e| {
             error!(
@@ -693,7 +669,8 @@ async fn check_and_execute_accumulated_positions<B: Broker + Clone + Send + 'sta
     env: &Env,
     pool: &SqlitePool,
 ) -> Result<(), EventProcessingError> {
-    let executions = check_all_accumulated_positions(pool).await?;
+    let broker_type = broker.to_supported_broker();
+    let executions = check_all_accumulated_positions(pool, broker_type).await?;
 
     if executions.is_empty() {
         debug!("No accumulated positions ready for execution");
@@ -1021,7 +998,7 @@ mod tests {
             .await
             {
                 let mut sql_tx = pool.begin().await.unwrap();
-                accumulator::process_onchain_trade(&mut sql_tx, trade)
+                accumulator::process_onchain_trade(&mut sql_tx, trade, SupportedBroker::DryRun)
                     .await
                     .unwrap();
                 sql_tx.commit().await.unwrap();
@@ -1473,8 +1450,15 @@ mod tests {
         let count = crate::queue::count_unprocessed(&pool).await.unwrap();
         assert_eq!(count, 1);
 
-        let result =
-            process_next_queued_event(&env, &pool, &cache, &provider, &feed_id_cache).await;
+        let result = process_next_queued_event(
+            SupportedBroker::DryRun,
+            &env,
+            &pool,
+            &cache,
+            &provider,
+            &feed_id_cache,
+        )
+        .await;
 
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
@@ -1508,9 +1492,9 @@ mod tests {
         let broker = env.get_test_broker().await.unwrap();
 
         let conductor = ConductorBuilder::new(env, pool, cache, provider, broker)
+            .with_broker_maintenance(None)
             .with_dex_event_streams(clear_stream, take_stream)
-            .spawn()
-            .await;
+            .spawn();
 
         assert!(!conductor.order_poller.is_finished());
         assert!(!conductor.event_processor.is_finished());
@@ -1536,9 +1520,9 @@ mod tests {
         let broker = env.get_test_broker().await.unwrap();
 
         let conductor = ConductorBuilder::new(env, pool, cache, provider, broker)
+            .with_broker_maintenance(None)
             .with_dex_event_streams(clear_stream, take_stream)
-            .spawn()
-            .await;
+            .spawn();
 
         let order_handle = conductor.order_poller;
         let event_handle = conductor.event_processor;
@@ -1579,9 +1563,9 @@ mod tests {
         let broker = env.get_test_broker().await.unwrap();
 
         let conductor = ConductorBuilder::new(env, pool, cache, provider, broker)
+            .with_broker_maintenance(None)
             .with_dex_event_streams(clear_stream, take_stream)
-            .spawn()
-            .await;
+            .spawn();
 
         let elapsed = start_time.elapsed();
 

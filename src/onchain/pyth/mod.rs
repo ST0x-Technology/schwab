@@ -757,30 +757,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
-    async fn test_extract_pyth_price_integration() {
-        let rpc_url = std::env::var("WS_RPC_URL")
-            .unwrap_or_else(|_| "wss://lb.drpc.org/ogHmws/base".to_string());
-
-        let provider = ProviderBuilder::new().connect(&rpc_url).await.unwrap();
-
-        let tx_hash = "0xa207d7abf2aa69badb2d4b266b5d2ed03ec10c4f0de173b866815714b75e055f"
-            .parse()
-            .unwrap();
-
-        let cache = FeedIdCache::new();
-        let result = extract_pyth_price(tx_hash, &provider, "AAPL", &cache).await;
-
-        assert!(result.is_ok(), "Failed to extract price: {result:?}");
-
-        let price = result.unwrap();
-        assert_eq!(price.expo, -8);
-        assert!(price.price > 0);
-        assert!(price.conf > 0);
-        assert!(price.publishTime > U256::ZERO);
-    }
-
-    #[tokio::test]
     async fn test_pyth_pricing_conversion() {
         let price = Price {
             price: 18_250_000_000,

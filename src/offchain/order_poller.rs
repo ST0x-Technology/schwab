@@ -1,7 +1,6 @@
 use rand::Rng;
 use sqlx::SqlitePool;
 use std::time::Duration;
-use tokio::sync::watch;
 use tokio::time::{Interval, interval};
 use tracing::{debug, error, info};
 
@@ -32,24 +31,17 @@ pub struct OrderStatusPoller<B: Broker> {
     config: OrderPollerConfig,
     pool: SqlitePool,
     interval: Interval,
-    shutdown_rx: watch::Receiver<bool>,
     broker: B,
 }
 
 impl<B: Broker> OrderStatusPoller<B> {
-    pub fn new(
-        config: OrderPollerConfig,
-        pool: SqlitePool,
-        shutdown_rx: watch::Receiver<bool>,
-        broker: B,
-    ) -> Self {
+    pub fn new(config: OrderPollerConfig, pool: SqlitePool, broker: B) -> Self {
         let interval = interval(config.polling_interval);
 
         Self {
             config,
             pool,
             interval,
-            shutdown_rx,
             broker,
         }
     }
@@ -60,15 +52,13 @@ impl<B: Broker> OrderStatusPoller<B> {
             self.config.polling_interval
         );
 
-        crate::loop_with_shutdown!(self.shutdown_rx, "order poller", {
-            _ = self.interval.tick() => {
-                if let Err(e) = self.poll_pending_orders().await {
-                    error!("Polling cycle failed: {e}");
-                }
-            }
-        });
+        loop {
+            self.interval.tick().await;
 
-        Ok(())
+            if let Err(e) = self.poll_pending_orders().await {
+                error!("Polling cycle failed: {e}");
+            }
+        }
     }
 
     async fn poll_pending_orders(&self) -> Result<(), OrderPollingError> {
@@ -90,11 +80,6 @@ impl<B: Broker> OrderStatusPoller<B> {
         info!("Polling {} submitted orders", submitted_executions.len());
 
         for execution in submitted_executions {
-            if *self.shutdown_rx.borrow() {
-                info!("Shutdown signal received, stopping polling");
-                break;
-            }
-
             let Some(execution_id) = execution.id else {
                 continue;
             };

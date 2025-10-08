@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use sqlx::SqlitePool;
 use tokio::task::JoinHandle;
-use tracing::info;
+use tracing::{error, info};
 
 use crate::schwab::auth::SchwabAuthEnv;
 use crate::schwab::market_hours::{MarketStatus, fetch_market_hours};
@@ -37,30 +37,45 @@ impl Broker for SchwabBroker {
         Ok(Self { auth, pool })
     }
 
-    async fn wait_until_market_open(&self) -> Result<Option<std::time::Duration>, Self::Error> {
-        // Fetch current market hours directly
-        let market_hours = fetch_market_hours(&self.auth, &self.pool, None).await?;
+    async fn wait_until_market_open(&self) -> Result<std::time::Duration, Self::Error> {
+        loop {
+            let market_hours = fetch_market_hours(&self.auth, &self.pool, None).await?;
 
-        // Check if market is currently open
-        match market_hours.current_status() {
-            MarketStatus::Open => Ok(None), // Market is open, no need to wait
-            MarketStatus::Closed => {
-                // Market is closed, calculate wait time until next open
-                if let Some(start_time) = market_hours.start {
-                    let next_open = start_time.with_timezone(&chrono::Utc);
-                    let now = chrono::Utc::now();
-                    if next_open > now {
-                        let duration = (next_open - now)
-                            .to_std()
-                            .unwrap_or(std::time::Duration::from_secs(3600));
-                        Ok(Some(duration))
-                    } else {
-                        // If next open is in past, return small wait time to retry
-                        Ok(Some(std::time::Duration::from_secs(60)))
+            match market_hours.current_status() {
+                MarketStatus::Open => {
+                    // Market is open, return time until close
+                    if let Some(end_time) = market_hours.end {
+                        let market_close = end_time.with_timezone(&chrono::Utc);
+                        let now = chrono::Utc::now();
+                        if market_close > now {
+                            let duration = (market_close - now)
+                                .to_std()
+                                .unwrap_or(std::time::Duration::from_secs(3600));
+                            return Ok(duration);
+                        }
                     }
-                } else {
-                    // No next open time found, return default wait time
-                    Ok(Some(std::time::Duration::from_secs(3600)))
+                    // No end time or already passed, return default timeout
+                    return Ok(std::time::Duration::from_secs(3600));
+                }
+                MarketStatus::Closed => {
+                    // Market is closed, wait until next open
+                    if let Some(start_time) = market_hours.start {
+                        let next_open = start_time.with_timezone(&chrono::Utc);
+                        let now = chrono::Utc::now();
+                        if next_open > now {
+                            let wait_duration = (next_open - now)
+                                .to_std()
+                                .unwrap_or(std::time::Duration::from_secs(3600));
+                            info!(
+                                "Market closed, waiting {} seconds until open",
+                                wait_duration.as_secs()
+                            );
+                            tokio::time::sleep(wait_duration).await;
+                            continue; // Re-check market status
+                        }
+                    }
+                    // No start time or already passed, wait a bit and retry
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                 }
             }
         }
@@ -218,17 +233,17 @@ impl Broker for SchwabBroker {
         Ok(order_id_str.to_string())
     }
 
-    async fn run_broker_maintenance(&self) -> Option<JoinHandle<anyhow::Result<()>>> {
+    async fn run_broker_maintenance(&self) -> Option<JoinHandle<()>> {
         let pool_clone = self.pool.clone();
         let auth_clone = self.auth.clone();
 
         let handle = tokio::spawn(async move {
             let refresh_handle = spawn_automatic_token_refresh(pool_clone, auth_clone);
 
-            match refresh_handle.await {
-                Ok(()) => Ok(()),
-                Err(e) if e.is_cancelled() => Ok(()),
-                Err(e) => Err(anyhow::anyhow!("Token refresh task panicked: {e}")),
+            if let Err(e) = refresh_handle.await {
+                if !e.is_cancelled() {
+                    error!("Token refresh task panicked: {e}");
+                }
             }
         });
 

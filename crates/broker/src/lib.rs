@@ -181,10 +181,9 @@ pub trait Broker: Send + Sync + 'static {
     where
         Self: Sized;
 
-    /// Wait until market opens if needed
-    /// Returns None if market is already open
-    /// Returns Some(duration) if need to wait for market to open
-    async fn wait_until_market_open(&self) -> Result<Option<std::time::Duration>, Self::Error>;
+    /// Wait until market opens (blocks if market closed), then return time until market close
+    /// Implementations without market hours should return a very long duration
+    async fn wait_until_market_open(&self) -> Result<std::time::Duration, Self::Error>;
 
     /// Place a market order for the specified symbol and quantity
     /// Returns order placement details including broker-assigned order ID
@@ -212,7 +211,8 @@ pub trait Broker: Send + Sync + 'static {
     /// Run broker-specific maintenance tasks (token refresh, connection health, etc.)
     /// Returns None if no maintenance needed, Some(handle) if maintenance task spawned
     /// Tasks should run indefinitely and be aborted by the caller when shutdown is needed
-    async fn run_broker_maintenance(&self) -> Option<JoinHandle<anyhow::Result<()>>>;
+    /// Errors are logged inside the task and do not propagate to the caller
+    async fn run_broker_maintenance(&self) -> Option<JoinHandle<()>>;
 }
 
 #[cfg(test)]
