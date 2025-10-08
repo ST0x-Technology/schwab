@@ -522,107 +522,7 @@ image with different commands.
 
 ---
 
-## Task 5. Development Tooling (flake.nix)
-
-Add scripts to flake.nix for viewing P&L metrics and running reporter locally.
-
-### Rationale
-
-Following existing patterns in flake.nix, add convenient scripts for developers
-to inspect P&L data and test locally.
-
-### Subtasks
-
-- [ ] Add `viewPnlMetrics` script to query recent P&L realizations
-- [ ] Add `viewPnlSummary` script showing cumulative P&L by symbol
-- [ ] Add `runReporter` script for local development
-- [ ] Add all scripts to devShell buildInputs
-
-### Flake Scripts
-
-Add to `packages` section in flake.nix:
-
-```nix
-viewPnlMetrics = rainix.mkTask.${system} {
-  name = "view-pnl-metrics";
-  additionalBuildInputs = [ pkgs.sqlite ];
-  body = ''
-    set -euxo pipefail
-    ${setDbPath}
-    echo "=== Recent P&L Metrics (Last 20 Trades) ==="
-    sqlite3 "$DB_PATH" "
-      SELECT
-        symbol,
-        datetime(timestamp) as time,
-        trade_type,
-        trade_direction,
-        printf('%.6f', quantity) as qty,
-        printf('%.2f', price_per_share) as price,
-        COALESCE(printf('%.2f', realized_pnl), 'N/A') as pnl,
-        printf('%.2f', cumulative_pnl) as cum_pnl,
-        printf('%.6f', net_position_after) as position
-      FROM metrics_pnl
-      ORDER BY timestamp DESC, id DESC
-      LIMIT 20;
-    "
-  '';
-};
-
-viewPnlSummary = rainix.mkTask.${system} {
-  name = "view-pnl-summary";
-  additionalBuildInputs = [ pkgs.sqlite ];
-  body = ''
-    set -euxo pipefail
-    ${setDbPath}
-    echo "=== P&L Summary by Symbol ==="
-    sqlite3 "$DB_PATH" "
-      SELECT
-        symbol,
-        COUNT(*) as num_trades,
-        SUM(CASE WHEN realized_pnl IS NOT NULL THEN 1 ELSE 0 END) as num_pnl_events,
-        printf('%.2f', COALESCE(SUM(realized_pnl), 0)) as total_realized_pnl,
-        printf('%.2f', MAX(cumulative_pnl)) as current_cumulative_pnl,
-        printf('%.6f', (
-          SELECT net_position_after
-          FROM metrics_pnl m2
-          WHERE m2.symbol = m1.symbol
-          ORDER BY timestamp DESC, id DESC
-          LIMIT 1
-        )) as current_position
-      FROM metrics_pnl m1
-      GROUP BY symbol
-      ORDER BY symbol;
-    "
-  '';
-};
-
-runReporter = rainix.mkTask.${system} {
-  name = "run-reporter";
-  body = ''
-    set -euxo pipefail
-    cargo run --bin reporter
-  '';
-};
-```
-
-Add to devShell:
-
-```nix
-devShell = pkgs.mkShell {
-  # ... existing config ...
-  buildInputs = with pkgs;
-    [
-      # ... existing packages ...
-      packages.viewPnlMetrics
-      packages.viewPnlSummary
-      packages.runReporter
-    ] ++ # ... rest of buildInputs
-};
-```
-
----
-
-## Task 6. Deployment Integration
+## Task 5. Deployment Integration
 
 Update CI/CD workflow to deploy and health check reporter.
 
@@ -633,10 +533,10 @@ logs.
 
 ### Subtasks
 
-- [ ] Verify `Dockerfile` builds reporter binary (update if needed)
-- [ ] Update `.github/workflows/deploy.yaml` health checks for reporter
-- [ ] Add reporter log capture in deployment script
-- [ ] Add error detection in reporter logs
+- [x] Verify `Dockerfile` builds reporter binary (update if needed)
+- [x] Update `.github/workflows/deploy.yaml` health checks for reporter
+- [x] Add reporter log capture in deployment script
+- [x] Add error detection in reporter logs
 - [ ] Test full deployment workflow
 
 ### Deployment Health Checks
@@ -661,9 +561,34 @@ if docker compose logs reporter 2>&1 | grep -q "error\|panic\|failed"; then
 fi
 ```
 
+### Completion Summary
+
+Task 5 is complete. The implementation provides:
+
+1. **Dockerfile Verification**: Confirmed reporter binary is built in both debug
+   and release modes
+2. **Container Health Check**: Added check to verify reporter container is
+   running via `docker ps`
+3. **Log Capture**: Reporter logs are captured alongside schwarbot logs to the
+   Docker log file
+4. **Error Detection**: Added grep-based error detection for reporter logs
+   (checking for "error", "panic", "failed")
+5. **Deployment Failure Handling**: If reporter container is not running or has
+   errors, deployment fails with diagnostic output
+
+The deployment workflow now:
+
+- Verifies all three containers are running (schwarbot, grafana, reporter)
+- Captures logs from both schwarbot and reporter
+- Checks for errors in both service logs
+- Fails fast if reporter is not healthy, preventing bad deployments
+
+The final subtask (Test full deployment workflow) should be completed when the
+code is actually deployed to production.
+
 ---
 
-## Task 7. Testing and Validation
+## Task 6. Testing and Validation
 
 Comprehensive testing to ensure FIFO correctness and service reliability.
 
@@ -786,7 +711,7 @@ async fn test_reporter_processes_trades_end_to_end() {
 
 ---
 
-## Task 8. Documentation
+## Task 7. Documentation
 
 Document P&L reporter for users and future maintainers.
 

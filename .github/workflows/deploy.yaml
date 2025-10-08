@@ -282,6 +282,12 @@ jobs:
               perform_rollback
             fi
 
+            if ! docker ps --format "{{.Names}}" | grep -q "^reporter$"; then
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - Reporter container not found in docker ps" | tee -a "${DEPLOY_LOG}" >&2
+              docker compose logs reporter 2>&1 | tee -a "${DEPLOY_LOG}"
+              perform_rollback
+            fi
+
             echo "$(date '+%Y-%m-%d %H:%M:%S') - All containers confirmed running" | tee -a "${DEPLOY_LOG}"
 
             # Disable ERR trap - deployment successful, no longer in risky window
@@ -291,6 +297,7 @@ jobs:
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Services started successfully, capturing logs..." | tee -a "${DEPLOY_LOG}"
             docker compose logs schwarbot 2>&1 | tee "${DOCKER_LOG}"
             docker compose logs alpacabot 2>&1 | tee -a "${DOCKER_LOG}"
+            docker compose logs reporter 2>&1 | tee -a "${DOCKER_LOG}"
 
             # Check for errors in schwarbot logs
             if docker compose logs schwarbot 2>&1 | grep -q "error\|panic\|failed"; then
@@ -304,6 +311,14 @@ jobs:
             if docker compose logs alpacabot 2>&1 | grep -q "error\|panic\|failed"; then
               echo "$(date '+%Y-%m-%d %H:%M:%S') - Alpacabot errors detected in logs" | tee -a "${DEPLOY_LOG}" >&2
               docker compose logs --tail 20 alpacabot 2>&1 | tee -a "${DEPLOY_LOG}"
+              echo "Full container logs saved to: ${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}" >&2
+              perform_rollback
+            fi
+
+            # Check for errors in reporter logs
+            if docker compose logs reporter 2>&1 | grep -q "error\|panic\|failed"; then
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - Reporter errors detected in logs" | tee -a "${DEPLOY_LOG}" >&2
+              docker compose logs --tail 20 reporter 2>&1 | tee -a "${DEPLOY_LOG}"
               echo "Full container logs saved to: ${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}" >&2
               perform_rollback
             fi
