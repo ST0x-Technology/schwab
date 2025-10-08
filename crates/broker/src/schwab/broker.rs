@@ -123,31 +123,51 @@ impl Broker for SchwabBroker {
     async fn get_order_status(&self, order_id: &Self::OrderId) -> Result<OrderState, Self::Error> {
         info!("Getting order status for: {}", order_id);
 
-        // Call the existing Schwab API function
         let order_response =
             crate::schwab::order::Order::get_order_status(order_id, &self.auth, &self.pool)
                 .await
                 .map_err(|e| BrokerError::Network(format!("Failed to get order status: {}", e)))?;
 
-        // Convert OrderStatusResponse to OrderState
         if order_response.is_filled() {
             let price_cents = order_response
                 .price_in_cents()
                 .map_err(|e| BrokerError::Network(format!("Failed to calculate price: {}", e)))?
-                .unwrap_or(0);
+                .ok_or_else(|| {
+                    BrokerError::Network(
+                        "Order marked as filled but price information is not available".to_string(),
+                    )
+                })?;
+
+            let close_time_str = order_response.close_time.as_ref().ok_or_else(|| {
+                BrokerError::Network("Order marked as filled but close_time is missing".to_string())
+            })?;
+
+            let executed_at =
+                chrono::DateTime::parse_from_str(close_time_str, "%Y-%m-%dT%H:%M:%S%z")
+                    .map_err(|e| {
+                        BrokerError::Network(format!("Failed to parse close_time: {}", e))
+                    })?
+                    .with_timezone(&chrono::Utc);
 
             Ok(OrderState::Filled {
-                executed_at: chrono::Utc::now(), // TODO: Parse actual timestamp from close_time
+                executed_at,
                 order_id: order_id.clone(),
                 price_cents,
             })
         } else if order_response.is_terminal_failure() {
+            let close_time_str = order_response.close_time.as_ref().ok_or_else(|| {
+                BrokerError::Network("Order marked as failed but close_time is missing".to_string())
+            })?;
+
+            let failed_at = chrono::DateTime::parse_from_str(close_time_str, "%Y-%m-%dT%H:%M:%S%z")
+                .map_err(|e| BrokerError::Network(format!("Failed to parse close_time: {}", e)))?
+                .with_timezone(&chrono::Utc);
+
             Ok(OrderState::Failed {
-                failed_at: chrono::Utc::now(), // TODO: Parse actual timestamp from close_time
+                failed_at,
                 error_reason: Some(format!("Order status: {:?}", order_response.status)),
             })
         } else {
-            // Order is still pending/working
             Ok(OrderState::Submitted {
                 order_id: order_id.clone(),
             })

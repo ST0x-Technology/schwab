@@ -32,8 +32,14 @@ impl std::fmt::Display for OrderStatus {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ParseOrderStatusError {
+    #[error("Invalid order status: '{0}'. Expected one of: PENDING, SUBMITTED, FILLED, FAILED")]
+    InvalidStatus(String),
+}
+
 impl std::str::FromStr for OrderStatus {
-    type Err = String;
+    type Err = ParseOrderStatusError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -41,7 +47,7 @@ impl std::str::FromStr for OrderStatus {
             "SUBMITTED" => Ok(Self::Submitted),
             "FILLED" => Ok(Self::Filled),
             "FAILED" => Ok(Self::Failed),
-            _ => Err(format!("Invalid order status: {s}")),
+            _ => Err(ParseOrderStatusError::InvalidStatus(s.to_string())),
         }
     }
 }

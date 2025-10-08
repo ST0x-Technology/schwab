@@ -66,7 +66,9 @@ impl Shares {
                 reason: "Shares exceeds maximum allowed value".to_string(),
             });
         }
-        Ok(Self(shares as u32))
+
+        let shares_u32 = shares.try_into()?;
+        Ok(Self(shares_u32))
     }
 
     pub fn value(&self) -> u32 {
@@ -167,6 +169,9 @@ pub enum BrokerError {
 
     #[error("Invalid order: {reason}")]
     InvalidOrder { reason: String },
+
+    #[error("Numeric conversion error: {0}")]
+    NumericConversion(#[from] std::num::TryFromIntError),
 }
 
 #[async_trait]
