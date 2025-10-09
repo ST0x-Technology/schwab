@@ -8,7 +8,7 @@ use crate::{Broker, BrokerError, MarketOrder, OrderPlacement, OrderState, OrderU
 pub type AlpacaConfig = AlpacaAuthEnv;
 
 /// Alpaca broker implementation
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AlpacaBroker {
     client: AlpacaClient,
 }

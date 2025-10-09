@@ -22,6 +22,7 @@ pub mod test_utils;
 
 use crate::conductor::run_market_hours_loop;
 use crate::env::Env;
+use st0x_broker::Broker;
 
 pub async fn launch(env: Env) -> anyhow::Result<()> {
     let pool = env.get_sqlite_pool().await?;
@@ -81,12 +82,22 @@ async fn run_with_broker<B: Broker + Clone + Send + 'static>(
 }
 
 async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
-    if env.dry_run {
-        let broker = env.get_test_broker().await?;
-        run_with_broker(broker, env, pool).await
-    } else {
-        let broker = env.get_schwab_broker(pool.clone()).await?;
-        run_with_broker(broker, env, pool).await
+    match env.broker {
+        st0x_broker::SupportedBroker::DryRun => {
+            info!("Initializing test broker for dry-run mode");
+            let broker = env.get_test_broker().await?;
+            run_with_broker(broker, env, pool).await
+        }
+        st0x_broker::SupportedBroker::Schwab => {
+            info!("Initializing Schwab broker");
+            let broker = env.get_schwab_broker(pool.clone()).await?;
+            run_with_broker(broker, env, pool).await
+        }
+        st0x_broker::SupportedBroker::Alpaca => {
+            info!("Initializing Alpaca broker");
+            let broker = env.get_alpaca_broker().await?;
+            run_with_broker(broker, env, pool).await
+        }
     }
 }
 

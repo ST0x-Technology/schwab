@@ -13,11 +13,12 @@ use alloy::primitives::B256;
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use chrono::Utc;
 use chrono_tz::US::Eastern;
+use st0x_broker::alpaca::auth::AlpacaAuthEnv;
 use st0x_broker::schwab::auth::SchwabAuthEnv;
 use st0x_broker::schwab::market_hours::{MarketStatus as MarketStatusEnum, fetch_market_hours};
 use st0x_broker::schwab::tokens::SchwabTokens;
 use st0x_broker::schwab::{SchwabError, extract_code_from_url};
-use st0x_broker::{Broker, Direction, MarketOrder, Shares, Symbol};
+use st0x_broker::{Broker, Direction, MarketOrder, Shares, SupportedBroker, Symbol};
 
 #[derive(Debug, Error)]
 pub enum CliError {
@@ -97,6 +98,8 @@ pub struct CliEnv {
     #[clap(flatten)]
     pub schwab_auth: SchwabAuthEnv,
     #[clap(flatten)]
+    pub alpaca_auth: AlpacaAuthEnv,
+    #[clap(flatten)]
     pub evm_env: EvmEnv,
     #[command(subcommand)]
     pub command: Commands,
@@ -112,10 +115,11 @@ impl CliEnv {
             log_level: cli_env.log_level,
             server_port: cli_env.server_port,
             schwab_auth: cli_env.schwab_auth,
+            alpaca_auth: cli_env.alpaca_auth,
             evm_env: cli_env.evm_env,
             order_polling_interval: 15,
             order_polling_max_jitter: 5,
-            dry_run: false,
+            broker: SupportedBroker::Schwab,
         };
 
         Ok((env, cli_env.command))
@@ -512,55 +516,16 @@ async fn process_tx_with_provider<W: Write, P: Provider + Clone>(
     Ok(())
 }
 
-async fn process_found_trade<W: Write>(
-    onchain_trade: OnchainTrade,
+async fn execute_broker_order<W: Write>(
     env: &Env,
     pool: &SqlitePool,
+    market_order: st0x_broker::MarketOrder,
     stdout: &mut W,
-) -> anyhow::Result<()> {
-    display_trade_details(&onchain_trade, stdout)?;
-
-    writeln!(stdout, "🔄 Processing trade with TradeAccumulator...")?;
-
-    let mut sql_tx = pool.begin().await?;
-    let execution = accumulator::process_onchain_trade(
-        &mut sql_tx,
-        onchain_trade,
-        st0x_broker::SupportedBroker::Schwab,
-    )
-    .await?;
-    sql_tx.commit().await?;
-
-    if let Some(execution) = execution {
-        let execution_id = execution
-            .id
-            .ok_or_else(|| anyhow::anyhow!("OffchainExecution missing ID after accumulation"))?;
-        writeln!(
-            stdout,
-            "✅ Trade triggered Schwab execution (ID: {execution_id})"
-        )?;
-        ensure_authentication(pool, &env.schwab_auth, stdout).await?;
-        writeln!(stdout, "🔄 Executing Schwab order...")?;
-        // Convert OffchainExecution to broker trait types
-        let market_order = st0x_broker::MarketOrder {
-            symbol: st0x_broker::Symbol::new(execution.symbol.clone())?,
-            shares: st0x_broker::Shares::new(execution.shares)?,
-            direction: execution.direction,
-        };
-
-        let placement = if env.dry_run {
-            let broker = env.get_test_broker().await.map_err(anyhow::Error::from)?;
-            let placement = broker
-                .place_market_order(market_order)
-                .await
-                .map_err(anyhow::Error::from)?;
-            writeln!(
-                stdout,
-                "✅ Dry-run order placed with ID: {}",
-                placement.order_id
-            )?;
-            placement
-        } else {
+) -> anyhow::Result<st0x_broker::OrderPlacement<String>> {
+    match env.broker {
+        SupportedBroker::Schwab => {
+            ensure_authentication(pool, &env.schwab_auth, stdout).await?;
+            writeln!(stdout, "🔄 Executing Schwab order...")?;
             let broker = env
                 .get_schwab_broker(pool.clone())
                 .await
@@ -574,10 +539,72 @@ async fn process_found_trade<W: Write>(
                 "✅ Schwab order placed with ID: {}",
                 placement.order_id
             )?;
-            placement
+            Ok(placement)
+        }
+        SupportedBroker::Alpaca => {
+            writeln!(stdout, "🔄 Executing Alpaca order...")?;
+            let broker = env.get_alpaca_broker().await.map_err(anyhow::Error::from)?;
+            let placement = broker
+                .place_market_order(market_order)
+                .await
+                .map_err(anyhow::Error::from)?;
+            writeln!(
+                stdout,
+                "✅ Alpaca order placed with ID: {}",
+                placement.order_id
+            )?;
+            Ok(placement)
+        }
+        SupportedBroker::DryRun => {
+            writeln!(stdout, "🔄 Executing dry-run order...")?;
+            let broker = env.get_test_broker().await.map_err(anyhow::Error::from)?;
+            let placement = broker
+                .place_market_order(market_order)
+                .await
+                .map_err(anyhow::Error::from)?;
+            writeln!(
+                stdout,
+                "✅ Dry-run order placed with ID: {}",
+                placement.order_id
+            )?;
+            Ok(placement)
+        }
+    }
+}
+
+async fn process_found_trade<W: Write>(
+    onchain_trade: OnchainTrade,
+    env: &Env,
+    pool: &SqlitePool,
+    stdout: &mut W,
+) -> anyhow::Result<()> {
+    display_trade_details(&onchain_trade, stdout)?;
+
+    writeln!(stdout, "🔄 Processing trade with TradeAccumulator...")?;
+
+    let mut sql_tx = pool.begin().await?;
+    let execution =
+        accumulator::process_onchain_trade(&mut sql_tx, onchain_trade, env.broker).await?;
+    sql_tx.commit().await?;
+
+    if let Some(execution) = execution {
+        let execution_id = execution
+            .id
+            .ok_or_else(|| anyhow::anyhow!("OffchainExecution missing ID after accumulation"))?;
+        writeln!(
+            stdout,
+            "✅ Trade triggered execution for {:?} (ID: {execution_id})",
+            env.broker
+        )?;
+
+        let market_order = st0x_broker::MarketOrder {
+            symbol: st0x_broker::Symbol::new(execution.symbol.clone())?,
+            shares: st0x_broker::Shares::new(execution.shares)?,
+            direction: execution.direction,
         };
 
-        // Update execution with order_id and set status to Submitted
+        let placement = execute_broker_order(env, pool, market_order, stdout).await?;
+
         let submitted_state = st0x_broker::OrderState::Submitted {
             order_id: placement.order_id.to_string(),
         };
@@ -1078,11 +1105,16 @@ mod tests {
             log_level: LogLevel::Debug,
             server_port: 8080,
             schwab_auth: SchwabAuthEnv {
-                app_key: "test_app_key".to_string(),
-                app_secret: "test_app_secret".to_string(),
-                redirect_uri: "https://127.0.0.1".to_string(),
-                base_url: mock_server.base_url(),
-                account_index: 0,
+                schwab_app_key: "test_app_key".to_string(),
+                schwab_app_secret: "test_app_secret".to_string(),
+                schwab_redirect_uri: "https://127.0.0.1".to_string(),
+                schwab_base_url: mock_server.base_url(),
+                schwab_account_index: 0,
+            },
+            alpaca_auth: AlpacaAuthEnv {
+                alpaca_api_key_id: String::new(),
+                alpaca_api_secret_key: String::new(),
+                alpaca_base_url: "https://paper-api.alpaca.markets".to_string(),
             },
             evm_env: EvmEnv {
                 ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
@@ -1092,7 +1124,7 @@ mod tests {
             },
             order_polling_interval: 15,
             order_polling_max_jitter: 5,
-            dry_run: false,
+            broker: SupportedBroker::Schwab,
         }
     }
 
@@ -1826,7 +1858,7 @@ mod tests {
         // Verify stdout output
         let stdout_str = String::from_utf8(stdout).unwrap();
         assert!(stdout_str.contains("Processing trade with TradeAccumulator"));
-        assert!(stdout_str.contains("Trade triggered Schwab execution"));
+        assert!(stdout_str.contains("Trade triggered execution for Schwab"));
         assert!(stdout_str.contains("Trade processing completed"));
     }
 

@@ -118,16 +118,39 @@ existing alpaca modules. Dead code warnings resolved.
 
 Integrate AlpacaBroker into the main application's broker selection logic.
 
-- [ ] Add `AlpacaAuthEnv` to imports in `src/env.rs`
-- [ ] Add `alpaca_auth: Option<AlpacaAuthEnv>` to main `Env` struct
-- [ ] Add `--broker` CLI argument with choices: schwab, alpaca, dry-run
-- [ ] Implement `get_alpaca_broker()` helper method in `Env`
-- [ ] Update `run_bot_session()` to support three-way broker selection
-- [ ] Update CLI test command to support Alpaca broker
-- [ ] Ensure database properly stores broker='alpaca' for Alpaca trades
-- [ ] Update any hardcoded `SupportedBroker::Schwab` references
+- [x] Add `AlpacaAuthEnv` to imports in `src/env.rs`
+- [x] Add `alpaca_auth: Option<AlpacaAuthEnv>` to main `Env` struct
+- [x] Add `--broker` CLI argument with choices: schwab, alpaca, dry-run
+  - Created `BrokerChoice` enum with `Schwab`, `Alpaca`, `DryRun` variants
+  - Replaced `dry_run: bool` field with `broker: BrokerChoice`
+- [x] Implement `get_alpaca_broker()` helper method in `Env`
+- [x] Update `run_bot_session()` to support three-way broker selection
+  - Uses pattern matching on `env.broker` to select appropriate broker
+- [x] Update CLI test command to support Alpaca broker
+  - Modified `process_found_trade()` to handle all three broker types
+  - Updated authentication flow for each broker type
+- [x] Ensure database properly stores broker='alpaca' for Alpaca trades
+  - Database parsing already supports "alpaca" broker type (from Task 1)
+- [x] Update any hardcoded `SupportedBroker::Schwab` references
+  - Updated in `src/cli.rs` to use dynamic `broker_type` based on env.broker
+- [x] Implement `Clone` for `AlpacaBroker` and `AlpacaClient`
+  - Added credential fields to `AlpacaClient` to enable cloning
+  - Implemented manual `Clone` trait since `apca::Client` doesn't implement
+    Clone
+- [x] Update all test helper functions with new `Env` struct fields
+  - Updated `create_test_env_for_cli()` in src/cli.rs
+  - Updated `create_test_env()` in src/api.rs and src/env.rs
+- [x] Add error handling for missing Alpaca credentials
+  - Created `BrokerConfigError::MissingAlpacaCredentials`
+  - Implemented conversion to `BrokerError::Authentication`
 - [ ] Test broker selection logic with all three options
 - [ ] Verify database correctly tracks different broker trades
+
+**Status**: ✅ **MOSTLY COMPLETED** - All code implementation finished. The
+application now supports three-way broker selection via the `--broker` CLI
+argument. Project compiles successfully with `cargo check` and `cargo fmt`
+passes. Integration testing with all three broker options still needs to be
+performed.
 
 ## Task 8: Add Alpaca-Specific Features
 

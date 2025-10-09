@@ -295,21 +295,21 @@ mod tests {
 
     fn create_test_auth_env() -> SchwabAuthEnv {
         SchwabAuthEnv {
-            app_key: "test_key".to_string(),
-            app_secret: "test_secret".to_string(),
-            redirect_uri: "https://127.0.0.1".to_string(),
-            base_url: "https://test.com".to_string(),
-            account_index: 0,
+            schwab_app_key: "test_key".to_string(),
+            schwab_app_secret: "test_secret".to_string(),
+            schwab_redirect_uri: "https://127.0.0.1".to_string(),
+            schwab_base_url: "https://test.com".to_string(),
+            schwab_account_index: 0,
         }
     }
 
     fn create_test_auth_env_with_server(server: &MockServer) -> SchwabAuthEnv {
         SchwabAuthEnv {
-            app_key: "test_key".to_string(),
-            app_secret: "test_secret".to_string(),
-            redirect_uri: "https://127.0.0.1".to_string(),
-            base_url: server.base_url(),
-            account_index: 0,
+            schwab_app_key: "test_key".to_string(),
+            schwab_app_secret: "test_secret".to_string(),
+            schwab_redirect_uri: "https://127.0.0.1".to_string(),
+            schwab_base_url: server.base_url(),
+            schwab_account_index: 0,
         }
     }
 
@@ -351,7 +351,7 @@ mod tests {
 
         assert!(result.is_ok());
         let broker = result.unwrap();
-        assert_eq!(broker.auth.app_key, "test_key");
+        assert_eq!(broker.auth.schwab_app_key, "test_key");
     }
 
     #[tokio::test]

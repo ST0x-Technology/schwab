@@ -4,8 +4,9 @@ use tracing::Level;
 
 use crate::offchain::order_poller::OrderPollerConfig;
 use crate::onchain::EvmEnv;
+use st0x_broker::alpaca::auth::AlpacaAuthEnv;
 use st0x_broker::schwab::auth::SchwabAuthEnv;
-use st0x_broker::{Broker, SchwabBroker, TestBroker};
+use st0x_broker::{AlpacaBroker, Broker, SchwabBroker, SupportedBroker, TestBroker};
 
 #[derive(clap::ValueEnum, Debug, Clone)]
 pub enum LogLevel {
@@ -51,6 +52,8 @@ pub struct Env {
     #[clap(flatten)]
     pub schwab_auth: SchwabAuthEnv,
     #[clap(flatten)]
+    pub alpaca_auth: AlpacaAuthEnv,
+    #[clap(flatten)]
     pub evm_env: EvmEnv,
     /// Interval in seconds between order status polling checks
     #[clap(long, env, default_value = "15")]
@@ -58,8 +61,9 @@ pub struct Env {
     /// Maximum jitter in seconds for order polling to prevent thundering herd
     #[clap(long, env, default_value = "5")]
     pub order_polling_max_jitter: u64,
-    #[clap(long, env, default_value = "false")]
-    pub dry_run: bool,
+    /// Broker to use for trading (required: schwab, alpaca, or dry-run)
+    #[clap(long, env)]
+    pub broker: SupportedBroker,
 }
 
 impl Env {
@@ -79,6 +83,12 @@ impl Env {
         pool: SqlitePool,
     ) -> Result<SchwabBroker, <SchwabBroker as Broker>::Error> {
         SchwabBroker::try_from_config((self.schwab_auth.clone(), pool)).await
+    }
+
+    pub(crate) async fn get_alpaca_broker(
+        &self,
+    ) -> Result<AlpacaBroker, <AlpacaBroker as Broker>::Error> {
+        AlpacaBroker::try_from_config(self.alpaca_auth.clone()).await
     }
 
     pub(crate) async fn get_test_broker(
@@ -113,11 +123,16 @@ pub mod tests {
             log_level: LogLevel::Debug,
             server_port: 8080,
             schwab_auth: SchwabAuthEnv {
-                app_key: "test_key".to_string(),
-                app_secret: "test_secret".to_string(),
-                redirect_uri: "https://127.0.0.1".to_string(),
-                base_url: "https://test.com".to_string(),
-                account_index: 0,
+                schwab_app_key: "test_key".to_string(),
+                schwab_app_secret: "test_secret".to_string(),
+                schwab_redirect_uri: "https://127.0.0.1".to_string(),
+                schwab_base_url: "https://test.com".to_string(),
+                schwab_account_index: 0,
+            },
+            alpaca_auth: AlpacaAuthEnv {
+                alpaca_api_key_id: String::new(),
+                alpaca_api_secret_key: String::new(),
+                alpaca_base_url: "https://paper-api.alpaca.markets".to_string(),
             },
             evm_env: EvmEnv {
                 ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
@@ -127,7 +142,7 @@ pub mod tests {
             },
             order_polling_interval: 15,
             order_polling_max_jitter: 5,
-            dry_run: false,
+            broker: SupportedBroker::Schwab,
         }
     }
 
@@ -184,7 +199,7 @@ pub mod tests {
         let env = create_test_env();
         assert_eq!(env.database_url, ":memory:");
         assert!(matches!(env.log_level, LogLevel::Debug));
-        assert_eq!(env.schwab_auth.app_key, "test_key");
+        assert_eq!(env.schwab_auth.schwab_app_key, "test_key");
         assert_eq!(env.evm_env.deployment_block, 1);
     }
 }

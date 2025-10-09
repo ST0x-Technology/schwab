@@ -92,7 +92,7 @@ impl std::fmt::Display for InvalidDirectionError {
 
 impl std::error::Error for InvalidDirectionError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum SupportedBroker {
     Schwab,
     Alpaca,

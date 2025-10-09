@@ -88,6 +88,8 @@ mod tests {
     use crate::env::Env;
     use crate::onchain::EvmEnv;
     use crate::test_utils::setup_test_db;
+    use st0x_broker::SupportedBroker;
+    use st0x_broker::alpaca::auth::AlpacaAuthEnv;
     use st0x_broker::schwab::auth::SchwabAuthEnv;
 
     fn create_test_env_with_mock_server(mock_server: &MockServer) -> Env {
@@ -96,11 +98,16 @@ mod tests {
             log_level: crate::env::LogLevel::Debug,
             server_port: 8080,
             schwab_auth: SchwabAuthEnv {
-                app_key: "test_app_key".to_string(),
-                app_secret: "test_app_secret".to_string(),
-                redirect_uri: "https://127.0.0.1".to_string(),
-                base_url: mock_server.base_url(),
-                account_index: 0,
+                schwab_app_key: "test_app_key".to_string(),
+                schwab_app_secret: "test_app_secret".to_string(),
+                schwab_redirect_uri: "https://127.0.0.1".to_string(),
+                schwab_base_url: mock_server.base_url(),
+                schwab_account_index: 0,
+            },
+            alpaca_auth: AlpacaAuthEnv {
+                alpaca_api_key_id: String::new(),
+                alpaca_api_secret_key: String::new(),
+                alpaca_base_url: "https://paper-api.alpaca.markets".to_string(),
             },
             evm_env: EvmEnv {
                 ws_rpc_url: Url::parse("ws://localhost:8545").unwrap(),
@@ -110,7 +117,7 @@ mod tests {
             },
             order_polling_interval: 15,
             order_polling_max_jitter: 5,
-            dry_run: false,
+            broker: SupportedBroker::Schwab,
         }
     }
 
