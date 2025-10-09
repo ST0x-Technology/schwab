@@ -360,7 +360,8 @@ async fn process_and_persist_trade(
     persist_metrics_row(pool, &row).await
 }
 
-async fn process_iteration(pool: &SqlitePool) -> anyhow::Result<usize> {
+#[doc(hidden)]
+pub async fn process_iteration(pool: &SqlitePool) -> anyhow::Result<usize> {
     let checkpoint = load_checkpoint(pool).await?;
     let all_trades = load_all_trades(pool).await?;
     let mut inventories = rebuild_fifo_state(&all_trades, checkpoint)?;
