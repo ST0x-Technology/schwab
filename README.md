@@ -426,7 +426,7 @@ Every trade gets a row in `metrics_pnl`:
 
 ### Example
 
-```
+```text
 Step 1: BUY 100 @ $10.00
   - Opens lot: 100 shares @ $10.00 cost basis
   - realized_pnl: NULL

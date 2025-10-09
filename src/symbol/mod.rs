@@ -31,10 +31,7 @@ impl TryFrom<&str> for Symbol {
     type Error = anyhow::Error;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        if s.is_empty() {
-            return Err(anyhow::anyhow!("Symbol cannot be empty"));
-        }
-        Ok(Self(s.to_string()))
+        Self::try_from(s.to_string())
     }
 }
 
