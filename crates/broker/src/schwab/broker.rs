@@ -11,7 +11,11 @@ use crate::{
 };
 
 /// Configuration for SchwabBroker containing auth environment and database pool
-pub type SchwabConfig = (SchwabAuthEnv, SqlitePool);
+#[derive(Debug, Clone)]
+pub struct SchwabConfig {
+    pub auth: SchwabAuthEnv,
+    pub pool: SqlitePool,
+}
 
 /// Schwab broker implementation
 #[derive(Debug, Clone)]
@@ -27,14 +31,15 @@ impl Broker for SchwabBroker {
     type Config = SchwabConfig;
 
     async fn try_from_config(config: Self::Config) -> Result<Self, Self::Error> {
-        let (auth, pool) = config;
-
         // Validate and refresh tokens during initialization
-        SchwabTokens::refresh_if_needed(&pool, &auth).await?;
+        SchwabTokens::refresh_if_needed(&config.pool, &config.auth).await?;
 
         info!("Schwab broker initialized with valid tokens");
 
-        Ok(Self { auth, pool })
+        Ok(Self {
+            auth: config.auth,
+            pool: config.pool,
+        })
     }
 
     async fn wait_until_market_open(&self) -> Result<std::time::Duration, Self::Error> {

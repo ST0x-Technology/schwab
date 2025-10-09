@@ -5,8 +5,6 @@ use uuid::Uuid;
 use super::auth::{AlpacaAuthEnv, AlpacaClient};
 use crate::{Broker, BrokerError, MarketOrder, OrderPlacement, OrderState, OrderUpdate};
 
-pub type AlpacaConfig = AlpacaAuthEnv;
-
 /// Alpaca broker implementation
 #[derive(Debug, Clone)]
 pub struct AlpacaBroker {
@@ -17,7 +15,7 @@ pub struct AlpacaBroker {
 impl Broker for AlpacaBroker {
     type Error = BrokerError;
     type OrderId = String;
-    type Config = AlpacaConfig;
+    type Config = AlpacaAuthEnv;
 
     async fn try_from_config(config: Self::Config) -> Result<Self, Self::Error> {
         let client = AlpacaClient::new(&config)?;

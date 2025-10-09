@@ -152,34 +152,17 @@ argument. Project compiles successfully with `cargo check` and `cargo fmt`
 passes. Integration testing with all three broker options still needs to be
 performed.
 
-## Task 8: Add Alpaca-Specific Features
+## Task 8: Finishing touches
 
-Implement features unique to Alpaca that enhance the bot's capabilities.
-
-- [ ] Add configuration for fractional share trading support
-- [ ] Implement extended hours trading flag in order placement
-- [ ] Add rate limit handling with exponential backoff
-- [ ] Implement Alpaca-specific error recovery strategies
-- [ ] Add configuration for paper trading mode
-- [ ] Handle pattern day trader restrictions if applicable
-- [ ] Add support for querying buying power/account status
-- [ ] Implement position querying for reconciliation
-- [ ] Document all Alpaca-specific configuration options
-- [ ] Add example .env configuration for Alpaca
-
-## Task 9: Testing and Documentation
-
-Comprehensive testing and documentation for the Alpaca integration.
-
+- [ ] Add rate limit handling with exponential backoff (using backon) (iff missing)
 - [ ] Write unit tests for all new Alpaca modules
-- [ ] Create integration tests using `httpmock` for Alpaca API
-- [ ] Test full order lifecycle in paper trading environment
+- [ ] Create tests using `httpmock` for Alpaca API
 - [ ] Add test coverage for error scenarios
-- [ ] Test broker switching between Schwab and Alpaca
-- [ ] Document Alpaca account setup process in README
-- [ ] Add Alpaca configuration section to CLAUDE.md
-- [ ] Create comparison table of Schwab vs Alpaca features
-- [ ] Document how to obtain Alpaca API keys
-- [ ] Add troubleshooting guide for common Alpaca issues
-- [ ] Update architecture documentation to include Alpaca
-- [ ] Verify all tests pass with `cargo test -p st0x-broker`
+- [ ] Add tests seemlessly broker switching between Schwab and Alpaca
+- [ ] Document Alpaca account setup process in @README (be brief)
+- [ ] Update architecture documentation @SPEC.md to include Alpaca
+- [ ] Verify all checks pass
+  - [ ] All tests
+  - [ ] All clippy rules
+  - [ ] All formatting rules
+  - [ ] Issues are actually resolved, not just errors/warnings bypassed

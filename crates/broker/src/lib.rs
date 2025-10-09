@@ -4,18 +4,18 @@ use tokio::task::JoinHandle;
 
 pub mod alpaca;
 pub mod error;
+pub mod mock;
 pub mod order;
 pub mod schwab;
-pub mod test;
 
 #[cfg(test)]
 pub mod test_utils;
 
 pub use alpaca::{AlpacaAuthEnv, AlpacaBroker, AlpacaClient};
 pub use error::PersistenceError;
+pub use mock::{MockBroker, MockBrokerConfig};
 pub use order::{MarketOrder, OrderPlacement, OrderState, OrderStatus, OrderUpdate};
-pub use schwab::broker::SchwabBroker;
-pub use test::TestBroker;
+pub use schwab::broker::{SchwabBroker, SchwabConfig};
 
 /// Stock symbol newtype wrapper with validation
 ///
@@ -187,6 +187,14 @@ impl From<apca::Error> for BrokerError {
     }
 }
 
+/// Trait for converting broker-specific configs into their corresponding broker implementations
+#[async_trait]
+pub trait TryIntoBroker {
+    type Broker: Broker;
+
+    async fn try_into_broker(self) -> Result<Self::Broker, <Self::Broker as Broker>::Error>;
+}
+
 #[async_trait]
 pub trait Broker: Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
@@ -231,6 +239,33 @@ pub trait Broker: Send + Sync + 'static {
     /// Tasks should run indefinitely and be aborted by the caller when shutdown is needed
     /// Errors are logged inside the task and do not propagate to the caller
     async fn run_broker_maintenance(&self) -> Option<JoinHandle<()>>;
+}
+
+#[async_trait]
+impl TryIntoBroker for SchwabConfig {
+    type Broker = SchwabBroker;
+
+    async fn try_into_broker(self) -> Result<Self::Broker, <Self::Broker as Broker>::Error> {
+        SchwabBroker::try_from_config(self).await
+    }
+}
+
+#[async_trait]
+impl TryIntoBroker for AlpacaAuthEnv {
+    type Broker = AlpacaBroker;
+
+    async fn try_into_broker(self) -> Result<Self::Broker, <Self::Broker as Broker>::Error> {
+        AlpacaBroker::try_from_config(self).await
+    }
+}
+
+#[async_trait]
+impl TryIntoBroker for MockBrokerConfig {
+    type Broker = MockBroker;
+
+    async fn try_into_broker(self) -> Result<Self::Broker, <Self::Broker as Broker>::Error> {
+        MockBroker::try_from_config(self).await
+    }
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@ use rocket::serde::{Deserialize, Serialize};
 use rocket::{Route, State, get, post, routes};
 use sqlx::SqlitePool;
 
-use crate::env::Env;
+use crate::env::{BrokerConfig, Config};
 use st0x_broker::schwab::extract_code_from_url;
 
 #[derive(Serialize, Deserialize)]
@@ -39,8 +39,14 @@ pub enum AuthRefreshResponse {
 pub async fn auth_refresh(
     request: Json<AuthRefreshRequest>,
     pool: &State<SqlitePool>,
-    env: &State<Env>,
+    config: &State<Config>,
 ) -> Json<AuthRefreshResponse> {
+    let BrokerConfig::Schwab(schwab_auth) = &config.broker else {
+        return Json(AuthRefreshResponse::Error {
+            error: "Auth refresh is only supported for Schwab broker".to_string(),
+        });
+    };
+
     let code = match extract_code_from_url(&request.redirect_url) {
         Ok(code) => code,
         Err(e) => {
@@ -50,7 +56,7 @@ pub async fn auth_refresh(
         }
     };
 
-    let tokens = match env.schwab_auth.get_tokens_from_code(&code).await {
+    let tokens = match schwab_auth.get_tokens_from_code(&code).await {
         Ok(tokens) => tokens,
         Err(e) => {
             return Json(AuthRefreshResponse::Error {
@@ -78,38 +84,30 @@ pub fn routes() -> Vec<Route> {
 #[cfg(test)]
 mod tests {
     use alloy::primitives::address;
-    use httpmock::MockServer;
+    use backon::{ExponentialBuilder, Retryable};
+    use clap::Parser;
+    use httpmock::{Mock, MockServer};
+    use reqwest::Client as ReqwestClient;
     use rocket::http::{ContentType, Status};
     use rocket::local::asynchronous::Client;
     use serde_json::json;
+    use serial_test::serial;
+    use std::time::Duration;
     use url::Url;
 
     use super::*;
-    use crate::env::Env;
+    use crate::env::{Config, Env};
+    use crate::launch;
     use crate::onchain::EvmEnv;
     use crate::test_utils::setup_test_db;
-    use st0x_broker::SupportedBroker;
-    use st0x_broker::alpaca::auth::AlpacaAuthEnv;
     use st0x_broker::schwab::auth::SchwabAuthEnv;
 
-    fn create_test_env_with_mock_server(mock_server: &MockServer) -> Env {
-        Env {
+    fn create_test_config_with_mock_server(mock_server: &MockServer) -> Config {
+        Config {
             database_url: ":memory:".to_string(),
             log_level: crate::env::LogLevel::Debug,
             server_port: 8080,
-            schwab_auth: SchwabAuthEnv {
-                schwab_app_key: "test_app_key".to_string(),
-                schwab_app_secret: "test_app_secret".to_string(),
-                schwab_redirect_uri: "https://127.0.0.1".to_string(),
-                schwab_base_url: mock_server.base_url(),
-                schwab_account_index: 0,
-            },
-            alpaca_auth: AlpacaAuthEnv {
-                alpaca_api_key_id: String::new(),
-                alpaca_api_secret_key: String::new(),
-                alpaca_base_url: "https://paper-api.alpaca.markets".to_string(),
-            },
-            evm_env: EvmEnv {
+            evm: EvmEnv {
                 ws_rpc_url: Url::parse("ws://localhost:8545").unwrap(),
                 orderbook: address!("0x1111111111111111111111111111111111111111"),
                 order_owner: address!("0x2222222222222222222222222222222222222222"),
@@ -117,7 +115,13 @@ mod tests {
             },
             order_polling_interval: 15,
             order_polling_max_jitter: 5,
-            broker: SupportedBroker::Schwab,
+            broker: BrokerConfig::Schwab(SchwabAuthEnv {
+                schwab_app_key: "test_app_key".to_string(),
+                schwab_app_secret: "test_app_secret".to_string(),
+                schwab_redirect_uri: "https://127.0.0.1".to_string(),
+                schwab_base_url: mock_server.base_url(),
+                schwab_account_index: 0,
+            }),
         }
     }
 
@@ -148,7 +152,7 @@ mod tests {
     #[tokio::test]
     async fn test_auth_refresh_success() {
         let server = MockServer::start();
-        let env = create_test_env_with_mock_server(&server);
+        let config = create_test_config_with_mock_server(&server);
         let pool = setup_test_db().await;
 
         let mock_response = json!({
@@ -166,7 +170,7 @@ mod tests {
         let rocket = rocket::build()
             .mount("/", routes![auth_refresh])
             .manage(pool)
-            .manage(env);
+            .manage(config);
         let client = Client::tracked(rocket)
             .await
             .expect("valid rocket instance");
@@ -203,13 +207,13 @@ mod tests {
     #[tokio::test]
     async fn test_auth_refresh_invalid_url() {
         let server = MockServer::start();
-        let env = create_test_env_with_mock_server(&server);
+        let config = create_test_config_with_mock_server(&server);
         let pool = setup_test_db().await;
 
         let rocket = rocket::build()
             .mount("/", routes![auth_refresh])
             .manage(pool)
-            .manage(env);
+            .manage(config);
         let client = Client::tracked(rocket)
             .await
             .expect("valid rocket instance");
@@ -242,13 +246,13 @@ mod tests {
     #[tokio::test]
     async fn test_auth_refresh_missing_code() {
         let server = MockServer::start();
-        let env = create_test_env_with_mock_server(&server);
+        let config = create_test_config_with_mock_server(&server);
         let pool = setup_test_db().await;
 
         let rocket = rocket::build()
             .mount("/", routes![auth_refresh])
             .manage(pool)
-            .manage(env);
+            .manage(config);
         let client = Client::tracked(rocket)
             .await
             .expect("valid rocket instance");
@@ -282,7 +286,7 @@ mod tests {
     #[tokio::test]
     async fn test_auth_refresh_schwab_api_error() {
         let server = MockServer::start();
-        let env = create_test_env_with_mock_server(&server);
+        let config = create_test_config_with_mock_server(&server);
         let pool = setup_test_db().await;
 
         let mock = server.mock(|when, then| {
@@ -295,7 +299,7 @@ mod tests {
         let rocket = rocket::build()
             .mount("/", routes![auth_refresh])
             .manage(pool)
-            .manage(env);
+            .manage(config);
         let client = Client::tracked(rocket)
             .await
             .expect("valid rocket instance");
@@ -330,13 +334,13 @@ mod tests {
     #[tokio::test]
     async fn test_auth_refresh_malformed_json_request() {
         let server = MockServer::start();
-        let env = create_test_env_with_mock_server(&server);
+        let config = create_test_config_with_mock_server(&server);
         let pool = setup_test_db().await;
 
         let rocket = rocket::build()
             .mount("/", routes![auth_refresh])
             .manage(pool)
-            .manage(env);
+            .manage(config);
         let client = Client::tracked(rocket)
             .await
             .expect("valid rocket instance");
@@ -355,13 +359,13 @@ mod tests {
     #[tokio::test]
     async fn test_auth_refresh_missing_redirect_url_field() {
         let server = MockServer::start();
-        let env = create_test_env_with_mock_server(&server);
+        let config = create_test_config_with_mock_server(&server);
         let pool = setup_test_db().await;
 
         let rocket = rocket::build()
             .mount("/", routes![auth_refresh])
             .manage(pool)
-            .manage(env);
+            .manage(config);
         let client = Client::tracked(rocket)
             .await
             .expect("valid rocket instance");
@@ -379,5 +383,179 @@ mod tests {
 
         // Rocket should return 422 for missing required field
         assert_eq!(response.status(), Status::UnprocessableEntity);
+    }
+
+    fn create_test_config_for_server(server: &MockServer, server_port: u16) -> Config {
+        let base_url = server.base_url();
+        let db_name = ":memory:";
+        let server_port_str = server_port.to_string();
+
+        let args = vec![
+            "test",
+            "--db",
+            db_name,
+            "--log-level",
+            "info",
+            "--server-port",
+            &server_port_str,
+            "--ws-rpc-url",
+            "ws://127.0.0.1:8545",
+            "--orderbook",
+            "0x1234567890123456789012345678901234567890",
+            "--order-owner",
+            "0xD2843D9E7738d46D90CB6Dff8D6C83db58B9c165",
+            "--deployment-block",
+            "1",
+            "--schwab-app-key",
+            "test_app_key",
+            "--schwab-app-secret",
+            "test_app_secret",
+            "--schwab-redirect-uri",
+            "https://127.0.0.1",
+            "--schwab-base-url",
+            &base_url,
+            "--schwab-account-index",
+            "0",
+            "--alpaca-api-key-id",
+            "",
+            "--alpaca-api-secret-key",
+            "",
+            "--broker",
+            "schwab",
+        ];
+
+        let parsed_env = Env::try_parse_from(args).expect("Failed to parse test environment");
+        parsed_env.into_config()
+    }
+
+    fn setup_schwab_api_mocks(server: &MockServer) -> Vec<Mock> {
+        vec![
+            server.mock(|when, then| {
+                when.method(httpmock::Method::GET)
+                    .path("/trader/v1/accounts/accountNumbers");
+                then.status(200)
+                    .header("content-type", "application/json")
+                    .json_body(json!([{"accountNumber": "12345", "hashValue": "hash123"}]));
+            }),
+            server.mock(|when, then| {
+                when.method(httpmock::Method::POST)
+                    .path("/v1/oauth/token")
+                    .header("content-type", "application/x-www-form-urlencoded");
+                then.status(200)
+                    .header("content-type", "application/json")
+                    .json_body(json!({
+                        "access_token": "new_access_token",
+                        "refresh_token": "new_refresh_token",
+                        "expires_in": 1800,
+                        "refresh_token_expires_in": 7_776_000,
+                        "token_type": "Bearer"
+                    }));
+            }),
+        ]
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_server_endpoints() {
+        let server = MockServer::start();
+        let server_port = 8081;
+        let config = create_test_config_for_server(&server, server_port);
+        let server_base_url = format!("http://127.0.0.1:{server_port}");
+
+        let oauth_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/v1/oauth/token")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body_contains("grant_type=authorization_code")
+                .body_contains("code=test_auth_code");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "access_token": "mock_access_token",
+                    "refresh_token": "mock_refresh_token",
+                    "expires_in": 1800,
+                    "refresh_token_expires_in": 7_776_000,
+                    "token_type": "Bearer"
+                }));
+        });
+
+        setup_schwab_api_mocks(&server);
+
+        tokio::spawn(async move { launch(config).await });
+
+        let client = ReqwestClient::new();
+        let health_url = format!("{server_base_url}/health");
+
+        let retry_strategy = ExponentialBuilder::default()
+            .with_max_delay(Duration::from_secs(1))
+            .with_max_times(20);
+
+        let health_check = || async { client.get(&health_url).send().await?.error_for_status() };
+
+        health_check
+            .retry(&retry_strategy)
+            .await
+            .expect("Server should become ready within timeout");
+
+        let health_response = client
+            .get(&health_url)
+            .send()
+            .await
+            .expect("Health endpoint should be accessible");
+
+        assert_eq!(health_response.status(), 200);
+        let health_data: serde_json::Value = health_response
+            .json()
+            .await
+            .expect("Health response should be valid JSON");
+        assert_eq!(health_data["status"], "healthy");
+        assert!(health_data["timestamp"].is_string());
+
+        let auth_request = json!({
+            "redirect_url": "https://127.0.0.1?code=test_auth_code&session=session123"
+        });
+
+        let auth_url = format!("{server_base_url}/auth/refresh");
+        let auth_response = client
+            .post(&auth_url)
+            .json(&auth_request)
+            .send()
+            .await
+            .expect("Auth endpoint should be accessible");
+
+        assert_eq!(auth_response.status(), 200);
+        let auth_data: serde_json::Value = auth_response
+            .json()
+            .await
+            .expect("Auth response should be valid JSON");
+
+        assert_eq!(auth_data["success"], "true");
+        assert!(
+            auth_data["message"]
+                .as_str()
+                .unwrap()
+                .contains("Authentication successful")
+        );
+
+        oauth_mock.assert();
+
+        let invalid_auth_request = json!({
+            "redirect_url": "https://127.0.0.1?error=access_denied"
+        });
+
+        let error_response = client
+            .post(&auth_url)
+            .json(&invalid_auth_request)
+            .send()
+            .await
+            .expect("Auth endpoint should handle errors");
+
+        assert_eq!(error_response.status(), 200);
+        let error_data: serde_json::Value = error_response
+            .json()
+            .await
+            .expect("Error response should be valid JSON");
+
+        assert_eq!(error_data["success"], "false");
     }
 }
