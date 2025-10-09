@@ -2,6 +2,8 @@ use crate::schwab::Direction;
 use rust_decimal::Decimal;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
+use std::fmt;
+use std::str::FromStr;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -14,10 +16,31 @@ pub(super) enum PnlError {
     ArithmeticOverflow,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum TradeType {
     Onchain,
     Offchain,
+}
+
+impl FromStr for TradeType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "ONCHAIN" => Ok(Self::Onchain),
+            "OFFCHAIN" => Ok(Self::Offchain),
+            _ => Err(format!("Invalid trade type: '{s}'")),
+        }
+    }
+}
+
+impl fmt::Display for TradeType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Onchain => write!(f, "ONCHAIN"),
+            Self::Offchain => write!(f, "OFFCHAIN"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -194,6 +217,7 @@ impl FifoInventory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::sample::select;
     use rust_decimal_macros::dec;
 
     #[test]
@@ -411,5 +435,30 @@ mod tests {
         assert_eq!(result.realized_pnl, Some(dec!(80.00)));
         assert_eq!(result.cumulative_pnl, dec!(110.00));
         assert_eq!(result.net_position_after, dec!(30));
+    }
+
+    #[test]
+    fn test_trade_type_from_str() {
+        assert_eq!("ONCHAIN".parse::<TradeType>().unwrap(), TradeType::Onchain);
+        assert_eq!(
+            "OFFCHAIN".parse::<TradeType>().unwrap(),
+            TradeType::Offchain
+        );
+        assert!("invalid".parse::<TradeType>().is_err());
+    }
+
+    #[test]
+    fn test_trade_type_display() {
+        assert_eq!(TradeType::Onchain.to_string(), "ONCHAIN");
+        assert_eq!(TradeType::Offchain.to_string(), "OFFCHAIN");
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn test_trade_type_roundtrip(trade_type in select(vec![TradeType::Onchain, TradeType::Offchain])) {
+            let display_str = trade_type.to_string();
+            let parsed: TradeType = display_str.parse().unwrap();
+            assert_eq!(parsed, trade_type);
+        }
     }
 }

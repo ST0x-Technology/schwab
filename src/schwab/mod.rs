@@ -54,7 +54,7 @@ impl std::str::FromStr for TradeStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
+pub(crate) enum Direction {
     Buy,
     Sell,
 }
