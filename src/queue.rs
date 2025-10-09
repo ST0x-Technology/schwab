@@ -38,6 +38,7 @@ pub struct QueuedEvent {
     pub processed: bool,
     pub created_at: Option<DateTime<Utc>>,
     pub processed_at: Option<DateTime<Utc>>,
+    pub block_timestamp: Option<DateTime<Utc>>,
 }
 
 async fn enqueue_event(
@@ -67,16 +68,22 @@ async fn enqueue_event(
     let event_json = serde_json::to_string(&event)
         .map_err(|e| EventQueueError::Processing(format!("Failed to serialize event: {e}")))?;
 
+    let block_timestamp_naive = log.block_timestamp.and_then(|ts| {
+        let ts_i64 = i64::try_from(ts).ok()?;
+        DateTime::from_timestamp(ts_i64, 0).map(|dt| dt.naive_utc())
+    });
+
     sqlx::query!(
         r#"
-        INSERT OR IGNORE INTO event_queue 
-        (tx_hash, log_index, block_number, event_data, processed)
-        VALUES (?, ?, ?, ?, 0)
+        INSERT OR IGNORE INTO event_queue
+        (tx_hash, log_index, block_number, event_data, processed, block_timestamp)
+        VALUES (?, ?, ?, ?, 0, ?)
         "#,
         tx_hash_str,
         log_index_i64,
         block_number_i64,
-        event_json
+        event_json,
+        block_timestamp_naive
     )
     .execute(pool)
     .await?;
@@ -90,7 +97,16 @@ pub(crate) async fn get_next_unprocessed_event(
 ) -> Result<Option<QueuedEvent>, EventQueueError> {
     let row = sqlx::query!(
         r#"
-        SELECT id, tx_hash, log_index, block_number, event_data, processed, created_at, processed_at
+        SELECT
+            id,
+            tx_hash,
+            log_index,
+            block_number,
+            event_data,
+            processed,
+            created_at,
+            processed_at,
+            block_timestamp
         FROM event_queue
         WHERE processed = 0
         ORDER BY block_number ASC, log_index ASC
@@ -124,6 +140,7 @@ pub(crate) async fn get_next_unprocessed_event(
         processed: row.processed,
         created_at: Some(row.created_at.and_utc()),
         processed_at: row.processed_at.map(|dt| dt.and_utc()),
+        block_timestamp: row.block_timestamp.map(|dt| dt.and_utc()),
     }))
 }
 
