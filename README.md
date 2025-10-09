@@ -130,13 +130,62 @@ rainix-rs-static
 
 - `src/lib.rs` - Main event loop and orchestration
 - `src/bin/server.rs` - Arbitrage bot server binary
+- `src/bin/reporter.rs` - P&L reporter binary
 - `src/bin/cli.rs` - Command-line interface for operations
 - `src/trade/` - Trade conversion and validation logic
 - `src/schwab.rs` - Charles Schwab API integration and OAuth
+- `src/reporter/` - P&L calculation and FIFO inventory logic
 - `src/symbol/` - Token symbol caching
 - `migrations/` - SQLite database schema
 - `AGENTS.md` - Development guidelines for AI assistance
 - `SPEC.md` - Full technical specification
+
+## P&L Reporter
+
+The reporter calculates realized profit/loss using FIFO (First-In-First-Out)
+accounting. It processes all trades (onchain and offchain) and maintains
+performance metrics in the `metrics_pnl` table for Grafana visualization.
+
+### How It Works
+
+- **FIFO Accounting**: Oldest position lots are consumed first when closing
+  positions
+- **In-Memory State**: FIFO inventory rebuilt on startup by replaying all trades
+- **Checkpoint**: Uses MAX(timestamp) from metrics_pnl to resume processing new
+  trades
+- **All Trades Tracked**: Both position-increasing and position-reducing trades
+  recorded
+
+### Running Locally
+
+```bash
+# Run reporter
+cargo run --bin reporter
+```
+
+### Metrics Table Schema
+
+Every trade gets a row in `metrics_pnl`:
+
+- **realized_pnl**: NULL for position increases, value for position decreases
+- **cumulative_pnl**: Running total of realized P&L for this symbol
+- **net_position_after**: Current position after trade (positive=long,
+  negative=short)
+
+### Example
+
+```
+Step 1: BUY 100 @ $10.00
+  - Opens lot: 100 shares @ $10.00 cost basis
+  - realized_pnl: NULL
+  - net_position_after: 100
+
+Step 2: SELL 60 @ $11.00
+  - Consumes 60 from oldest lot (FIFO)
+  - realized_pnl: (11.00 - 10.00) * 60 = $60.00
+  - cumulative_pnl: $60.00
+  - net_position_after: 40
+```
 
 ## Architecture
 
