@@ -238,6 +238,7 @@ impl OffchainExecution {
     ) -> Result<i64, st0x_broker::PersistenceError> {
         let shares_i64 = shares_to_db_i64(self.shares)?;
         let direction_str = self.direction.as_str();
+        let broker_str = self.broker.to_string();
         let status_str = self.state.status().as_str();
         let db_fields = self.state.to_db_fields()?;
 
@@ -247,16 +248,18 @@ impl OffchainExecution {
                 symbol,
                 shares,
                 direction,
+                broker,
                 order_id,
                 price_cents,
                 status,
                 executed_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
             "#,
             self.symbol,
             shares_i64,
             direction_str,
+            broker_str,
             db_fields.order_id,
             db_fields.price_cents,
             status_str,
