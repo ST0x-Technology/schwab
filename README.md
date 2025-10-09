@@ -424,20 +424,22 @@ Every trade gets a row in `metrics_pnl`:
 - **net_position_after**: Current position after trade (positive=long,
   negative=short)
 
-### Example
+### Example: Market Making tAAPL
 
-```text
-Step 1: BUY 100 @ $10.00
-  - Opens lot: 100 shares @ $10.00 cost basis
-  - realized_pnl: NULL
-  - net_position_after: 100
+This example demonstrates P&L calculation across both venues (onchain Raindex
+and offchain Schwab).
 
-Step 2: SELL 60 @ $11.00
-  - Consumes 60 from oldest lot (FIFO)
-  - realized_pnl: (11.00 - 10.00) * 60 = $60.00
-  - cumulative_pnl: $60.00
-  - net_position_after: 40
-```
+| Step | Source   | Side | Qty | Price   | Lots Consumed (FIFO)           | Realized P&L Calculation                            | Realized P&L | Cum P&L    | Net Pos | Inventory After                      | Notes                                        |
+| ---- | -------- | ---- | --- | ------- | ------------------------------ | --------------------------------------------------- | ------------ | ---------- | ------- | ------------------------------------ | -------------------------------------------- |
+| 1    | ONCHAIN  | SELL | 0.3 | $150.00 | —                              | —                                                   | NULL         | $0.00      | -0.3    | 0.3@$150 (short)                     | Fractional sell, below hedge threshold       |
+| 2    | ONCHAIN  | SELL | 0.4 | $151.00 | —                              | —                                                   | NULL         | $0.00      | -0.7    | 0.3@$150, 0.4@$151 (short)           | Accumulating short position                  |
+| 3    | ONCHAIN  | BUY  | 0.2 | $148.00 | 0.2@$150                       | (150-148)×0.2                                       | **+$0.40**   | **+$0.40** | -0.5    | 0.1@$150, 0.4@$151 (short)           | **P&L from onchain only, no offchain hedge** |
+| 4    | ONCHAIN  | SELL | 0.6 | $149.00 | —                              | —                                                   | NULL         | $0.40      | -1.1    | 0.1@$150, 0.4@$151, 0.6@$149 (short) | Crosses ≥1.0 threshold                       |
+| 5    | OFFCHAIN | BUY  | 1.0 | $148.50 | 0.1@$150 + 0.4@$151 + 0.5@$149 | (150-148.5)×0.1 + (151-148.5)×0.4 + (149-148.5)×0.5 | **+$1.15**   | **+$1.55** | -0.1    | 0.1@$149 (short)                     | Hedges floor(1.1)=1 share                    |
+| 6    | ONCHAIN  | BUY  | 1.5 | $147.50 | 0.1@$149 then reverses         | (149-147.5)×0.1                                     | **+$0.15**   | **+$1.70** | +1.4    | 1.4@$147.50 (long)                   | Position reversal: short→long                |
+| 7    | OFFCHAIN | SELL | 1.0 | $149.00 | 1.0@$147.50                    | (149-147.5)×1.0                                     | **+$1.50**   | **+$3.20** | +0.4    | 0.4@$147.50 (long)                   | Hedges floor(1.4)=1 share                    |
+
+**Final State:** Total P&L = **$3.20**, Net Position = **+0.4 long**
 
 ## How It Works
 

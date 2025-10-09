@@ -810,19 +810,17 @@ mod tests {
     async fn test_requirements_doc_seven_step_example() {
         let pool = create_test_pool().await;
 
-        let mut time = 1000;
-        let mut next_time = || {
-            time += 1000;
-            DateTime::from_timestamp(time, 0).expect("Invalid timestamp")
-        };
+        let timestamps: Vec<_> = (1..=7)
+            .map(|i| DateTime::from_timestamp(i * 1000, 0).expect("Invalid timestamp"))
+            .collect();
 
-        insert_onchain_trade(&pool, "AAPL", 100.0, 10.0, "BUY", next_time()).await;
-        insert_onchain_trade(&pool, "AAPL", 50.0, 12.0, "BUY", next_time()).await;
-        insert_onchain_trade(&pool, "AAPL", 80.0, 11.0, "SELL", next_time()).await;
-        insert_onchain_trade(&pool, "AAPL", 60.0, 9.5, "SELL", next_time()).await;
-        insert_onchain_trade(&pool, "AAPL", 30.0, 12.2, "BUY", next_time()).await;
-        insert_onchain_trade(&pool, "AAPL", 70.0, 12.0, "SELL", next_time()).await;
-        insert_onchain_trade(&pool, "AAPL", 20.0, 11.5, "BUY", next_time()).await;
+        insert_onchain_trade(&pool, "AAPL", 100.0, 10.0, "BUY", timestamps[0]).await;
+        insert_onchain_trade(&pool, "AAPL", 50.0, 12.0, "BUY", timestamps[1]).await;
+        insert_onchain_trade(&pool, "AAPL", 80.0, 11.0, "SELL", timestamps[2]).await;
+        insert_onchain_trade(&pool, "AAPL", 60.0, 9.5, "SELL", timestamps[3]).await;
+        insert_onchain_trade(&pool, "AAPL", 30.0, 12.2, "BUY", timestamps[4]).await;
+        insert_onchain_trade(&pool, "AAPL", 70.0, 12.0, "SELL", timestamps[5]).await;
+        insert_onchain_trade(&pool, "AAPL", 20.0, 11.5, "BUY", timestamps[6]).await;
 
         process_iteration(&pool)
             .await
@@ -858,6 +856,45 @@ mod tests {
         assert_option_f64_eq(metrics[6].realized_pnl, Some(10.0));
         assert_f64_eq(metrics[6].cumulative_pnl, -26.0);
         assert_f64_eq(metrics[6].net_position_after, -10.0);
+    }
+
+    #[tokio::test]
+    async fn test_fractional_onchain_pnl_without_offchain_hedge() {
+        let pool = create_test_pool().await;
+
+        let timestamps: Vec<_> = (1..=4)
+            .map(|i| DateTime::from_timestamp(i * 1000, 0).expect("Invalid timestamp"))
+            .collect();
+
+        insert_onchain_trade(&pool, "AAPL", 0.3, 150.0, "SELL", timestamps[0]).await;
+        insert_onchain_trade(&pool, "AAPL", 0.4, 151.0, "SELL", timestamps[1]).await;
+        insert_onchain_trade(&pool, "AAPL", 0.5, 149.0, "SELL", timestamps[2]).await;
+        insert_onchain_trade(&pool, "AAPL", 0.6, 148.0, "BUY", timestamps[3]).await;
+
+        process_iteration(&pool)
+            .await
+            .expect("Failed to process iteration");
+
+        let metrics = query_all_pnl_metrics(&pool, "AAPL").await;
+        assert_eq!(metrics.len(), 4);
+
+        assert_eq!(metrics[0].trade_type, "ONCHAIN");
+        assert_option_f64_eq(metrics[0].realized_pnl, None);
+        assert_f64_eq(metrics[0].net_position_after, -0.3);
+
+        assert_eq!(metrics[1].trade_type, "ONCHAIN");
+        assert_option_f64_eq(metrics[1].realized_pnl, None);
+        assert_f64_eq(metrics[1].net_position_after, -0.7);
+
+        assert_eq!(metrics[2].trade_type, "ONCHAIN");
+        assert_option_f64_eq(metrics[2].realized_pnl, None);
+        assert_f64_eq(metrics[2].net_position_after, -1.2);
+
+        assert_eq!(metrics[3].trade_type, "ONCHAIN");
+        let expected_pnl = (150.0 - 148.0) * 0.3 + (151.0 - 148.0) * 0.3;
+        assert_option_f64_eq(metrics[3].realized_pnl, Some(expected_pnl));
+        assert_f64_eq(metrics[3].cumulative_pnl, expected_pnl);
+        assert_f64_eq(metrics[3].net_position_after, -0.6);
     }
 
     #[tokio::test]
