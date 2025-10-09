@@ -276,7 +276,6 @@ fn spawn_queue_processor<
 
 fn spawn_periodic_accumulated_position_check<B: Broker + Clone + Send + 'static>(
     broker: B,
-    env: Env,
     pool: SqlitePool,
 ) -> JoinHandle<()> {
     info!("Starting periodic accumulated position checker");
@@ -290,7 +289,7 @@ fn spawn_periodic_accumulated_position_check<B: Broker + Clone + Send + 'static>
         loop {
             interval.tick().await;
             debug!("Running periodic accumulated position check");
-            if let Err(e) = check_and_execute_accumulated_positions(&broker, &env, &pool).await {
+            if let Err(e) = check_and_execute_accumulated_positions(&broker, &pool).await {
                 error!("Periodic accumulated position check failed: {e}");
             }
         }
@@ -434,8 +433,7 @@ async fn run_queue_processor<P: Provider + Clone, B: Broker + Clone>(
         {
             Ok(Some(execution)) => {
                 if let Some(exec_id) = execution.id {
-                    if let Err(e) =
-                        execute_pending_offchain_execution(broker, env, pool, exec_id).await
+                    if let Err(e) = execute_pending_offchain_execution(broker, pool, exec_id).await
                     {
                         error!("Failed to execute offchain order {exec_id}: {e}");
                     }
@@ -666,7 +664,6 @@ fn reconstruct_log_from_queued_event(
 
 async fn check_and_execute_accumulated_positions<B: Broker + Clone + Send + 'static>(
     broker: &B,
-    env: &Env,
     pool: &SqlitePool,
 ) -> Result<(), EventProcessingError> {
     let broker_type = broker.to_supported_broker();
@@ -695,15 +692,9 @@ async fn check_and_execute_accumulated_positions<B: Broker + Clone + Send + 'sta
 
         let pool_clone = pool.clone();
         let broker_clone = broker.clone();
-        let env_clone = env.clone();
         tokio::spawn(async move {
-            if let Err(e) = execute_pending_offchain_execution(
-                &broker_clone,
-                &env_clone,
-                &pool_clone,
-                execution_id,
-            )
-            .await
+            if let Err(e) =
+                execute_pending_offchain_execution(&broker_clone, &pool_clone, execution_id).await
             {
                 error!(
                     "Failed to execute accumulated position for execution_id {}: {e}",
@@ -723,7 +714,6 @@ async fn check_and_execute_accumulated_positions<B: Broker + Clone + Send + 'sta
 
 async fn execute_pending_offchain_execution<B: Broker + Clone + Send + 'static>(
     broker: &B,
-    _env: &Env,
     pool: &SqlitePool,
     execution_id: i64,
 ) -> Result<(), EventProcessingError> {
@@ -739,7 +729,7 @@ async fn execute_pending_offchain_execution<B: Broker + Clone + Send + 'static>(
 
     let market_order = MarketOrder {
         symbol: Symbol::new(execution.symbol.clone())?,
-        shares: Shares::new(execution.shares as u64)?,
+        shares: Shares::new(execution.shares)?,
         direction: execution.direction,
     };
 
@@ -1473,7 +1463,7 @@ mod tests {
         let env = create_test_env();
         let broker = env.get_test_broker().await.unwrap();
 
-        let result = execute_pending_offchain_execution(&broker, &env, &pool, 99999).await;
+        let result = execute_pending_offchain_execution(&broker, &pool, 99999).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }

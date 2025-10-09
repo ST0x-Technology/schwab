@@ -60,8 +60,9 @@ impl Broker for TestBroker {
 
     async fn wait_until_market_open(&self) -> Result<std::time::Duration, Self::Error> {
         info!("[TEST] Market hours check - market is always open in test mode");
-        // Return a very long duration since test broker has no market hours
-        Ok(std::time::Duration::from_secs(365 * 24 * 3600)) // 1 year
+        // Test broker should never block on market hours, so return Duration::MAX
+        // to signal no time limit
+        Ok(std::time::Duration::MAX)
     }
 
     async fn place_market_order(
@@ -151,7 +152,7 @@ mod tests {
         let result = broker.wait_until_market_open().await;
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), None); // Market is always open in test mode
+        assert_eq!(result.unwrap(), std::time::Duration::from_secs(0));
     }
 
     #[tokio::test]
@@ -159,9 +160,9 @@ mod tests {
         let broker = TestBroker::with_failure("Test failure");
         let result = broker.wait_until_market_open().await;
 
-        // wait_until_market_open should succeed even for failure brokers
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), None);
+        let dur = result.unwrap();
+        assert_eq!(dur, std::time::Duration::from_secs(0));
     }
 
     #[tokio::test]

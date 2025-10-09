@@ -141,7 +141,6 @@ impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
             spawn_event_processor(self.common.pool.clone(), self.state.event_receiver);
         let position_checker = spawn_periodic_accumulated_position_check(
             self.common.broker.clone(),
-            self.common.env.clone(),
             self.common.pool.clone(),
         );
         let queue_processor = spawn_queue_processor(

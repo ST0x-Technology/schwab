@@ -8,7 +8,6 @@ pub mod api;
 mod bindings;
 pub mod cli;
 mod conductor;
-mod db_utils;
 pub mod env;
 mod error;
 mod lock;
@@ -72,15 +71,22 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn run_with_broker<B: Broker + Clone + Send + 'static>(
+    broker: B,
+    env: Env,
+    pool: SqlitePool,
+) -> anyhow::Result<()> {
+    let broker_maintenance = broker.run_broker_maintenance().await;
+    run_market_hours_loop(broker, env, pool, broker_maintenance).await
+}
+
 async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
     if env.dry_run {
         let broker = env.get_test_broker().await?;
-        let broker_maintenance = broker.run_broker_maintenance().await;
-        run_market_hours_loop(broker, env, pool, broker_maintenance).await
+        run_with_broker(broker, env, pool).await
     } else {
         let broker = env.get_schwab_broker(pool.clone()).await?;
-        let broker_maintenance = broker.run_broker_maintenance().await;
-        run_market_hours_loop(broker, env, pool, broker_maintenance).await
+        run_with_broker(broker, env, pool).await
     }
 }
 

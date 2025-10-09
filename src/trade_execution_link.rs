@@ -2,13 +2,13 @@ use chrono::{DateTime, Utc};
 use st0x_broker::{Direction, OrderState};
 
 #[cfg(test)]
-use crate::db_utils::shares_from_db_i64;
-#[cfg(test)]
 use crate::error::OnChainError;
 #[cfg(test)]
 use crate::onchain::io::TokenizedEquitySymbol;
 #[cfg(test)]
 use sqlx::SqlitePool;
+#[cfg(test)]
+use st0x_broker::PersistenceError;
 #[cfg(test)]
 use st0x_broker::{OrderStatus, SupportedBroker};
 
@@ -93,7 +93,9 @@ impl TradeExecutionLink {
                 })?;
 
                 let execution_status_enum = row.status.parse::<OrderStatus>().map_err(|e| {
-                    OnChainError::Persistence(st0x_broker::PersistenceError::InvalidTradeStatus(e))
+                    OnChainError::Persistence(st0x_broker::PersistenceError::InvalidTradeStatus(
+                        e.to_string(),
+                    ))
                 })?;
 
                 let execution_status = OrderState::from_db_row(
@@ -108,7 +110,11 @@ impl TradeExecutionLink {
                     execution_id: row.execution_id,
                     contributed_shares: row.contributed_shares,
                     execution_symbol: row.symbol,
-                    execution_total_shares: shares_from_db_i64(row.shares)?,
+                    execution_total_shares: row.shares.try_into().map_err(|_| {
+                        OnChainError::Persistence(PersistenceError::InvalidShareQuantity(
+                            row.shares,
+                        ))
+                    })?,
                     execution_direction,
                     execution_status,
                     created_at: Some(DateTime::from_naive_utc_and_offset(row.created_at, Utc)),
@@ -225,7 +231,11 @@ impl TradeExecutionLink {
                         .trade_created_at
                         .map(|naive_dt| DateTime::from_naive_utc_and_offset(naive_dt, Utc)),
                     execution_id: row.execution_id,
-                    execution_shares: shares_from_db_i64(row.execution_shares)?,
+                    execution_shares: row.execution_shares.try_into().map_err(|_| {
+                        OnChainError::Persistence(PersistenceError::InvalidShareQuantity(
+                            row.execution_shares,
+                        ))
+                    })?,
                     execution_direction: row.execution_direction,
                     execution_status: row.status,
                     execution_order_id: row.order_id,

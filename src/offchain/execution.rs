@@ -1,6 +1,5 @@
 use sqlx::SqlitePool;
 
-use crate::db_utils::shares_from_db_i64;
 use crate::error::OnChainError;
 use st0x_broker::PersistenceError;
 use st0x_broker::{Direction, SupportedBroker};
@@ -62,7 +61,9 @@ fn row_to_execution(
     Ok(OffchainExecution {
         id: Some(id),
         symbol,
-        shares: shares_from_db_i64(shares)?,
+        shares: shares.try_into().map_err(|_| {
+            OnChainError::Persistence(PersistenceError::InvalidShareQuantity(shares))
+        })?,
         direction: parsed_direction,
         broker: parsed_broker,
         state: parsed_state,
