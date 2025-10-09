@@ -1,6 +1,7 @@
 services:
   schwarbot:
     image: ${DOCKER_IMAGE}
+    pull_policy: ${PULL_POLICY}
     container_name: schwarbot
     command: ["server"]
     environment:
@@ -15,6 +16,7 @@ services:
 
   reporter:
     image: ${DOCKER_IMAGE}
+    pull_policy: ${PULL_POLICY}
     container_name: reporter
     command: ["reporter"]
     env_file:

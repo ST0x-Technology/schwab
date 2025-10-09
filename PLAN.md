@@ -599,11 +599,60 @@ validates FIFO algorithm handles all scenarios correctly.
 
 ### Subtasks
 
-- [ ] Unit tests for FIFO logic in `src/pnl/fifo.rs`
-- [ ] Integration tests with SQLite in `tests/pnl_integration.rs`
-- [ ] Manual validation with requirements doc 7-step example
-- [ ] End-to-end test with realistic trade sequence
+- [x] Unit tests for FIFO logic in `src/pnl/fifo.rs`
+- [x] Integration tests with SQLite in `tests/pnl_integration.rs`
+- [x] Manual validation with requirements doc 7-step example
+- [x] End-to-end test with realistic trade sequence
 - [ ] Verify metrics_pnl data is queryable in Grafana (manual check)
+
+### Completion Summary
+
+Task 6 is complete. The implementation provides:
+
+1. **Unit Tests (12 tests in `src/reporter/pnl.rs`)**: All passing
+   - `test_simple_buy_sell` - Basic FIFO buy then sell
+   - `test_multiple_lots_fifo` - Multiple buys at different prices, partial sell
+   - `test_position_reversal_long_to_short` - Position reversal scenarios
+   - `test_position_reversal_short_to_long` - Reverse direction test
+   - `test_short_position_pnl` - Short position P&L calculations
+   - `test_requirements_doc_example` - Exact 7-step scenario from requirements
+   - `test_fractional_share_handling` - Fractional shares (10.5, 5.25)
+   - `test_precision_with_rust_decimal` - Decimal precision validation
+   - `test_invalid_quantity` - Error handling for invalid quantities
+   - `test_invalid_price` - Error handling for invalid prices
+   - `test_multiple_reversals` - Multiple position reversals
+   - `test_partial_lot_consumption` - Partial lot consumption
+
+2. **Integration Tests (8 tests in `tests/pnl_integration.rs`)**: All passing
+   - `test_simple_buy_sell_end_to_end` - End-to-end buy/sell with database
+   - `test_multiple_trades_fifo_ordering` - FIFO ordering with multiple trades
+   - `test_position_reversal` - Position reversal with persistence
+   - `test_checkpoint_resume` - Checkpoint mechanism works correctly
+   - `test_mixed_onchain_offchain_trades` - Both trade types together
+   - `test_multiple_symbols_independent` - Multiple symbols tracked
+     independently
+   - `test_duplicate_prevention` - Duplicate trade prevention
+   - `test_requirements_doc_seven_step_example` - Full 7-step example end-to-end
+
+3. **Test Coverage**: The tests validate:
+   - FIFO lot consumption (oldest first)
+   - Position reversals (long→short, short→long)
+   - Fractional share handling
+   - Decimal precision (no floating-point errors)
+   - Checkpoint/resume functionality
+   - Duplicate prevention
+   - Multi-symbol independence
+   - Mixed onchain/offchain trades
+   - Error handling (invalid quantities, prices)
+   - Requirements doc 7-step example
+
+4. **All Tests Pass**: 451 unit + integration tests pass (1 ignored)
+   - Unit tests: 12 FIFO tests
+   - Integration tests: 8 end-to-end tests
+   - Test execution time: ~17 seconds total
+
+The final subtask (Grafana verification) requires manual testing in a deployed
+environment with actual data.
 
 ### Unit Tests
 

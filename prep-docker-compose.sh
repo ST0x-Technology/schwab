@@ -36,11 +36,13 @@ if [ "$PROD_MODE" = true ]; then
   fi
 
   export DOCKER_IMAGE="registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}"
+  export PULL_POLICY="always"
 else
   echo "==> Local/debug mode: building image locally"
 
   export DOCKER_IMAGE="schwarbot:local"
   export DATA_VOLUME_PATH="./data"
+  export PULL_POLICY="never"
 
   # Build Docker image with debug profile
   echo "==> Building Docker image with debug profile..."
