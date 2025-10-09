@@ -29,16 +29,16 @@ impl Enqueueable for TakeOrderV2 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QueuedEvent {
-    pub id: Option<i64>,
-    pub tx_hash: B256,
-    pub log_index: u64,
-    pub block_number: u64,
-    pub event: TradeEvent,
-    pub processed: bool,
-    pub created_at: Option<DateTime<Utc>>,
-    pub processed_at: Option<DateTime<Utc>>,
-    pub block_timestamp: Option<DateTime<Utc>>,
+pub(crate) struct QueuedEvent {
+    pub(crate) id: Option<i64>,
+    pub(crate) tx_hash: B256,
+    pub(crate) log_index: u64,
+    pub(crate) block_number: u64,
+    pub(crate) event: TradeEvent,
+    pub(crate) processed: bool,
+    pub(crate) created_at: Option<DateTime<Utc>>,
+    pub(crate) processed_at: Option<DateTime<Utc>>,
+    pub(crate) block_timestamp: Option<DateTime<Utc>>,
 }
 
 async fn enqueue_event(
