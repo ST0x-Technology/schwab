@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::price_cents_from_db_i64;
-use crate::error::OnChainError;
+use crate::error::PersistenceError;
 
 /// Deserialize orderId from Schwab API as int64 and convert to string for database compatibility.
 ///
@@ -92,7 +92,7 @@ impl OrderStatusResponse {
     }
 
     /// Convert price to cents for database storage
-    pub(crate) fn price_in_cents(&self) -> Result<Option<u64>, OnChainError> {
+    pub(crate) fn price_in_cents(&self) -> Result<Option<u64>, PersistenceError> {
         self.calculate_weighted_average_price().map_or_else(
             || Ok(None),
             |price| {

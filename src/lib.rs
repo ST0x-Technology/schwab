@@ -1,7 +1,8 @@
 use rocket::Config;
 use sqlx::SqlitePool;
-use std::sync::Arc;
 use tracing::{error, info};
+
+use st0x_broker::Broker;
 
 pub mod api;
 mod bindings;
@@ -10,21 +11,17 @@ mod conductor;
 pub mod env;
 mod error;
 mod lock;
+mod offchain;
 mod onchain;
 mod queue;
-pub mod schwab;
 mod symbol;
 mod trade_execution_link;
-mod trading_hours_controller;
 
 #[cfg(test)]
 pub mod test_utils;
 
 use crate::conductor::run_market_hours_loop;
 use crate::env::Env;
-use crate::schwab::market_hours_cache::MarketHoursCache;
-use crate::schwab::tokens::spawn_automatic_token_refresh;
-use crate::trading_hours_controller::TradingHoursController;
 
 pub async fn launch(env: Env) -> anyhow::Result<()> {
     let pool = env.get_sqlite_pool().await?;
@@ -74,17 +71,23 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn run_with_broker<B: Broker + Clone + Send + 'static>(
+    broker: B,
+    env: Env,
+    pool: SqlitePool,
+) -> anyhow::Result<()> {
+    let broker_maintenance = broker.run_broker_maintenance().await;
+    run_market_hours_loop(broker, env, pool, broker_maintenance).await
+}
+
 async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
-    let token_refresher = spawn_automatic_token_refresh(pool.clone(), env.schwab_auth.clone());
-
-    let market_hours_cache = Arc::new(MarketHoursCache::new());
-    let controller = TradingHoursController::new(
-        market_hours_cache,
-        env.schwab_auth.clone(),
-        Arc::new(pool.clone()),
-    );
-
-    run_market_hours_loop(controller, env, pool, token_refresher).await
+    if env.dry_run {
+        let broker = env.get_test_broker().await?;
+        run_with_broker(broker, env, pool).await
+    } else {
+        let broker = env.get_schwab_broker(pool.clone()).await?;
+        run_with_broker(broker, env, pool).await
+    }
 }
 
 #[cfg(test)]

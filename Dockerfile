@@ -63,9 +63,6 @@ RUN apt-get update && \
         ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# Create schwab user and group
-RUN groupadd -r schwab && useradd --no-log-init -r -g schwab schwab
-
 WORKDIR /app
 
 # Copy only the compiled binaries from builder stage (now with fixed interpreter paths)

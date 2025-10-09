@@ -10,7 +10,7 @@ use super::{SchwabAuthEnv, SchwabError, SchwabTokens};
 
 /// Market session types for trading hours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MarketSession {
+pub enum MarketSession {
     PreMarket,
     Regular,
     AfterHours,
@@ -18,7 +18,7 @@ pub(crate) enum MarketSession {
 
 impl MarketSession {
     #[cfg(test)]
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::PreMarket => "PRE_MARKET",
             Self::Regular => "REGULAR",
@@ -42,13 +42,13 @@ impl std::str::FromStr for MarketSession {
 
 /// Market status representing whether the market is currently open or closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MarketStatus {
+pub enum MarketStatus {
     Open,
     Closed,
 }
 
 impl MarketStatus {
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Open => "OPEN",
             Self::Closed => "CLOSED",
@@ -58,7 +58,7 @@ impl MarketStatus {
 
 /// Market hours information for a specific date and session.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct MarketHours {
+pub struct MarketHours {
     pub date: NaiveDate,
     pub session_type: MarketSession,
     /// Start time in Eastern timezone (None for closed days)
@@ -70,7 +70,7 @@ pub(crate) struct MarketHours {
 
 impl MarketHours {
     /// Get current market status based on current time.
-    pub(crate) fn current_status(&self) -> MarketStatus {
+    pub fn current_status(&self) -> MarketStatus {
         if !self.is_open {
             return MarketStatus::Closed;
         }
@@ -92,15 +92,15 @@ impl MarketHours {
         }
     }
 
-    /// Convert start time to system timezone.
+    /// Get the next market open time in UTC.
     #[cfg(test)]
-    pub(crate) fn start_in_local(&self) -> Option<DateTime<Utc>> {
+    pub fn next_market_open(&self) -> Option<DateTime<Utc>> {
         self.start.map(|dt| dt.with_timezone(&Utc))
     }
 
     /// Convert end time to system timezone.
     #[cfg(test)]
-    pub(crate) fn end_in_local(&self) -> Option<DateTime<Utc>> {
+    pub fn end_in_local(&self) -> Option<DateTime<Utc>> {
         self.end.map(|dt| dt.with_timezone(&Utc))
     }
 }
@@ -159,7 +159,7 @@ struct TimeRange {
 ///
 /// Uses the `/marketdata/v1/markets/{marketId}` endpoint with "equity" as the market ID.
 /// Returns market hours in Eastern timezone per the API specification.
-pub(crate) async fn fetch_market_hours(
+pub async fn fetch_market_hours(
     env: &SchwabAuthEnv,
     pool: &SqlitePool,
     date: Option<&str>,
@@ -582,7 +582,7 @@ mod tests {
             is_open: true,
         };
 
-        let start_utc = market_hours.start_in_local().unwrap();
+        let start_utc = market_hours.next_market_open().unwrap();
         let end_utc = market_hours.end_in_local().unwrap();
 
         assert_eq!(start_utc, start_et.with_timezone(&Utc));

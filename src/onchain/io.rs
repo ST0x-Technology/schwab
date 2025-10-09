@@ -5,7 +5,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use crate::error::{OnChainError, TradeValidationError};
-use crate::schwab::Direction;
+use st0x_broker::Direction;
 
 /// Macro to create a TokenizedEquitySymbol.
 /// This macro provides a convenient way to create tokenized equity symbols.

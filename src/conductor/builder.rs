@@ -7,6 +7,8 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use tracing::info;
 
+use st0x_broker::Broker;
+
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
 use crate::env::Env;
 use crate::onchain::trade::TradeEvent;
@@ -21,57 +23,69 @@ type ClearStream = Box<dyn Stream<Item = Result<(ClearV2, Log), sol_types::Error
 type TakeStream =
     Box<dyn Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin + Send>;
 
-struct CommonFields<P> {
+struct CommonFields<P, B> {
     env: Env,
     pool: SqlitePool,
     cache: SymbolCache,
     provider: P,
+    broker: B,
 }
 
 pub(crate) struct Initial;
 
-pub(crate) struct WithToken {
-    token_refresher: JoinHandle<()>,
+pub(crate) struct WithBrokerMaintenance {
+    broker_maintenance: Option<JoinHandle<()>>,
 }
 
 pub(crate) struct WithDexStreams {
-    token_refresher: JoinHandle<()>,
+    broker_maintenance: Option<JoinHandle<()>>,
     clear_stream: ClearStream,
     take_stream: TakeStream,
     event_sender: UnboundedSender<(TradeEvent, Log)>,
     event_receiver: UnboundedReceiver<(TradeEvent, Log)>,
 }
 
-pub(crate) struct ConductorBuilder<P, State> {
-    common: CommonFields<P>,
+pub(crate) struct ConductorBuilder<P, B, State> {
+    common: CommonFields<P, B>,
     state: State,
 }
 
-impl<P: Provider + Clone + Send + 'static> ConductorBuilder<P, Initial> {
-    pub(crate) fn new(env: Env, pool: SqlitePool, cache: SymbolCache, provider: P) -> Self {
+impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
+    ConductorBuilder<P, B, Initial>
+{
+    pub(crate) fn new(
+        env: Env,
+        pool: SqlitePool,
+        cache: SymbolCache,
+        provider: P,
+        broker: B,
+    ) -> Self {
         Self {
             common: CommonFields {
                 env,
                 pool,
                 cache,
                 provider,
+                broker,
             },
             state: Initial,
         }
     }
 
-    pub(crate) fn with_token_refresher(
+    pub(crate) fn with_broker_maintenance(
         self,
-        token_refresher: JoinHandle<()>,
-    ) -> ConductorBuilder<P, WithToken> {
+        broker_maintenance: Option<JoinHandle<()>>,
+    ) -> ConductorBuilder<P, B, WithBrokerMaintenance> {
         ConductorBuilder {
             common: self.common,
-            state: WithToken { token_refresher },
+            state: WithBrokerMaintenance { broker_maintenance },
         }
     }
 }
 
-impl<P: Provider + Clone + Send + 'static> ConductorBuilder<P, WithToken> {
+impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
+    ConductorBuilder<P, B, WithBrokerMaintenance>
+{
     pub(crate) fn with_dex_event_streams(
         self,
         clear_stream: impl Stream<Item = Result<(ClearV2, Log), sol_types::Error>>
@@ -82,14 +96,14 @@ impl<P: Provider + Clone + Send + 'static> ConductorBuilder<P, WithToken> {
         + Unpin
         + Send
         + 'static,
-    ) -> ConductorBuilder<P, WithDexStreams> {
+    ) -> ConductorBuilder<P, B, WithDexStreams> {
         let (event_sender, event_receiver) =
             tokio::sync::mpsc::unbounded_channel::<(TradeEvent, Log)>();
 
         ConductorBuilder {
             common: self.common,
             state: WithDexStreams {
-                token_refresher: self.state.token_refresher,
+                broker_maintenance: self.state.broker_maintenance,
                 clear_stream: Box::new(clear_stream),
                 take_stream: Box::new(take_stream),
                 event_sender,
@@ -99,12 +113,25 @@ impl<P: Provider + Clone + Send + 'static> ConductorBuilder<P, WithToken> {
     }
 }
 
-impl<P: Provider + Clone + Send + 'static> ConductorBuilder<P, WithDexStreams> {
+impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
+    ConductorBuilder<P, B, WithDexStreams>
+{
     pub(crate) fn spawn(self) -> Conductor {
         info!("Starting conductor orchestration");
 
-        let broker = self.common.env.get_broker();
-        let order_poller = spawn_order_poller(&self.common.env, &self.common.pool, broker.clone());
+        let broker_maintenance = self.state.broker_maintenance;
+
+        if broker_maintenance.is_some() {
+            info!("Started broker maintenance tasks");
+        } else {
+            info!("No broker maintenance tasks needed");
+        }
+
+        let order_poller = spawn_order_poller(
+            &self.common.env,
+            &self.common.pool,
+            self.common.broker.clone(),
+        );
         let dex_event_receiver = spawn_onchain_event_receiver(
             self.state.event_sender,
             self.state.clear_stream,
@@ -113,12 +140,11 @@ impl<P: Provider + Clone + Send + 'static> ConductorBuilder<P, WithDexStreams> {
         let event_processor =
             spawn_event_processor(self.common.pool.clone(), self.state.event_receiver);
         let position_checker = spawn_periodic_accumulated_position_check(
-            broker.clone(),
-            self.common.env.clone(),
+            self.common.broker.clone(),
             self.common.pool.clone(),
         );
         let queue_processor = spawn_queue_processor(
-            broker,
+            self.common.broker,
             &self.common.env,
             &self.common.pool,
             &self.common.cache,
@@ -126,7 +152,7 @@ impl<P: Provider + Clone + Send + 'static> ConductorBuilder<P, WithDexStreams> {
         );
 
         Conductor {
-            token_refresher: self.state.token_refresher,
+            broker_maintenance,
             order_poller,
             dex_event_receiver,
             event_processor,

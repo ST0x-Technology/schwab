@@ -4,12 +4,13 @@ use tracing::info;
 use super::OnchainTrade;
 use crate::error::{OnChainError, TradeValidationError};
 use crate::lock::{clear_execution_lease, set_pending_execution_id, try_acquire_execution_lease};
+use crate::offchain::execution::OffchainExecution;
+use crate::offchain::execution::update_execution_status_within_transaction;
 use crate::onchain::io::EquitySymbol;
 use crate::onchain::position_calculator::{AccumulationBucket, PositionCalculator};
-use crate::schwab::TradeState;
-use crate::schwab::execution::update_execution_status_within_transaction;
-use crate::schwab::{Direction, execution::SchwabExecution};
 use crate::trade_execution_link::TradeExecutionLink;
+use st0x_broker::OrderState;
+use st0x_broker::{Direction, SupportedBroker};
 
 /// Processes an onchain trade through the accumulation system with duplicate detection.
 ///
@@ -19,14 +20,15 @@ use crate::trade_execution_link::TradeExecutionLink;
 /// 3. Updates the position accumulator for the symbol
 /// 4. Attempts to create a Schwab execution if position thresholds are met
 ///
-/// Returns `Some(SchwabExecution)` if a Schwab order was created, `None` if the trade
+/// Returns `Some(OffchainExecution)` if a Schwab order was created, `None` if the trade
 /// was accumulated but didn't trigger an execution (or was a duplicate).
 ///
 /// The transaction must be committed by the caller.
 pub async fn process_onchain_trade(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     trade: OnchainTrade,
-) -> Result<Option<SchwabExecution>, OnChainError> {
+    broker_type: st0x_broker::SupportedBroker,
+) -> Result<Option<OffchainExecution>, OnChainError> {
     // Check if trade already exists to handle duplicates gracefully
     let tx_hash_str = trade.tx_hash.to_string();
     #[allow(clippy::cast_possible_wrap)]
@@ -90,13 +92,15 @@ pub async fn process_onchain_trade(
     clean_up_stale_executions(sql_tx, base_symbol).await?;
 
     let execution = if try_acquire_execution_lease(sql_tx, base_symbol).await? {
-        let result = try_create_execution_if_ready(sql_tx, base_symbol, &mut calculator).await?;
+        let result =
+            try_create_execution_if_ready(sql_tx, base_symbol, &mut calculator, broker_type)
+                .await?;
 
         match &result {
             Some(execution) => {
                 let execution_id = execution
                     .id
-                    .ok_or(crate::error::PersistenceError::MissingExecutionId)?;
+                    .ok_or(st0x_broker::PersistenceError::MissingExecutionId)?;
                 set_pending_execution_id(sql_tx, base_symbol, execution_id).await?;
             }
             None => {
@@ -197,12 +201,20 @@ async fn try_create_execution_if_ready(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     base_symbol: &EquitySymbol,
     calculator: &mut PositionCalculator,
-) -> Result<Option<SchwabExecution>, OnChainError> {
+    broker_type: st0x_broker::SupportedBroker,
+) -> Result<Option<OffchainExecution>, OnChainError> {
     let Some(execution_type) = calculator.determine_execution_type() else {
         return Ok(None);
     };
 
-    execute_position(&mut *sql_tx, base_symbol, calculator, execution_type).await
+    execute_position(
+        &mut *sql_tx,
+        base_symbol,
+        calculator,
+        execution_type,
+        broker_type,
+    )
+    .await
 }
 
 async fn execute_position(
@@ -210,7 +222,8 @@ async fn execute_position(
     base_symbol: &EquitySymbol,
     calculator: &mut PositionCalculator,
     execution_type: AccumulationBucket,
-) -> Result<Option<SchwabExecution>, OnChainError> {
+    broker_type: st0x_broker::SupportedBroker,
+) -> Result<Option<OffchainExecution>, OnChainError> {
     let shares = calculator.calculate_executable_shares();
 
     if shares == 0 {
@@ -223,11 +236,12 @@ async fn execute_position(
     };
 
     let execution =
-        create_execution_within_transaction(sql_tx, base_symbol, shares, instruction).await?;
+        create_execution_within_transaction(sql_tx, base_symbol, shares, instruction, broker_type)
+            .await?;
 
     let execution_id = execution
         .id
-        .ok_or(crate::error::PersistenceError::MissingExecutionId)?;
+        .ok_or(st0x_broker::PersistenceError::MissingExecutionId)?;
 
     // Find all trades that contributed to this execution and create linkages
     create_trade_execution_linkages(sql_tx, base_symbol, execution_id, execution_type, shares)
@@ -350,13 +364,15 @@ async fn create_execution_within_transaction(
     symbol: &EquitySymbol,
     shares: u64,
     direction: Direction,
-) -> Result<SchwabExecution, OnChainError> {
-    let execution = SchwabExecution {
+    broker: SupportedBroker,
+) -> Result<OffchainExecution, OnChainError> {
+    let execution = OffchainExecution {
         id: None,
         symbol: symbol.to_string(),
         shares,
         direction,
-        state: TradeState::Pending,
+        broker,
+        state: OrderState::Pending,
     };
 
     let execution_id = execution.save_within_transaction(sql_tx).await?;
@@ -379,9 +395,9 @@ async fn clean_up_stale_executions(
     let stale_executions = sqlx::query!(
         r#"
         SELECT se.id, se.symbol
-        FROM schwab_executions se
+        FROM offchain_trades se
         JOIN trade_accumulators ta ON ta.pending_execution_id = se.id
-        WHERE ta.symbol = ?1 
+        WHERE ta.symbol = ?1
           AND se.status = 'SUBMITTED'
           AND ta.last_updated < datetime('now', ?2)
         "#,
@@ -392,7 +408,10 @@ async fn clean_up_stale_executions(
     .await?;
 
     for stale_execution in stale_executions {
-        let execution_id = stale_execution.id;
+        let Some(execution_id) = stale_execution.id else {
+            tracing::warn!("Stale execution has null ID, skipping cleanup");
+            continue;
+        };
 
         info!(
             symbol = %base_symbol,
@@ -402,14 +421,14 @@ async fn clean_up_stale_executions(
         );
 
         // Mark execution as failed due to timeout
-        let failed_state = TradeState::Failed {
+        let failed_state = OrderState::Failed {
             failed_at: chrono::Utc::now(),
             error_reason: Some(format!(
                 "Execution timed out after {STALE_EXECUTION_MINUTES} minutes without status update"
             )),
         };
 
-        update_execution_status_within_transaction(sql_tx, execution_id, failed_state).await?;
+        update_execution_status_within_transaction(sql_tx, execution_id, &failed_state).await?;
 
         // Clear the pending execution ID from accumulator
         let base_symbol_str = base_symbol.as_str();
@@ -441,20 +460,21 @@ async fn clean_up_stale_executions(
 /// enough shares to execute but the triggering trade didn't push them over the threshold.
 pub async fn check_all_accumulated_positions(
     pool: &SqlitePool,
-) -> Result<Vec<SchwabExecution>, OnChainError> {
+    broker_type: st0x_broker::SupportedBroker,
+) -> Result<Vec<OffchainExecution>, OnChainError> {
     info!("Checking all accumulated positions for ready executions");
 
     // Query all symbols with net position >= 1.0 shares absolute value
     // and no pending execution
     let ready_symbols = sqlx::query!(
         r#"
-        SELECT 
+        SELECT
             symbol,
             net_position,
             accumulated_long,
             accumulated_short,
             pending_execution_id
-        FROM trade_accumulators_with_net 
+        FROM trade_accumulators
         WHERE pending_execution_id IS NULL
           AND ABS(net_position) >= 1.0
         ORDER BY last_updated ASC
@@ -499,13 +519,19 @@ pub async fn check_all_accumulated_positions(
             // Check if still ready after potentially concurrent processing
             if let Some(execution_type) = calculator.determine_execution_type() {
                 // The linkage system will handle allocating the oldest available trades
-                let result =
-                    execute_position(&mut sql_tx, &symbol, &mut calculator, execution_type).await?;
+                let result = execute_position(
+                    &mut sql_tx,
+                    &symbol,
+                    &mut calculator,
+                    execution_type,
+                    broker_type,
+                )
+                .await?;
 
                 if let Some(execution) = &result {
                     let execution_id = execution
                         .id
-                        .ok_or(crate::error::PersistenceError::MissingExecutionId)?;
+                        .ok_or(st0x_broker::PersistenceError::MissingExecutionId)?;
                     set_pending_execution_id(&mut sql_tx, &symbol, execution_id).await?;
 
                     info!(
@@ -561,20 +587,21 @@ pub async fn check_all_accumulated_positions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schwab::TradeStatus;
     use crate::symbol;
     use crate::test_utils::setup_test_db;
     use crate::tokenized_symbol;
     use crate::trade_execution_link::TradeExecutionLink;
     use alloy::primitives::fixed_bytes;
+    use st0x_broker::OrderStatus;
 
     // Helper function for tests to handle transaction management
     async fn process_trade_with_tx(
         pool: &SqlitePool,
         trade: OnchainTrade,
-    ) -> Result<Option<SchwabExecution>, OnChainError> {
+    ) -> Result<Option<OffchainExecution>, OnChainError> {
         let mut sql_tx = pool.begin().await?;
-        let result = process_onchain_trade(&mut sql_tx, trade).await?;
+        let result =
+            process_onchain_trade(&mut sql_tx, trade, st0x_broker::SupportedBroker::Schwab).await?;
         sql_tx.commit().await?;
         Ok(result)
     }
@@ -834,12 +861,13 @@ mod tests {
         let pool = setup_test_db().await;
 
         // First, create a pending execution for AAPL to trigger the unique constraint
-        let blocking_execution = SchwabExecution {
+        let blocking_execution = OffchainExecution {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 50,
             direction: Direction::Buy,
-            state: TradeState::Pending,
+            broker: SupportedBroker::Schwab,
+            state: OrderState::Pending,
         };
         let mut sql_tx = pool.begin().await.unwrap();
         blocking_execution
@@ -888,10 +916,10 @@ mod tests {
         assert!(accumulator_result.is_none());
 
         // Verify only the original execution remains
-        let executions = crate::schwab::execution::find_executions_by_symbol_and_status(
+        let executions = crate::offchain::execution::find_executions_by_symbol_and_status(
             &pool,
             "AAPL",
-            TradeStatus::Pending,
+            OrderStatus::Pending,
         )
         .await
         .unwrap();
@@ -969,7 +997,7 @@ mod tests {
         assert_eq!(trade_count, 2);
 
         // Verify exactly one execution was created
-        let execution_count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+        let execution_count = sqlx::query!("SELECT COUNT(*) as count FROM offchain_trades")
             .fetch_one(&pool)
             .await
             .unwrap()
@@ -980,21 +1008,20 @@ mod tests {
     async fn process_with_retry(
         pool: &SqlitePool,
         trade: OnchainTrade,
-    ) -> Result<Option<SchwabExecution>, OnChainError> {
+    ) -> Result<Option<OffchainExecution>, OnChainError> {
         for attempt in 0..3 {
             match process_trade_with_tx(pool, trade.clone()).await {
                 Ok(result) => return Ok(result),
-                Err(OnChainError::Persistence(crate::error::PersistenceError::Database(
+                Err(OnChainError::Persistence(st0x_broker::PersistenceError::Database(
                     sqlx::Error::Database(db_err),
                 ))) if db_err.message().contains("database is deadlocked") => {
                     if attempt < 2 {
-                        // Exponential backoff: 10ms, 20ms
                         tokio::time::sleep(std::time::Duration::from_millis(10 * (1 << attempt)))
                             .await;
                         continue;
                     }
                     return Err(OnChainError::Persistence(
-                        crate::error::PersistenceError::Database(sqlx::Error::Database(db_err)),
+                        st0x_broker::PersistenceError::Database(sqlx::Error::Database(db_err)),
                     ));
                 }
                 Err(e) => return Err(e),
@@ -1027,7 +1054,7 @@ mod tests {
         let trade_count = super::OnchainTrade::db_count(pool).await.unwrap();
         assert_eq!(trade_count, 2, "Expected 2 trades to be saved");
 
-        let execution_count = sqlx::query!("SELECT COUNT(*) as count FROM schwab_executions")
+        let execution_count = sqlx::query!("SELECT COUNT(*) as count FROM offchain_trades")
             .fetch_one(pool)
             .await
             .unwrap()
@@ -1442,12 +1469,13 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Create a submitted execution that is stale
-        let stale_execution = SchwabExecution {
+        let stale_execution = OffchainExecution {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 1,
             direction: Direction::Buy,
-            state: TradeState::Submitted {
+            broker: SupportedBroker::Schwab,
+            state: OrderState::Submitted {
                 order_id: "123456".to_string(),
             },
         };
@@ -1510,10 +1538,10 @@ mod tests {
         assert_eq!(new_execution.shares, 1);
 
         // Verify the stale execution was marked as failed
-        let stale_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
+        let stale_executions = crate::offchain::execution::find_executions_by_symbol_and_status(
             &pool,
             "AAPL",
-            crate::schwab::TradeStatus::Failed,
+            OrderStatus::Failed,
         )
         .await
         .unwrap();
@@ -1521,10 +1549,10 @@ mod tests {
         assert_eq!(stale_executions[0].id.unwrap(), execution_id);
 
         // Verify the new execution was created and is pending
-        let pending_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
+        let pending_executions = crate::offchain::execution::find_executions_by_symbol_and_status(
             &pool,
             "AAPL",
-            crate::schwab::TradeStatus::Pending,
+            OrderStatus::Pending,
         )
         .await
         .unwrap();
@@ -1537,22 +1565,24 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Create executions at different ages
-        let recent_execution = SchwabExecution {
+        let recent_execution = OffchainExecution {
             id: None,
             symbol: "MSFT".to_string(),
             shares: 1,
             direction: Direction::Buy,
-            state: TradeState::Submitted {
+            broker: st0x_broker::SupportedBroker::Schwab,
+            state: OrderState::Submitted {
                 order_id: "recent123".to_string(),
             },
         };
 
-        let stale_execution = SchwabExecution {
+        let stale_execution = OffchainExecution {
             id: None,
             symbol: "TSLA".to_string(),
             shares: 1,
             direction: Direction::Sell,
-            state: TradeState::Submitted {
+            broker: st0x_broker::SupportedBroker::Schwab,
+            state: OrderState::Submitted {
                 order_id: "stale456".to_string(),
             },
         };
@@ -1596,10 +1626,10 @@ mod tests {
         test_tx.commit().await.unwrap();
 
         // Verify recent execution (MSFT) is still submitted
-        let msft_submitted = crate::schwab::execution::find_executions_by_symbol_and_status(
+        let msft_submitted = crate::offchain::execution::find_executions_by_symbol_and_status(
             &pool,
             "MSFT",
-            crate::schwab::TradeStatus::Submitted,
+            OrderStatus::Submitted,
         )
         .await
         .unwrap();
@@ -1607,10 +1637,10 @@ mod tests {
         assert_eq!(msft_submitted[0].id.unwrap(), recent_id);
 
         // Verify stale execution (TSLA) was failed
-        let tsla_failed = crate::schwab::execution::find_executions_by_symbol_and_status(
+        let tsla_failed = crate::offchain::execution::find_executions_by_symbol_and_status(
             &pool,
             "TSLA",
-            crate::schwab::TradeStatus::Failed,
+            OrderStatus::Failed,
         )
         .await
         .unwrap();
@@ -1637,12 +1667,13 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Create only recent executions (not stale)
-        let recent_execution = SchwabExecution {
+        let recent_execution = OffchainExecution {
             id: None,
             symbol: "NVDA".to_string(),
             shares: 2,
             direction: Direction::Buy,
-            state: TradeState::Submitted {
+            broker: st0x_broker::SupportedBroker::Schwab,
+            state: OrderState::Submitted {
                 order_id: "recent789".to_string(),
             },
         };
@@ -1672,13 +1703,14 @@ mod tests {
         test_tx.commit().await.unwrap();
 
         // Verify execution is still submitted (not failed)
-        let submitted_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
-            &pool,
-            "NVDA",
-            crate::schwab::TradeStatus::Submitted,
-        )
-        .await
-        .unwrap();
+        let submitted_executions =
+            crate::offchain::execution::find_executions_by_symbol_and_status(
+                &pool,
+                "NVDA",
+                OrderStatus::Submitted,
+            )
+            .await
+            .unwrap();
         assert_eq!(submitted_executions.len(), 1);
         assert_eq!(submitted_executions[0].id.unwrap(), execution_id);
 
@@ -1727,7 +1759,10 @@ mod tests {
         assert!(aapl_pending.is_none());
 
         // Run the function - should not create any executions since 0.8 < 1.0
-        let executions = check_all_accumulated_positions(&pool).await.unwrap();
+        let executions =
+            check_all_accumulated_positions(&pool, st0x_broker::SupportedBroker::Schwab)
+                .await
+                .unwrap();
         assert_eq!(executions.len(), 0);
 
         // Verify AAPL state unchanged
@@ -1744,7 +1779,10 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Run the function on empty database
-        let executions = check_all_accumulated_positions(&pool).await.unwrap();
+        let executions =
+            check_all_accumulated_positions(&pool, st0x_broker::SupportedBroker::Schwab)
+                .await
+                .unwrap();
 
         // Should create no executions
         assert_eq!(executions.len(), 0);
@@ -1755,12 +1793,13 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Create a pending execution first
-        let pending_execution = SchwabExecution {
+        let pending_execution = OffchainExecution {
             id: None,
             symbol: "AAPL".to_string(),
             shares: 1,
             direction: Direction::Buy,
-            state: TradeState::Pending,
+            broker: st0x_broker::SupportedBroker::Schwab,
+            state: OrderState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -1783,7 +1822,10 @@ mod tests {
         sql_tx.commit().await.unwrap();
 
         // Run the function
-        let executions = check_all_accumulated_positions(&pool).await.unwrap();
+        let executions =
+            check_all_accumulated_positions(&pool, st0x_broker::SupportedBroker::Schwab)
+                .await
+                .unwrap();
 
         // Should create no executions since AAPL has pending execution
         assert_eq!(executions.len(), 0);

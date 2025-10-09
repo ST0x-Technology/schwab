@@ -1,19 +1,19 @@
 use chrono::{DateTime, Utc};
 
-use super::{TradeStatus, price_cents_from_db_i64};
-use crate::error::{OnChainError, PersistenceError};
+use super::OrderStatus;
+use crate::BrokerError;
 
-/// Database fields extracted from TradeState for storage
+/// Database fields extracted from OrderState for storage
 #[derive(Debug)]
-pub(crate) struct TradeStateDbFields {
-    pub(crate) order_id: Option<String>,
-    pub(crate) price_cents: Option<i64>,
-    pub(crate) executed_at: Option<chrono::NaiveDateTime>,
+pub struct OrderStateDbFields {
+    pub order_id: Option<String>,
+    pub price_cents: Option<i64>,
+    pub executed_at: Option<chrono::NaiveDateTime>,
 }
 
 // Stateful enum with associated data for runtime use
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TradeState {
+pub enum OrderState {
     Pending,
     Submitted {
         order_id: String,
@@ -30,71 +30,47 @@ pub enum TradeState {
 }
 
 /// Trait for types that can be converted to a status string for database queries
-pub(crate) trait HasTradeStatus {
-    fn status_str(&self) -> &'static str;
-}
-
-impl HasTradeStatus for TradeStatus {
-    fn status_str(&self) -> &'static str {
-        self.as_str()
-    }
-}
-
-impl HasTradeStatus for TradeState {
+impl super::HasOrderStatus for OrderState {
     fn status_str(&self) -> &'static str {
         self.status().as_str()
     }
 }
 
-impl HasTradeStatus for &'static str {
-    fn status_str(&self) -> &'static str {
-        self
-    }
-}
-
-impl TradeState {
-    pub const fn status(&self) -> TradeStatus {
+impl OrderState {
+    pub const fn status(&self) -> OrderStatus {
         match self {
-            Self::Pending => TradeStatus::Pending,
-            Self::Submitted { .. } => TradeStatus::Submitted,
-            Self::Filled { .. } => TradeStatus::Filled,
-            Self::Failed { .. } => TradeStatus::Failed,
+            Self::Pending => OrderStatus::Pending,
+            Self::Submitted { .. } => OrderStatus::Submitted,
+            Self::Filled { .. } => OrderStatus::Filled,
+            Self::Failed { .. } => OrderStatus::Failed,
         }
     }
 
-    /// Converts database row data to a TradeState instance with proper validation.
+    /// Converts database row data to an OrderState instance with proper validation.
     /// This centralizes the conversion logic and ensures database consistency.
-    pub(crate) fn from_db_row(
-        status: TradeStatus,
+    pub fn from_db_row(
+        status: OrderStatus,
         order_id: Option<String>,
         price_cents: Option<i64>,
         executed_at: Option<chrono::NaiveDateTime>,
-    ) -> Result<Self, OnChainError> {
+    ) -> Result<Self, BrokerError> {
         match status {
-            TradeStatus::Pending => Ok(Self::Pending),
-            TradeStatus::Submitted => {
-                let order_id = order_id.ok_or_else(|| {
-                    OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
-                        "SUBMITTED requires order_id".to_string(),
-                    ))
+            OrderStatus::Pending => Ok(Self::Pending),
+            OrderStatus::Submitted => {
+                let order_id = order_id.ok_or_else(|| BrokerError::InvalidOrder {
+                    reason: "SUBMITTED requires order_id".to_string(),
                 })?;
                 Ok(Self::Submitted { order_id })
             }
-            TradeStatus::Filled => {
-                let order_id = order_id.ok_or_else(|| {
-                    OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
-                        "FILLED requires order_id".to_string(),
-                    ))
+            OrderStatus::Filled => {
+                let order_id = order_id.ok_or_else(|| BrokerError::InvalidOrder {
+                    reason: "FILLED requires order_id".to_string(),
                 })?;
-                let price_cents = price_cents.ok_or_else(|| {
-                    OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
-                        "FILLED requires price_cents".to_string(),
-                    ))
+                let price_cents = price_cents.ok_or_else(|| BrokerError::InvalidOrder {
+                    reason: "FILLED requires price_cents".to_string(),
                 })?;
-                let executed_at = executed_at.ok_or_else(|| {
-                    OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
-                        "FILLED requires executed_at".to_string(),
-                    ))
+                let executed_at = executed_at.ok_or_else(|| BrokerError::InvalidOrder {
+                    reason: "FILLED requires executed_at".to_string(),
                 })?;
                 Ok(Self::Filled {
                     executed_at: DateTime::<Utc>::from_naive_utc_and_offset(executed_at, Utc),
@@ -102,11 +78,9 @@ impl TradeState {
                     price_cents: price_cents_from_db_i64(price_cents)?,
                 })
             }
-            TradeStatus::Failed => {
-                let failed_at = executed_at.ok_or_else(|| {
-                    OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
-                        "FAILED requires executed_at timestamp".to_string(),
-                    ))
+            OrderStatus::Failed => {
+                let failed_at = executed_at.ok_or_else(|| BrokerError::InvalidOrder {
+                    reason: "FAILED requires executed_at timestamp".to_string(),
                 })?;
                 Ok(Self::Failed {
                     failed_at: DateTime::<Utc>::from_naive_utc_and_offset(failed_at, Utc),
@@ -116,18 +90,16 @@ impl TradeState {
         }
     }
 
-    /// Extracts database-compatible values from TradeState for storage.
+    /// Extracts database-compatible values from OrderState for storage.
     /// Returns (order_id, price_cents_i64, executed_at) tuple.
-    pub(crate) fn to_db_fields(
-        &self,
-    ) -> Result<TradeStateDbFields, crate::error::PersistenceError> {
+    pub fn to_db_fields(&self) -> Result<OrderStateDbFields, BrokerError> {
         match self {
-            Self::Pending => Ok(TradeStateDbFields {
+            Self::Pending => Ok(OrderStateDbFields {
                 order_id: None,
                 price_cents: None,
                 executed_at: None,
             }),
-            Self::Submitted { order_id } => Ok(TradeStateDbFields {
+            Self::Submitted { order_id } => Ok(OrderStateDbFields {
                 order_id: Some(order_id.clone()),
                 price_cents: None,
                 executed_at: None,
@@ -136,7 +108,7 @@ impl TradeState {
                 executed_at,
                 order_id,
                 price_cents,
-            } => Ok(TradeStateDbFields {
+            } => Ok(OrderStateDbFields {
                 order_id: Some(order_id.clone()),
                 price_cents: Some(u64_to_i64_exact(*price_cents)?),
                 executed_at: Some(executed_at.naive_utc()),
@@ -144,7 +116,7 @@ impl TradeState {
             Self::Failed {
                 failed_at,
                 error_reason: _,
-            } => Ok(TradeStateDbFields {
+            } => Ok(OrderStateDbFields {
                 order_id: None,
                 price_cents: None,
                 executed_at: Some(failed_at.naive_utc()),
@@ -156,14 +128,26 @@ impl TradeState {
 /// Converts u64 to i64 for database storage with exact conversion.
 /// NEVER silently changes amounts - returns error if conversion would lose data.
 /// This is critical for financial applications where data integrity is paramount.
-fn u64_to_i64_exact(value: u64) -> Result<i64, crate::error::PersistenceError> {
+fn u64_to_i64_exact(value: u64) -> Result<i64, BrokerError> {
     if value > i64::MAX as u64 {
-        Err(crate::error::PersistenceError::InvalidTradeStatus(format!(
-            "Value {value} exceeds maximum i64 range - conversion would lose data"
-        )))
+        Err(BrokerError::InvalidOrder {
+            reason: format!("Value {value} exceeds maximum i64 range - conversion would lose data"),
+        })
     } else {
         #[allow(clippy::cast_possible_wrap)]
         Ok(value as i64) // Safe: verified within i64 range
+    }
+}
+
+/// Converts i64 from database to u64 for application use with exact conversion.
+/// NEVER silently changes amounts - returns error if conversion would lose data.
+fn price_cents_from_db_i64(value: i64) -> Result<u64, BrokerError> {
+    if value < 0 {
+        Err(BrokerError::InvalidOrder {
+            reason: format!("Negative price_cents value {value} is invalid"),
+        })
+    } else {
+        Ok(value as u64) // Safe: verified non-negative
     }
 }
 
@@ -174,23 +158,23 @@ mod tests {
 
     #[test]
     fn test_from_db_row_pending() {
-        let result = TradeState::from_db_row(TradeStatus::Pending, None, None, None).unwrap();
-        assert_eq!(result, TradeState::Pending);
+        let result = OrderState::from_db_row(OrderStatus::Pending, None, None, None).unwrap();
+        assert_eq!(result, OrderState::Pending);
     }
 
     #[test]
     fn test_from_db_row_submitted() {
-        let result = TradeState::from_db_row(
-            TradeStatus::Submitted,
-            Some("1004055538123".to_string()),
+        let result = OrderState::from_db_row(
+            OrderStatus::Submitted,
+            Some("ORDER123".to_string()),
             None,
             None,
         )
         .unwrap();
         assert_eq!(
             result,
-            TradeState::Submitted {
-                order_id: "1004055538123".to_string()
+            OrderState::Submitted {
+                order_id: "ORDER123".to_string()
             }
         );
     }
@@ -198,21 +182,21 @@ mod tests {
     #[test]
     fn test_from_db_row_filled() {
         let timestamp = Utc::now().naive_utc();
-        let result = TradeState::from_db_row(
-            TradeStatus::Filled,
-            Some("1004055538123".to_string()),
+        let result = OrderState::from_db_row(
+            OrderStatus::Filled,
+            Some("ORDER123".to_string()),
             Some(15000),
             Some(timestamp),
         )
         .unwrap();
 
         match result {
-            TradeState::Filled {
+            OrderState::Filled {
                 executed_at,
                 order_id,
                 price_cents,
             } => {
-                assert_eq!(order_id, "1004055538123");
+                assert_eq!(order_id, "ORDER123");
                 assert_eq!(price_cents, 15000);
                 assert_eq!(executed_at.naive_utc(), timestamp);
             }
@@ -224,10 +208,10 @@ mod tests {
     fn test_from_db_row_failed() {
         let timestamp = Utc::now().naive_utc();
         let result =
-            TradeState::from_db_row(TradeStatus::Failed, None, None, Some(timestamp)).unwrap();
+            OrderState::from_db_row(OrderStatus::Failed, None, None, Some(timestamp)).unwrap();
 
         match result {
-            TradeState::Failed {
+            OrderState::Failed {
                 failed_at,
                 error_reason,
             } => {
@@ -240,7 +224,7 @@ mod tests {
 
     #[test]
     fn test_from_db_row_submitted_missing_order_id() {
-        let result = TradeState::from_db_row(TradeStatus::Submitted, None, None, None);
+        let result = OrderState::from_db_row(OrderStatus::Submitted, None, None, None);
         assert!(result.is_err());
     }
 
@@ -248,16 +232,16 @@ mod tests {
     fn test_from_db_row_filled_missing_order_id() {
         let timestamp = Utc::now().naive_utc();
         let result =
-            TradeState::from_db_row(TradeStatus::Filled, None, Some(15000), Some(timestamp));
+            OrderState::from_db_row(OrderStatus::Filled, None, Some(15000), Some(timestamp));
         assert!(result.is_err());
     }
 
     #[test]
     fn test_from_db_row_filled_missing_price_cents() {
         let timestamp = Utc::now().naive_utc();
-        let result = TradeState::from_db_row(
-            TradeStatus::Filled,
-            Some("1004055538123".to_string()),
+        let result = OrderState::from_db_row(
+            OrderStatus::Filled,
+            Some("ORDER123".to_string()),
             None,
             Some(timestamp),
         );
@@ -266,9 +250,9 @@ mod tests {
 
     #[test]
     fn test_from_db_row_filled_missing_executed_at() {
-        let result = TradeState::from_db_row(
-            TradeStatus::Filled,
-            Some("1004055538123".to_string()),
+        let result = OrderState::from_db_row(
+            OrderStatus::Filled,
+            Some("ORDER123".to_string()),
             Some(15000),
             None,
         );
@@ -277,13 +261,13 @@ mod tests {
 
     #[test]
     fn test_from_db_row_failed_missing_executed_at() {
-        let result = TradeState::from_db_row(TradeStatus::Failed, None, None, None);
+        let result = OrderState::from_db_row(OrderStatus::Failed, None, None, None);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_to_db_fields_pending() {
-        let state = TradeState::Pending;
+        let state = OrderState::Pending;
         let db_fields = state.to_db_fields().unwrap();
         assert_eq!(db_fields.order_id, None);
         assert_eq!(db_fields.price_cents, None);
@@ -292,11 +276,11 @@ mod tests {
 
     #[test]
     fn test_to_db_fields_submitted() {
-        let state = TradeState::Submitted {
-            order_id: "1004055538123".to_string(),
+        let state = OrderState::Submitted {
+            order_id: "ORDER123".to_string(),
         };
         let db_fields = state.to_db_fields().unwrap();
-        assert_eq!(db_fields.order_id, Some("1004055538123".to_string()));
+        assert_eq!(db_fields.order_id, Some("ORDER123".to_string()));
         assert_eq!(db_fields.price_cents, None);
         assert_eq!(db_fields.executed_at, None);
     }
@@ -304,13 +288,13 @@ mod tests {
     #[test]
     fn test_to_db_fields_filled() {
         let timestamp = Utc::now();
-        let state = TradeState::Filled {
+        let state = OrderState::Filled {
             executed_at: timestamp,
-            order_id: "1004055538123".to_string(),
+            order_id: "ORDER123".to_string(),
             price_cents: 15000,
         };
         let db_fields = state.to_db_fields().unwrap();
-        assert_eq!(db_fields.order_id, Some("1004055538123".to_string()));
+        assert_eq!(db_fields.order_id, Some("ORDER123".to_string()));
         assert_eq!(db_fields.price_cents, Some(15000));
         assert_eq!(db_fields.executed_at, Some(timestamp.naive_utc()));
     }
@@ -318,7 +302,7 @@ mod tests {
     #[test]
     fn test_to_db_fields_failed() {
         let timestamp = Utc::now();
-        let state = TradeState::Failed {
+        let state = OrderState::Failed {
             failed_at: timestamp,
             error_reason: Some("Test error".to_string()),
         };
@@ -330,30 +314,30 @@ mod tests {
 
     #[test]
     fn test_status_extraction() {
-        assert_eq!(TradeState::Pending.status(), TradeStatus::Pending);
+        assert_eq!(OrderState::Pending.status(), OrderStatus::Pending);
         assert_eq!(
-            TradeState::Submitted {
-                order_id: "1004055538123".to_string()
+            OrderState::Submitted {
+                order_id: "ORDER123".to_string()
             }
             .status(),
-            TradeStatus::Submitted
+            OrderStatus::Submitted
         );
         assert_eq!(
-            TradeState::Filled {
+            OrderState::Filled {
                 executed_at: Utc::now(),
-                order_id: "1004055538123".to_string(),
+                order_id: "ORDER123".to_string(),
                 price_cents: 15000,
             }
             .status(),
-            TradeStatus::Filled
+            OrderStatus::Filled
         );
         assert_eq!(
-            TradeState::Failed {
+            OrderState::Failed {
                 failed_at: Utc::now(),
                 error_reason: None,
             }
             .status(),
-            TradeStatus::Failed
+            OrderStatus::Failed
         );
     }
 
@@ -374,5 +358,18 @@ mod tests {
         let overflow_value = (i64::MAX as u64) + 1;
         let result = u64_to_i64_exact(overflow_value);
         assert!(result.is_err()); // MUST fail, never silently change amounts
+    }
+
+    #[test]
+    fn test_price_cents_from_db_i64_positive() {
+        assert_eq!(price_cents_from_db_i64(0).unwrap(), 0);
+        assert_eq!(price_cents_from_db_i64(15000).unwrap(), 15000);
+        assert_eq!(price_cents_from_db_i64(i64::MAX).unwrap(), i64::MAX as u64);
+    }
+
+    #[test]
+    fn test_price_cents_from_db_i64_negative() {
+        let result = price_cents_from_db_i64(-1);
+        assert!(result.is_err()); // MUST fail for negative values
     }
 }

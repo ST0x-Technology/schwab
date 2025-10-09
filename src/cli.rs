@@ -8,16 +8,16 @@ use crate::env::{Env, LogLevel};
 use crate::error::OnChainError;
 use crate::onchain::pyth::{FeedIdCache, extract_pyth_price};
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
-use crate::schwab::SchwabAuthEnv;
-use crate::schwab::market_hours::{MarketStatus as MarketStatusEnum, fetch_market_hours};
-use crate::schwab::order::{Instruction, Order};
-use crate::schwab::run_oauth_flow;
-use crate::schwab::tokens::SchwabTokens;
 use crate::symbol::cache::SymbolCache;
 use alloy::primitives::B256;
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use chrono::Utc;
 use chrono_tz::US::Eastern;
+use st0x_broker::schwab::auth::SchwabAuthEnv;
+use st0x_broker::schwab::market_hours::{MarketStatus as MarketStatusEnum, fetch_market_hours};
+use st0x_broker::schwab::tokens::SchwabTokens;
+use st0x_broker::schwab::{SchwabError, extract_code_from_url};
+use st0x_broker::{Broker, Direction, MarketOrder, Shares, Symbol};
 
 #[derive(Debug, Error)]
 pub enum CliError {
@@ -164,7 +164,7 @@ async fn run_command_with_writers<W: Write>(
             execute_order_with_writers(
                 validated_ticker,
                 quantity,
-                Instruction::Buy,
+                Direction::Buy,
                 &env,
                 pool,
                 stdout,
@@ -181,7 +181,7 @@ async fn run_command_with_writers<W: Write>(
             execute_order_with_writers(
                 validated_ticker,
                 quantity,
-                Instruction::Sell,
+                Direction::Sell,
                 &env,
                 pool,
                 stdout,
@@ -355,7 +355,7 @@ async fn display_market_status<W: Write>(
 
 async fn ensure_authentication<W: Write>(
     pool: &SqlitePool,
-    schwab_auth: &crate::schwab::SchwabAuthEnv,
+    schwab_auth: &st0x_broker::schwab::auth::SchwabAuthEnv,
     stdout: &mut W,
 ) -> anyhow::Result<()> {
     info!("Refreshing authentication tokens if needed");
@@ -365,7 +365,7 @@ async fn ensure_authentication<W: Write>(
             info!("Authentication tokens are valid, access token obtained");
             return Ok(());
         }
-        Err(crate::schwab::SchwabError::RefreshTokenExpired) => {
+        Err(st0x_broker::schwab::SchwabError::RefreshTokenExpired) => {
             info!("Refresh token has expired, launching interactive OAuth flow");
             writeln!(
                 stdout,
@@ -404,33 +404,62 @@ async fn ensure_authentication<W: Write>(
     }
 }
 
+async fn run_oauth_flow(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<(), SchwabError> {
+    println!(
+        "Authenticate portfolio brokerage account (not dev account) and paste URL: {}",
+        env.get_auth_url()
+    );
+    print!("Paste the full redirect URL you were sent to: ");
+    std::io::stdout().flush()?;
+
+    let mut redirect_url = String::new();
+    std::io::stdin().read_line(&mut redirect_url)?;
+    let redirect_url = redirect_url.trim();
+
+    let code = extract_code_from_url(redirect_url)?;
+    println!("Extracted code: {code}");
+
+    let tokens = env.get_tokens_from_code(&code).await?;
+    tokens.store(pool).await?;
+
+    Ok(())
+}
+
 async fn execute_order_with_writers<W: Write>(
     ticker: String,
     quantity: u64,
-    instruction: Instruction,
+    direction: Direction,
     env: &Env,
     pool: &SqlitePool,
     stdout: &mut W,
 ) -> anyhow::Result<()> {
-    let order = Order::new(ticker.clone(), instruction.clone(), quantity);
+    // Create broker instance
+    let broker = env.get_schwab_broker(pool.clone()).await?;
 
-    info!("Created order: ticker={ticker}, instruction={instruction:?}, quantity={quantity}");
+    // Create generic market order
+    let market_order = MarketOrder {
+        symbol: Symbol::new(ticker.clone())?,
+        shares: Shares::new(quantity)?,
+        direction,
+    };
 
-    match order.place(&env.schwab_auth, pool).await {
-        Ok(response) => {
+    info!("Created order: ticker={ticker}, direction={direction:?}, quantity={quantity}");
+
+    match broker.place_market_order(market_order).await {
+        Ok(placement) => {
             info!(
-                "Order placed successfully: ticker={ticker}, instruction={instruction:?}, quantity={quantity}, order_id={}",
-                response.order_id
+                "Order placed successfully: ticker={ticker}, direction={direction:?}, quantity={quantity}, order_id={}",
+                placement.order_id
             );
             writeln!(stdout, "✅ Order placed successfully!")?;
             writeln!(stdout, "   Ticker: {ticker}")?;
-            writeln!(stdout, "   Action: {instruction:?}")?;
-            writeln!(stdout, "   Order ID: {}", response.order_id)?;
+            writeln!(stdout, "   Action: {direction:?}")?;
+            writeln!(stdout, "   Order ID: {}", placement.order_id)?;
             writeln!(stdout, "   Quantity: {quantity}")?;
         }
         Err(e) => {
             error!(
-                "Failed to place order: ticker={ticker}, instruction={instruction:?}, quantity={quantity}, error={e:?}"
+                "Failed to place order: ticker={ticker}, direction={direction:?}, quantity={quantity}, error={e:?}"
             );
             writeln!(stdout, "❌ Failed to place order: {e}")?;
             return Err(e.into());
@@ -494,24 +523,74 @@ async fn process_found_trade<W: Write>(
     writeln!(stdout, "🔄 Processing trade with TradeAccumulator...")?;
 
     let mut sql_tx = pool.begin().await?;
-    let execution = accumulator::process_onchain_trade(&mut sql_tx, onchain_trade).await?;
+    let execution = accumulator::process_onchain_trade(
+        &mut sql_tx,
+        onchain_trade,
+        st0x_broker::SupportedBroker::Schwab,
+    )
+    .await?;
     sql_tx.commit().await?;
 
     if let Some(execution) = execution {
         let execution_id = execution
             .id
-            .ok_or_else(|| anyhow::anyhow!("SchwabExecution missing ID after accumulation"))?;
+            .ok_or_else(|| anyhow::anyhow!("OffchainExecution missing ID after accumulation"))?;
         writeln!(
             stdout,
             "✅ Trade triggered Schwab execution (ID: {execution_id})"
         )?;
         ensure_authentication(pool, &env.schwab_auth, stdout).await?;
         writeln!(stdout, "🔄 Executing Schwab order...")?;
-        let broker = env.get_broker();
-        broker
-            .execute_order(env, pool, execution)
-            .await
-            .map_err(anyhow::Error::from)?;
+        // Convert OffchainExecution to broker trait types
+        let market_order = st0x_broker::MarketOrder {
+            symbol: st0x_broker::Symbol::new(execution.symbol.clone())?,
+            shares: st0x_broker::Shares::new(execution.shares)?,
+            direction: execution.direction,
+        };
+
+        let placement = if env.dry_run {
+            let broker = env.get_test_broker().await.map_err(anyhow::Error::from)?;
+            let placement = broker
+                .place_market_order(market_order)
+                .await
+                .map_err(anyhow::Error::from)?;
+            writeln!(
+                stdout,
+                "✅ Dry-run order placed with ID: {}",
+                placement.order_id
+            )?;
+            placement
+        } else {
+            let broker = env
+                .get_schwab_broker(pool.clone())
+                .await
+                .map_err(anyhow::Error::from)?;
+            let placement = broker
+                .place_market_order(market_order)
+                .await
+                .map_err(anyhow::Error::from)?;
+            writeln!(
+                stdout,
+                "✅ Schwab order placed with ID: {}",
+                placement.order_id
+            )?;
+            placement
+        };
+
+        // Update execution with order_id and set status to Submitted
+        let submitted_state = st0x_broker::OrderState::Submitted {
+            order_id: placement.order_id.to_string(),
+        };
+
+        let mut sql_tx = pool.begin().await?;
+        crate::offchain::execution::update_execution_status_within_transaction(
+            &mut sql_tx,
+            execution_id,
+            &submitted_state,
+        )
+        .await
+        .map_err(anyhow::Error::from)?;
+        sql_tx.commit().await?;
         writeln!(stdout, "🎯 Trade processing completed!")?;
     } else {
         writeln!(
@@ -557,14 +636,12 @@ mod tests {
     use crate::bindings::IERC20::symbolCall;
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
     use crate::env::LogLevel;
+    use crate::offchain::execution::find_executions_by_symbol_and_status;
+    use crate::onchain::EvmEnv;
     use crate::onchain::trade::OnchainTrade;
-    use crate::schwab::Direction;
-    use crate::schwab::TradeStatus;
-    use crate::schwab::execution::find_executions_by_symbol_and_status;
     use crate::test_utils::get_test_order;
     use crate::test_utils::setup_test_db;
     use crate::tokenized_symbol;
-    use crate::{onchain::EvmEnv, schwab::SchwabAuthEnv};
     use alloy::hex;
     use alloy::primitives::{IntoLogData, U256, address, fixed_bytes};
     use alloy::providers::mock::Asserter;
@@ -573,6 +650,9 @@ mod tests {
     use clap::CommandFactory;
     use httpmock::MockServer;
     use serde_json::json;
+    use st0x_broker::Direction;
+    use st0x_broker::OrderStatus;
+    use st0x_broker::schwab::auth::SchwabAuthEnv;
     use std::str::FromStr;
 
     #[tokio::test]
@@ -606,7 +686,7 @@ mod tests {
         execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut std::io::sink(),
@@ -649,7 +729,7 @@ mod tests {
         execute_order_with_writers(
             "TSLA".to_string(),
             50,
-            Instruction::Sell,
+            Direction::Sell,
             &env,
             &pool,
             &mut std::io::sink(),
@@ -689,7 +769,7 @@ mod tests {
         let result = execute_order_with_writers(
             "INVALID".to_string(),
             100,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut std::io::sink(),
@@ -707,7 +787,7 @@ mod tests {
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
 
-        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+        let expired_tokens = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: Utc::now() - Duration::minutes(35),
             refresh_token: "expired_refresh_token".to_string(),
@@ -715,13 +795,11 @@ mod tests {
         };
         expired_tokens.store(&pool).await.unwrap();
 
-        let result =
-            crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
-                .await;
+        let result = SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth).await;
 
         assert!(matches!(
             result.unwrap_err(),
-            crate::schwab::SchwabError::RefreshTokenExpired
+            st0x_broker::schwab::SchwabError::RefreshTokenExpired
         ));
     }
 
@@ -731,7 +809,7 @@ mod tests {
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
 
-        let tokens_needing_refresh = crate::schwab::tokens::SchwabTokens {
+        let tokens_needing_refresh = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: Utc::now() - Duration::minutes(35),
             refresh_token: "valid_refresh_token".to_string(),
@@ -771,16 +849,15 @@ mod tests {
                 .header("location", "/trader/v1/accounts/ABC123DEF456/orders/12345");
         });
 
-        let access_token =
-            crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
-                .await
-                .unwrap();
+        let access_token = SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
+            .await
+            .unwrap();
         assert_eq!(access_token, "refreshed_access_token");
 
         execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut std::io::sink(),
@@ -792,9 +869,7 @@ mod tests {
         account_mock.assert();
         order_mock.assert();
 
-        let stored_tokens = crate::schwab::tokens::SchwabTokens::load(&pool)
-            .await
-            .unwrap();
+        let stored_tokens = SchwabTokens::load(&pool).await.unwrap();
         assert_eq!(stored_tokens.access_token, "refreshed_access_token");
         assert_eq!(stored_tokens.refresh_token, "new_refresh_token");
     }
@@ -828,7 +903,7 @@ mod tests {
         execute_order_with_writers(
             "TSLA".to_string(),
             50,
-            Instruction::Sell,
+            Direction::Sell,
             &env,
             &pool,
             &mut std::io::sink(),
@@ -839,9 +914,7 @@ mod tests {
         account_mock.assert();
         order_mock.assert();
 
-        let stored_tokens = crate::schwab::tokens::SchwabTokens::load(&pool)
-            .await
-            .unwrap();
+        let stored_tokens = SchwabTokens::load(&pool).await.unwrap();
         assert_eq!(stored_tokens.access_token, "test_access_token");
     }
 
@@ -875,7 +948,7 @@ mod tests {
         let result = execute_order_with_writers(
             "AAPL".to_string(),
             123,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut stdout_buffer,
@@ -924,7 +997,7 @@ mod tests {
         let result = execute_order_with_writers(
             "TSLA".to_string(),
             50,
-            Instruction::Sell,
+            Direction::Sell,
             &env,
             &pool,
             &mut stdout_buffer,
@@ -946,7 +1019,7 @@ mod tests {
         let env = create_test_env_for_cli(&server);
         let pool = setup_test_db().await;
 
-        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+        let expired_tokens = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: Utc::now() - Duration::minutes(35),
             refresh_token: "expired_refresh_token".to_string(),
@@ -954,13 +1027,11 @@ mod tests {
         };
         expired_tokens.store(&pool).await.unwrap();
 
-        let result =
-            crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
-                .await;
+        let result = SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth).await;
 
         assert!(matches!(
             result.unwrap_err(),
-            crate::schwab::SchwabError::RefreshTokenExpired
+            st0x_broker::schwab::SchwabError::RefreshTokenExpired
         ));
 
         let mut stdout_buffer = Vec::new();
@@ -1026,7 +1097,7 @@ mod tests {
     }
 
     async fn setup_test_tokens(pool: &SqlitePool) {
-        let tokens = crate::schwab::tokens::SchwabTokens {
+        let tokens = SchwabTokens {
             access_token: "test_access_token".to_string(),
             access_token_fetched_at: chrono::Utc::now(),
             refresh_token: "test_refresh_token".to_string(),
@@ -1363,7 +1434,7 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Set up expired access token but valid refresh token that will trigger a refresh attempt
-        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+        let expired_tokens = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: chrono::Utc::now() - chrono::Duration::minutes(35),
             refresh_token: "valid_but_rejected_refresh_token".to_string(),
@@ -1389,7 +1460,7 @@ mod tests {
         let result = execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut stdout,
@@ -1402,12 +1473,10 @@ mod tests {
         );
         token_refresh_mock.assert();
 
-        let stdout_str = String::from_utf8(stdout).unwrap();
-        assert!(
-            stdout_str.contains("authentication")
-                || stdout_str.contains("refresh token")
-                || stdout_str.contains("expired")
-        );
+        // The function fails early when creating the broker, so no output is written
+        // The error should be related to authentication issues
+        let error_msg = format!("{}", result.unwrap_err());
+        assert!(error_msg.contains("Refresh token expired"));
     }
 
     #[tokio::test]
@@ -1417,7 +1486,7 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Set up expired tokens
-        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+        let expired_tokens = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: chrono::Utc::now() - chrono::Duration::minutes(35),
             refresh_token: "valid_refresh_token".to_string(),
@@ -1466,7 +1535,7 @@ mod tests {
         let result = execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut stdout,
@@ -1482,9 +1551,7 @@ mod tests {
         order_mock.assert();
 
         // Verify that new tokens were stored in database
-        let stored_tokens = crate::schwab::tokens::SchwabTokens::load(&pool)
-            .await
-            .unwrap();
+        let stored_tokens = SchwabTokens::load(&pool).await.unwrap();
         assert_eq!(stored_tokens.access_token, "new_access_token");
         assert_eq!(stored_tokens.refresh_token, "new_refresh_token");
     }
@@ -1501,7 +1568,7 @@ mod tests {
         let result = execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut stdout,
@@ -1509,12 +1576,11 @@ mod tests {
         .await;
 
         assert!(result.is_err(), "CLI should fail when no tokens are stored");
-        let stdout_str = String::from_utf8(stdout).unwrap();
-        assert!(
-            stdout_str.contains("no rows returned")
-                || stdout_str.contains("Database error")
-                || stdout_str.contains("Failed to place order")
-        );
+
+        // The function fails early when creating the broker, so no output is written
+        // The error should be related to missing authentication tokens
+        let error_msg = format!("{}", result.unwrap_err());
+        assert!(error_msg.contains("no rows returned"));
 
         // Now add tokens and verify database integration works
         setup_test_tokens(&pool).await;
@@ -1542,7 +1608,7 @@ mod tests {
         let result2 = execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut stdout2,
@@ -1578,7 +1644,7 @@ mod tests {
         let result = execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut stdout,
@@ -1660,7 +1726,7 @@ mod tests {
         let result = execute_order_with_writers(
             "INVALID".to_string(),
             999_999,
-            Instruction::Buy,
+            Direction::Buy,
             &env,
             &pool,
             &mut stdout,
@@ -1729,10 +1795,10 @@ mod tests {
         assert_eq!(trade.symbol.to_string(), "AAPL0x"); // Tokenized symbol
         assert!((trade.amount - 9.0).abs() < f64::EPSILON); // Amount from the test data
 
-        // Verify SchwabExecution was created (due to TradeAccumulator)
+        // Verify OffchainExecution was created (due to TradeAccumulator)
         // Executions are now in SUBMITTED status with order_id stored for order status polling
         let executions =
-            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Submitted)
+            find_executions_by_symbol_and_status(&pool, "AAPL", OrderStatus::Submitted)
                 .await
                 .unwrap();
         assert_eq!(executions.len(), 1);
@@ -1742,7 +1808,7 @@ mod tests {
         // Verify order_id was stored in database
         let execution_id = executions[0].id.unwrap();
         let row = sqlx::query!(
-            "SELECT order_id FROM schwab_executions WHERE id = ?1",
+            "SELECT order_id FROM offchain_trades WHERE id = ?1",
             execution_id
         )
         .fetch_one(&pool)

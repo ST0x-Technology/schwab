@@ -3,6 +3,7 @@
 
 use alloy::primitives::{B256, ruint::FromUintError};
 use alloy::transports::{RpcError, TransportErrorKind};
+use st0x_broker::PersistenceError;
 use std::num::ParseFloatError;
 
 /// Business logic validation errors for trade processing rules.
@@ -47,23 +48,6 @@ pub(crate) enum TradeValidationError {
     NotTokenizedEquity(String),
 }
 
-/// Database persistence and data corruption errors.
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum PersistenceError {
-    #[error("Database error: {0}")]
-    Database(#[from] sqlx::Error),
-    #[error("Invalid direction in database: {0}")]
-    InvalidDirection(String),
-    #[error("Invalid trade status in database: {0}")]
-    InvalidTradeStatus(String),
-    #[error("Invalid share quantity in database: {0}")]
-    InvalidShareQuantity(i64),
-    #[error("Invalid price cents in database: {0}")]
-    InvalidPriceCents(i64),
-    #[error("Execution missing ID after database save")]
-    MissingExecutionId,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AlloyError {
     #[error("Failed to get symbol: {0}")]
@@ -97,7 +81,40 @@ pub(crate) enum EventProcessingError {
     #[error("Onchain trade processing error: {0}")]
     OnChain(#[from] OnChainError),
     #[error("Schwab execution error: {0}")]
-    Schwab(#[from] crate::schwab::SchwabError),
+    Schwab(#[from] st0x_broker::schwab::SchwabError),
+    #[error("Broker error: {0}")]
+    Broker(#[from] st0x_broker::BrokerError),
+}
+
+/// Order polling errors for order status monitoring.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum OrderPollingError {
+    #[error("Broker error: {0}")]
+    Broker(Box<dyn std::error::Error + Send + Sync>),
+    #[error("Database error: {0}")]
+    Database(#[from] sqlx::Error),
+    #[error("Persistence error: {0}")]
+    Persistence(#[from] PersistenceError),
+    #[error("Configuration error: {0}")]
+    Configuration(String),
+}
+
+impl From<st0x_broker::BrokerError> for OrderPollingError {
+    fn from(err: st0x_broker::BrokerError) -> Self {
+        Self::Broker(Box::new(err))
+    }
+}
+
+impl From<OnChainError> for OrderPollingError {
+    fn from(err: OnChainError) -> Self {
+        match err {
+            OnChainError::Persistence(p) => Self::Persistence(p),
+            OnChainError::Alloy(e) => Self::Configuration(format!("Blockchain error: {e}")),
+            OnChainError::Validation(e) => Self::Configuration(format!("Validation error: {e}")),
+            OnChainError::Broker(e) => Self::Broker(Box::new(e)),
+            OnChainError::EventQueue(e) => Self::Configuration(format!("Event queue error: {e}")),
+        }
+    }
 }
 
 /// Unified error type for onchain trade processing with clear domain boundaries.
@@ -110,6 +127,8 @@ pub(crate) enum OnChainError {
     Persistence(#[from] PersistenceError),
     #[error("Alloy error: {0}")]
     Alloy(#[from] AlloyError),
+    #[error("Broker error: {0}")]
+    Broker(#[from] st0x_broker::BrokerError),
     #[error("Event queue error: {0}")]
     EventQueue(#[from] EventQueueError),
 }
@@ -129,6 +148,12 @@ impl From<alloy::contract::Error> for OnChainError {
 impl From<ParseFloatError> for OnChainError {
     fn from(err: ParseFloatError) -> Self {
         Self::Validation(TradeValidationError::U256ToF64(err))
+    }
+}
+
+impl From<st0x_broker::InvalidDirectionError> for OnChainError {
+    fn from(err: st0x_broker::InvalidDirectionError) -> Self {
+        Self::Persistence(PersistenceError::InvalidDirection(err))
     }
 }
 
