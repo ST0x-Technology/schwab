@@ -5,6 +5,7 @@ use st0x_broker::PersistenceError;
 use st0x_broker::{Direction, SupportedBroker};
 use st0x_broker::{OrderState, OrderStatus};
 
+#[derive(sqlx::FromRow)]
 struct ExecutionRow {
     id: i64,
     symbol: String,
@@ -70,21 +71,6 @@ fn row_to_execution(
     })
 }
 
-/// Converts u64 share quantity to i64 for database storage with exact conversion.
-/// NEVER silently changes amounts - returns error if conversion would lose data.
-/// This is critical for financial applications where data integrity is paramount.
-const fn shares_to_db_i64(shares: u64) -> Result<i64, PersistenceError> {
-    if shares > i64::MAX as u64 {
-        Err(PersistenceError::InvalidShareQuantity({
-            #[allow(clippy::cast_possible_wrap)]
-            (shares as i64) // This will be negative, which is what we want to signal invalid
-        }))
-    } else {
-        #[allow(clippy::cast_possible_wrap)]
-        Ok(shares as i64) // Safe: verified within i64 range
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OffchainExecution {
     pub id: Option<i64>,
@@ -137,72 +123,72 @@ impl HasTradeStatus for OrderStatus {
     }
 }
 
-pub async fn find_executions_by_symbol_and_status<S: HasTradeStatus>(
+#[cfg(test)]
+pub(crate) async fn find_executions_by_symbol_and_status<S: HasTradeStatus>(
     pool: &SqlitePool,
     symbol: &str,
     status: S,
 ) -> Result<Vec<OffchainExecution>, OnChainError> {
+    find_executions_by_symbol_status_and_broker(pool, symbol, status, None).await
+}
+
+pub async fn find_executions_by_symbol_status_and_broker<S: HasTradeStatus>(
+    pool: &SqlitePool,
+    symbol: &str,
+    status: S,
+    broker: Option<SupportedBroker>,
+) -> Result<Vec<OffchainExecution>, OnChainError> {
     let status_str = status.status_str();
-    if symbol.is_empty() {
-        let rows = sqlx::query!(
-            "SELECT * FROM offchain_trades WHERE status = ?1 ORDER BY id ASC",
-            status_str
-        )
-        .fetch_all(pool)
-        .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(|row| {
-                let id = row.id.ok_or_else(|| {
-                    OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
-                        "Database row missing required ID".to_string(),
-                    ))
-                })?;
-                row_to_execution(ExecutionRow {
-                    id,
-                    symbol: row.symbol,
-                    shares: row.shares,
-                    direction: row.direction,
-                    broker: row.broker,
-                    order_id: row.order_id,
-                    price_cents: row.price_cents,
-                    status: row.status,
-                    executed_at: row.executed_at,
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?)
+    let (query, params): (String, Vec<String>) = if symbol.is_empty() {
+        broker.map_or_else(
+            || {
+                (
+                    "SELECT * FROM offchain_trades WHERE status = ?1 ORDER BY id ASC".to_string(),
+                    vec![status_str.to_string()],
+                )
+            },
+            |broker| {
+                (
+                    "SELECT * FROM offchain_trades WHERE status = ?1 AND broker = ?2 ORDER BY id ASC"
+                        .to_string(),
+                    vec![status_str.to_string(), broker.to_string()],
+                )
+            },
+        )
     } else {
-        let rows = sqlx::query!(
-            "SELECT * FROM offchain_trades WHERE symbol = ?1 AND status = ?2 ORDER BY id ASC",
-            symbol,
-            status_str
+        broker.map_or_else(
+            || {
+                (
+                    "SELECT * FROM offchain_trades WHERE symbol = ?1 AND status = ?2 ORDER BY id ASC"
+                        .to_string(),
+                    vec![symbol.to_string(), status_str.to_string()],
+                )
+            },
+            |broker| {
+                (
+                    "SELECT * FROM offchain_trades WHERE symbol = ?1 AND status = ?2 AND broker = ?3 ORDER BY id ASC"
+                        .to_string(),
+                    vec![
+                        symbol.to_string(),
+                        status_str.to_string(),
+                        broker.to_string(),
+                    ],
+                )
+            },
         )
-        .fetch_all(pool)
-        .await?;
+    };
 
-        Ok(rows
-            .into_iter()
-            .map(|row| {
-                let id = row.id.ok_or_else(|| {
-                    OnChainError::Persistence(PersistenceError::InvalidTradeStatus(
-                        "Database row missing required ID".to_string(),
-                    ))
-                })?;
-                row_to_execution(ExecutionRow {
-                    id,
-                    symbol: row.symbol,
-                    shares: row.shares,
-                    direction: row.direction,
-                    broker: row.broker,
-                    order_id: row.order_id,
-                    price_cents: row.price_cents,
-                    status: row.status,
-                    executed_at: row.executed_at,
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?)
+    let mut query_builder = sqlx::query_as::<_, ExecutionRow>(&query);
+    for param in params {
+        query_builder = query_builder.bind(param);
     }
+
+    let rows = query_builder.fetch_all(pool).await?;
+
+    rows.into_iter()
+        .map(row_to_execution)
+        .collect::<Result<Vec<_>, _>>()
 }
 
 pub async fn find_execution_by_id(
@@ -236,7 +222,12 @@ impl OffchainExecution {
         &self,
         sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     ) -> Result<i64, st0x_broker::PersistenceError> {
-        let shares_i64 = shares_to_db_i64(self.shares)?;
+        let shares_i64 = i64::try_from(self.shares).map_err(|_| {
+            PersistenceError::InvalidShareQuantity({
+                #[allow(clippy::cast_possible_wrap)]
+                (self.shares as i64)
+            })
+        })?;
         let direction_str = self.direction.as_str();
         let broker_str = self.broker.to_string();
         let status_str = self.state.status().as_str();

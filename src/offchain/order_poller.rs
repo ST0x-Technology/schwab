@@ -5,12 +5,20 @@ use tokio::time::{Interval, interval};
 use tracing::{debug, error, info};
 
 use super::execution::{
-    OffchainExecution, find_execution_by_id, find_executions_by_symbol_and_status,
+    OffchainExecution, find_execution_by_id, find_executions_by_symbol_status_and_broker,
     update_execution_status_within_transaction,
 };
 use crate::error::OrderPollingError;
 use crate::lock::{clear_execution_lease, clear_pending_execution_id};
+use crate::onchain::io::EquitySymbol;
 use st0x_broker::{Broker, OrderState, OrderStatus, PersistenceError};
+
+fn parse_execution_symbol(symbol: &str) -> Result<EquitySymbol, OrderPollingError> {
+    symbol.parse().map_err(|e| {
+        error!("Failed to parse symbol {symbol}: {e}");
+        OrderPollingError::Persistence(PersistenceError::InvalidSymbol(symbol.to_string()))
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct OrderPollerConfig {
@@ -64,13 +72,18 @@ impl<B: Broker> OrderStatusPoller<B> {
     async fn poll_pending_orders(&self) -> Result<(), OrderPollingError> {
         debug!("Starting polling cycle for submitted orders");
 
-        let submitted_executions =
-            find_executions_by_symbol_and_status(&self.pool, "", OrderStatus::Submitted)
-                .await
-                .map_err(|e| {
-                    error!("Failed to query pending executions: {e}");
-                    OrderPollingError::from(e)
-                })?;
+        let broker = self.broker.to_supported_broker();
+        let submitted_executions = find_executions_by_symbol_status_and_broker(
+            &self.pool,
+            "",
+            OrderStatus::Submitted,
+            Some(broker),
+        )
+        .await
+        .map_err(|e| {
+            error!("Failed to query pending executions: {e}");
+            OrderPollingError::from(e)
+        })?;
 
         if submitted_executions.is_empty() {
             debug!("No submitted orders to poll");
@@ -173,37 +186,21 @@ impl<B: Broker> OrderStatusPoller<B> {
 
         update_execution_status_within_transaction(&mut tx, execution_id, &new_status).await?;
 
-        clear_pending_execution_id(
-            &mut tx,
-            &execution.symbol.parse().map_err(|e| {
-                error!("Failed to parse symbol {}: {e}", execution.symbol);
-                OrderPollingError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "Invalid symbol in execution".to_string(),
-                ))
-            })?,
-        )
-        .await
-        .map_err(|e| {
-            error!(
-                "Failed to clear pending execution ID for symbol {}: {e}",
-                execution.symbol
-            );
-            OrderPollingError::Persistence(PersistenceError::InvalidTradeStatus(
-                "Failed to clear pending execution ID".to_string(),
-            ))
-        })?;
+        let symbol = parse_execution_symbol(&execution.symbol)?;
 
-        clear_execution_lease(
-            &mut tx,
-            &execution.symbol.parse().map_err(|e| {
-                error!("Failed to parse symbol {}: {e}", execution.symbol);
+        clear_pending_execution_id(&mut tx, &symbol)
+            .await
+            .map_err(|e| {
+                error!(
+                    "Failed to clear pending execution ID for symbol {}: {e}",
+                    execution.symbol
+                );
                 OrderPollingError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "Invalid symbol in execution".to_string(),
+                    "Failed to clear pending execution ID".to_string(),
                 ))
-            })?,
-        )
-        .await
-        .map_err(|e| {
+            })?;
+
+        clear_execution_lease(&mut tx, &symbol).await.map_err(|e| {
             error!(
                 "Failed to clear execution lease for symbol {}: {e}",
                 execution.symbol
@@ -256,37 +253,21 @@ impl<B: Broker> OrderStatusPoller<B> {
 
         update_execution_status_within_transaction(&mut tx, execution_id, &new_status).await?;
 
-        clear_pending_execution_id(
-            &mut tx,
-            &execution.symbol.parse().map_err(|e| {
-                error!("Failed to parse symbol {}: {e}", execution.symbol);
-                OrderPollingError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "Invalid symbol in execution".to_string(),
-                ))
-            })?,
-        )
-        .await
-        .map_err(|e| {
-            error!(
-                "Failed to clear pending execution ID for symbol {}: {e}",
-                execution.symbol
-            );
-            OrderPollingError::Persistence(PersistenceError::InvalidTradeStatus(
-                "Failed to clear pending execution ID".to_string(),
-            ))
-        })?;
+        let symbol = parse_execution_symbol(&execution.symbol)?;
 
-        clear_execution_lease(
-            &mut tx,
-            &execution.symbol.parse().map_err(|e| {
-                error!("Failed to parse symbol {}: {e}", execution.symbol);
+        clear_pending_execution_id(&mut tx, &symbol)
+            .await
+            .map_err(|e| {
+                error!(
+                    "Failed to clear pending execution ID for symbol {}: {e}",
+                    execution.symbol
+                );
                 OrderPollingError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "Invalid symbol in execution".to_string(),
+                    "Failed to clear pending execution ID".to_string(),
                 ))
-            })?,
-        )
-        .await
-        .map_err(|e| {
+            })?;
+
+        clear_execution_lease(&mut tx, &symbol).await.map_err(|e| {
             error!(
                 "Failed to clear execution lease for symbol {}: {e}",
                 execution.symbol

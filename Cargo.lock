@@ -5171,7 +5171,32 @@ dependencies = [
 ]
 
 [[package]]
-name = "st0x-arbot"
+name = "st0x-broker"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "backon",
+ "base64 0.22.1",
+ "chrono",
+ "chrono-tz",
+ "clap",
+ "flate2",
+ "httpmock",
+ "rand 0.8.5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "sqlx",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing",
+ "url",
+ "urlencoding",
+]
+
+[[package]]
+name = "st0x-hedge"
 version = "0.1.0"
 dependencies = [
  "alloy",
@@ -5201,31 +5226,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "url",
- "urlencoding",
-]
-
-[[package]]
-name = "st0x-broker"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "backon",
- "base64 0.22.1",
- "chrono",
- "chrono-tz",
- "clap",
- "flate2",
- "httpmock",
- "rand 0.8.5",
- "reqwest",
- "serde",
- "serde_json",
- "serial_test",
- "sqlx",
- "thiserror 2.0.12",
- "tokio",
- "tracing",
  "url",
  "urlencoding",
 ]

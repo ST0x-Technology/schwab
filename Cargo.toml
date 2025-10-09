@@ -28,7 +28,7 @@ rand = "0.8"
 chrono-tz = "0.10.4"
 
 [package]
-name = "st0x-arbot"
+name = "st0x-hedge"
 version = "0.1.0"
 edition = "2024"
 
@@ -56,7 +56,7 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 urlencoding.workspace = true
 flate2.workspace = true
 itertools = "0.14.0"
-rand = "0.8"
+rand.workspace = true
 rocket = { version = "0.5.1", features = ["json"] }
 chrono-tz.workspace = true
 rust_decimal = "1.38.0"

@@ -152,7 +152,7 @@ mod tests {
         let result = broker.wait_until_market_open().await;
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), std::time::Duration::from_secs(0));
+        assert_eq!(result.unwrap(), std::time::Duration::MAX);
     }
 
     #[tokio::test]
@@ -162,7 +162,7 @@ mod tests {
 
         assert!(result.is_ok());
         let dur = result.unwrap();
-        assert_eq!(dur, std::time::Duration::from_secs(0));
+        assert_eq!(dur, std::time::Duration::MAX);
     }
 
     #[tokio::test]

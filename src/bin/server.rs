@@ -1,6 +1,6 @@
 use clap::Parser;
-use st0x_arbot::env::{Env, setup_tracing};
-use st0x_arbot::launch;
+use st0x_hedge::env::{Env, setup_tracing};
+use st0x_hedge::launch;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

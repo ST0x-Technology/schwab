@@ -90,7 +90,7 @@ impl Env {
 
 pub fn setup_tracing(log_level: &LogLevel) {
     let level: Level = log_level.into();
-    let default_filter = format!("rain_schwab={level},auth={level},main={level}");
+    let default_filter = format!("st0x_hedge={level},auth={level},main={level}");
 
     tracing_subscriber::fmt()
         .with_env_filter(

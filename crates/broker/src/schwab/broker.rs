@@ -188,7 +188,15 @@ impl Broker for SchwabBroker {
 
         for row in rows {
             let Some(order_id_value) = row.order_id else {
-                continue; // Skip orders without order_id
+                return Err(BrokerError::InvalidOrder {
+                    reason: format!(
+                        "SUBMITTED order in database is missing order_id: execution_id={}, symbol={}, shares={}, direction={}",
+                        row.id.unwrap_or(-1),
+                        row.symbol,
+                        row.shares,
+                        row.direction
+                    ),
+                });
             };
 
             // Get current status from Schwab API

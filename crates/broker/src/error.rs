@@ -13,6 +13,8 @@ pub enum PersistenceError {
     InvalidPriceCents(i64),
     #[error("Execution missing ID after database save")]
     MissingExecutionId,
+    #[error("Invalid symbol in database: {0}")]
+    InvalidSymbol(String),
 }
 
 impl From<crate::BrokerError> for PersistenceError {

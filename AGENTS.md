@@ -39,13 +39,13 @@ exploiting price discrepancies.
 
 This project uses a Cargo workspace with:
 
-- **Root crate (`st0x-arbot`)**: Main arbitrage bot application
+- **Root crate (`st0x-hedge`)**: Main arbitrage bot application
 - **Broker crate (`st0x-broker`)**: Standalone broker abstraction library
 
 ### Building & Running
 
 - `cargo build` - Build all workspace members
-- `cargo build -p st0x-arbot` - Build main crate only
+- `cargo build -p st0x-hedge` - Build main crate only
 - `cargo build -p st0x-broker` - Build broker crate only
 - `cargo run --bin server` - Run the main arbitrage bot
 - `cargo run --bin cli -- auth` - Run the authentication flow for Charles Schwab
@@ -59,7 +59,7 @@ This project uses a Cargo workspace with:
 - `cargo test -q` - Run all tests (both main and broker crates)
 - `cargo test -q --lib` - Run library tests only
 - `cargo test -p st0x-broker -q` - Run broker crate tests only
-- `cargo test -p st0x-arbot -q` - Run main crate tests only
+- `cargo test -p st0x-hedge -q` - Run main crate tests only
 - `cargo test -q <test_name>` - Run specific test
 
 ### Database Management
