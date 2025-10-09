@@ -27,6 +27,11 @@ struct InventoryLot {
     direction: Direction,
 }
 
+/// Maintains FIFO (First-In-First-Out) inventory tracking for a single symbol.
+///
+/// Manages a queue of position lots and calculates realized P&L when lots are
+/// consumed. The FIFO algorithm consumes oldest lots first when closing
+/// positions, which is a standard accounting method for cost basis calculation.
 pub(super) struct FifoInventory {
     lots: VecDeque<InventoryLot>,
     cumulative_pnl: Decimal,
@@ -46,6 +51,12 @@ impl FifoInventory {
         }
     }
 
+    /// Processes a trade and updates FIFO inventory, returning P&L metrics.
+    ///
+    /// The trade either increases the position (same direction as current
+    /// position or opening new position) or decreases the position (opposite
+    /// direction). When decreasing, FIFO lots are consumed and P&L is
+    /// realized. When increasing, a new lot is added with no P&L realization.
     pub(super) fn process_trade(
         &mut self,
         quantity: Decimal,
@@ -93,6 +104,16 @@ impl FifoInventory {
         }
     }
 
+    /// Consumes FIFO lots (oldest first) to close or reduce a position,
+    /// calculating realized P&L.
+    ///
+    /// For long positions (Direction::Buy lots), P&L = (sell_price -
+    /// cost_basis) * shares For short positions (Direction::Sell lots), P&L =
+    /// (cost_basis - buy_price) * shares
+    ///
+    /// If the trade quantity exceeds available lots, the position reverses:
+    /// all existing lots are consumed and a new lot opens in the opposite
+    /// direction.
     fn consume_lots(
         &mut self,
         quantity: Decimal,

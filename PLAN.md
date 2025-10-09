@@ -272,13 +272,13 @@ impl FifoInventory {
 
 ### Unit Tests
 
-- [ ] Test: Simple buy then sell (basic FIFO)
-- [ ] Test: Multiple buys at different prices, then partial sell
-- [ ] Test: Position reversal (long → short)
-- [ ] Test: Short position P&L calculation
-- [ ] Test: Example from requirements doc (7-step scenario)
-- [ ] Test: Fractional share handling
-- [ ] Test: Precision with rust_decimal (no floating point errors)
+- [x] Test: Simple buy then sell (basic FIFO)
+- [x] Test: Multiple buys at different prices, then partial sell
+- [x] Test: Position reversal (long → short)
+- [x] Test: Short position P&L calculation
+- [x] Test: Example from requirements doc (7-step scenario)
+- [x] Test: Fractional share handling
+- [x] Test: Precision with rust_decimal (no floating point errors)
 
 ---
 
@@ -771,10 +771,10 @@ understand/extend it.
 
 ### Subtasks
 
-- [ ] Add "P&L Reporter" section to README.md
-- [ ] Document FIFO algorithm in code comments
-- [ ] Update CLAUDE.md with P&L reporter information
-- [ ] Add inline documentation for complex logic
+- [x] Add "P&L Reporter" section to README.md
+- [x] Document FIFO algorithm in code comments
+- [x] Update CLAUDE.md with P&L reporter information
+- [x] Add inline documentation for complex logic
 
 ### README.md Updates
 
@@ -866,6 +866,34 @@ Add to Architecture section:
   - UNIQUE constraint on (trade_type, trade_id) prevents duplicates
   - MAX(timestamp) serves as processing checkpoint
 ````
+
+### Completion Summary
+
+Task 7 is complete. The implementation provides:
+
+1. **README.md Documentation**: Added comprehensive P&L Reporter section with:
+   - How It Works explanation
+   - Running locally instructions
+   - Metrics table schema description
+   - Example walkthrough of FIFO P&L calculation
+   - Updated project structure to include reporter binary and modules
+
+2. **CLAUDE.md Updates**: Added P&L Reporter architecture section covering:
+   - Reporter binary overview
+   - Core FIFO logic components
+   - Database schema design
+   - Precision trade-off documentation
+
+3. **Inline Documentation**: Added comprehensive doc comments to
+   `src/reporter/pnl.rs`:
+   - `FifoInventory` struct documentation explaining FIFO algorithm
+   - `process_trade` method documentation explaining position increase vs
+     decrease logic
+   - `consume_lots` method documentation explaining P&L calculation and position
+     reversal
+
+All documentation is now in place for users and maintainers to understand and
+work with the P&L reporter system.
 
 ---
 
