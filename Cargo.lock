@@ -3888,9 +3888,9 @@ dependencies = [
 
 [[package]]
 name = "proptest"
-version = "1.7.0"
+version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fcdab19deb5195a31cf7726a210015ff1496ba1464fd42cb4f537b8b01b471f"
+checksum = "2bb0be07becd10686a0bb407298fb425360a5c44a663774406340c59a22de4ce"
 dependencies = [
  "bit-set 0.8.0",
  "bit-vec 0.8.0",
@@ -4025,10 +4025,12 @@ dependencies = [
  "httpmock",
  "itertools 0.14.0",
  "lazy_static",
+ "proptest",
  "rand 0.8.5",
  "reqwest",
  "rocket",
  "rust_decimal",
+ "rust_decimal_macros",
  "serde",
  "serde_json",
  "serial_test",
@@ -4467,6 +4469,16 @@ dependencies = [
  "rkyv",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "rust_decimal_macros"
+version = "1.38.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6dae310b657d2d686616e215c84c3119c675450d64c4b9f9e3467209191c3bcf"
+dependencies = [
+ "quote",
+ "syn 2.0.104",
 ]
 
 [[package]]

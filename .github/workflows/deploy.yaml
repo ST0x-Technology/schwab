@@ -54,6 +54,7 @@ jobs:
       - name: Encode file contents
         run: |
           echo "ENV_TEMPLATE=$(base64 -w 0 .env.example)" >> $GITHUB_ENV
+          echo "PREP_DOCKER_COMPOSE_SCRIPT=$(base64 -w 0 prep-docker-compose.sh)" >> $GITHUB_ENV
           echo "DOCKER_COMPOSE_TEMPLATE=$(base64 -w 0 docker-compose.template.yaml)" >> $GITHUB_ENV
           echo "GRAFANA_DOCKERFILE=$(base64 -w 0 Dockerfile.grafana)" >> $GITHUB_ENV
           echo "GRAFANA_DATASOURCE_YAML=$(base64 -w 0 grafana-datasource.yaml)" >> $GITHUB_ENV
@@ -69,7 +70,7 @@ jobs:
           host: ${{ secrets.DROPLET_HOST }}
           username: root
           key: ${{ secrets.DROPLET_SSH_KEY }}
-          envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_OWNER,DEPLOYMENT_BLOCK,APP_KEY,APP_SECRET,ENV_TEMPLATE,DOCKER_COMPOSE_TEMPLATE,GRAFANA_DOCKERFILE,GRAFANA_DATASOURCE_YAML,GRAFANA_ADMIN_PASSWORD
+          envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_OWNER,DEPLOYMENT_BLOCK,APP_KEY,APP_SECRET,ENV_TEMPLATE,PREP_DOCKER_COMPOSE_SCRIPT,DOCKER_COMPOSE_TEMPLATE,GRAFANA_DOCKERFILE,GRAFANA_DATASOURCE_YAML,GRAFANA_ADMIN_PASSWORD
           script: |
             set -euo pipefail
 
@@ -99,13 +100,21 @@ jobs:
             # Decode and create files from base64-encoded content
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating configuration files from templates" | tee -a "${DEPLOY_LOG}"
 
-            # Create docker-compose.yaml from template using envsubst
-            export DATA_VOLUME_PATH="/mnt/volume_nyc3_01"
-            echo "$DOCKER_COMPOSE_TEMPLATE" | base64 -d | envsubst > /mnt/volume_nyc3_01/docker-compose.yaml
+            # Create prep-docker-compose.sh script
+            echo "$PREP_DOCKER_COMPOSE_SCRIPT" | base64 -d > /mnt/volume_nyc3_01/prep-docker-compose.sh
+            chmod +x /mnt/volume_nyc3_01/prep-docker-compose.sh
+
+            # Create docker-compose.template.yaml
+            echo "$DOCKER_COMPOSE_TEMPLATE" | base64 -d > /mnt/volume_nyc3_01/docker-compose.template.yaml
 
             # Create Grafana files needed for custom image build
             echo "$GRAFANA_DOCKERFILE" | base64 -d > /mnt/volume_nyc3_01/Dockerfile.grafana
             echo "$GRAFANA_DATASOURCE_YAML" | base64 -d > /mnt/volume_nyc3_01/grafana-datasource.yaml
+
+            # Run prep-docker-compose.sh in production mode
+            cd /mnt/volume_nyc3_01
+            export DATA_VOLUME_PATH="/mnt/volume_nyc3_01"
+            ./prep-docker-compose.sh --prod 2>&1 | tee -a "${DEPLOY_LOG}"
 
             # Pull images and stop existing services
             cd /mnt/volume_nyc3_01
@@ -155,16 +164,31 @@ jobs:
               exit 1
             fi
 
-            echo "$(date '+%Y-%m-%d %H:%M:%S') - Both containers confirmed running" | tee -a "${DEPLOY_LOG}"
+            if ! docker ps --format "{{.Names}}" | grep -q "^reporter$"; then
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - Reporter container not found in docker ps" | tee -a "${DEPLOY_LOG}" >&2
+              docker compose logs reporter 2>&1 | tee -a "${DEPLOY_LOG}"
+              exit 1
+            fi
+
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - All containers confirmed running" | tee -a "${DEPLOY_LOG}"
 
             # Capture initial container logs
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Services started successfully, capturing logs..." | tee -a "${DEPLOY_LOG}"
             docker compose logs schwarbot 2>&1 | tee "${DOCKER_LOG}"
+            docker compose logs reporter 2>&1 | tee -a "${DOCKER_LOG}"
 
             # Check for errors in schwarbot logs
             if docker compose logs schwarbot 2>&1 | grep -q "error\|panic\|failed"; then
-              echo "$(date '+%Y-%m-%d %H:%M:%S') - Application errors detected in logs" | tee -a "${DEPLOY_LOG}" >&2
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - Schwarbot errors detected in logs" | tee -a "${DEPLOY_LOG}" >&2
               docker compose logs --tail 20 schwarbot 2>&1 | tee -a "${DEPLOY_LOG}"
+              echo "Full container logs saved to: ${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}" >&2
+              exit 1
+            fi
+
+            # Check for errors in reporter logs
+            if docker compose logs reporter 2>&1 | grep -q "error\|panic\|failed"; then
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - Reporter errors detected in logs" | tee -a "${DEPLOY_LOG}" >&2
+              docker compose logs --tail 20 reporter 2>&1 | tee -a "${DEPLOY_LOG}"
               echo "Full container logs saved to: ${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}" >&2
               exit 1
             fi
@@ -192,6 +216,7 @@ jobs:
           APP_SECRET: ${{ secrets.APP_SECRET }}
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
           ENV_TEMPLATE: ${{ env.ENV_TEMPLATE }}
+          PREP_DOCKER_COMPOSE_SCRIPT: ${{ env.PREP_DOCKER_COMPOSE_SCRIPT }}
           DOCKER_COMPOSE_TEMPLATE: ${{ env.DOCKER_COMPOSE_TEMPLATE }}
           GRAFANA_DOCKERFILE: ${{ env.GRAFANA_DOCKERFILE }}
           GRAFANA_DATASOURCE_YAML: ${{ env.GRAFANA_DATASOURCE_YAML }}

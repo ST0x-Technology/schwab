@@ -4,7 +4,7 @@ use std::io::Write;
 use thiserror::Error;
 use tracing::{error, info};
 
-use crate::env::{Env, LogLevel};
+use crate::env::{Env, HasSqlite, LogLevel};
 use crate::error::OnChainError;
 use crate::onchain::pyth::{FeedIdCache, extract_pyth_price};
 use crate::onchain::{EvmEnv, OnchainTrade, accumulator};

@@ -27,11 +27,10 @@ This file provides guidance to AI agents working with code in this repository.
 
 ## Project Overview
 
-This is a Rust-based arbitrage bot for tokenized equities that monitors onchain
-trades via the Raindex orderbook and executes offsetting trades on Charles
-Schwab to maintain market-neutral positions. The bot bridges the gap between
-onchain tokenized equity markets and traditional brokerage platforms by
-exploiting price discrepancies.
+For project background, architecture, and operational details, see:
+
+- @README.md - Quick start, setup, and development guide
+- @SPEC.md - Full technical specification and system architecture
 
 ## Key Development Commands
 
@@ -53,9 +52,18 @@ exploiting price discrepancies.
 ### Database Management
 
 - `sqlx db create` - Create the database
+- `sqlx db drop` - Drop the database
+- `sqlx db reset` - Drop database, recreate, and run pending migrations
+- `sqlx db setup` - Create database and run pending migrations
+- `sqlx migrate add <DESCRIPTION>` - Create a new migration file with
+  auto-generated version number
 - `sqlx migrate run` - Apply database migrations
 - `sqlx migrate revert` - Revert last migration
 - Database URL configured via `DATABASE_URL` environment variable
+
+**IMPORTANT:** Always use `sqlx migrate add` to create migration files. NEVER
+manually create migration files using the Write tool, as this bypasses sqlx's
+versioning system.
 
 ### Development Tools
 
@@ -64,6 +72,8 @@ exploiting price discrepancies.
   linting
 - `cargo fmt` - Format code
 - `cargo-tarpaulin --skip-clean --out Html` - Generate test coverage report
+- `cargo expand` - View macro expansions (useful for debugging alloy's `sol!`
+  macro bindings)
 
 ### Nix Development Environment
 
@@ -77,138 +87,23 @@ exploiting price discrepancies.
 - When running `git diff`, make sure to add `--no-pager` to avoid opening it in
   the interactive view, e.g. `git --no-pager diff`
 
-## Architecture Overview
+## Database Schema
 
-### Core Event Processing Flow
+The complete database schema is defined in migration files under `migrations/`.
+Key tables include:
 
-**Main Event Loop ([`launch` function in `src/lib.rs`])**
+- `onchain_trades` - Blockchain trade records
+- `schwab_executions` - Schwab order execution tracking
+- `trade_accumulators` - Position tracking per symbol
+- `trade_execution_links` - Audit trail
+- `schwab_auth` - OAuth token storage
+- `event_queue` - Idempotent event processing
+- `symbol_locks` - Concurrency control
+- `metrics_pnl` - P&L metrics for Grafana
 
-- Monitors two concurrent WebSocket event streams: `ClearV2` and `TakeOrderV2`
-  from the Raindex orderbook
-- Uses `tokio::select!` to handle events from either stream without blocking
-- Converts blockchain events to structured `Trade` objects for processing
+For detailed schema and architectural details, see migration files and @SPEC.md.
 
-**Trade Conversion Logic ([`Trade` struct and methods in `src/trade/mod.rs`])**
-
-- Parses onchain events into actionable trade data with strict validation
-- Expects symbol pairs of USDC + tokenized equity with "0x" suffix (e.g.,
-  "AAPL0x")
-- Determines Schwab trade direction: buying tokenized equity onchain → selling
-  on Schwab
-- Calculates prices in cents and maintains onchain/offchain trade ratios
-
-**Async Event Processing Architecture**
-
-- Each blockchain event spawns independent async execution flow
-- Handles throughput mismatch: fast onchain events vs slower Schwab API calls
-- No artificial concurrency limits - processes events as they arrive
-- Flow: Parse Event → SQLite Deduplication Check → Schwab API Call → Record
-  Result
-
-### Authentication & API Integration
-
-**Charles Schwab OAuth (`src/schwab.rs`)**
-
-- OAuth 2.0 flow with 30-minute access tokens and 7-day refresh tokens
-- Token storage and retrieval from SQLite database
-- Comprehensive error handling for authentication failures
-
-**Symbol Caching (`crate::symbol::cache::SymbolCache`)**
-
-- Thread-safe caching of ERC20 token symbols using `tokio::sync::RwLock`
-- Prevents repeated RPC calls for the same token addresses
-
-### Database Schema & Idempotency
-
-**SQLite Tables:**
-
-- `onchain_trades`: Immutable blockchain trade records
-
-  - `id`: Primary key (auto-increment)
-  - `tx_hash`: Transaction hash (66 chars, 0x-prefixed)
-  - `log_index`: Event log index (non-negative)
-  - `symbol`: Asset symbol (non-empty string)
-  - `amount`: Trade quantity (positive real number)
-  - `direction`: Trade direction ('BUY' or 'SELL')
-  - `price_usdc`: Price in USDC (positive real number)
-  - `created_at`: Timestamp (default CURRENT_TIMESTAMP)
-  - Unique constraint: `(tx_hash, log_index)`
-
-- `schwab_executions`: Schwab order execution tracking
-
-  - `id`: Primary key (auto-increment)
-  - `symbol`: Asset symbol (non-empty string)
-  - `shares`: Whole shares executed (positive integer)
-  - `direction`: Execution direction ('BUY' or 'SELL')
-  - `order_id`: Schwab order ID (nullable, non-empty if present)
-  - `price_cents`: Execution price in cents (nullable, non-negative)
-  - `status`: Execution status ('PENDING', 'COMPLETED', 'FAILED')
-  - `executed_at`: Execution timestamp (nullable)
-  - Check constraints ensure consistent status transitions
-
-- `trade_accumulators`: Unified position tracking per symbol
-
-  - `symbol`: Primary key (non-empty string)
-  - `net_position`: Running net position (real number)
-  - `accumulated_long`: Fractional shares for buying (non-negative)
-  - `accumulated_short`: Fractional shares for selling (non-negative)
-  - `pending_execution_id`: Reference to pending execution (nullable)
-  - `last_updated`: Last update timestamp (default CURRENT_TIMESTAMP)
-
-- `trade_execution_links`: Many-to-many audit trail
-
-  - `id`: Primary key (auto-increment)
-  - `trade_id`: Foreign key to onchain_trades
-  - `execution_id`: Foreign key to schwab_executions
-  - `contributed_shares`: Fractional shares contributed (positive)
-  - `created_at`: Link creation timestamp
-  - Unique constraint: `(trade_id, execution_id)`
-
-- `schwab_auth`: OAuth token storage (sensitive data)
-
-  - `id`: Primary key (constrained to 1 for singleton)
-  - `access_token`: Current access token
-  - `access_token_fetched_at`: Access token timestamp
-  - `refresh_token`: Current refresh token
-  - `refresh_token_fetched_at`: Refresh token timestamp
-
-- `event_queue`: Idempotent event processing queue
-
-  - `id`: Primary key (auto-increment)
-  - `tx_hash`: Transaction hash (66 chars, 0x-prefixed)
-  - `log_index`: Event log index (non-negative)
-  - `block_number`: Block number (non-negative)
-  - `event_data`: JSON serialized event (non-empty)
-  - `processed`: Processing status (boolean, default false)
-  - `created_at`: Queue entry timestamp
-  - `processed_at`: Processing completion timestamp (nullable)
-  - Unique constraint: `(tx_hash, log_index)`
-
-- `symbol_locks`: Per-symbol execution concurrency control
-
-  - `symbol`: Primary key (non-empty string)
-  - `locked_at`: Lock acquisition timestamp
-
-**Idempotency Controls:**
-
-- Uses `(tx_hash, log_index)` as unique identifier to prevent duplicate trade
-  execution
-- Trade status tracking: pending → completed/failed
-- Retry logic with exponential backoff for failed trades
-
-### Configuration
-
-Environment variables (can be set via `.env` file):
-
-- `DATABASE_URL`: SQLite database path
-- `WS_RPC_URL`: WebSocket RPC endpoint for blockchain monitoring
-- `ORDERBOOK`: Raindex orderbook contract address
-- `ORDER_OWNER`: Owner address of orders to monitor for trades
-- `APP_KEY`, `APP_SECRET`: Charles Schwab API credentials
-- `REDIRECT_URI`: OAuth redirect URI (default: https://127.0.0.1)
-- `BASE_URL`: Schwab API base URL (default: https://api.schwabapi.com)
-
-### Code Quality & Best Practices
+## Code Quality & Best Practices
 
 - **Event-Driven Architecture**: Each trade spawns independent async task for
   maximum throughput

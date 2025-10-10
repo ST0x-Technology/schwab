@@ -33,6 +33,14 @@
               cargo-tarpaulin --skip-clean --out Html
             '';
           };
+
+          prepDockerCompose = rainix.mkTask.${system} {
+            name = "prep-docker-compose";
+            additionalBuildInputs = [ pkgs.gettext pkgs.docker ];
+            body = ''
+              exec ./prep-docker-compose.sh "$@"
+            '';
+          };
         };
 
         devShell = pkgs.mkShell {
@@ -47,6 +55,7 @@
               cargo-chef
               packages.prepSolArtifacts
               packages.checkTestCoverage
+              packages.prepDockerCompose
             ] ++ rainix.devShells.${system}.default.buildInputs;
         };
       });

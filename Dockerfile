@@ -1,5 +1,7 @@
 FROM ubuntu:latest AS builder
 
+ARG BUILD_PROFILE=release
+
 RUN apt update -y
 RUN apt install curl git -y
 RUN curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install linux \
@@ -30,7 +32,12 @@ RUN nix develop --command cargo chef prepare --recipe-path recipe.json
 RUN rm -rf src
 
 # Cook dependencies using cargo chef (this is the expensive cached layer)
-RUN nix develop --command cargo chef cook --release --recipe-path recipe.json
+RUN nix develop --command bash -c ' \
+    if [ "$BUILD_PROFILE" = "release" ]; then \
+        cargo chef cook --release --recipe-path recipe.json; \
+    else \
+        cargo chef cook --recipe-path recipe.json; \
+    fi'
 
 COPY . .
 
@@ -47,15 +54,23 @@ RUN nix develop --command bash -c ' \
 # Build final Rust binaries (fast since deps are already compiled)
 RUN nix develop --command bash -c ' \
     export DATABASE_URL=sqlite:///tmp/build_db.sqlite && \
-    cargo build --release --bin server \
-'
+    if [ "$BUILD_PROFILE" = "release" ]; then \
+        cargo build --release --bin server && \
+        cargo build --release --bin reporter; \
+    else \
+        cargo build --bin server && \
+        cargo build --bin reporter; \
+    fi'
 
 # Fix binary interpreter path to use standard Linux paths
 RUN apt-get update && apt-get install -y patchelf && \
-    patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 /app/target/release/server && \
+    patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 /app/target/${BUILD_PROFILE}/server && \
+    patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 /app/target/${BUILD_PROFILE}/reporter && \
     apt-get remove -y patchelf && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
 FROM debian:12-slim
+
+ARG BUILD_PROFILE=release
 
 # Install runtime dependencies
 RUN apt-get update && \
@@ -69,10 +84,15 @@ RUN groupadd -r schwab && useradd --no-log-init -r -g schwab schwab
 WORKDIR /app
 
 # Copy only the compiled binaries from builder stage (now with fixed interpreter paths)
-COPY --from=builder /app/target/release/server ./
+COPY --from=builder /app/target/${BUILD_PROFILE}/server /usr/local/bin/
+COPY --from=builder /app/target/${BUILD_PROFILE}/reporter /usr/local/bin/
 COPY --from=builder /app/migrations ./migrations
 
 # Set proper ownership and permissions
-RUN chown -R schwab:schwab /app
+RUN chown -R schwab:schwab /app && \
+    chown schwab:schwab /usr/local/bin/server && \
+    chown schwab:schwab /usr/local/bin/reporter
 
-ENTRYPOINT ["./server"]
+USER schwab
+
+ENTRYPOINT []

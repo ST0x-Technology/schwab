@@ -1,9 +1,24 @@
 services:
   schwarbot:
-    image: registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}
+    image: ${DOCKER_IMAGE}
+    pull_policy: ${PULL_POLICY}
     container_name: schwarbot
+    command: ["server"]
     environment:
       - OTEL_METRICS_EXPORTER_ENDPOINT=http://grafana:4318
+    env_file:
+      - .env
+    volumes:
+      - ${DATA_VOLUME_PATH}:/data
+    depends_on:
+      - grafana
+    restart: unless-stopped
+
+  reporter:
+    image: ${DOCKER_IMAGE}
+    pull_policy: ${PULL_POLICY}
+    container_name: reporter
+    command: ["reporter"]
     env_file:
       - .env
     volumes:

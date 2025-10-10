@@ -12,6 +12,7 @@ mod error;
 mod lock;
 mod onchain;
 mod queue;
+pub mod reporter;
 pub mod schwab;
 mod symbol;
 mod trade_execution_link;
@@ -21,7 +22,7 @@ mod trading_hours_controller;
 pub mod test_utils;
 
 use crate::conductor::run_market_hours_loop;
-use crate::env::Env;
+use crate::env::{Env, HasSqlite};
 use crate::schwab::market_hours_cache::MarketHoursCache;
 use crate::schwab::tokens::spawn_automatic_token_refresh;
 use crate::trading_hours_controller::TradingHoursController;

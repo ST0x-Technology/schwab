@@ -130,13 +130,64 @@ rainix-rs-static
 
 - `src/lib.rs` - Main event loop and orchestration
 - `src/bin/server.rs` - Arbitrage bot server binary
+- `src/bin/reporter.rs` - P&L reporter binary
 - `src/bin/cli.rs` - Command-line interface for operations
 - `src/trade/` - Trade conversion and validation logic
 - `src/schwab.rs` - Charles Schwab API integration and OAuth
+- `src/reporter/` - P&L calculation and FIFO inventory logic
 - `src/symbol/` - Token symbol caching
 - `migrations/` - SQLite database schema
 - `AGENTS.md` - Development guidelines for AI assistance
 - `SPEC.md` - Full technical specification
+
+## P&L Reporter
+
+The reporter calculates realized profit/loss using FIFO (First-In-First-Out)
+accounting. It processes all trades (onchain and offchain) and maintains
+performance metrics in the `metrics_pnl` table for Grafana visualization.
+
+### How It Works
+
+- **FIFO Accounting**: Oldest position lots are consumed first when closing
+  positions
+- **In-Memory State**: FIFO inventory rebuilt on startup by replaying all trades
+- **Checkpoint**: Uses MAX(timestamp) from metrics_pnl to resume processing new
+  trades
+- **All Trades Tracked**: Both position-increasing and position-reducing trades
+  recorded
+
+### Running Locally
+
+```bash
+# Run reporter
+cargo run --bin reporter
+```
+
+### Metrics Table Schema
+
+Every trade gets a row in `metrics_pnl`:
+
+- **realized_pnl**: NULL for position increases, value for position decreases
+- **cumulative_pnl**: Running total of realized P&L for this symbol
+- **net_position_after**: Current position after trade (positive=long,
+  negative=short)
+
+### Example: Market Making tAAPL
+
+This example demonstrates P&L calculation across both venues (onchain Raindex
+and offchain Schwab).
+
+| Step | Source   | Side | Qty | Price   | Lots Consumed (FIFO)           | Realized P&L Calculation                            | Realized P&L | Cum P&L    | Net Pos | Inventory After                      | Notes                                        |
+| ---- | -------- | ---- | --- | ------- | ------------------------------ | --------------------------------------------------- | ------------ | ---------- | ------- | ------------------------------------ | -------------------------------------------- |
+| 1    | ONCHAIN  | SELL | 0.3 | $150.00 | —                              | —                                                   | NULL         | $0.00      | -0.3    | 0.3@$150 (short)                     | Fractional sell, below hedge threshold       |
+| 2    | ONCHAIN  | SELL | 0.4 | $151.00 | —                              | —                                                   | NULL         | $0.00      | -0.7    | 0.3@$150, 0.4@$151 (short)           | Accumulating short position                  |
+| 3    | ONCHAIN  | BUY  | 0.2 | $148.00 | 0.2@$150                       | (150-148)×0.2                                       | **+$0.40**   | **+$0.40** | -0.5    | 0.1@$150, 0.4@$151 (short)           | **P&L from onchain only, no offchain hedge** |
+| 4    | ONCHAIN  | SELL | 0.6 | $149.00 | —                              | —                                                   | NULL         | $0.40      | -1.1    | 0.1@$150, 0.4@$151, 0.6@$149 (short) | Crosses ≥1.0 threshold                       |
+| 5    | OFFCHAIN | BUY  | 1.0 | $148.50 | 0.1@$150 + 0.4@$151 + 0.5@$149 | (150-148.5)×0.1 + (151-148.5)×0.4 + (149-148.5)×0.5 | **+$1.15**   | **+$1.55** | -0.1    | 0.1@$149 (short)                     | Hedges floor(1.1)=1 share                    |
+| 6    | ONCHAIN  | BUY  | 1.5 | $147.50 | 0.1@$149 then reverses         | (149-147.5)×0.1                                     | **+$0.15**   | **+$1.70** | +1.4    | 1.4@$147.50 (long)                   | Position reversal: short→long                |
+| 7    | OFFCHAIN | SELL | 1.0 | $149.00 | 1.0@$147.50                    | (149-147.5)×1.0                                     | **+$1.50**   | **+$3.20** | +0.4    | 0.4@$147.50 (long)                   | Hedges floor(1.4)=1 share                    |
+
+**Final State:** Total P&L = **$3.20**, Net Position = **+0.4 long**
 
 ## Architecture
 
