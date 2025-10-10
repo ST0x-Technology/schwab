@@ -38,7 +38,7 @@ pub async fn launch(config: Config) -> anyhow::Result<()> {
 
     let bot_pool = pool.clone();
     let bot_task = tokio::spawn(async move {
-        if let Err(e) = run(config, bot_pool).await {
+        if let Err(e) = Box::pin(run(config, bot_pool)).await {
             error!("Bot failed: {e}");
         }
     });
@@ -72,7 +72,7 @@ async fn run(config: Config, pool: SqlitePool) -> anyhow::Result<()> {
     const RERUN_DELAY_SECS: u64 = 10;
 
     loop {
-        let result = run_bot_session(&config, &pool).await;
+        let result = Box::pin(run_bot_session(&config, &pool)).await;
 
         match result {
             Ok(()) => {
@@ -99,7 +99,7 @@ async fn run_bot_session(config: &Config, pool: &SqlitePool) -> anyhow::Result<(
         BrokerConfig::DryRun => {
             info!("Initializing test broker for dry-run mode");
             let broker = MockBrokerConfig.try_into_broker().await?;
-            run_with_broker(config.clone(), pool.clone(), broker).await
+            Box::pin(run_with_broker(config.clone(), pool.clone(), broker)).await
         }
         BrokerConfig::Schwab(schwab_auth) => {
             info!("Initializing Schwab broker");
@@ -108,82 +108,24 @@ async fn run_bot_session(config: &Config, pool: &SqlitePool) -> anyhow::Result<(
                 pool: pool.clone(),
             };
             let broker = schwab_config.try_into_broker().await?;
-            run_with_broker(config.clone(), pool.clone(), broker).await
+            Box::pin(run_with_broker(config.clone(), pool.clone(), broker)).await
         }
         BrokerConfig::Alpaca(alpaca_auth) => {
             info!("Initializing Alpaca broker");
             let broker = alpaca_auth.clone().try_into_broker().await?;
-            run_with_broker(config.clone(), pool.clone(), broker).await
+            Box::pin(run_with_broker(config.clone(), pool.clone(), broker)).await
         }
     }
 }
 
-async fn run_with_broker<B: Broker + Clone>(
+async fn run_with_broker<B: Broker + Clone + Send + 'static>(
     config: Config,
     pool: SqlitePool,
     broker: B,
 ) -> anyhow::Result<()> {
-    if let Some(wait_duration) = broker
-        .wait_until_market_open()
-        .await
-        .map_err(|e| anyhow::anyhow!("Market hours check failed: {}", e))?
-    {
-        info!(
-            "Market is closed, waiting {} minutes until market opens",
-            wait_duration.as_secs() / 60
-        );
-        tokio::time::sleep(wait_duration).await;
-    }
+    let broker_maintenance = broker.run_broker_maintenance().await;
 
-    info!("Market is open, starting bot session");
-
-    let (provider, cache, mut clear_stream, mut take_stream) =
-        initialize_event_streams(config.clone()).await?;
-
-    let cutoff_block =
-        get_cutoff_block(&mut clear_stream, &mut take_stream, &provider, &pool).await?;
-
-    backfill_events(&pool, &provider, &config.evm, cutoff_block - 1).await?;
-
-    conductor::run_live(
-        config.clone(),
-        pool.clone(),
-        cache,
-        provider,
-        broker,
-        clear_stream,
-        take_stream,
-    )
-    .await
-}
-
-async fn initialize_event_streams(
-    config: Config,
-) -> anyhow::Result<(
-    impl alloy::providers::Provider + Clone,
-    SymbolCache,
-    impl Stream<
-        Item = Result<
-            (bindings::IOrderBookV4::ClearV2, alloy::rpc::types::Log),
-            alloy::sol_types::Error,
-        >,
-    >,
-    impl Stream<
-        Item = Result<
-            (bindings::IOrderBookV4::TakeOrderV2, alloy::rpc::types::Log),
-            alloy::sol_types::Error,
-        >,
-    >,
-)> {
-    let ws = WsConnect::new(config.evm.ws_rpc_url.as_str());
-    let provider = ProviderBuilder::new().connect_ws(ws).await?;
-    let cache = SymbolCache::default();
-    let orderbook = IOrderBookV4Instance::new(config.evm.orderbook, &provider);
-
-    let clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
-    let take_stream = orderbook.TakeOrderV2_filter().watch().await?.into_stream();
-
-    Ok((provider, cache, clear_stream, take_stream))
+    conductor::run_market_hours_loop(broker, config, pool, broker_maintenance).await
 }
 
 #[cfg(test)]
@@ -202,7 +144,7 @@ mod tests {
         let mut config = create_test_config();
         let pool = create_test_pool().await;
         config.evm.ws_rpc_url = "ws://invalid.nonexistent.url:8545".parse().unwrap();
-        run(config, pool).await.unwrap_err();
+        Box::pin(run(config, pool)).await.unwrap_err();
     }
 
     #[tokio::test]
@@ -211,7 +153,7 @@ mod tests {
         let pool = create_test_pool().await;
         config.evm.orderbook = alloy::primitives::Address::ZERO;
         config.evm.ws_rpc_url = "ws://localhost:8545".parse().unwrap();
-        run(config, pool).await.unwrap_err();
+        Box::pin(run(config, pool)).await.unwrap_err();
     }
 
     #[tokio::test]
@@ -219,6 +161,6 @@ mod tests {
         let mut config = create_test_config();
         config.database_url = "invalid://database/url".to_string();
         let pool = create_test_pool().await;
-        run(config, pool).await.unwrap_err();
+        Box::pin(run(config, pool)).await.unwrap_err();
     }
 }
