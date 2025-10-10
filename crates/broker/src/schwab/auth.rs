@@ -12,15 +12,15 @@ use super::{SchwabError, tokens::SchwabTokens};
 #[derive(Parser, Debug, Clone)]
 pub struct SchwabAuthEnv {
     #[clap(long, env)]
-    pub app_key: String,
+    pub schwab_app_key: String,
     #[clap(long, env)]
-    pub app_secret: String,
+    pub schwab_app_secret: String,
     #[clap(long, env, default_value = "https://127.0.0.1")]
-    pub redirect_uri: String,
+    pub schwab_redirect_uri: String,
     #[clap(long, env, default_value = "https://api.schwabapi.com")]
-    pub base_url: String,
+    pub schwab_base_url: String,
     #[clap(long, env, default_value = "0")]
-    pub account_index: usize,
+    pub schwab_account_index: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,7 +59,7 @@ impl SchwabAuthEnv {
             client
                 .get(format!(
                     "{}/trader/v1/accounts/accountNumbers",
-                    self.base_url
+                    self.schwab_base_url
                 ))
                 .headers(headers.clone())
                 .send()
@@ -84,34 +84,36 @@ impl SchwabAuthEnv {
             return Err(SchwabError::NoAccountsFound);
         }
 
-        if self.account_index >= account_numbers.len() {
+        if self.schwab_account_index >= account_numbers.len() {
             return Err(SchwabError::AccountIndexOutOfBounds {
-                index: self.account_index,
+                index: self.schwab_account_index,
                 count: account_numbers.len(),
             });
         }
 
-        Ok(account_numbers[self.account_index].hash_value.clone())
+        Ok(account_numbers[self.schwab_account_index]
+            .hash_value
+            .clone())
     }
 
     pub fn get_auth_url(&self) -> String {
         format!(
             "{}/v1/oauth/authorize?client_id={}&redirect_uri={}",
-            self.base_url,
-            urlencoding::encode(&self.app_key),
-            urlencoding::encode(&self.redirect_uri)
+            self.schwab_base_url,
+            urlencoding::encode(&self.schwab_app_key),
+            urlencoding::encode(&self.schwab_redirect_uri)
         )
     }
 
     pub async fn get_tokens_from_code(&self, code: &str) -> Result<SchwabTokens, SchwabError> {
         info!("Getting tokens for code: {code}");
-        let credentials = format!("{}:{}", self.app_key, self.app_secret);
+        let credentials = format!("{}:{}", self.schwab_app_key, self.schwab_app_secret);
         let credentials = BASE64_STANDARD.encode(credentials);
 
         let payload = format!(
             "grant_type=authorization_code&code={}&redirect_uri={}",
             urlencoding::encode(code),
-            urlencoding::encode(&self.redirect_uri)
+            urlencoding::encode(&self.schwab_redirect_uri)
         );
 
         let headers = [
@@ -130,7 +132,7 @@ impl SchwabAuthEnv {
         debug!("Sending request to Schwab API with headers: {headers:?}\nAnd payload: {payload}");
         let client = reqwest::Client::new();
         let response = client
-            .post(format!("{}/v1/oauth/token", self.base_url))
+            .post(format!("{}/v1/oauth/token", self.schwab_base_url))
             .headers(headers)
             .body(payload)
             .send()
@@ -178,7 +180,7 @@ impl SchwabAuthEnv {
     }
 
     pub async fn refresh_tokens(&self, refresh_token: &str) -> Result<SchwabTokens, SchwabError> {
-        let credentials = format!("{}:{}", self.app_key, self.app_secret);
+        let credentials = format!("{}:{}", self.schwab_app_key, self.schwab_app_secret);
         let credentials = BASE64_STANDARD.encode(credentials);
 
         let payload = format!(
@@ -202,7 +204,7 @@ impl SchwabAuthEnv {
         let client = reqwest::Client::new();
         let response = (|| async {
             client
-                .post(format!("{}/v1/oauth/token", self.base_url))
+                .post(format!("{}/v1/oauth/token", self.schwab_base_url))
                 .headers(headers.clone())
                 .body(payload.clone())
                 .send()
@@ -242,21 +244,21 @@ mod tests {
 
     fn create_test_env() -> SchwabAuthEnv {
         SchwabAuthEnv {
-            app_key: "test_app_key".to_string(),
-            app_secret: "test_app_secret".to_string(),
-            redirect_uri: "https://127.0.0.1".to_string(),
-            base_url: "https://api.schwabapi.com".to_string(),
-            account_index: 0,
+            schwab_app_key: "test_app_key".to_string(),
+            schwab_app_secret: "test_app_secret".to_string(),
+            schwab_redirect_uri: "https://127.0.0.1".to_string(),
+            schwab_base_url: "https://api.schwabapi.com".to_string(),
+            schwab_account_index: 0,
         }
     }
 
     fn create_test_env_with_mock_server(mock_server: &MockServer) -> SchwabAuthEnv {
         SchwabAuthEnv {
-            app_key: "test_app_key".to_string(),
-            app_secret: "test_app_secret".to_string(),
-            redirect_uri: "https://127.0.0.1".to_string(),
-            base_url: mock_server.base_url(),
-            account_index: 0,
+            schwab_app_key: "test_app_key".to_string(),
+            schwab_app_secret: "test_app_secret".to_string(),
+            schwab_redirect_uri: "https://127.0.0.1".to_string(),
+            schwab_base_url: mock_server.base_url(),
+            schwab_account_index: 0,
         }
     }
 
@@ -270,11 +272,11 @@ mod tests {
     #[test]
     fn test_schwab_auth_env_get_auth_url_custom_base_url() {
         let env = SchwabAuthEnv {
-            app_key: "custom_key".to_string(),
-            app_secret: "custom_secret".to_string(),
-            redirect_uri: "https://custom.redirect.com".to_string(),
-            base_url: "https://custom.api.com".to_string(),
-            account_index: 0,
+            schwab_app_key: "custom_key".to_string(),
+            schwab_app_secret: "custom_secret".to_string(),
+            schwab_redirect_uri: "https://custom.redirect.com".to_string(),
+            schwab_base_url: "https://custom.api.com".to_string(),
+            schwab_account_index: 0,
         };
         let expected_url = "https://custom.api.com/v1/oauth/authorize?client_id=custom_key&redirect_uri=https%3A%2F%2Fcustom.redirect.com";
         assert_eq!(env.get_auth_url(), expected_url);
@@ -283,11 +285,11 @@ mod tests {
     #[test]
     fn test_schwab_auth_env_get_auth_url_with_special_characters() {
         let env = SchwabAuthEnv {
-            app_key: "test key with spaces & symbols!".to_string(),
-            app_secret: "test_secret".to_string(),
-            redirect_uri: "https://example.com/callback?param=value&other=test".to_string(),
-            base_url: "https://api.schwabapi.com".to_string(),
-            account_index: 0,
+            schwab_app_key: "test key with spaces & symbols!".to_string(),
+            schwab_app_secret: "test_secret".to_string(),
+            schwab_redirect_uri: "https://example.com/callback?param=value&other=test".to_string(),
+            schwab_base_url: "https://api.schwabapi.com".to_string(),
+            schwab_account_index: 0,
         };
         let expected_url = "https://api.schwabapi.com/v1/oauth/authorize?client_id=test%20key%20with%20spaces%20%26%20symbols%21&redirect_uri=https%3A%2F%2Fexample.com%2Fcallback%3Fparam%3Dvalue%26other%3Dtest";
         assert_eq!(env.get_auth_url(), expected_url);
@@ -556,15 +558,15 @@ mod tests {
     #[test]
     fn test_schwab_auth_env_default_values() {
         let env = SchwabAuthEnv {
-            app_key: "test_key".to_string(),
-            app_secret: "test_secret".to_string(),
-            redirect_uri: "https://127.0.0.1".to_string(),
-            base_url: "https://api.schwabapi.com".to_string(),
-            account_index: 0,
+            schwab_app_key: "test_key".to_string(),
+            schwab_app_secret: "test_secret".to_string(),
+            schwab_redirect_uri: "https://127.0.0.1".to_string(),
+            schwab_base_url: "https://api.schwabapi.com".to_string(),
+            schwab_account_index: 0,
         };
 
-        assert_eq!(env.redirect_uri, "https://127.0.0.1");
-        assert_eq!(env.base_url, "https://api.schwabapi.com");
+        assert_eq!(env.schwab_redirect_uri, "https://127.0.0.1");
+        assert_eq!(env.schwab_base_url, "https://api.schwabapi.com");
     }
 
     #[tokio::test]
@@ -605,7 +607,7 @@ mod tests {
     async fn test_get_account_hash_with_custom_index() {
         let server = MockServer::start();
         let mut env = create_test_env_with_mock_server(&server);
-        env.account_index = 1;
+        env.schwab_account_index = 1;
         let pool = setup_test_db().await;
         setup_test_tokens(&pool).await;
 
@@ -640,7 +642,7 @@ mod tests {
     async fn test_get_account_hash_index_out_of_bounds() {
         let server = MockServer::start();
         let mut env = create_test_env_with_mock_server(&server);
-        env.account_index = 2;
+        env.schwab_account_index = 2;
         let pool = setup_test_db().await;
         setup_test_tokens(&pool).await;
 

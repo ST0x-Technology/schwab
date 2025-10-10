@@ -10,7 +10,7 @@ use super::{SchwabError, auth::SchwabAuthEnv};
 const ACCESS_TOKEN_DURATION_MINUTES: i64 = 30;
 const REFRESH_TOKEN_DURATION_DAYS: i64 = 7;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct SchwabTokens {
     /// Expires every 30 minutes
     pub access_token: String,
@@ -18,6 +18,29 @@ pub struct SchwabTokens {
     /// Expires every 7 days
     pub refresh_token: String,
     pub refresh_token_fetched_at: DateTime<Utc>,
+}
+
+impl<'de> Deserialize<'de> for SchwabTokens {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct SchwabTokensHelper {
+            access_token: String,
+            access_token_fetched_at: DateTime<Utc>,
+            refresh_token: String,
+            refresh_token_fetched_at: DateTime<Utc>,
+        }
+
+        let helper = SchwabTokensHelper::deserialize(deserializer)?;
+        Ok(Self {
+            access_token: helper.access_token,
+            access_token_fetched_at: helper.access_token_fetched_at,
+            refresh_token: helper.refresh_token,
+            refresh_token_fetched_at: helper.refresh_token_fetched_at,
+        })
+    }
 }
 
 impl SchwabTokens {

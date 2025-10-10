@@ -22,16 +22,23 @@ This file provides guidance to AI agents working with code in this repository.
 - You should update PLAN.md every time you complete a section
 - Upon completing a planned task, add detailed descriptions of the changes you
   made to ease the review process
-- Upon completing everything in PLAN.md and getting approval from the user on
-  the changes, you can delete the planning file to avoid polluting the repo
+
+### Before creating a PR
+
+- **CRITICAL**: Delete PLAN.md before submitting changes for review
+- PLAN.md is a transient development file that should ONLY exist on development
+  branches
+- PLAN.md should NEVER appear in pull requests or be merged to main/master
+- The plan is for development tracking only - final documentation goes in commit
+  messages, docstrings, and permanent markdown documents
 
 ## Project Overview
 
-This is a Rust-based arbitrage bot for tokenized equities that monitors onchain
-trades via the Raindex orderbook and executes offsetting trades on Charles
-Schwab to maintain market-neutral positions. The bot bridges the gap between
-onchain tokenized equity markets and traditional brokerage platforms by
-exploiting price discrepancies.
+This is a Rust-based market making system for tokenized equities that provides
+onchain liquidity via Raindex orders and hedges directional exposure by
+executing offsetting trades on traditional brokerages (Charles Schwab or Alpaca
+Markets). The system captures arbitrage profits from spreads while attempting to
+minimize delta exposure through automated hedging.
 
 ## Key Development Commands
 
@@ -289,7 +296,7 @@ Environment variables (can be set via `.env` file):
 - **Symbol Suffix Convention**: Tokenized equities use "0x" suffix to
   distinguish from base assets
 - **Price Direction Logic**: Onchain buy = offchain sell (and vice versa) to
-  maintain market-neutral positions
+  hedge directional exposure
 - **Comprehensive Error Handling**: Custom error types (`OnChainError`,
   `SchwabError`) with proper propagation
 - **Type Modeling**: Make invalid states unrepresentable through the type

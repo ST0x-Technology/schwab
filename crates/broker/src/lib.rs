@@ -2,18 +2,20 @@ use async_trait::async_trait;
 use std::fmt::{Debug, Display};
 use tokio::task::JoinHandle;
 
+pub mod alpaca;
 pub mod error;
+pub mod mock;
 pub mod order;
 pub mod schwab;
-pub mod test;
 
 #[cfg(test)]
 pub mod test_utils;
 
+pub use alpaca::{AlpacaAuthEnv, AlpacaBroker, AlpacaClient, MarketHoursError};
 pub use error::PersistenceError;
+pub use mock::{MockBroker, MockBrokerConfig};
 pub use order::{MarketOrder, OrderPlacement, OrderState, OrderStatus, OrderUpdate};
-pub use schwab::broker::SchwabBroker;
-pub use test::TestBroker;
+pub use schwab::broker::{SchwabBroker, SchwabConfig};
 
 /// Stock symbol newtype wrapper with validation
 ///
@@ -47,7 +49,7 @@ impl Display for Symbol {
 ///
 /// Represents whole share quantities with bounds checking.
 /// Values are constrained to 1..=u32::MAX for practical trading limits.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shares(u32);
 
 impl Shares {
@@ -61,14 +63,11 @@ impl Shares {
                 reason: "Shares must be greater than 0".to_string(),
             });
         }
-        if shares > u32::MAX as u64 {
-            return Err(BrokerError::InvalidOrder {
+        u32::try_from(shares)
+            .map(Self)
+            .map_err(|_| BrokerError::InvalidOrder {
                 reason: "Shares exceeds maximum allowed value".to_string(),
-            });
-        }
-
-        let shares_u32 = shares.try_into()?;
-        Ok(Self(shares_u32))
+            })
     }
 
     pub fn value(&self) -> u32 {
@@ -93,17 +92,19 @@ impl std::fmt::Display for InvalidDirectionError {
 
 impl std::error::Error for InvalidDirectionError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum SupportedBroker {
     Schwab,
+    Alpaca,
     DryRun,
 }
 
 impl std::fmt::Display for SupportedBroker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SupportedBroker::Schwab => write!(f, "schwab"),
-            SupportedBroker::DryRun => write!(f, "dry_run"),
+            Self::Schwab => write!(f, "schwab"),
+            Self::Alpaca => write!(f, "alpaca"),
+            Self::DryRun => write!(f, "dry_run"),
         }
     }
 }
@@ -149,6 +150,15 @@ pub enum BrokerError {
     #[error("Schwab API error: {0}")]
     Schwab(#[from] schwab::SchwabError),
 
+    #[error("Alpaca API error: {0}")]
+    Alpaca(Box<apca::Error>),
+
+    #[error("Alpaca request error: {0}")]
+    AlpacaRequest(String),
+
+    #[error("Market hours error: {0}")]
+    MarketHours(#[from] MarketHoursError),
+
     #[error("Authentication failed: {0}")]
     Authentication(String),
 
@@ -172,6 +182,20 @@ pub enum BrokerError {
 
     #[error("Numeric conversion error: {0}")]
     NumericConversion(#[from] std::num::TryFromIntError),
+}
+
+impl From<apca::Error> for BrokerError {
+    fn from(error: apca::Error) -> Self {
+        Self::Alpaca(Box::new(error))
+    }
+}
+
+/// Trait for converting broker-specific configs into their corresponding broker implementations
+#[async_trait]
+pub trait TryIntoBroker {
+    type Broker: Broker;
+
+    async fn try_into_broker(self) -> Result<Self::Broker, <Self::Broker as Broker>::Error>;
 }
 
 #[async_trait]
@@ -218,6 +242,33 @@ pub trait Broker: Send + Sync + 'static {
     /// Tasks should run indefinitely and be aborted by the caller when shutdown is needed
     /// Errors are logged inside the task and do not propagate to the caller
     async fn run_broker_maintenance(&self) -> Option<JoinHandle<()>>;
+}
+
+#[async_trait]
+impl TryIntoBroker for SchwabConfig {
+    type Broker = SchwabBroker;
+
+    async fn try_into_broker(self) -> Result<Self::Broker, <Self::Broker as Broker>::Error> {
+        SchwabBroker::try_from_config(self).await
+    }
+}
+
+#[async_trait]
+impl TryIntoBroker for AlpacaAuthEnv {
+    type Broker = AlpacaBroker;
+
+    async fn try_into_broker(self) -> Result<Self::Broker, <Self::Broker as Broker>::Error> {
+        AlpacaBroker::try_from_config(self).await
+    }
+}
+
+#[async_trait]
+impl TryIntoBroker for MockBrokerConfig {
+    type Broker = MockBroker;
+
+    async fn try_into_broker(self) -> Result<Self::Broker, <Self::Broker as Broker>::Error> {
+        MockBroker::try_from_config(self).await
+    }
 }
 
 #[cfg(test)]

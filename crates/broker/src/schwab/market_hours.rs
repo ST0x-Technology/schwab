@@ -176,7 +176,7 @@ pub async fn fetch_market_hours(
     .into_iter()
     .collect::<HeaderMap>();
 
-    let mut url = format!("{}/marketdata/v1/markets/equity", env.base_url);
+    let mut url = format!("{}/marketdata/v1/markets/equity", env.schwab_base_url);
 
     if let Some(date_param) = date {
         use std::fmt::Write;

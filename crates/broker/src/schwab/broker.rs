@@ -11,7 +11,11 @@ use crate::{
 };
 
 /// Configuration for SchwabBroker containing auth environment and database pool
-pub type SchwabConfig = (SchwabAuthEnv, SqlitePool);
+#[derive(Debug, Clone)]
+pub struct SchwabConfig {
+    pub auth: SchwabAuthEnv,
+    pub pool: SqlitePool,
+}
 
 /// Schwab broker implementation
 #[derive(Debug, Clone)]
@@ -27,14 +31,15 @@ impl Broker for SchwabBroker {
     type Config = SchwabConfig;
 
     async fn try_from_config(config: Self::Config) -> Result<Self, Self::Error> {
-        let (auth, pool) = config;
-
         // Validate and refresh tokens during initialization
-        SchwabTokens::refresh_if_needed(&pool, &auth).await?;
+        SchwabTokens::refresh_if_needed(&config.pool, &config.auth).await?;
 
         info!("Schwab broker initialized with valid tokens");
 
-        Ok(Self { auth, pool })
+        Ok(Self {
+            auth: config.auth,
+            pool: config.pool,
+        })
     }
 
     async fn wait_until_market_open(&self) -> Result<std::time::Duration, Self::Error> {
@@ -108,7 +113,7 @@ impl Broker for SchwabBroker {
             .place(&self.auth, &self.pool)
             .await
             .map_err(|e| {
-                BrokerError::OrderPlacement(format!("Schwab order placement failed: {}", e))
+                BrokerError::OrderPlacement(format!("Schwab order placement failed: {e}"))
             })?;
 
         Ok(OrderPlacement {
@@ -126,12 +131,12 @@ impl Broker for SchwabBroker {
         let order_response =
             crate::schwab::order::Order::get_order_status(order_id, &self.auth, &self.pool)
                 .await
-                .map_err(|e| BrokerError::Network(format!("Failed to get order status: {}", e)))?;
+                .map_err(|e| BrokerError::Network(format!("Failed to get order status: {e}")))?;
 
         if order_response.is_filled() {
             let price_cents = order_response
                 .price_in_cents()
-                .map_err(|e| BrokerError::Network(format!("Failed to calculate price: {}", e)))?
+                .map_err(|e| BrokerError::Network(format!("Failed to calculate price: {e}")))?
                 .ok_or_else(|| {
                     BrokerError::Network(
                         "Order marked as filled but price information is not available".to_string(),
@@ -144,9 +149,7 @@ impl Broker for SchwabBroker {
 
             let executed_at =
                 chrono::DateTime::parse_from_str(close_time_str, "%Y-%m-%dT%H:%M:%S%z")
-                    .map_err(|e| {
-                        BrokerError::Network(format!("Failed to parse close_time: {}", e))
-                    })?
+                    .map_err(|e| BrokerError::Network(format!("Failed to parse close_time: {e}")))?
                     .with_timezone(&chrono::Utc);
 
             Ok(OrderState::Filled {
@@ -160,7 +163,7 @@ impl Broker for SchwabBroker {
             })?;
 
             let failed_at = chrono::DateTime::parse_from_str(close_time_str, "%Y-%m-%dT%H:%M:%S%z")
-                .map_err(|e| BrokerError::Network(format!("Failed to parse close_time: {}", e)))?
+                .map_err(|e| BrokerError::Network(format!("Failed to parse close_time: {e}")))?
                 .with_timezone(&chrono::Utc);
 
             Ok(OrderState::Failed {
@@ -211,21 +214,25 @@ impl Broker for SchwabBroker {
 
                         let symbol =
                             Symbol::new(row.symbol).map_err(|e| BrokerError::InvalidOrder {
-                                reason: format!("Invalid symbol in database: {}", e),
+                                reason: format!("Invalid symbol in database: {e}"),
                             })?;
 
-                        let shares = Shares::new(row.shares as u64).map_err(|e| {
-                            BrokerError::InvalidOrder {
-                                reason: format!("Invalid shares in database: {}", e),
-                            }
-                        })?;
+                        let shares_u64 =
+                            u64::try_from(row.shares).map_err(|_| BrokerError::InvalidOrder {
+                                reason: "Invalid negative shares in database".to_string(),
+                            })?;
+
+                        let shares =
+                            Shares::new(shares_u64).map_err(|e| BrokerError::InvalidOrder {
+                                reason: format!("Invalid shares in database: {e}"),
+                            })?;
 
                         let direction =
                             row.direction
                                 .parse()
                                 .map_err(|e: crate::InvalidDirectionError| {
                                     BrokerError::InvalidOrder {
-                                        reason: format!("Invalid direction in database: {}", e),
+                                        reason: format!("Invalid direction in database: {e}"),
                                     }
                                 })?;
 
@@ -243,7 +250,6 @@ impl Broker for SchwabBroker {
                 Err(e) => {
                     // Log error but continue with other orders
                     info!("Failed to get status for order {}: {}", order_id_value, e);
-                    continue;
                 }
             }
         }
@@ -292,21 +298,21 @@ mod tests {
 
     fn create_test_auth_env() -> SchwabAuthEnv {
         SchwabAuthEnv {
-            app_key: "test_key".to_string(),
-            app_secret: "test_secret".to_string(),
-            redirect_uri: "https://127.0.0.1".to_string(),
-            base_url: "https://test.com".to_string(),
-            account_index: 0,
+            schwab_app_key: "test_key".to_string(),
+            schwab_app_secret: "test_secret".to_string(),
+            schwab_redirect_uri: "https://127.0.0.1".to_string(),
+            schwab_base_url: "https://test.com".to_string(),
+            schwab_account_index: 0,
         }
     }
 
     fn create_test_auth_env_with_server(server: &MockServer) -> SchwabAuthEnv {
         SchwabAuthEnv {
-            app_key: "test_key".to_string(),
-            app_secret: "test_secret".to_string(),
-            redirect_uri: "https://127.0.0.1".to_string(),
-            base_url: server.base_url(),
-            account_index: 0,
+            schwab_app_key: "test_key".to_string(),
+            schwab_app_secret: "test_secret".to_string(),
+            schwab_redirect_uri: "https://127.0.0.1".to_string(),
+            schwab_base_url: server.base_url(),
+            schwab_account_index: 0,
         }
     }
 
@@ -348,7 +354,7 @@ mod tests {
 
         assert!(result.is_ok());
         let broker = result.unwrap();
-        assert_eq!(broker.auth.app_key, "test_key");
+        assert_eq!(broker.auth.schwab_app_key, "test_key");
     }
 
     #[tokio::test]

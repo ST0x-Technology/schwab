@@ -10,15 +10,19 @@ use crate::{
     Broker, BrokerError, MarketOrder, OrderPlacement, OrderState, OrderUpdate, SupportedBroker,
 };
 
+/// Configuration for MockBroker
+#[derive(Debug, Clone, Default)]
+pub struct MockBrokerConfig;
+
 /// Unified test broker for dry-run mode and testing that logs operations without executing real trades
 #[derive(Debug, Clone)]
-pub struct TestBroker {
+pub struct MockBroker {
     order_counter: Arc<AtomicU64>,
     should_fail: bool,
     failure_message: String,
 }
 
-impl TestBroker {
+impl MockBroker {
     pub fn new() -> Self {
         Self {
             order_counter: Arc::new(AtomicU64::new(1)),
@@ -37,24 +41,24 @@ impl TestBroker {
 
     fn generate_order_id(&self) -> String {
         let id = self.order_counter.fetch_add(1, Ordering::SeqCst);
-        format!("TEST_{}", id)
+        format!("TEST_{id}")
     }
 }
 
-impl Default for TestBroker {
+impl Default for MockBroker {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl Broker for TestBroker {
+impl Broker for MockBroker {
     type Error = BrokerError;
     type OrderId = String;
-    type Config = ();
+    type Config = MockBrokerConfig;
 
     async fn try_from_config(_config: Self::Config) -> Result<Self, Self::Error> {
-        warn!("[TEST] Initializing test broker - always ready in test mode");
+        warn!("[MOCK] Initializing mock broker - always ready in dry-run mode");
         Ok(Self::new())
     }
 
@@ -123,7 +127,7 @@ impl Broker for TestBroker {
     }
 
     fn parse_order_id(&self, order_id_str: &str) -> Result<Self::OrderId, Self::Error> {
-        // For TestBroker, OrderId is String, so just clone the input
+        // For MockBroker, OrderId is String, so just clone the input
         Ok(order_id_str.to_string())
     }
 
@@ -138,7 +142,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_try_from_config_success() {
-        let result = TestBroker::try_from_config(()).await;
+        let result = MockBroker::try_from_config(MockBrokerConfig).await;
         assert!(result.is_ok());
 
         let broker = result.unwrap();
@@ -148,7 +152,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_wait_until_market_open_always_returns_none() {
-        let broker = TestBroker::new();
+        let broker = MockBroker::new();
         let result = broker.wait_until_market_open().await;
 
         assert!(result.is_ok());
@@ -157,7 +161,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_failure_broker_wait_until_market_open() {
-        let broker = TestBroker::with_failure("Test failure");
+        let broker = MockBroker::with_failure("Test failure");
         let result = broker.wait_until_market_open().await;
 
         assert!(result.is_ok());
@@ -167,7 +171,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_order_id() {
-        let broker = TestBroker::new();
+        let broker = MockBroker::new();
         let test_id = "TEST_123";
         let parsed = broker.parse_order_id(test_id).unwrap();
         assert_eq!(parsed, test_id);
@@ -175,7 +179,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_to_supported_broker() {
-        let broker = TestBroker::new();
+        let broker = MockBroker::new();
         assert_eq!(broker.to_supported_broker(), SupportedBroker::DryRun);
     }
 }

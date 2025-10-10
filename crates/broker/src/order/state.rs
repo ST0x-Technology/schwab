@@ -75,7 +75,7 @@ impl OrderState {
                 Ok(Self::Filled {
                     executed_at: DateTime::<Utc>::from_naive_utc_and_offset(executed_at, Utc),
                     order_id,
-                    price_cents: price_cents_from_db_i64(price_cents)?,
+                    price_cents: u64::try_from(price_cents)?,
                 })
             }
             OrderStatus::Failed => {
@@ -136,18 +136,6 @@ fn u64_to_i64_exact(value: u64) -> Result<i64, BrokerError> {
     } else {
         #[allow(clippy::cast_possible_wrap)]
         Ok(value as i64) // Safe: verified within i64 range
-    }
-}
-
-/// Converts i64 from database to u64 for application use with exact conversion.
-/// NEVER silently changes amounts - returns error if conversion would lose data.
-fn price_cents_from_db_i64(value: i64) -> Result<u64, BrokerError> {
-    if value < 0 {
-        Err(BrokerError::InvalidOrder {
-            reason: format!("Negative price_cents value {value} is invalid"),
-        })
-    } else {
-        Ok(value as u64) // Safe: verified non-negative
     }
 }
 
@@ -358,18 +346,5 @@ mod tests {
         let overflow_value = (i64::MAX as u64) + 1;
         let result = u64_to_i64_exact(overflow_value);
         assert!(result.is_err()); // MUST fail, never silently change amounts
-    }
-
-    #[test]
-    fn test_price_cents_from_db_i64_positive() {
-        assert_eq!(price_cents_from_db_i64(0).unwrap(), 0);
-        assert_eq!(price_cents_from_db_i64(15000).unwrap(), 15000);
-        assert_eq!(price_cents_from_db_i64(i64::MAX).unwrap(), i64::MAX as u64);
-    }
-
-    #[test]
-    fn test_price_cents_from_db_i64_negative() {
-        let result = price_cents_from_db_i64(-1);
-        assert!(result.is_err()); // MUST fail for negative values
     }
 }

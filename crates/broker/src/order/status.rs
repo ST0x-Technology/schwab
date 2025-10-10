@@ -1,11 +1,24 @@
 use super::HasOrderStatus;
 
-/// Flat enum for database storage (matches CHECK constraint pattern)
+/// Order status lifecycle enum for database storage (matches CHECK constraint pattern)
+///
+/// Represents the lifecycle of an order from creation through completion:
+/// - `Pending`: Order created in our system but not yet sent to broker
+/// - `Submitted`: Order sent to broker and acknowledged (broker is working on it)
+/// - `Filled`: Order successfully completed by broker
+/// - `Failed`: Order rejected, canceled, expired, or otherwise terminal without filling
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderStatus {
+    /// Order exists in our system but hasn't been sent to the broker yet
     Pending,
+
+    /// Order has been sent to and acknowledged by the broker (actively being worked)
     Submitted,
+
+    /// Order has been completely filled by the broker
     Filled,
+
+    /// Order terminated without filling (rejected, canceled, expired, etc.)
     Failed,
 }
 
