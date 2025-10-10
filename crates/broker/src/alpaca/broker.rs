@@ -36,10 +36,8 @@ impl Broker for AlpacaBroker {
         Ok(Self { client })
     }
 
-    async fn wait_until_market_open(&self) -> Result<Option<std::time::Duration>, Self::Error> {
-        super::market_hours::wait_until_market_open(self.client.client())
-            .await
-            .map_err(|e| BrokerError::Network(format!("Failed to check market hours: {e}")))
+    async fn wait_until_market_open(&self) -> Result<std::time::Duration, Self::Error> {
+        Ok(super::market_hours::wait_until_market_open(self.client.client()).await?)
     }
 
     async fn place_market_order(
@@ -87,10 +85,7 @@ impl Broker for AlpacaBroker {
         Ok(order_id_str.to_string())
     }
 
-    async fn run_broker_maintenance(
-        &self,
-        _shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    ) -> Option<tokio::task::JoinHandle<Result<(), Self::Error>>> {
+    async fn run_broker_maintenance(&self) -> Option<tokio::task::JoinHandle<()>> {
         // Alpaca uses API keys, no token refresh needed
         None
     }
@@ -227,23 +222,36 @@ mod tests {
         account_mock.assert();
         clock_mock.assert();
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), None);
+        let duration = result.unwrap();
+        assert!(duration.as_secs() > 0);
     }
 
     #[tokio::test]
-    async fn test_wait_until_market_open_when_closed() {
+    async fn test_wait_until_market_open_when_closed_then_open() {
         let server = MockServer::start();
         let auth = create_test_auth_env(&server.base_url());
 
         let account_mock = create_account_mock(&server);
 
-        let clock_mock = server.mock(|when, then| {
+        let closed_mock = server.mock(|when, then| {
             when.method(GET).path("/v2/clock");
             then.status(200)
                 .header("content-type", "application/json")
                 .json_body(json!({
                     "timestamp": "2025-01-03T20:00:00-05:00",
                     "is_open": false,
+                    "next_open": "2025-01-03T20:00:01-05:00",
+                    "next_close": "2030-01-06T21:00:00+00:00"
+                }));
+        });
+
+        let open_mock = server.mock(|when, then| {
+            when.method(GET).path("/v2/clock");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "timestamp": "2025-01-03T20:00:02-05:00",
+                    "is_open": true,
                     "next_open": "2030-01-06T14:30:00+00:00",
                     "next_close": "2030-01-06T21:00:00+00:00"
                 }));
@@ -253,11 +261,11 @@ mod tests {
         let result = broker.wait_until_market_open().await;
 
         account_mock.assert();
-        clock_mock.assert();
+        closed_mock.assert();
+        open_mock.assert();
         assert!(result.is_ok());
         let duration = result.unwrap();
-        assert!(duration.is_some());
-        assert!(duration.unwrap().as_secs() > 0);
+        assert!(duration.as_secs() > 0);
     }
 
     #[tokio::test]
@@ -324,11 +332,8 @@ mod tests {
 
         account_mock.assert();
 
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let result = broker.run_broker_maintenance(shutdown_rx).await;
+        let result = broker.run_broker_maintenance().await;
 
         assert!(result.is_none());
-
-        drop(shutdown_tx);
     }
 }

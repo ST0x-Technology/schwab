@@ -58,22 +58,23 @@ pub(crate) async fn run_market_hours_loop<B: Broker + Clone + Send + 'static>(
         info!("Starting conductor (no market hours restrictions)");
     }
 
-    let mut conductor =
-        match Conductor::start(&config, &pool, broker.clone(), broker_maintenance).await {
-            Ok(c) => c,
-            Err(e) => {
-                error!(
-                    "Failed to start conductor: {e}, retrying in {} seconds",
-                    RERUN_DELAY_SECS
-                );
+    let mut conductor = match Conductor::start(&config, &pool, broker.clone(), broker_maintenance)
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            error!(
+                "Failed to start conductor: {e}, retrying in {} seconds",
+                RERUN_DELAY_SECS
+            );
 
-                tokio::time::sleep(std::time::Duration::from_secs(RERUN_DELAY_SECS)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(RERUN_DELAY_SECS)).await;
 
-                let new_maintenance = broker.run_broker_maintenance().await;
+            let new_maintenance = broker.run_broker_maintenance().await;
 
-                return Box::pin(run_market_hours_loop(broker, config, pool, new_maintenance)).await;
-            }
-        };
+            return Box::pin(run_market_hours_loop(broker, config, pool, new_maintenance)).await;
+        }
+    };
 
     info!("Market opened, conductor running");
 
@@ -1460,7 +1461,6 @@ mod tests {
     #[tokio::test]
     async fn test_execute_pending_offchain_execution_not_found() {
         let pool = setup_test_db().await;
-        let config = create_test_config();
         let broker = MockBrokerConfig.try_into_broker().await.unwrap();
 
         let result = execute_pending_offchain_execution(&broker, &pool, 99999).await;

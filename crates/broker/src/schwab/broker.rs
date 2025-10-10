@@ -136,7 +136,7 @@ impl Broker for SchwabBroker {
         if order_response.is_filled() {
             let price_cents = order_response
                 .price_in_cents()
-                .map_err(|e| BrokerError::Network(format!("Failed to calculate price: {}", e)))?
+                .map_err(|e| BrokerError::Network(format!("Failed to calculate price: {e}")))?
                 .ok_or_else(|| {
                     BrokerError::Network(
                         "Order marked as filled but price information is not available".to_string(),
@@ -149,9 +149,7 @@ impl Broker for SchwabBroker {
 
             let executed_at =
                 chrono::DateTime::parse_from_str(close_time_str, "%Y-%m-%dT%H:%M:%S%z")
-                    .map_err(|e| {
-                        BrokerError::Network(format!("Failed to parse close_time: {}", e))
-                    })?
+                    .map_err(|e| BrokerError::Network(format!("Failed to parse close_time: {e}")))?
                     .with_timezone(&chrono::Utc);
 
             Ok(OrderState::Filled {
@@ -165,7 +163,7 @@ impl Broker for SchwabBroker {
             })?;
 
             let failed_at = chrono::DateTime::parse_from_str(close_time_str, "%Y-%m-%dT%H:%M:%S%z")
-                .map_err(|e| BrokerError::Network(format!("Failed to parse close_time: {}", e)))?
+                .map_err(|e| BrokerError::Network(format!("Failed to parse close_time: {e}")))?
                 .with_timezone(&chrono::Utc);
 
             Ok(OrderState::Failed {

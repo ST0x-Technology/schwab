@@ -6,6 +6,7 @@ use tracing::{error, info};
 
 use crate::env::{BrokerConfig, Config, Env};
 use crate::error::OnChainError;
+use crate::onchain::pyth::FeedIdCache;
 use crate::onchain::{OnchainTrade, accumulator};
 use crate::symbol::cache::SymbolCache;
 use alloy::primitives::B256;
@@ -426,8 +427,9 @@ async fn process_tx_with_provider<W: Write, P: Provider + Clone>(
     cache: &SymbolCache,
 ) -> anyhow::Result<()> {
     let evm_env = &config.evm;
+    let feed_id_cache = FeedIdCache::new();
 
-    match OnchainTrade::try_from_tx_hash(tx_hash, provider, cache, evm_env).await {
+    match OnchainTrade::try_from_tx_hash(tx_hash, provider, cache, evm_env, &feed_id_cache).await {
         Ok(Some(onchain_trade)) => {
             process_found_trade(onchain_trade, config, pool, stdout).await?;
         }
@@ -1179,6 +1181,7 @@ mod tests {
         let asserter = Asserter::new();
         asserter.push_success(&mock_data.receipt_json);
         asserter.push_success(&json!([mock_data.after_clear_log]));
+        asserter.push_success(&mock_data.receipt_json);
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &input_symbol.to_string(),
         ));
@@ -1759,7 +1762,8 @@ mod tests {
 
         assert!(
             result.is_ok(),
-            "process_tx should succeed with proper mocking"
+            "process_tx should succeed with proper mocking: {:?}",
+            result.as_ref().err()
         );
 
         // Verify the OnchainTrade was saved to database
@@ -1852,6 +1856,7 @@ mod tests {
         let asserter1 = Asserter::new();
         asserter1.push_success(&mock_data.receipt_json);
         asserter1.push_success(&json!([mock_data.after_clear_log]));
+        asserter1.push_success(&mock_data.receipt_json);
         asserter1.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
         ));
@@ -1868,7 +1873,11 @@ mod tests {
         let result1 =
             process_tx_with_provider(tx_hash, &config, &pool, &mut stdout1, &provider1, &cache1)
                 .await;
-        assert!(result1.is_ok(), "First process_tx should succeed");
+        assert!(
+            result1.is_ok(),
+            "First process_tx should succeed: {:?}",
+            result1.as_ref().err()
+        );
 
         // Verify the OnchainTrade was saved to database
         let trade = OnchainTrade::find_by_tx_hash_and_log_index(&pool, tx_hash, 0)
@@ -1887,6 +1896,7 @@ mod tests {
         let asserter2 = Asserter::new();
         asserter2.push_success(&mock_data.receipt_json);
         asserter2.push_success(&json!([mock_data.after_clear_log]));
+        asserter2.push_success(&mock_data.receipt_json);
         asserter2.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
         ));
@@ -2132,7 +2142,14 @@ mod tests {
             amount: 2.5,
             direction: Direction::Buy,
             price_usdc: 20000.0,
+            block_timestamp: None,
             created_at: None,
+            gas_used: None,
+            effective_gas_price: None,
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
         };
 
         let trade2 = trade1.clone();

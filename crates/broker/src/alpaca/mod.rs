@@ -5,3 +5,4 @@ mod order;
 
 pub use auth::{AlpacaAuthEnv, AlpacaClient};
 pub use broker::AlpacaBroker;
+pub use market_hours::MarketHoursError;

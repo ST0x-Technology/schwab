@@ -1,5 +1,3 @@
-use alloy::providers::{ProviderBuilder, WsConnect};
-use futures_util::Stream;
 use sqlx::SqlitePool;
 use tracing::{error, info, warn};
 
@@ -19,11 +17,7 @@ mod trade_execution_link;
 #[cfg(test)]
 pub mod test_utils;
 
-use crate::conductor::get_cutoff_block;
 use crate::env::{BrokerConfig, Config};
-use crate::symbol::cache::SymbolCache;
-use bindings::IOrderBookV4::IOrderBookV4Instance;
-use onchain::backfill::backfill_events;
 use st0x_broker::{Broker, MockBrokerConfig, SchwabConfig, TryIntoBroker};
 
 pub async fn launch(config: Config) -> anyhow::Result<()> {

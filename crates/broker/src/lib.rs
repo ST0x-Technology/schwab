@@ -11,7 +11,7 @@ pub mod schwab;
 #[cfg(test)]
 pub mod test_utils;
 
-pub use alpaca::{AlpacaAuthEnv, AlpacaBroker, AlpacaClient};
+pub use alpaca::{AlpacaAuthEnv, AlpacaBroker, AlpacaClient, MarketHoursError};
 pub use error::PersistenceError;
 pub use mock::{MockBroker, MockBrokerConfig};
 pub use order::{MarketOrder, OrderPlacement, OrderState, OrderStatus, OrderUpdate};
@@ -155,6 +155,9 @@ pub enum BrokerError {
 
     #[error("Alpaca request error: {0}")]
     AlpacaRequest(String),
+
+    #[error("Market hours error: {0}")]
+    MarketHours(#[from] MarketHoursError),
 
     #[error("Authentication failed: {0}")]
     Authentication(String),

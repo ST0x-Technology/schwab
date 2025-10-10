@@ -370,4 +370,119 @@ mod tests {
             if order_id == "1004055538123" && *price_cents == 15025
         ));
     }
+
+    #[tokio::test]
+    async fn test_database_tracks_different_brokers() {
+        let pool = setup_test_db().await;
+
+        let schwab_execution = OffchainExecution {
+            id: None,
+            symbol: "AAPL".to_string(),
+            shares: 100,
+            direction: Direction::Buy,
+            broker: SupportedBroker::Schwab,
+            state: OrderState::Pending,
+        };
+
+        let alpaca_execution = OffchainExecution {
+            id: None,
+            symbol: "TSLA".to_string(),
+            shares: 50,
+            direction: Direction::Sell,
+            broker: SupportedBroker::Alpaca,
+            state: OrderState::Pending,
+        };
+
+        let dry_run_execution = OffchainExecution {
+            id: None,
+            symbol: "MSFT".to_string(),
+            shares: 25,
+            direction: Direction::Buy,
+            broker: SupportedBroker::DryRun,
+            state: OrderState::Pending,
+        };
+
+        let mut sql_tx1 = pool.begin().await.unwrap();
+        let schwab_id = schwab_execution
+            .save_within_transaction(&mut sql_tx1)
+            .await
+            .unwrap();
+        sql_tx1.commit().await.unwrap();
+
+        let mut sql_tx2 = pool.begin().await.unwrap();
+        let alpaca_id = alpaca_execution
+            .save_within_transaction(&mut sql_tx2)
+            .await
+            .unwrap();
+        sql_tx2.commit().await.unwrap();
+
+        let mut sql_tx3 = pool.begin().await.unwrap();
+        let dry_run_id = dry_run_execution
+            .save_within_transaction(&mut sql_tx3)
+            .await
+            .unwrap();
+        sql_tx3.commit().await.unwrap();
+
+        let schwab_retrieved = find_execution_by_id(&pool, schwab_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(schwab_retrieved.broker, SupportedBroker::Schwab);
+        assert_eq!(schwab_retrieved.symbol, "AAPL");
+        assert_eq!(schwab_retrieved.shares, 100);
+
+        let alpaca_retrieved = find_execution_by_id(&pool, alpaca_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(alpaca_retrieved.broker, SupportedBroker::Alpaca);
+        assert_eq!(alpaca_retrieved.symbol, "TSLA");
+        assert_eq!(alpaca_retrieved.shares, 50);
+
+        let dry_run_retrieved = find_execution_by_id(&pool, dry_run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(dry_run_retrieved.broker, SupportedBroker::DryRun);
+        assert_eq!(dry_run_retrieved.symbol, "MSFT");
+        assert_eq!(dry_run_retrieved.shares, 25);
+
+        let all_pending = find_executions_by_symbol_status_and_broker(&pool, "", "PENDING", None)
+            .await
+            .unwrap();
+        assert_eq!(all_pending.len(), 3);
+
+        let schwab_only = find_executions_by_symbol_status_and_broker(
+            &pool,
+            "",
+            "PENDING",
+            Some(SupportedBroker::Schwab),
+        )
+        .await
+        .unwrap();
+        assert_eq!(schwab_only.len(), 1);
+        assert_eq!(schwab_only[0].broker, SupportedBroker::Schwab);
+
+        let alpaca_only = find_executions_by_symbol_status_and_broker(
+            &pool,
+            "",
+            "PENDING",
+            Some(SupportedBroker::Alpaca),
+        )
+        .await
+        .unwrap();
+        assert_eq!(alpaca_only.len(), 1);
+        assert_eq!(alpaca_only[0].broker, SupportedBroker::Alpaca);
+
+        let dry_run_only = find_executions_by_symbol_status_and_broker(
+            &pool,
+            "",
+            "PENDING",
+            Some(SupportedBroker::DryRun),
+        )
+        .await
+        .unwrap();
+        assert_eq!(dry_run_only.len(), 1);
+        assert_eq!(dry_run_only[0].broker, SupportedBroker::DryRun);
+    }
 }
