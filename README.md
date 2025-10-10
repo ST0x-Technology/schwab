@@ -1,116 +1,221 @@
-# st0x peg management system
-
-An arbitrage bot for tokenized equities that bridges onchain Raindex orderbook
-trades with Charles Schwab brokerage executions.
+# st0x.liquidity
 
 ## Overview
 
-Schwab monitors onchain tokenized equity trades and executes offsetting trades
-on Charles Schwab to maintain market-neutral positions while capturing spread
-differentials. The bot helps establish price discovery in early-stage onchain
-equity markets by arbitraging discrepancies between onchain prices and
-traditional market prices.
+Tokenized equity market making system that provides onchain liquidity and
+captures arbitrage profits.
 
-## Prerequisites
+- **Onchain Liquidity**: Raindex orders continuously offer to buy/sell tokenized
+  equities at spreads around oracle prices
+- **Automatic Hedging**: When liquidity is taken onchain, the Rust bot executes
+  offsetting trades on traditional brokerages to hedge the change in exposure
+- **Profit Capture**: Earns the spread on every trade while hedging directional
+  exposure
 
-- Nix with flakes enabled
-- Charles Schwab brokerage account with API access
-- Ethereum node with WebSocket access
+The system enables efficient price discovery for onchain tokenized equity
+markets by providing continuous two-sided liquidity.
 
-## Quick Start
+## Features
 
-### 1. Charles Schwab Setup
+- **Multi-Broker Support**: Hedge through Charles Schwab, Alpaca Markets, or
+  dry-run mode
+- **Real-Time Hedging**: WebSocket-based monitoring for near instant execution
+  when onchain liquidity is taken
+- **Fractional Share Batching**: Accumulates fractional onchain trades until
+  whole shares can be executed (required for Schwab; used uniformly across
+  brokers in current implementation)
+- **Complete Audit Trail**: Database tracking linking every onchain trade to
+  offchain hedge executions
+- **Exposure Hedging**: Automatically executes offsetting trades to reduce
+  directional exposure from onchain fills
 
-First, set up a Charles Schwab account. If you are based outside of the US,
-register with Charles Schwab International.
+## Getting Started
 
-Once your trading account is established, navigate to the
-[Schwab Developer Portal](https://developer.schwab.com/).
+### Prerequisites
 
-Register a new account on this site using the same details as your trading
-account. After completing registration, you will see three setup options:
-Individual, Company, or Join a Company. Select the option to set up as an
-individual.
+Before you begin, ensure you have:
 
-Next, proceed to the API Products section and choose "Individual Developers".
-Click on "Trader API" and request access. In the request make sure you add your
-Charles Schwab account number.
+- **Nix with flakes enabled** - For reproducible development environment
+- **Brokerage account** - Either:
+  - Charles Schwab account with API access
+  - Alpaca Markets account (simpler setup, supports paper trading)
+- **Ethereum node** - WebSocket RPC endpoint for blockchain monitoring
 
-Charles Schwab will then process your request, which typically takes 3-5 days.
-During this period, your developer account will be linked with your trading
-account.
+### Step 1: Clone and Setup Development Environment
 
-### 2. Configuration
-
-Create a `.env` file in the project root and set the database URL:
-
-```bash
-DATABASE_URL=sqlite:schwab.db
-```
-
-For all other environment variables, refer to `.env.example` and configure as
-needed.
-
-### 3. Database Setup
+Clone the repository, enter the Nix shell, and build dependencies:
 
 ```bash
-# Create database and run migrations
-sqlx db create
-sqlx migrate run
-```
-
-### 4. Authentication
-
-Authenticate with Charles Schwab (one-time setup):
-
-```bash
-cargo run --bin cli -- auth
-```
-
-Follow the OAuth flow to obtain and store your access and refresh tokens.
-
-### 5. Run the Bot
-
-```bash
-cargo run --bin server
-```
-
-## Development
-
-### With Nix
-
-Enter the development shell with all dependencies:
-
-```bash
+git clone https://github.com/ST0x-Technology/st0x.liquidity.git
+cd st0x.liquidity
 nix develop
 ```
 
-### Nix Scripts
+This enters a reproducible development environment with all dependencies (Rust,
+SQLx, etc.).
 
-The flake provides the following utility scripts:
+Build Solidity artifacts required for compilation:
 
 ```bash
-# Build Solidity artifacts for the orderbook interface
 nix run .#prepSolArtifacts
-
-# Generate test coverage report (outputs to HTML)
-nix run .#checkTestCoverage
 ```
 
-### Building
+Verify your setup:
 
 ```bash
 cargo build
 ```
 
-### Testing
+### Step 2: Broker Setup
+
+Choose one broker and complete its setup:
+
+#### Option A: Charles Schwab
+
+**Note**: Approval process takes 3-5 business days.
+
+1. Create a trading account at [Charles Schwab](https://www.schwab.com/) (or
+   [Schwab International](https://international.schwab.com/) if outside US)
+2. Register at [Schwab Developer Portal](https://developer.schwab.com/) using
+   the same credentials
+3. Select "Individual" setup option
+4. Request "Trader API" access under API Products → Individual Developers
+5. Include your Schwab account number in the request
+6. Wait for approval (typically 3-5 days)
+
+After approval, add your credentials to `.env`:
 
 ```bash
+SCHWAB_APP_KEY=your_app_key
+SCHWAB_APP_SECRET=your_app_secret
+SCHWAB_BASE_URL=https://api.schwabapi.com
+SCHWAB_REDIRECT_URI=https://127.0.0.1
+```
+
+#### Option B: Alpaca Markets (Recommended for Testing)
+
+**Instant setup with paper trading support.**
+
+1. Create an account at [Alpaca Markets](https://alpaca.markets/)
+2. Navigate to dashboard → Generate API keys
+3. For paper trading, use paper trading keys (recommended for initial testing)
+4. For live trading, enable live trading in account settings first
+
+Add credentials to `.env`:
+
+```bash
+ALPACA_API_KEY_ID=your_api_key_id
+ALPACA_API_SECRET_KEY=your_secret_key
+ALPACA_BASE_URL=https://paper-api.alpaca.markets  # or https://api.alpaca.markets for live
+```
+
+### Step 3: Configuration
+
+Create a `.env` file with your environment-specific settings:
+
+```bash
+# Database
+DATABASE_URL=sqlite:st0x.db
+
+# Blockchain
+WS_RPC_URL=wss://your-ethereum-node.com
+ORDERBOOK=0x... # Raindex orderbook contract address
+ORDER_OWNER=0x... # Order owner address to monitor
+
+# Broker credentials (from Step 2)
+# Add either Schwab OR Alpaca credentials based on your choice
+```
+
+See `.env.example` for complete configuration options.
+
+### Step 4: Database Setup
+
+Initialize the database and run migrations:
+
+```bash
+sqlx db create
+sqlx migrate run
+```
+
+### Step 5: Authentication
+
+**For Charles Schwab only** - Complete one-time OAuth flow:
+
+```bash
+cargo run --bin cli -- auth
+```
+
+This will open your browser to complete OAuth authentication and store tokens in
+the database.
+
+**For Alpaca Markets** - No additional auth needed; API keys from `.env` are
+sufficient.
+
+### Step 6: Run the Bot
+
+Start the arbitrage bot with your chosen broker:
+
+```bash
+# Charles Schwab
+cargo run --bin server -- --broker schwab
+
+# Alpaca Markets
+cargo run --bin server -- --broker alpaca
+
+# Dry-run mode (testing without real trades)
+cargo run --bin server -- --broker dry-run
+```
+
+The bot will now monitor blockchain events and execute offsetting trades
+automatically.
+
+## Project Structure
+
+This is a Cargo workspace with two crates:
+
+### `st0x-hedge` (Main Application)
+
+The arbitrage bot application:
+
+```
+src/
+├── lib.rs              # Main event loop and orchestration
+├── bin/
+│   ├── server.rs       # Arbitrage bot server
+│   └── cli.rs          # CLI for manual operations
+├── onchain/            # Blockchain event processing
+├── offchain/           # Database models and execution tracking
+├── conductor/          # Trade accumulation and broker orchestration
+└── symbol/             # Token symbol caching
+migrations/             # SQLite database schema
+```
+
+### `st0x-broker` (Broker Abstraction Library)
+
+Standalone library providing unified broker trait:
+
+```
+src/
+├── lib.rs              # Broker trait and shared types
+├── schwab/             # Charles Schwab integration
+├── alpaca/             # Alpaca Markets integration
+└── test.rs             # Test/dry-run broker
+```
+
+## Development
+
+### Building and Testing
+
+```bash
+# Build all workspace members
+cargo build
+
 # Run all tests
 cargo test -q
 
-# Run with coverage (or use nix run .#checkTestCoverage)
-cargo-tarpaulin --skip-clean --out Html
+# Run specific crate tests
+cargo test -p st0x-hedge -q
+cargo test -p st0x-broker -q
 ```
 
 ### Code Quality
@@ -119,34 +224,43 @@ cargo-tarpaulin --skip-clean --out Html
 # Format code
 cargo fmt
 
-# Run linter
+# Lint with clippy
 cargo clippy --all-targets --all-features -- -D clippy::all
 
 # Run static analysis
 rainix-rs-static
+
+# Generate test coverage
+nix run .#checkTestCoverage
 ```
 
-## Project Structure
+## Documentation
 
-- `src/lib.rs` - Main event loop and orchestration
-- `src/bin/server.rs` - Arbitrage bot server binary
-- `src/bin/cli.rs` - Command-line interface for operations
-- `src/trade/` - Trade conversion and validation logic
-- `src/schwab.rs` - Charles Schwab API integration and OAuth
-- `src/symbol/` - Token symbol caching
-- `migrations/` - SQLite database schema
-- `AGENTS.md` - Development guidelines for AI assistance
-- `SPEC.md` - Full technical specification
+- **[SPEC.md](SPEC.md)** - Complete technical specification and architecture
+  details
+- **[AGENTS.md](AGENTS.md)** - Development guidelines for AI-assisted coding
 
-## Architecture
+## How It Works
 
-The bot uses an event-driven async architecture:
+**Market Making Flow:**
 
-1. WebSocket monitors blockchain events (ClearV2, TakeOrderV2)
-2. Each event spawns independent async task for processing
-3. Events are deduplicated using (tx_hash, log_index) keys
-4. Onchain trades accumulate per symbol in database
-5. When accumulated position reaches ≥1.0 shares, execute on Schwab
-6. Complete audit trail links onchain trades to offchain executions
+1. **Provide Liquidity**: Raindex orders offer continuous two-sided liquidity
+   for tokenized equities at spreads around oracle prices
+2. **Detect Fills**: WebSocket monitors orderbook events when traders take
+   liquidity onchain
+3. **Parse Trade**: Extract details (symbol, amount, direction, price) from
+   blockchain events
+4. **Accumulate**: Batch fractional positions in database until ≥1.0 shares
+5. **Hedge**: Execute offsetting market order on traditional broker to reduce
+   exposure
+6. **Track**: Maintain complete audit trail linking onchain fills to offchain
+   hedges
 
-See [SPEC.md](SPEC.md) for detailed architecture and operational flows.
+**Profit Model**: The system earns the spread on each trade (difference between
+onchain order price and offchain hedge execution price) while hedging
+directional exposure.
+
+**Note**: While Alpaca Markets supports fractional share trading (minimum $1
+worth), the current implementation uses uniform batching logic for all brokers.
+This may be reconfigured in the future to allow immediate fractional execution
+when using Alpaca.
