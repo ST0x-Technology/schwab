@@ -891,7 +891,7 @@ mod tests {
         assert_f64_eq(metrics[2].net_position_after, -1.2);
 
         assert_eq!(metrics[3].trade_type, "ONCHAIN");
-        let expected_pnl = (150.0 - 148.0) * 0.3 + (151.0 - 148.0) * 0.3;
+        let expected_pnl = 2.0_f64.mul_add(0.3, 3.0 * 0.3);
         assert_option_f64_eq(metrics[3].realized_pnl, Some(expected_pnl));
         assert_f64_eq(metrics[3].cumulative_pnl, expected_pnl);
         assert_f64_eq(metrics[3].net_position_after, -0.6);
