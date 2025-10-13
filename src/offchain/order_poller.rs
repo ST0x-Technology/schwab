@@ -6,7 +6,6 @@ use tracing::{debug, error, info};
 
 use super::execution::{
     OffchainExecution, find_execution_by_id, find_executions_by_symbol_status_and_broker,
-    update_execution_status_within_transaction,
 };
 use crate::error::OrderPollingError;
 use crate::lock::{clear_execution_lease, clear_pending_execution_id};
@@ -75,7 +74,7 @@ impl<B: Broker> OrderStatusPoller<B> {
         let broker = self.broker.to_supported_broker();
         let submitted_executions = find_executions_by_symbol_status_and_broker(
             &self.pool,
-            "",
+            None,
             OrderStatus::Submitted,
             Some(broker),
         )
@@ -184,7 +183,7 @@ impl<B: Broker> OrderStatusPoller<B> {
                 ))
             })?;
 
-        update_execution_status_within_transaction(&mut tx, execution_id, &new_status).await?;
+        new_status.store_update(&mut tx, execution_id).await?;
 
         let symbol = parse_execution_symbol(&execution.symbol)?;
 
@@ -251,7 +250,7 @@ impl<B: Broker> OrderStatusPoller<B> {
                 ))
             })?;
 
-        update_execution_status_within_transaction(&mut tx, execution_id, &new_status).await?;
+        new_status.store_update(&mut tx, execution_id).await?;
 
         let symbol = parse_execution_symbol(&execution.symbol)?;
 

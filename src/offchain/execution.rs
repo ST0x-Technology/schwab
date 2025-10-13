@@ -1,9 +1,9 @@
 use sqlx::SqlitePool;
 
 use crate::error::OnChainError;
-use st0x_broker::PersistenceError;
-use st0x_broker::{Direction, SupportedBroker};
-use st0x_broker::{OrderState, OrderStatus};
+use st0x_broker::{
+    Direction, OrderState, OrderStatus, PersistenceError, Shares, SupportedBroker, Symbol,
+};
 
 #[derive(sqlx::FromRow)]
 struct ExecutionRow {
@@ -34,37 +34,21 @@ fn row_to_execution(
     }: ExecutionRow,
 ) -> Result<OffchainExecution, OnChainError> {
     let parsed_direction = direction.parse()?;
-    let parsed_broker = match broker.as_str() {
-        "schwab" => SupportedBroker::Schwab,
-        "dry_run" => SupportedBroker::DryRun,
-        _ => {
-            return Err(OnChainError::Persistence(
-                PersistenceError::InvalidTradeStatus(format!("Unknown broker type: {broker}")),
-            ));
-        }
-    };
-    let status_enum = match status.as_str() {
-        "PENDING" => OrderStatus::Pending,
-        "SUBMITTED" => OrderStatus::Submitted,
-        "FILLED" => OrderStatus::Filled,
-        "FAILED" => OrderStatus::Failed,
-        _ => {
-            return Err(OnChainError::Persistence(
-                PersistenceError::InvalidTradeStatus(format!("Invalid order status: {status}")),
-            ));
-        }
-    };
+    let parsed_broker = broker.parse()?;
+    let status_enum = status.parse()?;
     let parsed_state = OrderState::from_db_row(status_enum, order_id, price_cents, executed_at)
         .map_err(|e| {
             OnChainError::Persistence(PersistenceError::InvalidTradeStatus(e.to_string()))
         })?;
 
+    let shares_u64 = shares
+        .try_into()
+        .map_err(|_| OnChainError::Persistence(PersistenceError::InvalidShareQuantity(shares)))?;
+
     Ok(OffchainExecution {
         id: Some(id),
-        symbol,
-        shares: shares.try_into().map_err(|_| {
-            OnChainError::Persistence(PersistenceError::InvalidShareQuantity(shares))
-        })?,
+        symbol: Symbol::new(symbol)?,
+        shares: Shares::new(shares_u64)?,
         direction: parsed_direction,
         broker: parsed_broker,
         state: parsed_state,
@@ -72,75 +56,24 @@ fn row_to_execution(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OffchainExecution {
-    pub id: Option<i64>,
-    pub symbol: String,
-    pub shares: u64,
-    pub direction: Direction,
-    pub broker: SupportedBroker,
-    pub state: OrderState,
+pub(crate) struct OffchainExecution {
+    pub(crate) id: Option<i64>,
+    pub(crate) symbol: Symbol,
+    pub(crate) shares: Shares,
+    pub(crate) direction: Direction,
+    pub(crate) broker: SupportedBroker,
+    pub(crate) state: OrderState,
 }
 
-pub async fn update_execution_status_within_transaction(
-    sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    execution_id: i64,
-    new_state: &OrderState,
-) -> Result<(), PersistenceError> {
-    let status_str = new_state.status().as_str();
-    let db_fields = new_state.to_db_fields()?;
-
-    sqlx::query!(
-        "
-        UPDATE offchain_trades
-        SET status = ?1, order_id = ?2, price_cents = ?3, executed_at = ?4
-        WHERE id = ?5
-        ",
-        status_str,
-        db_fields.order_id,
-        db_fields.price_cents,
-        db_fields.executed_at,
-        execution_id
-    )
-    .execute(&mut **sql_tx)
-    .await?;
-
-    Ok(())
-}
-
-pub trait HasTradeStatus {
-    fn status_str(&self) -> &str;
-}
-
-impl HasTradeStatus for &str {
-    fn status_str(&self) -> &str {
-        self
-    }
-}
-
-impl HasTradeStatus for OrderStatus {
-    fn status_str(&self) -> &str {
-        self.as_str()
-    }
-}
-
-#[cfg(test)]
-pub(crate) async fn find_executions_by_symbol_and_status<S: HasTradeStatus>(
+pub(crate) async fn find_executions_by_symbol_status_and_broker(
     pool: &SqlitePool,
-    symbol: &str,
-    status: S,
-) -> Result<Vec<OffchainExecution>, OnChainError> {
-    find_executions_by_symbol_status_and_broker(pool, symbol, status, None).await
-}
-
-pub async fn find_executions_by_symbol_status_and_broker<S: HasTradeStatus>(
-    pool: &SqlitePool,
-    symbol: &str,
-    status: S,
+    symbol: Option<Symbol>,
+    status: OrderStatus,
     broker: Option<SupportedBroker>,
 ) -> Result<Vec<OffchainExecution>, OnChainError> {
-    let status_str = status.status_str();
+    let status_str = status.as_str();
 
-    let (query, params): (String, Vec<String>) = if symbol.is_empty() {
+    let (query, params): (String, Vec<String>) = if symbol.is_none() {
         broker.map_or_else(
             || {
                 (
@@ -157,12 +90,13 @@ pub async fn find_executions_by_symbol_status_and_broker<S: HasTradeStatus>(
             },
         )
     } else {
+        let symbol_str = symbol.unwrap().to_string();
         broker.map_or_else(
             || {
                 (
                     "SELECT * FROM offchain_trades WHERE symbol = ?1 AND status = ?2 ORDER BY id ASC"
                         .to_string(),
-                    vec![symbol.to_string(), status_str.to_string()],
+                    vec![symbol_str.clone(), status_str.to_string()],
                 )
             },
             |broker| {
@@ -170,7 +104,7 @@ pub async fn find_executions_by_symbol_status_and_broker<S: HasTradeStatus>(
                     "SELECT * FROM offchain_trades WHERE symbol = ?1 AND status = ?2 AND broker = ?3 ORDER BY id ASC"
                         .to_string(),
                     vec![
-                        symbol.to_string(),
+                        symbol_str.clone(),
                         status_str.to_string(),
                         broker.to_string(),
                     ],
@@ -191,7 +125,7 @@ pub async fn find_executions_by_symbol_status_and_broker<S: HasTradeStatus>(
         .collect::<Result<Vec<_>, _>>()
 }
 
-pub async fn find_execution_by_id(
+pub(crate) async fn find_execution_by_id(
     pool: &SqlitePool,
     execution_id: i64,
 ) -> Result<Option<OffchainExecution>, OnChainError> {
@@ -218,48 +152,19 @@ pub async fn find_execution_by_id(
 }
 
 impl OffchainExecution {
-    pub async fn save_within_transaction(
+    pub(crate) async fn save_within_transaction(
         &self,
         sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    ) -> Result<i64, st0x_broker::PersistenceError> {
-        let shares_i64 = i64::try_from(self.shares).map_err(|_| {
-            PersistenceError::InvalidShareQuantity({
-                #[allow(clippy::cast_possible_wrap)]
-                (self.shares as i64)
-            })
-        })?;
-        let direction_str = self.direction.as_str();
-        let broker_str = self.broker.to_string();
-        let status_str = self.state.status().as_str();
-        let db_fields = self.state.to_db_fields()?;
-
-        let result = sqlx::query!(
-            r#"
-            INSERT INTO offchain_trades (
-                symbol,
-                shares,
-                direction,
-                broker,
-                order_id,
-                price_cents,
-                status,
-                executed_at
+    ) -> Result<i64, PersistenceError> {
+        self.state
+            .store(
+                sql_tx,
+                &self.symbol,
+                self.shares,
+                self.direction,
+                self.broker,
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-            "#,
-            self.symbol,
-            shares_i64,
-            direction_str,
-            broker_str,
-            db_fields.order_id,
-            db_fields.price_cents,
-            status_str,
-            db_fields.executed_at
-        )
-        .execute(&mut **sql_tx)
-        .await?;
-
-        Ok(result.last_insert_rowid())
+            .await
     }
 }
 
@@ -298,8 +203,8 @@ mod tests {
 
         let execution1 = OffchainExecution {
             id: None,
-            symbol: "AAPL".to_string(),
-            shares: 50,
+            symbol: Symbol::new("AAPL".to_string()).unwrap(),
+            shares: Shares::new(50).unwrap(),
             direction: Direction::Buy,
             broker: SupportedBroker::Schwab,
             state: OrderState::Pending,
@@ -307,8 +212,8 @@ mod tests {
 
         let execution2 = OffchainExecution {
             id: None,
-            symbol: "AAPL".to_string(),
-            shares: 25,
+            symbol: Symbol::new("AAPL".to_string()).unwrap(),
+            shares: Shares::new(25).unwrap(),
             direction: Direction::Sell,
             broker: SupportedBroker::Schwab,
             state: OrderState::Filled {
@@ -320,8 +225,8 @@ mod tests {
 
         let execution3 = OffchainExecution {
             id: None,
-            symbol: "MSFT".to_string(),
-            shares: 10,
+            symbol: Symbol::new("MSFT".to_string()).unwrap(),
+            shares: Shares::new(10).unwrap(),
             direction: Direction::Buy,
             broker: SupportedBroker::Schwab,
             state: OrderState::Pending,
@@ -348,20 +253,30 @@ mod tests {
             .unwrap();
         sql_tx3.commit().await.unwrap();
 
-        let pending_aapl = find_executions_by_symbol_and_status(&pool, "AAPL", "PENDING")
-            .await
-            .unwrap();
+        let pending_aapl = find_executions_by_symbol_status_and_broker(
+            &pool,
+            Some(Symbol::new("AAPL".to_string()).unwrap()),
+            OrderStatus::Pending,
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(pending_aapl.len(), 1);
-        assert_eq!(pending_aapl[0].shares, 50);
+        assert_eq!(pending_aapl[0].shares, Shares::new(50).unwrap());
         assert_eq!(pending_aapl[0].direction, Direction::Buy);
 
-        let completed_aapl = find_executions_by_symbol_and_status(&pool, "AAPL", "FILLED")
-            .await
-            .unwrap();
+        let completed_aapl = find_executions_by_symbol_status_and_broker(
+            &pool,
+            Some(Symbol::new("AAPL".to_string()).unwrap()),
+            OrderStatus::Filled,
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(completed_aapl.len(), 1);
-        assert_eq!(completed_aapl[0].shares, 25);
+        assert_eq!(completed_aapl[0].shares, Shares::new(25).unwrap());
         assert_eq!(completed_aapl[0].direction, Direction::Sell);
         assert!(matches!(
             &completed_aapl[0].state,

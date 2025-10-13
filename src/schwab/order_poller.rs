@@ -6,10 +6,7 @@ use tokio::time::{Interval, interval};
 use tracing::{debug, error, info};
 
 use super::broker::Broker;
-use super::execution::{
-    find_execution_by_id, find_executions_by_symbol_and_status,
-    update_execution_status_within_transaction,
-};
+use super::execution::find_execution_by_id;
 use super::{SchwabAuthEnv, SchwabError, TradeState};
 use crate::lock::{clear_execution_lease, clear_pending_execution_id};
 
@@ -189,7 +186,7 @@ impl<B: Broker> OrderStatusPoller<B> {
                 SchwabError::InvalidConfiguration("Execution not found".to_string())
             })?;
 
-        update_execution_status_within_transaction(&mut tx, execution_id, new_status).await?;
+        new_status.store_update(&mut tx, execution_id).await?;
 
         // Clear pending execution ID and execution lease to unblock future executions
         clear_pending_execution_id(
@@ -258,7 +255,7 @@ impl<B: Broker> OrderStatusPoller<B> {
                 SchwabError::InvalidConfiguration("Execution not found".to_string())
             })?;
 
-        update_execution_status_within_transaction(&mut tx, execution_id, new_status).await?;
+        new_status.store_update(&mut tx, execution_id).await?;
 
         // Clear pending execution ID and execution lease to unblock future executions
         clear_pending_execution_id(

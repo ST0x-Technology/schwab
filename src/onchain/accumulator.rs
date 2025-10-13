@@ -5,12 +5,10 @@ use super::OnchainTrade;
 use crate::error::{OnChainError, TradeValidationError};
 use crate::lock::{clear_execution_lease, set_pending_execution_id, try_acquire_execution_lease};
 use crate::offchain::execution::OffchainExecution;
-use crate::offchain::execution::update_execution_status_within_transaction;
 use crate::onchain::io::EquitySymbol;
 use crate::onchain::position_calculator::{AccumulationBucket, PositionCalculator};
 use crate::trade_execution_link::TradeExecutionLink;
-use st0x_broker::OrderState;
-use st0x_broker::{Direction, SupportedBroker};
+use st0x_broker::{Direction, OrderState, SupportedBroker};
 
 /// Processes an onchain trade through the accumulation system with duplicate detection.
 ///
@@ -428,7 +426,7 @@ async fn clean_up_stale_executions(
             )),
         };
 
-        update_execution_status_within_transaction(sql_tx, execution_id, &failed_state).await?;
+        failed_state.store_update(sql_tx, execution_id).await?;
 
         // Clear the pending execution ID from accumulator
         let base_symbol_str = base_symbol.as_str();
@@ -587,12 +585,13 @@ pub async fn check_all_accumulated_positions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::offchain::execution::find_executions_by_symbol_status_and_broker;
     use crate::symbol;
     use crate::test_utils::setup_test_db;
     use crate::tokenized_symbol;
     use crate::trade_execution_link::TradeExecutionLink;
     use alloy::primitives::fixed_bytes;
-    use st0x_broker::OrderStatus;
+    use st0x_broker::{OrderStatus, Symbol};
 
     // Helper function for tests to handle transaction management
     async fn process_trade_with_tx(
@@ -916,10 +915,11 @@ mod tests {
         assert!(accumulator_result.is_none());
 
         // Verify only the original execution remains
-        let executions = crate::offchain::execution::find_executions_by_symbol_and_status(
+        let executions = find_executions_by_symbol_status_and_broker(
             &pool,
-            "AAPL",
+            Some(Symbol::new("AAPL".to_string()).unwrap()),
             OrderStatus::Pending,
+            None,
         )
         .await
         .unwrap();
@@ -1538,10 +1538,11 @@ mod tests {
         assert_eq!(new_execution.shares, 1);
 
         // Verify the stale execution was marked as failed
-        let stale_executions = crate::offchain::execution::find_executions_by_symbol_and_status(
+        let stale_executions = find_executions_by_symbol_status_and_broker(
             &pool,
-            "AAPL",
+            Some(Symbol::new("AAPL".to_string()).unwrap()),
             OrderStatus::Failed,
+            None,
         )
         .await
         .unwrap();
@@ -1549,10 +1550,11 @@ mod tests {
         assert_eq!(stale_executions[0].id.unwrap(), execution_id);
 
         // Verify the new execution was created and is pending
-        let pending_executions = crate::offchain::execution::find_executions_by_symbol_and_status(
+        let pending_executions = find_executions_by_symbol_status_and_broker(
             &pool,
-            "AAPL",
+            Some(Symbol::new("AAPL".to_string()).unwrap()),
             OrderStatus::Pending,
+            None,
         )
         .await
         .unwrap();
@@ -1626,10 +1628,11 @@ mod tests {
         test_tx.commit().await.unwrap();
 
         // Verify recent execution (MSFT) is still submitted
-        let msft_submitted = crate::offchain::execution::find_executions_by_symbol_and_status(
+        let msft_submitted = find_executions_by_symbol_status_and_broker(
             &pool,
-            "MSFT",
+            Some(Symbol::new("MSFT".to_string()).unwrap()),
             OrderStatus::Submitted,
+            None,
         )
         .await
         .unwrap();
@@ -1637,10 +1640,11 @@ mod tests {
         assert_eq!(msft_submitted[0].id.unwrap(), recent_id);
 
         // Verify stale execution (TSLA) was failed
-        let tsla_failed = crate::offchain::execution::find_executions_by_symbol_and_status(
+        let tsla_failed = find_executions_by_symbol_status_and_broker(
             &pool,
-            "TSLA",
+            Some(Symbol::new("TSLA".to_string()).unwrap()),
             OrderStatus::Failed,
+            None,
         )
         .await
         .unwrap();

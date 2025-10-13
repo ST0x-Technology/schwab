@@ -12,7 +12,7 @@ use crate::symbol::cache::SymbolCache;
 use alloy::primitives::B256;
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use st0x_broker::schwab::{SchwabAuthEnv, SchwabError, SchwabTokens, extract_code_from_url};
-use st0x_broker::{Broker, Direction, MarketOrder, Shares, Symbol};
+use st0x_broker::{Broker, Direction, MarketOrder, OrderState, Shares, Symbol};
 
 #[derive(Debug, Error)]
 pub enum CliError {
@@ -453,19 +453,15 @@ async fn process_found_trade<W: Write>(
         )?;
         ensure_authentication(pool, &env.schwab_auth, stdout).await?;
         writeln!(stdout, "🔄 Executing Schwab order...")?;
-        // Convert OffchainExecution to broker trait types
-        let market_order = st0x_broker::MarketOrder {
-            symbol: st0x_broker::Symbol::new(execution.symbol.clone())?,
-            shares: st0x_broker::Shares::new(execution.shares)?,
+        let market_order = MarketOrder {
+            symbol: execution.symbol.clone(),
+            shares: execution.shares,
             direction: execution.direction,
         };
 
         let placement = if env.dry_run {
             let broker = env.get_test_broker().await.map_err(anyhow::Error::from)?;
-            let placement = broker
-                .place_market_order(market_order)
-                .await
-                .map_err(anyhow::Error::from)?;
+            let placement = broker.place_market_order(market_order).await?;
             writeln!(
                 stdout,
                 "✅ Dry-run order placed with ID: {}",
@@ -489,19 +485,14 @@ async fn process_found_trade<W: Write>(
             placement
         };
 
-        // Update execution with order_id and set status to Submitted
-        let submitted_state = st0x_broker::OrderState::Submitted {
+        let submitted_state = OrderState::Submitted {
             order_id: placement.order_id.to_string(),
         };
 
         let mut sql_tx = pool.begin().await?;
-        crate::offchain::execution::update_execution_status_within_transaction(
-            &mut sql_tx,
-            execution_id,
-            &submitted_state,
-        )
-        .await
-        .map_err(anyhow::Error::from)?;
+        submitted_state
+            .store_update(&mut sql_tx, execution_id)
+            .await?;
         sql_tx.commit().await?;
         writeln!(stdout, "🎯 Trade processing completed!")?;
     } else {
@@ -538,17 +529,13 @@ fn display_trade_details<W: Write>(
     Ok(())
 }
 
-// Old ArbTrade-based functions removed - now using unified TradeAccumulator system
-
-// Tests temporarily disabled during migration to new system
-// TODO: Update tests to use OnchainTrade + TradeAccumulator instead of ArbTrade
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::bindings::IERC20::symbolCall;
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
     use crate::env::LogLevel;
-    use crate::offchain::execution::find_executions_by_symbol_and_status;
+    use crate::offchain::execution::find_executions_by_symbol_status_and_broker;
     use crate::onchain::EvmEnv;
     use crate::onchain::trade::OnchainTrade;
     use crate::test_utils::get_test_order;
@@ -1724,12 +1711,16 @@ mod tests {
 
         // Verify OffchainExecution was created (due to TradeAccumulator)
         // Executions are now in SUBMITTED status with order_id stored for order status polling
-        let executions =
-            find_executions_by_symbol_and_status(&pool, "AAPL", OrderStatus::Submitted)
-                .await
-                .unwrap();
+        let executions = find_executions_by_symbol_status_and_broker(
+            &pool,
+            Some(st0x_broker::Symbol::new("AAPL".to_string()).unwrap()),
+            OrderStatus::Submitted,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(executions.len(), 1);
-        assert_eq!(executions[0].shares, 9);
+        assert_eq!(executions[0].shares, st0x_broker::Shares::new(9).unwrap());
         assert_eq!(executions[0].direction, Direction::Buy);
 
         // Verify order_id was stored in database

@@ -81,22 +81,7 @@ impl PositionCalculator {
     }
 
     pub(crate) fn calculate_executable_shares(&self) -> u64 {
-        shares_from_amount_floor(self.net_position().abs())
-    }
-}
-
-/// Converts accumulated amount to whole shares using floor (conservative approach).
-///
-/// Uses floor rather than round to ensure we never execute more shares than
-/// we have accumulated fractional amounts for.
-fn shares_from_amount_floor(amount: f64) -> u64 {
-    if amount < 0.0 {
-        0 // Negative amounts result in 0 shares
-    } else {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        {
-            amount.floor() as u64 // Safe: floor() removes fractional part, negative case handled above
-        }
+        self.net_position().abs().floor().max(0.0) as u64
     }
 }
 
