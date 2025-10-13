@@ -21,7 +21,7 @@ impl AlpacaTradingMode {
 }
 
 /// Alpaca API authentication environment configuration
-#[derive(Parser, Debug, Clone)]
+#[derive(Parser, Clone)]
 pub struct AlpacaAuthEnv {
     /// Alpaca API key ID
     #[clap(long, env)]
@@ -36,6 +36,16 @@ pub struct AlpacaAuthEnv {
     pub alpaca_trading_mode: AlpacaTradingMode,
 }
 
+impl std::fmt::Debug for AlpacaAuthEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AlpacaAuthEnv")
+            .field("alpaca_api_key_id", &"[REDACTED]")
+            .field("alpaca_api_secret_key", &"[REDACTED]")
+            .field("alpaca_trading_mode", &self.alpaca_trading_mode)
+            .finish()
+    }
+}
+
 impl AlpacaAuthEnv {
     pub(crate) fn base_url(&self) -> &'static str {
         self.alpaca_trading_mode.base_url()
@@ -43,13 +53,24 @@ impl AlpacaAuthEnv {
 }
 
 /// Alpaca API client wrapper with authentication and configuration
-#[derive(Debug)]
 pub struct AlpacaClient {
     client: Client,
     trading_mode: AlpacaTradingMode,
     base_url: String,
     api_key_id: String,
     api_secret_key: String,
+}
+
+impl std::fmt::Debug for AlpacaClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AlpacaClient")
+            .field("client", &"<Client>")
+            .field("trading_mode", &self.trading_mode)
+            .field("base_url", &self.base_url)
+            .field("api_key_id", &"[REDACTED]")
+            .field("api_secret_key", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl AlpacaClient {
@@ -177,5 +198,36 @@ mod tests {
 
         assert!(paper_client.is_paper_trading());
         assert!(!live_client.is_paper_trading());
+    }
+
+    #[test]
+    fn test_alpaca_auth_env_debug_redacts_secrets() {
+        let config = AlpacaAuthEnv {
+            alpaca_api_key_id: "secret_key_id_123".to_string(),
+            alpaca_api_secret_key: "super_secret_key_456".to_string(),
+            alpaca_trading_mode: AlpacaTradingMode::Paper,
+        };
+
+        let debug_output = format!("{:?}", config);
+
+        assert!(debug_output.contains("[REDACTED]"));
+        assert!(!debug_output.contains("secret_key_id_123"));
+        assert!(!debug_output.contains("super_secret_key_456"));
+        assert!(debug_output.contains("Paper"));
+    }
+
+    #[test]
+    fn test_alpaca_client_debug_redacts_secrets() {
+        let config = create_test_paper_config();
+        let client = AlpacaClient::new(&config).unwrap();
+
+        let debug_output = format!("{:?}", client);
+
+        assert!(debug_output.contains("[REDACTED]"));
+        assert!(!debug_output.contains("test_key_id"));
+        assert!(!debug_output.contains("test_secret_key"));
+        assert!(debug_output.contains("Paper"));
+        assert!(debug_output.contains("https://paper-api.alpaca.markets"));
+        assert!(debug_output.contains("<Client>"));
     }
 }

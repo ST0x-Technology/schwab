@@ -167,7 +167,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_function_error_propagation() {
         let mut config = create_test_config();
-        config.database_url = "invalid://database/url".to_string();
+        config.evm.ws_rpc_url = "ws://invalid.nonexistent.localhost:9999".parse().unwrap();
         let pool = create_test_pool().await;
         Box::pin(run(config, pool)).await.unwrap_err();
     }
