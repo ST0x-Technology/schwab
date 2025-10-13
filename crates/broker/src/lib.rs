@@ -108,6 +108,22 @@ impl std::fmt::Display for SupportedBroker {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("Invalid broker: {0}")]
+pub struct InvalidBrokerError(String);
+
+impl std::str::FromStr for SupportedBroker {
+    type Err = InvalidBrokerError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "schwab" => Ok(Self::Schwab),
+            "dry_run" => Ok(Self::DryRun),
+            _ => Err(InvalidBrokerError(s.to_string())),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     Buy,
