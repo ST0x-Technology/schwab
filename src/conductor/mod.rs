@@ -1464,8 +1464,10 @@ mod tests {
         let broker = MockBrokerConfig.try_into_broker().await.unwrap();
 
         let result = execute_pending_offchain_execution(&broker, &pool, 99999).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not found"));
+        assert!(matches!(
+            result.unwrap_err(),
+            EventProcessingError::AccumulatorProcessing(_)
+        ));
     }
 
     #[tokio::test]

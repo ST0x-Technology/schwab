@@ -18,7 +18,8 @@ mod trade_execution_link;
 pub mod test_utils;
 
 use crate::env::{BrokerConfig, Config};
-use st0x_broker::{Broker, MockBrokerConfig, SchwabConfig, TryIntoBroker};
+use st0x_broker::schwab::SchwabError;
+use st0x_broker::{Broker, BrokerError, MockBrokerConfig, SchwabConfig, TryIntoBroker};
 
 pub async fn launch(config: Config) -> anyhow::Result<()> {
     let pool = config.get_sqlite_pool().await?;
@@ -79,14 +80,21 @@ async fn run(config: Config, pool: SqlitePool) -> anyhow::Result<()> {
                 info!("Bot session completed successfully");
                 break Ok(());
             }
-            Err(e) if e.to_string().contains("RefreshTokenExpired") => {
-                warn!(
-                    "Refresh token expired, retrying in {} seconds",
-                    RERUN_DELAY_SECS
-                );
-                tokio::time::sleep(std::time::Duration::from_secs(RERUN_DELAY_SECS)).await;
-            }
             Err(e) => {
+                if let Some(broker_error) = e.downcast_ref::<BrokerError>() {
+                    if matches!(
+                        broker_error,
+                        BrokerError::Schwab(SchwabError::RefreshTokenExpired)
+                    ) {
+                        warn!(
+                            "Refresh token expired, retrying in {} seconds",
+                            RERUN_DELAY_SECS
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(RERUN_DELAY_SECS)).await;
+                        continue;
+                    }
+                }
+
                 error!("Bot session failed: {e}");
                 return Err(e);
             }

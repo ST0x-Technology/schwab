@@ -94,14 +94,15 @@ impl Broker for AlpacaBroker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::alpaca::auth::AlpacaTradingMode;
     use httpmock::prelude::*;
     use serde_json::json;
 
-    fn create_test_auth_env(base_url: &str) -> AlpacaAuthEnv {
+    fn create_test_auth_env(_base_url: &str) -> AlpacaAuthEnv {
         AlpacaAuthEnv {
-            api_key_id: "test_key_id".to_string(),
-            api_secret_key: "test_secret_key".to_string(),
-            base_url: base_url.to_string(),
+            alpaca_api_key_id: "test_key_id".to_string(),
+            alpaca_api_secret_key: "test_secret_key".to_string(),
+            alpaca_trading_mode: AlpacaTradingMode::Paper,
         }
     }
 
@@ -182,19 +183,6 @@ mod tests {
             result.unwrap_err(),
             BrokerError::Authentication(_)
         ));
-    }
-
-    #[tokio::test]
-    async fn test_try_from_config_with_invalid_url() {
-        let auth = AlpacaAuthEnv {
-            api_key_id: "test_key_id".to_string(),
-            api_secret_key: "test_secret_key".to_string(),
-            base_url: "not_a_valid_url".to_string(),
-        };
-
-        let result = AlpacaBroker::try_from_config(auth).await;
-
-        assert!(result.is_err());
     }
 
     #[tokio::test]
