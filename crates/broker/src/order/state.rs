@@ -141,7 +141,7 @@ fn u64_to_i64_exact(value: u64) -> Result<i64, BrokerError> {
 
 /// Converts i64 from database to u64 for application use with exact conversion.
 /// NEVER silently changes amounts - returns error if conversion would lose data.
-fn price_cents_from_db_i64(value: i64) -> Result<u64, BrokerError> {
+pub(crate) fn price_cents_from_db_i64(value: i64) -> Result<u64, BrokerError> {
     if value < 0 {
         Err(BrokerError::InvalidOrder {
             reason: format!("Negative price_cents value {value} is invalid"),

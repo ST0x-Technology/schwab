@@ -312,8 +312,7 @@ pub(crate) struct Instrument {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::setup_test_db;
-    use chrono::Utc;
+    use crate::test_utils::{TEST_ENCRYPTION_KEY, setup_test_db, setup_test_tokens};
     use serde_json::json;
 
     #[test]
@@ -447,7 +446,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -484,7 +483,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -515,26 +514,15 @@ mod tests {
         );
     }
 
-    fn create_test_env_with_mock_server(
-        mock_server: &httpmock::MockServer,
-    ) -> super::SchwabAuthEnv {
-        super::SchwabAuthEnv {
+    fn create_test_env_with_mock_server(mock_server: &httpmock::MockServer) -> SchwabAuthEnv {
+        SchwabAuthEnv {
             app_key: "test_app_key".to_string(),
             app_secret: "test_app_secret".to_string(),
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: mock_server.base_url(),
             account_index: 0,
+            encryption_key: TEST_ENCRYPTION_KEY,
         }
-    }
-
-    async fn setup_test_tokens(pool: &sqlx::SqlitePool) {
-        let tokens = super::super::tokens::SchwabTokens {
-            access_token: "test_access_token".to_string(),
-            access_token_fetched_at: Utc::now(),
-            refresh_token: "test_refresh_token".to_string(),
-            refresh_token_fetched_at: Utc::now(),
-        };
-        tokens.store(pool).await.unwrap();
     }
 
     #[tokio::test]
@@ -542,7 +530,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -576,7 +564,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -613,7 +601,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -654,7 +642,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -700,7 +688,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -738,7 +726,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -775,7 +763,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -797,7 +785,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -835,7 +823,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -892,7 +880,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -940,7 +928,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1009,7 +997,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1049,7 +1037,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1087,7 +1075,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1125,7 +1113,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1159,7 +1147,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)

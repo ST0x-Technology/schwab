@@ -59,6 +59,7 @@ itertools = "0.14.0"
 rand.workspace = true
 rocket = { version = "0.5.1", features = ["json"] }
 chrono-tz.workspace = true
+aes-gcm = "0.10.3"
 rust_decimal = "1.38.0"
 
 [dev-dependencies]

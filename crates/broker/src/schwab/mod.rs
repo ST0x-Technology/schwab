@@ -1,9 +1,9 @@
-use crate::error;
 use reqwest::header::InvalidHeaderValue;
 use thiserror::Error;
 
 pub mod auth;
 pub mod broker;
+pub(crate) mod encryption;
 pub mod market_hours;
 pub mod market_hours_cache;
 pub(crate) mod order;
@@ -53,15 +53,8 @@ pub enum SchwabError {
         response_text: String,
         parse_error: String,
     },
-}
-
-pub(crate) const fn price_cents_from_db_i64(db_value: i64) -> Result<u64, error::PersistenceError> {
-    if db_value < 0 {
-        Err(error::PersistenceError::InvalidPriceCents(db_value))
-    } else {
-        #[allow(clippy::cast_sign_loss)]
-        Ok(db_value as u64)
-    }
+    #[error("Encryption error: {0}")]
+    Encryption(#[from] encryption::EncryptionError),
 }
 
 pub fn extract_code_from_url(url: &str) -> Result<String, SchwabError> {
@@ -79,6 +72,7 @@ pub fn extract_code_from_url(url: &str) -> Result<String, SchwabError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::TEST_ENCRYPTION_KEY;
     use httpmock::prelude::*;
     use serde_json::json;
 
@@ -89,6 +83,7 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: mock_server.base_url(),
             account_index: 0,
+            encryption_key: TEST_ENCRYPTION_KEY,
         }
     }
 

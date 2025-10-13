@@ -21,6 +21,8 @@ url.workspace = true
 rand.workspace = true
 serde_json.workspace = true
 chrono-tz.workspace = true
+alloy = { version = "1.0.38", features = ["full"] }
+aes-gcm = "0.10.3"
 
 [dev-dependencies]
 httpmock.workspace = true
