@@ -3,6 +3,7 @@ members = [".", "crates/broker"]
 resolver = "2"
 
 [workspace.dependencies]
+alloy = { version = "1.0.38", features = ["full"] }
 async-trait = "0.1.81"
 sqlx = { version = "0.8.6", features = [
   "sqlite",
@@ -33,7 +34,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-alloy = { version = "1.0.9", features = ["full"] }
+alloy.workspace = true
 anyhow = "1.0.98"
 async-trait.workspace = true
 st0x-broker = { path = "crates/broker" }
