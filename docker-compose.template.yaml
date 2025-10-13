@@ -4,6 +4,21 @@ services:
     container_name: schwarbot
     environment:
       - OTEL_METRICS_EXPORTER_ENDPOINT=http://grafana:4318
+      - DATABASE_URL=sqlite:///data/schwab.db
+    env_file:
+      - .env
+    volumes:
+      - ${DATA_VOLUME_PATH}:/data
+    depends_on:
+      - grafana
+    restart: unless-stopped
+
+  alpacabot:
+    image: registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}
+    container_name: alpacabot
+    environment:
+      - OTEL_METRICS_EXPORTER_ENDPOINT=http://grafana:4318
+      - DATABASE_URL=sqlite:///data/alpaca.db
     env_file:
       - .env
     volumes:
@@ -29,7 +44,8 @@ services:
       - "4318:4318"  # OTLP HTTP receiver
     volumes:
       - grafana-data:/data
-      - ./schwab.db:/data/schwab.db:ro
+      - ${DATA_VOLUME_PATH}/schwab.db:/data/schwab.db:ro
+      - ${DATA_VOLUME_PATH}/alpaca.db:/data/alpaca.db:ro
       - ./grafana-datasource.yaml:/otel-lgtm/grafana/conf/provisioning/datasources/sqlite.yaml:ro
     restart: unless-stopped
 
