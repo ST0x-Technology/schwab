@@ -7,8 +7,7 @@ use alloy::rpc::types::Log;
 use chrono::Utc;
 use sqlx::SqlitePool;
 use st0x_broker::OrderState;
-use st0x_broker::schwab::auth::SchwabAuthEnv;
-use st0x_broker::schwab::tokens::SchwabTokens;
+use st0x_broker::schwab::{SchwabAuthEnv, SchwabTokens};
 use st0x_broker::{Direction, SupportedBroker};
 
 /// Returns a test `OrderV3` instance that is shared across multiple

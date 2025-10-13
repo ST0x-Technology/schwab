@@ -1,5 +1,3 @@
-use super::HasOrderStatus;
-
 /// Flat enum for database storage (matches CHECK constraint pattern)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderStatus {
@@ -17,12 +15,6 @@ impl OrderStatus {
             Self::Filled => "FILLED",
             Self::Failed => "FAILED",
         }
-    }
-}
-
-impl HasOrderStatus for OrderStatus {
-    fn status_str(&self) -> &'static str {
-        self.as_str()
     }
 }
 

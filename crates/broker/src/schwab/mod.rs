@@ -1,17 +1,20 @@
 use reqwest::header::InvalidHeaderValue;
 use thiserror::Error;
 
-pub mod auth;
-pub mod broker;
-pub(crate) mod encryption;
-pub mod market_hours;
-pub mod market_hours_cache;
-pub(crate) mod order;
-pub(crate) mod order_status;
-pub mod tokens;
+mod auth;
+mod broker;
+mod encryption;
+mod market_hours;
+mod order;
+mod order_status;
+mod tokens;
 
+// Re-export only what's needed for broker construction
 pub use auth::SchwabAuthEnv;
-pub(crate) use tokens::SchwabTokens;
+pub use broker::SchwabBroker;
+
+// Re-export for auth CLI command (Schwab-specific, not part of generic broker API)
+pub use tokens::SchwabTokens;
 
 #[derive(Error, Debug)]
 pub enum SchwabError {

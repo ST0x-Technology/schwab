@@ -6,11 +6,6 @@ pub mod status;
 pub use state::OrderState;
 pub use status::OrderStatus;
 
-/// Trait for types that can provide order status information
-pub trait HasOrderStatus {
-    fn status_str(&self) -> &'static str;
-}
-
 #[derive(Debug)]
 pub struct OrderPlacement<OrderId> {
     pub order_id: OrderId,

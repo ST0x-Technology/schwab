@@ -29,13 +29,6 @@ pub enum OrderState {
     },
 }
 
-/// Trait for types that can be converted to a status string for database queries
-impl super::HasOrderStatus for OrderState {
-    fn status_str(&self) -> &'static str {
-        self.status().as_str()
-    }
-}
-
 impl OrderState {
     pub const fn status(&self) -> OrderStatus {
         match self {

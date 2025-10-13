@@ -12,7 +12,7 @@ pub mod test_utils;
 
 pub use error::PersistenceError;
 pub use order::{MarketOrder, OrderPlacement, OrderState, OrderStatus, OrderUpdate};
-pub use schwab::broker::SchwabBroker;
+pub use schwab::SchwabBroker;
 pub use test::TestBroker;
 
 /// Stock symbol newtype wrapper with validation

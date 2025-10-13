@@ -30,9 +30,9 @@ pub struct SchwabAuthEnv {
 #[derive(Debug, Deserialize)]
 pub(crate) struct SchwabAuthResponse {
     /// Expires every 30 minutes
-    pub access_token: String,
+    pub(crate) access_token: String,
     /// Expires every 7 days
-    pub refresh_token: String,
+    pub(crate) refresh_token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,8 +40,8 @@ pub(crate) struct SchwabAuthResponse {
 pub(crate) struct AccountNumbers {
     // Field exists in API response but isn't currently used
     #[allow(dead_code)]
-    pub account_number: String,
-    pub hash_value: String,
+    pub(crate) account_number: String,
+    pub(crate) hash_value: String,
 }
 
 impl SchwabAuthEnv {

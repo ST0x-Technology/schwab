@@ -4,7 +4,7 @@ use tracing::Level;
 
 use crate::offchain::order_poller::OrderPollerConfig;
 use crate::onchain::EvmEnv;
-use st0x_broker::schwab::auth::SchwabAuthEnv;
+use st0x_broker::schwab::SchwabAuthEnv;
 use st0x_broker::{Broker, SchwabBroker, TestBroker};
 
 #[derive(clap::ValueEnum, Debug, Clone)]
@@ -105,7 +105,7 @@ pub mod tests {
     use super::*;
     use crate::onchain::EvmEnv;
     use alloy::primitives::{FixedBytes, address};
-    use st0x_broker::schwab::auth::SchwabAuthEnv;
+    use st0x_broker::schwab::SchwabAuthEnv;
 
     const TEST_ENCRYPTION_KEY: FixedBytes<32> = FixedBytes::ZERO;
 
