@@ -290,7 +290,6 @@ fn parse_datetime(datetime_str: &str, date: NaiveDate) -> Result<DateTime<Utc>, 
 mod tests {
     use super::*;
     use crate::test_utils::{TEST_ENCRYPTION_KEY, setup_test_db, setup_test_tokens};
-    use chrono::TimeZone;
     use httpmock::prelude::*;
     use serde_json::json;
 

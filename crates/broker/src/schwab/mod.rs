@@ -16,38 +16,76 @@ pub use broker::SchwabBroker;
 // Re-export for auth CLI command (Schwab-specific, not part of generic broker API)
 pub use tokens::SchwabTokens;
 
+/// Errors that can occur during Schwab broker operations including API calls,
+/// authentication, database operations, and order processing.
 #[derive(Error, Debug)]
 pub enum SchwabError {
+    /// HTTP header creation failed, wraps [`reqwest::header::InvalidHeaderValue`].
     #[error("Failed to create header value: {0}")]
     InvalidHeader(#[from] InvalidHeaderValue),
+
+    /// HTTP request execution failed, wraps [`reqwest::Error`].
     #[error("Request failed: {0}")]
     Reqwest(#[from] reqwest::Error),
+
+    /// Database query or migration failed, wraps [`sqlx::Error`].
     #[error("Database error: {0}")]
     Sqlx(#[from] sqlx::Error),
+
+    /// File system operation failed, wraps [`std::io::Error`].
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// URL string parsing failed, wraps [`url::ParseError`].
     #[error("URL parsing failed: {0}")]
     Url(#[from] url::ParseError),
+
+    /// OAuth redirect URL missing required authorization code parameter.
+    /// `url`: The full redirect URL received.
     #[error("Missing authorization code parameter in URL: {url}")]
     MissingAuthCode { url: String },
+
+    /// JSON serialization or deserialization failed, wraps [`serde_json::Error`].
     #[error("JSON serialization failed: {0}")]
     JsonSerialization(#[from] serde_json::Error),
+
+    /// Refresh token expired and manual re-authentication required.
     #[error("Refresh token has expired")]
     RefreshTokenExpired,
+
+    /// Schwab API returned no account numbers for the authenticated user.
     #[error("No accounts found")]
     NoAccountsFound,
+
+    /// Requested account index exceeds available accounts.
+    /// `index`: The requested account index.
+    /// `count`: Total number of accounts available.
     #[error("Account index {index} out of bounds (found {count} accounts)")]
     AccountIndexOutOfBounds { index: usize, count: usize },
+
+    /// Schwab API request completed with non-success HTTP status.
+    /// `action`: Description of the attempted operation.
+    /// `status`: HTTP status code returned.
+    /// `body`: Response body text.
     #[error("{action} failed with status: {status}, body: {body}")]
     RequestFailed {
         action: String,
         status: reqwest::StatusCode,
         body: String,
     },
+
+    /// Broker configuration validation failed during initialization.
     #[error("Invalid configuration: {0}")]
     InvalidConfiguration(String),
+
+    /// Order execution database persistence failed, wraps [`crate::error::PersistenceError`].
     #[error("Execution persistence error: {0}")]
     ExecutionPersistence(#[from] crate::error::PersistenceError),
+
+    /// Schwab API response body parsing failed.
+    /// `action`: Description of the attempted operation.
+    /// `response_text`: Raw API response body.
+    /// `parse_error`: Error message from parser.
     #[error(
         "Failed to parse API response: {action}, response: {response_text}, error: {parse_error}"
     )]
@@ -56,6 +94,8 @@ pub enum SchwabError {
         response_text: String,
         parse_error: String,
     },
+
+    /// Token encryption or decryption failed, wraps [`encryption::EncryptionError`].
     #[error("Encryption error: {0}")]
     Encryption(#[from] encryption::EncryptionError),
 }
