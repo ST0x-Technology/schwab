@@ -78,10 +78,6 @@ pub struct Env {
     #[clap(long, env, default_value = "8080")]
     server_port: u16,
     #[clap(flatten)]
-    schwab_auth: SchwabAuthEnv,
-    #[clap(flatten)]
-    alpaca_auth: AlpacaAuthEnv,
-    #[clap(flatten)]
     pub(crate) evm: EvmEnv,
     /// Interval in seconds between order status polling checks
     #[clap(long, env, default_value = "15")]
@@ -97,8 +93,14 @@ pub struct Env {
 impl Env {
     pub fn into_config(self) -> Config {
         let broker = match self.broker {
-            SupportedBroker::Schwab => BrokerConfig::Schwab(self.schwab_auth),
-            SupportedBroker::Alpaca => BrokerConfig::Alpaca(self.alpaca_auth),
+            SupportedBroker::Schwab => {
+                let schwab_auth = SchwabAuthEnv::parse();
+                BrokerConfig::Schwab(schwab_auth)
+            }
+            SupportedBroker::Alpaca => {
+                let alpaca_auth = AlpacaAuthEnv::parse();
+                BrokerConfig::Alpaca(alpaca_auth)
+            }
             SupportedBroker::DryRun => BrokerConfig::DryRun,
         };
 
@@ -235,5 +237,28 @@ pub mod tests {
         assert!(matches!(config.log_level, LogLevel::Debug));
         assert!(matches!(config.broker, BrokerConfig::Schwab(_)));
         assert_eq!(config.evm.deployment_block, 1);
+    }
+
+    #[test]
+    fn test_dry_run_broker_does_not_require_any_credentials() {
+        let args = vec![
+            "test",
+            "--db",
+            ":memory:",
+            "--ws-rpc-url",
+            "ws://localhost:8545",
+            "--orderbook",
+            "0x1111111111111111111111111111111111111111",
+            "--order-owner",
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--deployment-block",
+            "1",
+            "--broker",
+            "dry-run",
+        ];
+
+        let env = Env::try_parse_from(args).unwrap();
+        let config = env.into_config();
+        assert!(matches!(config.broker, BrokerConfig::DryRun));
     }
 }
