@@ -15,14 +15,16 @@ COPY flake.nix flake.lock ./
 RUN nix develop --command echo "Nix dev env ready"
 
 COPY Cargo.toml Cargo.lock ./
+COPY crates/broker/Cargo.toml ./crates/broker/
 
-RUN mkdir -p src/bin && \
+RUN mkdir -p src/bin crates/broker/src && \
     echo 'fn main() {}' > src/lib.rs && \
-    echo 'fn main() {}' > src/bin/server.rs
+    echo 'fn main() {}' > src/bin/server.rs && \
+    echo 'fn main() {}' > crates/broker/src/lib.rs
 
 RUN nix develop --command cargo chef prepare --recipe-path recipe.json
 
-RUN rm -rf src
+RUN rm -rf src crates
 
 RUN nix develop --command cargo chef cook --release --recipe-path recipe.json
 
