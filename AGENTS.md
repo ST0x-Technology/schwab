@@ -793,6 +793,71 @@ pub async fn refresh_if_needed(pool: &SqlitePool) -> Result<bool, SchwabError> {
 
 ### Code style
 
+#### Module Organization
+
+Organize code within modules by importance and visibility:
+
+- **Public API first**: Place public functions, types, and traits at the top of
+  the module where they are immediately visible to consumers
+- **Private helpers below public code**: Place private helper functions, types,
+  and traits immediately after the public code that uses them
+- **Implementation blocks next to type definitions**: Place `impl` blocks after
+  the type definition
+
+This organization pattern makes the module's public interface clear at a glance
+and keeps implementation details appropriately subordinate.
+
+**Example of good module organization (note that comments are just for
+illustration, in real code we wouldn't leave those):**
+
+```rust
+// Public struct definition
+pub(crate) struct TradeExecution {
+    pub(crate) id: Option<i64>,
+    pub(crate) symbol: Symbol,
+    pub(crate) shares: Shares,
+}
+
+// Implementation block right after type definition
+impl TradeExecution {
+    pub(crate) async fn save(&self, pool: &SqlitePool) -> Result<i64, Error> {
+        // Implementation
+    }
+}
+
+// Public function that uses helper functions
+pub(crate) async fn find_executions_by_status(
+    pool: &SqlitePool,
+    status: OrderStatus,
+) -> Result<Vec<TradeExecution>, Error> {
+    let rows = query_by_status(pool, status.as_str()).await?;
+    rows.into_iter().map(row_to_execution).collect()
+}
+
+// Another public function (standalone)
+pub(crate) async fn find_execution_by_id(
+    pool: &SqlitePool,
+    id: i64,
+) -> Result<Option<TradeExecution>, Error> {
+    // Implementation
+}
+
+// Private helper functions used by find_executions_by_status
+async fn query_by_status(
+    pool: &SqlitePool,
+    status: &str,
+) -> Result<Vec<ExecutionRow>, sqlx::Error> {
+    // SQL query implementation
+}
+
+fn row_to_execution(row: ExecutionRow) -> Result<TradeExecution, Error> {
+    // Conversion logic
+}
+```
+
+This pattern applies across the entire workspace, including both the main crate
+and sub-crates like `st0x-broker`.
+
 #### Use `.unwrap` over boolean result assertions in tests
 
 Instead of
