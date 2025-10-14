@@ -35,19 +35,31 @@ exploiting price discrepancies.
 
 ## Key Development Commands
 
+### Workspace Structure
+
+This project uses a Cargo workspace with:
+
+- **Root crate (`st0x-hedge`)**: Main arbitrage bot application
+- **Broker crate (`st0x-broker`)**: Standalone broker abstraction library
+
 ### Building & Running
 
-- `cargo build` - Build the project
+- `cargo build` - Build all workspace members
+- `cargo build -p st0x-hedge` - Build main crate only
+- `cargo build -p st0x-broker` - Build broker crate only
 - `cargo run --bin server` - Run the main arbitrage bot
 - `cargo run --bin cli -- auth` - Run the authentication flow for Charles Schwab
   OAuth setup
+- `cargo run --bin cli -- test -t AAPL -q 100 -d buy` - Test trading
+  functionality with mock broker
 - `cargo run --bin cli` - Run the command-line interface for manual operations
 
 ### Testing
 
-- `cargo test -q` - Run all tests
+- `cargo test -q` - Run all tests (both main and broker crates)
 - `cargo test -q --lib` - Run library tests only
-- `cargo test -q --bin <binary>` - Run tests for specific binary
+- `cargo test -p st0x-broker -q` - Run broker crate tests only
+- `cargo test -p st0x-hedge -q` - Run main crate tests only
 - `cargo test -q <test_name>` - Run specific test
 
 ### Database Management
@@ -55,6 +67,7 @@ exploiting price discrepancies.
 - `sqlx db create` - Create the database
 - `sqlx migrate run` - Apply database migrations
 - `sqlx migrate revert` - Revert last migration
+- `sqlx migrate reset -y` - Drop the database and re-run all migrations
 - Database URL configured via `DATABASE_URL` environment variable
 
 ### Development Tools
@@ -78,6 +91,65 @@ exploiting price discrepancies.
   the interactive view, e.g. `git --no-pager diff`
 
 ## Architecture Overview
+
+### Broker Abstraction Layer
+
+**Design Principle**: The application uses a generic broker trait to support
+multiple trading platforms while maintaining type safety and zero-cost
+abstractions.
+
+**Broker Trait (`st0x-broker` crate)**:
+
+- Generic interface for executing trades across different brokers
+- Associated types for `Error`, `OrderId`, and `Config` allow broker-specific
+  implementations
+- Key methods: `try_from_config()`, `wait_until_market_open()`,
+  `place_market_order()`, `get_order_status()`
+- Runtime broker selection via `--dry-run` flag (TestBroker vs SchwabBroker)
+
+**Supported Brokers**:
+
+- **SchwabBroker**: Production Charles Schwab API integration with OAuth 2.0,
+  market hours validation, and real order execution
+- **TestBroker**: Mock implementation for testing and dry-run scenarios with
+  configurable failure modes
+
+**Type Safety Features**:
+
+- Newtypes: `Symbol`, `Shares`, `Direction` prevent mixing incompatible values
+- Order lifecycle modeling: `OrderState` enum encodes valid order states
+- Compile-time broker configuration validation
+
+**Integration with Main Application**:
+
+- Main crate remains broker-agnostic using generic `Broker` trait
+- Broker-specific logic (token refresh, market hours) handled through trait
+  methods
+- Clean separation: broker concerns stay in `st0x-broker` crate, orchestration
+  in main crate
+
+#### Requirements for New Brokers
+
+- **Implement all trait methods**: Especially `try_from_config()`,
+  `place_market_order()`, and `get_order_status()`
+- **Handle authentication**: Manage API keys, tokens, or session management as
+  needed
+- **Market hours support**: Implement `wait_until_market_open()` for the
+  broker's supported markets
+- **Error handling**: Map broker-specific errors to `BrokerError` enum
+- **Testing**: Add comprehensive unit tests using the broker's sandbox/paper
+  trading environment
+- **Documentation**: Add broker-specific setup instructions and API
+  documentation
+
+#### Benefits of This Architecture
+
+- **Zero changes to core bot logic**: Main application remains broker-agnostic
+- **Type safety**: Compile-time verification of broker compatibility
+- **Independent testing**: Each broker can be tested in isolation
+- **Extensible**: Easy to add new brokers without affecting existing ones
+- **Performance**: Zero-cost abstractions via generics (no dynamic dispatch in
+  hot paths)
 
 ### Core Event Processing Flow
 
@@ -720,6 +792,71 @@ pub async fn refresh_if_needed(pool: &SqlitePool) -> Result<bool, SchwabError> {
 - Keep comments concise and focused on the "why" rather than the "what"
 
 ### Code style
+
+#### Module Organization
+
+Organize code within modules by importance and visibility:
+
+- **Public API first**: Place public functions, types, and traits at the top of
+  the module where they are immediately visible to consumers
+- **Private helpers below public code**: Place private helper functions, types,
+  and traits immediately after the public code that uses them
+- **Implementation blocks next to type definitions**: Place `impl` blocks after
+  the type definition
+
+This organization pattern makes the module's public interface clear at a glance
+and keeps implementation details appropriately subordinate.
+
+**Example of good module organization (note that comments are just for
+illustration, in real code we wouldn't leave those):**
+
+```rust
+// Public struct definition
+pub(crate) struct TradeExecution {
+    pub(crate) id: Option<i64>,
+    pub(crate) symbol: Symbol,
+    pub(crate) shares: Shares,
+}
+
+// Implementation block right after type definition
+impl TradeExecution {
+    pub(crate) async fn save(&self, pool: &SqlitePool) -> Result<i64, Error> {
+        // Implementation
+    }
+}
+
+// Public function that uses helper functions
+pub(crate) async fn find_executions_by_status(
+    pool: &SqlitePool,
+    status: OrderStatus,
+) -> Result<Vec<TradeExecution>, Error> {
+    let rows = query_by_status(pool, status.as_str()).await?;
+    rows.into_iter().map(row_to_execution).collect()
+}
+
+// Another public function (standalone)
+pub(crate) async fn find_execution_by_id(
+    pool: &SqlitePool,
+    id: i64,
+) -> Result<Option<TradeExecution>, Error> {
+    // Implementation
+}
+
+// Private helper functions used by find_executions_by_status
+async fn query_by_status(
+    pool: &SqlitePool,
+    status: &str,
+) -> Result<Vec<ExecutionRow>, sqlx::Error> {
+    // SQL query implementation
+}
+
+fn row_to_execution(row: ExecutionRow) -> Result<TradeExecution, Error> {
+    // Conversion logic
+}
+```
+
+This pattern applies across the entire workspace, including both the main crate
+and sub-crates like `st0x-broker`.
 
 #### Use `.unwrap` over boolean result assertions in tests
 

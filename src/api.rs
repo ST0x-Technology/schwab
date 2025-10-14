@@ -5,7 +5,7 @@ use rocket::{Route, State, get, post, routes};
 use sqlx::SqlitePool;
 
 use crate::env::Env;
-use crate::schwab::extract_code_from_url;
+use st0x_broker::schwab::extract_code_from_url;
 
 #[derive(Serialize, Deserialize)]
 struct HealthResponse {
@@ -89,8 +89,8 @@ mod tests {
     use super::*;
     use crate::env::Env;
     use crate::onchain::EvmEnv;
-    use crate::schwab::SchwabAuthEnv;
     use crate::test_utils::setup_test_db;
+    use st0x_broker::schwab::SchwabAuthEnv;
 
     const TEST_ENCRYPTION_KEY: FixedBytes<32> = FixedBytes::ZERO;
 

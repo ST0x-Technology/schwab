@@ -30,9 +30,9 @@ pub struct SchwabAuthEnv {
 #[derive(Debug, Deserialize)]
 pub(crate) struct SchwabAuthResponse {
     /// Expires every 30 minutes
-    pub access_token: String,
+    pub(crate) access_token: String,
     /// Expires every 7 days
-    pub refresh_token: String,
+    pub(crate) refresh_token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,12 +40,12 @@ pub(crate) struct SchwabAuthResponse {
 pub(crate) struct AccountNumbers {
     // Field exists in API response but isn't currently used
     #[allow(dead_code)]
-    pub account_number: String,
-    pub hash_value: String,
+    pub(crate) account_number: String,
+    pub(crate) hash_value: String,
 }
 
 impl SchwabAuthEnv {
-    pub(crate) async fn get_account_hash(&self, pool: &SqlitePool) -> Result<String, SchwabError> {
+    pub async fn get_account_hash(&self, pool: &SqlitePool) -> Result<String, SchwabError> {
         let access_token = SchwabTokens::get_valid_access_token(pool, self).await?;
 
         let headers = [
@@ -107,10 +107,7 @@ impl SchwabAuthEnv {
         )
     }
 
-    pub(crate) async fn get_tokens_from_code(
-        &self,
-        code: &str,
-    ) -> Result<SchwabTokens, SchwabError> {
+    pub async fn get_tokens_from_code(&self, code: &str) -> Result<SchwabTokens, SchwabError> {
         info!("Getting tokens for code: {code}");
         let credentials = format!("{}:{}", self.app_key, self.app_secret);
         let credentials = BASE64_STANDARD.encode(credentials);
@@ -184,10 +181,7 @@ impl SchwabAuthEnv {
         })
     }
 
-    pub(crate) async fn refresh_tokens(
-        &self,
-        refresh_token: &str,
-    ) -> Result<SchwabTokens, SchwabError> {
+    pub async fn refresh_tokens(&self, refresh_token: &str) -> Result<SchwabTokens, SchwabError> {
         let credentials = format!("{}:{}", self.app_key, self.app_secret);
         let credentials = BASE64_STANDARD.encode(credentials);
 
@@ -245,13 +239,10 @@ impl SchwabAuthEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{setup_test_db, setup_test_tokens};
-    use alloy::primitives::FixedBytes;
+    use crate::test_utils::{TEST_ENCRYPTION_KEY, setup_test_db, setup_test_tokens};
     use chrono::{Duration, Utc};
     use httpmock::prelude::*;
     use serde_json::json;
-
-    const TEST_ENCRYPTION_KEY: FixedBytes<32> = FixedBytes::ZERO;
 
     fn create_test_env() -> SchwabAuthEnv {
         SchwabAuthEnv {

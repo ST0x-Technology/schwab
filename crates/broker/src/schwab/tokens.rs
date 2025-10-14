@@ -26,7 +26,7 @@ pub struct SchwabTokens {
 }
 
 impl SchwabTokens {
-    pub(crate) async fn store(
+    pub async fn store(
         &self,
         pool: &SqlitePool,
         encryption_key: &FixedBytes<32>,
@@ -67,7 +67,7 @@ impl SchwabTokens {
         Ok(())
     }
 
-    pub(crate) async fn load(
+    pub async fn load(
         pool: &SqlitePool,
         encryption_key: &FixedBytes<32>,
     ) -> Result<Self, SchwabError> {
@@ -129,7 +129,7 @@ impl SchwabTokens {
         expires_at - now
     }
 
-    pub(crate) async fn get_valid_access_token(
+    pub async fn get_valid_access_token(
         pool: &SqlitePool,
         env: &SchwabAuthEnv,
     ) -> Result<String, SchwabError> {
@@ -156,7 +156,7 @@ impl SchwabTokens {
         Ok(count)
     }
 
-    pub(crate) async fn refresh_if_needed(
+    pub async fn refresh_if_needed(
         pool: &SqlitePool,
         env: &SchwabAuthEnv,
     ) -> Result<bool, SchwabError> {
@@ -228,13 +228,12 @@ async fn handle_token_refresh(pool: &SqlitePool, env: &SchwabAuthEnv) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::setup_test_db;
-    use alloy::primitives::FixedBytes;
+    use crate::test_utils::{TEST_ENCRYPTION_KEY, setup_test_db};
     use chrono::Utc;
     use httpmock::prelude::*;
     use serde_json::json;
-
-    const TEST_ENCRYPTION_KEY: FixedBytes<32> = FixedBytes::ZERO;
+    use std::thread;
+    use tokio::time::{Duration as TokioDuration, sleep};
 
     fn create_test_env_with_mock_server(mock_server: &MockServer) -> SchwabAuthEnv {
         SchwabAuthEnv {
@@ -705,9 +704,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_automatic_token_refresh_before_expiration() -> Result<(), SchwabError> {
-        use std::thread;
-        use tokio::time::{Duration as TokioDuration, sleep};
-
         let server = MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;

@@ -1,12 +1,11 @@
 use clap::Parser;
 use sqlx::SqlitePool;
-use std::sync::Arc;
 use tracing::Level;
 
+use crate::offchain::order_poller::OrderPollerConfig;
 use crate::onchain::EvmEnv;
-use crate::schwab::OrderPollerConfig;
-use crate::schwab::SchwabAuthEnv;
-use crate::schwab::broker::{DynBroker, LogBroker, Schwab};
+use st0x_broker::schwab::SchwabAuthEnv;
+use st0x_broker::{Broker, SchwabBroker, TestBroker};
 
 #[derive(clap::ValueEnum, Debug, Clone)]
 pub enum LogLevel {
@@ -75,18 +74,23 @@ impl Env {
         }
     }
 
-    pub(crate) fn get_broker(&self) -> DynBroker {
-        if self.dry_run {
-            Arc::new(LogBroker::new())
-        } else {
-            Arc::new(Schwab)
-        }
+    pub(crate) async fn get_schwab_broker(
+        &self,
+        pool: SqlitePool,
+    ) -> Result<SchwabBroker, <SchwabBroker as Broker>::Error> {
+        SchwabBroker::try_from_config((self.schwab_auth.clone(), pool)).await
+    }
+
+    pub(crate) async fn get_test_broker(
+        &self,
+    ) -> Result<TestBroker, <TestBroker as Broker>::Error> {
+        TestBroker::try_from_config(()).await
     }
 }
 
 pub fn setup_tracing(log_level: &LogLevel) {
     let level: Level = log_level.into();
-    let default_filter = format!("rain_schwab={level},auth={level},main={level}");
+    let default_filter = format!("st0x_hedge={level},auth={level},main={level}");
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -100,8 +104,8 @@ pub fn setup_tracing(log_level: &LogLevel) {
 pub mod tests {
     use super::*;
     use crate::onchain::EvmEnv;
-    use crate::schwab::SchwabAuthEnv;
     use alloy::primitives::{FixedBytes, address};
+    use st0x_broker::schwab::SchwabAuthEnv;
 
     const TEST_ENCRYPTION_KEY: FixedBytes<32> = FixedBytes::ZERO;
 
@@ -164,18 +168,18 @@ pub mod tests {
         assert!(pool_result.is_ok());
     }
 
-    #[test]
-    fn test_get_broker_dry_run_modes() {
-        // Test dry_run = false (should return Schwab broker)
-        let mut env = create_test_env();
-        env.dry_run = false;
-        let broker = env.get_broker();
-        assert_eq!(format!("{broker:?}"), "Schwab");
+    #[tokio::test]
+    async fn test_get_broker_types() {
+        let env = create_test_env();
+        let pool = crate::test_utils::setup_test_db().await;
 
-        // Test dry_run = true (should return LogBroker)
-        env.dry_run = true;
-        let broker = env.get_broker();
-        assert!(format!("{broker:?}").contains("LogBroker"));
+        // SchwabBroker creation should fail without valid tokens
+        let schwab_result = env.get_schwab_broker(pool.clone()).await;
+        assert!(schwab_result.is_err());
+
+        // TestBroker should always work
+        let test_broker = env.get_test_broker().await.unwrap();
+        assert!(format!("{test_broker:?}").contains("TestBroker"));
     }
 
     #[test]

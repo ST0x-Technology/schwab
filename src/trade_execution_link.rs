@@ -1,15 +1,16 @@
+use chrono::{DateTime, Utc};
+use st0x_broker::{Direction, OrderState};
+
 #[cfg(test)]
 use crate::error::OnChainError;
 #[cfg(test)]
 use crate::onchain::io::TokenizedEquitySymbol;
 #[cfg(test)]
-use crate::schwab::TradeStatus;
-#[cfg(test)]
-use crate::schwab::shares_from_db_i64;
-use crate::schwab::{Direction, TradeState};
-use chrono::{DateTime, Utc};
-#[cfg(test)]
 use sqlx::SqlitePool;
+#[cfg(test)]
+use st0x_broker::PersistenceError;
+#[cfg(test)]
+use st0x_broker::{OrderStatus, Shares, SupportedBroker, Symbol};
 
 /// Links individual onchain trades to their contributing Schwab executions.
 ///
@@ -76,7 +77,7 @@ impl TradeExecutionLink {
                 se.price_cents,
                 se.executed_at
             FROM trade_execution_links tel
-            JOIN schwab_executions se ON tel.execution_id = se.id
+            JOIN offchain_trades se ON tel.execution_id = se.id
             WHERE tel.trade_id = ?1
             ORDER BY tel.created_at ASC
             "#,
@@ -88,14 +89,16 @@ impl TradeExecutionLink {
         rows.into_iter()
             .map(|row| {
                 let execution_direction = row.direction.parse::<Direction>().map_err(|e| {
-                    OnChainError::Persistence(crate::error::PersistenceError::InvalidDirection(e))
+                    OnChainError::Persistence(st0x_broker::PersistenceError::InvalidDirection(e))
                 })?;
 
-                let execution_status_enum = row.status.parse::<TradeStatus>().map_err(|e| {
-                    OnChainError::Persistence(crate::error::PersistenceError::InvalidTradeStatus(e))
+                let execution_status_enum = row.status.parse::<OrderStatus>().map_err(|e| {
+                    OnChainError::Persistence(st0x_broker::PersistenceError::InvalidTradeStatus(
+                        e.to_string(),
+                    ))
                 })?;
 
-                let execution_status = TradeState::from_db_row(
+                let execution_status = OrderState::from_db_row(
                     execution_status_enum,
                     row.order_id,
                     row.price_cents,
@@ -103,11 +106,15 @@ impl TradeExecutionLink {
                 )?;
 
                 Ok(ExecutionContribution {
-                    link_id: row.id,
+                    link_id: row.id.unwrap(),
                     execution_id: row.execution_id,
                     contributed_shares: row.contributed_shares,
                     execution_symbol: row.symbol,
-                    execution_total_shares: shares_from_db_i64(row.shares)?,
+                    execution_total_shares: row.shares.try_into().map_err(|_| {
+                        OnChainError::Persistence(PersistenceError::InvalidShareQuantity(
+                            row.shares,
+                        ))
+                    })?,
                     execution_direction,
                     execution_status,
                     created_at: Some(DateTime::from_naive_utc_and_offset(row.created_at, Utc)),
@@ -148,7 +155,7 @@ impl TradeExecutionLink {
         rows.into_iter()
             .map(|row| {
                 Ok(TradeContribution {
-                    link_id: row.id,
+                    link_id: row.id.unwrap(),
                     trade_id: row.trade_id,
                     contributed_shares: row.contributed_shares,
                     trade_tx_hash: row.tx_hash,
@@ -171,7 +178,7 @@ impl TradeExecutionLink {
         tokenized_symbol: &TokenizedEquitySymbol,
     ) -> Result<Vec<AuditTrailEntry>, OnChainError> {
         let symbol = tokenized_symbol.to_string();
-        let base_symbol = tokenized_symbol.base().as_str();
+        let base_symbol = tokenized_symbol.base().to_string();
 
         let rows = sqlx::query!(
             r#"
@@ -194,7 +201,7 @@ impl TradeExecutionLink {
                 se.executed_at
             FROM trade_execution_links tel
             JOIN onchain_trades ot ON tel.trade_id = ot.id
-            JOIN schwab_executions se ON tel.execution_id = se.id
+            JOIN offchain_trades se ON tel.execution_id = se.id
             WHERE ot.symbol = ?1 OR se.symbol = ?2
             ORDER BY tel.created_at ASC
             "#,
@@ -224,7 +231,11 @@ impl TradeExecutionLink {
                         .trade_created_at
                         .map(|naive_dt| DateTime::from_naive_utc_and_offset(naive_dt, Utc)),
                     execution_id: row.execution_id,
-                    execution_shares: shares_from_db_i64(row.execution_shares)?,
+                    execution_shares: row.execution_shares.try_into().map_err(|_| {
+                        OnChainError::Persistence(PersistenceError::InvalidShareQuantity(
+                            row.execution_shares,
+                        ))
+                    })?,
                     execution_direction: row.execution_direction,
                     execution_status: row.status,
                     execution_order_id: row.order_id,
@@ -254,7 +265,7 @@ pub struct ExecutionContribution {
     pub execution_symbol: String,
     pub execution_total_shares: u64,
     pub execution_direction: Direction,
-    pub execution_status: TradeState,
+    pub execution_status: OrderState,
     pub created_at: Option<DateTime<Utc>>,
 }
 
@@ -301,8 +312,8 @@ pub struct AuditTrailEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::offchain::execution::OffchainExecution;
     use crate::onchain::OnchainTrade;
-    use crate::schwab::execution::SchwabExecution;
     use crate::test_utils::setup_test_db;
     use crate::tokenized_symbol;
     use alloy::primitives::fixed_bytes;
@@ -333,12 +344,13 @@ mod tests {
             pyth_publish_time: None,
         };
 
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
-            symbol: "AAPL".to_string(),
-            shares: 1,
+            symbol: Symbol::new("AAPL").unwrap(),
+            shares: Shares::new(1).unwrap(),
             direction: Direction::Sell,
-            state: TradeState::Pending,
+            broker: SupportedBroker::Schwab,
+            state: OrderState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -418,12 +430,13 @@ mod tests {
             },
         ];
 
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
-            symbol: "MSFT".to_string(),
-            shares: 1,
+            symbol: Symbol::new("MSFT").unwrap(),
+            shares: Shares::new(1).unwrap(),
             direction: Direction::Buy,
-            state: TradeState::Filled {
+            broker: SupportedBroker::Schwab,
+            state: OrderState::Filled {
                 executed_at: Utc::now(),
                 order_id: "1004055538123".to_string(),
                 price_cents: 30250,
@@ -468,12 +481,13 @@ mod tests {
         // Simulate multiple small trades that together trigger one execution
         let trades = vec![(0.3, 1u64), (0.4, 2u64), (0.5, 3u64)];
 
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
-            symbol: "AAPL".to_string(),
-            shares: 1,
+            symbol: Symbol::new("AAPL").unwrap(),
+            shares: Shares::new(1).unwrap(),
             direction: Direction::Sell,
-            state: TradeState::Pending,
+            broker: SupportedBroker::Schwab,
+            state: OrderState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
@@ -559,12 +573,13 @@ mod tests {
             pyth_publish_time: None,
         };
 
-        let execution = SchwabExecution {
+        let execution = OffchainExecution {
             id: None,
-            symbol: "AAPL".to_string(),
-            shares: 1,
+            symbol: Symbol::new("AAPL").unwrap(),
+            shares: Shares::new(1).unwrap(),
             direction: Direction::Buy,
-            state: TradeState::Pending,
+            broker: SupportedBroker::Schwab,
+            state: OrderState::Pending,
         };
 
         let mut sql_tx = pool.begin().await.unwrap();
