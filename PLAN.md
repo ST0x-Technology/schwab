@@ -11,28 +11,21 @@ currently failing because:
 3. No local testing capability for deployment changes
 4. No rollback mechanism when deployments fail
 
-## Task 1. Fix CLI argument parsing with conditional requirements ✓
+## Task 1. Fix CLI argument parsing with conditional requirements
 
-**Problem**: Both `SchwabAuthEnv` and `AlpacaAuthEnv` were flattened into `Env`,
-making all their fields required even when only one broker was selected.
+**Problem**: Both `SchwabAuthEnv` and `AlpacaAuthEnv` are flattened into `Env`,
+making all their fields required even when only one broker is selected.
 
-**Solution**: Removed flattened auth structs from `Env`. Now `Env::parse()`
-determines broker selection first, then `Env::into_config()` conditionally
-parses broker-specific auth structs (`SchwabAuthEnv::parse()` or
-`AlpacaAuthEnv::parse()`). Credentials are only required when the corresponding
-broker is selected.
+**Approach**: Remove flattened auth structs from `Env`. Parse `Env` first to
+determine broker selection, then conditionally parse broker-specific auth
+structs (`SchwabAuthEnv::parse()` or `AlpacaAuthEnv::parse()`) in
+`Env::into_config()`. This way credentials are only required when the
+corresponding broker is selected.
 
-**Changes Made**:
-
-- Removed flattened `schwab_auth` and `alpaca_auth` fields from `Env` struct in
-  `src/env.rs`
-- Updated `Env::into_config()` to conditionally parse broker-specific configs
-  based on `broker` field
-- Added test `test_dry_run_broker_does_not_require_any_credentials` to verify
-  dry-run doesn't require any credentials
-- Fixed `create_test_config_for_server` in `src/api.rs` to directly construct
-  `Config` instead of using environment variables
-- All 253 tests pass, clippy clean, code formatted
+- [x] Remove flattened `schwab_auth` and `alpaca_auth` fields from `Env` struct
+- [x] Update `Env::into_config()` to conditionally parse broker-specific configs
+- [x] Update tests to verify credentials only required for selected broker
+- [x] Verify existing test suite still passes
 
 ## Task 2. Update .env.example with all required variables
 
@@ -41,12 +34,12 @@ expectations. Do NOT add `BROKER` or `ALPACA_TRADING_MODE` (set in
 docker-compose per container). Use `${VAR_NAME}` syntax for envsubst
 compatibility.
 
-- [ ] Add `SCHWAB_APP_KEY=${SCHWAB_APP_KEY}`
-- [ ] Add `SCHWAB_APP_SECRET=${SCHWAB_APP_SECRET}`
-- [ ] Add `ENCRYPTION_KEY=${ENCRYPTION_KEY}`
-- [ ] Add `ALPACA_API_KEY_ID=${ALPACA_API_KEY_ID}`
-- [ ] Add `ALPACA_API_SECRET_KEY=${ALPACA_API_SECRET_KEY}`
-- [ ] Verify existing variables use `${VAR_NAME}` syntax
+- [x] Add `SCHWAB_APP_KEY=${SCHWAB_APP_KEY}`
+- [x] Add `SCHWAB_APP_SECRET=${SCHWAB_APP_SECRET}`
+- [x] Add `ENCRYPTION_KEY=${ENCRYPTION_KEY}`
+- [x] Add `ALPACA_API_KEY_ID=${ALPACA_API_KEY_ID}`
+- [x] Add `ALPACA_API_SECRET_KEY=${ALPACA_API_SECRET_KEY}`
+- [x] Verify existing variables use `${VAR_NAME}` syntax
 
 ## Task 3. Adapt prep-docker-compose.sh from feat/pnl branch
 
