@@ -11,40 +11,38 @@ ENV PATH="${PATH}:/nix/var/nix/profiles/default/bin"
 
 WORKDIR /app
 
-# Copy flake files first for better layer caching
 COPY flake.nix flake.lock ./
 RUN nix develop --command echo "Nix dev env ready"
 
-# Copy only Cargo files for dependency resolution
 COPY Cargo.toml Cargo.lock ./
+COPY crates/broker/Cargo.toml ./crates/broker/
 
-# Create minimal dummy source structure for cargo chef
-RUN mkdir -p src/bin && \
+RUN mkdir -p src/bin crates/broker/src && \
     echo 'fn main() {}' > src/lib.rs && \
-    echo 'fn main() {}' > src/bin/server.rs
+    echo 'fn main() {}' > src/bin/server.rs && \
+    echo 'fn main() {}' > crates/broker/src/lib.rs
 
-# Prepare cargo chef recipe (cached layer if Cargo.toml doesn't change)
 RUN nix develop --command cargo chef prepare --recipe-path recipe.json
 
-# Remove dummy source files
-RUN rm -rf src
+RUN rm -rf src crates
 
-# Cook dependencies using cargo chef (this is the expensive cached layer)
 RUN nix develop --command cargo chef cook --release --recipe-path recipe.json
 
 COPY . .
 
-# Build Solidity artifacts
 RUN nix run .#prepSolArtifacts
 
-# Set up database and run migrations for SQLx compile-time verification
 RUN nix develop --command bash -c ' \
     export DATABASE_URL=sqlite:///tmp/build_db.sqlite && \
     sqlx database create && \
     sqlx migrate run \
 '
 
-# Build final Rust binaries (fast since deps are already compiled)
+RUN nix develop --command bash -c ' \
+    export DATABASE_URL=sqlite:///tmp/build_db.sqlite && \
+    cargo test -q \
+'
+
 RUN nix develop --command bash -c ' \
     export DATABASE_URL=sqlite:///tmp/build_db.sqlite && \
     cargo build --release --bin server \
@@ -57,14 +55,11 @@ RUN apt-get update && apt-get install -y patchelf && \
 
 FROM debian:12-slim
 
-# Install runtime dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
-
-# Create schwab user and group
-RUN groupadd -r schwab && useradd --no-log-init -r -g schwab schwab
+    rm -rf /var/lib/apt/lists/* && \
+    useradd -m -u 1000 schwab
 
 WORKDIR /app
 
@@ -72,10 +67,8 @@ WORKDIR /app
 COPY --from=builder /app/target/release/server ./
 COPY --from=builder /app/migrations ./migrations
 
-# Set proper ownership and permissions
 RUN chown -R schwab:schwab /app
 
-# Switch to non-root user (temporarily disabled for volume permission fix)
-# USER schwab
+USER schwab
 
 ENTRYPOINT ["./server"]

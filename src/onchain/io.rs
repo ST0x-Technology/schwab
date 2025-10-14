@@ -5,7 +5,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use crate::error::{OnChainError, TradeValidationError};
-use crate::schwab::Direction;
+use st0x_broker::{Direction, Symbol};
 
 /// Macro to create a TokenizedEquitySymbol.
 /// This macro provides a convenient way to create tokenized equity symbols.
@@ -18,12 +18,12 @@ macro_rules! tokenized_symbol {
 
 // The macro is available via the crate::tokenized_symbol path
 
-/// Macro to create an EquitySymbol.
-/// This macro provides a convenient way to create equity symbols.
+/// Macro to create a Symbol.
+/// This macro provides a convenient way to create symbols.
 #[macro_export]
 macro_rules! symbol {
     ($symbol:expr) => {
-        EquitySymbol::new($symbol).unwrap()
+        st0x_broker::Symbol::new($symbol).unwrap()
     };
 }
 
@@ -61,119 +61,91 @@ impl Usdc {
     }
 }
 
-/// Represents a validated base equity symbol (e.g., "AAPL", "MSFT")
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct EquitySymbol(String);
-
-impl EquitySymbol {
-    /// Creates a new EquitySymbol with validation
-    pub(crate) fn new(symbol: &str) -> Result<Self, OnChainError> {
-        // Reject USDC as it's not an equity
-        if symbol == "USDC" {
-            return Err(OnChainError::Validation(
-                TradeValidationError::NotTokenizedEquity(symbol.to_string()),
-            ));
-        }
-
-        // Basic validation - no whitespace, reasonable length, not empty
-        if symbol.chars().any(char::is_whitespace) || symbol.len() > 32 || symbol.is_empty() {
-            return Err(OnChainError::Validation(
-                TradeValidationError::NotTokenizedEquity(symbol.to_string()),
-            ));
-        }
-
-        Ok(Self(symbol.to_string()))
-    }
-
-    /// Gets the base symbol string
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for EquitySymbol {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl FromStr for EquitySymbol {
-    type Err = OnChainError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::new(s)
-    }
-}
-
-/// The suffix for tokenized equity symbols
+/// The marker for tokenized equity symbols (can be prefix or suffix)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TokenizedEquitySuffix {
-    ZeroX, // "0x"
-    S1,    // "s1"
+pub(crate) enum TokenizedEquityMarker {
+    T,     // "t" (prefix)
+    ZeroX, // "0x" (suffix)
+    S1,    // "s1" (suffix)
 }
 
-impl TokenizedEquitySuffix {
+impl TokenizedEquityMarker {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
+            Self::T => "t",
             Self::ZeroX => "0x",
             Self::S1 => "s1",
         }
     }
+
+    pub(crate) const fn is_prefix(self) -> bool {
+        matches!(self, Self::T)
+    }
 }
 
-impl fmt::Display for TokenizedEquitySuffix {
+impl fmt::Display for TokenizedEquityMarker {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
     }
 }
 
 /// Represents a validated tokenized equity symbol with guaranteed format
-/// Composed of a base equity symbol and a tokenized suffix
+/// Composed of a base equity symbol and a tokenized marker (prefix or suffix)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TokenizedEquitySymbol {
-    base: EquitySymbol,
-    suffix: TokenizedEquitySuffix,
+    base: Symbol,
+    marker: TokenizedEquityMarker,
 }
 
 impl TokenizedEquitySymbol {
     /// Creates a new TokenizedEquitySymbol from components
-    pub(crate) const fn new(base: EquitySymbol, suffix: TokenizedEquitySuffix) -> Self {
-        Self { base, suffix }
+    pub(crate) fn new(base: Symbol, marker: TokenizedEquityMarker) -> Self {
+        Self { base, marker }
     }
 
-    /// Creates a new TokenizedEquitySymbol from a string (e.g., "AAPL0x")
+    /// Creates a new TokenizedEquitySymbol from a string (e.g., "AAPL0x", "tAAPL")
     pub(crate) fn parse(symbol: &str) -> Result<Self, OnChainError> {
-        // Try to extract suffix first
+        // Try to extract prefix first
+        if let Some(stripped) = symbol.strip_prefix('t') {
+            let base = Symbol::new(stripped)?;
+            return Ok(Self::new(base, TokenizedEquityMarker::T));
+        }
+
+        // Try to extract suffix
         if let Some(stripped) = symbol.strip_suffix("0x") {
-            let base = EquitySymbol::new(stripped)?;
-            return Ok(Self::new(base, TokenizedEquitySuffix::ZeroX));
+            let base = Symbol::new(stripped)?;
+            return Ok(Self::new(base, TokenizedEquityMarker::ZeroX));
         }
 
         if let Some(stripped) = symbol.strip_suffix("s1") {
-            let base = EquitySymbol::new(stripped)?;
-            return Ok(Self::new(base, TokenizedEquitySuffix::S1));
+            let base = Symbol::new(stripped)?;
+            return Ok(Self::new(base, TokenizedEquityMarker::S1));
         }
 
-        // No valid suffix found
+        // No valid marker found
         Err(OnChainError::Validation(
             TradeValidationError::NotTokenizedEquity(symbol.to_string()),
         ))
     }
 
     /// Gets the base equity symbol
-    pub(crate) const fn base(&self) -> &EquitySymbol {
+    pub(crate) fn base(&self) -> &Symbol {
         &self.base
     }
 
     /// Extract the base symbol (equivalent to the old extract_base_from_tokenized)
     pub(crate) fn extract_base(&self) -> String {
-        self.base.as_str().to_string()
+        self.base.to_string()
     }
 }
 
 impl fmt::Display for TokenizedEquitySymbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}{}", self.base, self.suffix)
+        if self.marker.is_prefix() {
+            write!(f, "{}{}", self.marker, self.base)
+        } else {
+            write!(f, "{}{}", self.base, self.marker)
+        }
     }
 }
 
@@ -188,7 +160,7 @@ impl FromStr for TokenizedEquitySymbol {
 /// Trade details extracted from symbol pair processing
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct TradeDetails {
-    ticker: EquitySymbol,
+    ticker: Symbol,
     equity_amount: Shares,
     usdc_amount: Usdc,
     direction: Direction,
@@ -197,7 +169,7 @@ pub(crate) struct TradeDetails {
 impl TradeDetails {
     /// Gets the ticker symbol
     #[cfg(test)]
-    pub(crate) fn ticker(&self) -> &EquitySymbol {
+    pub(crate) fn ticker(&self) -> &Symbol {
         &self.ticker
     }
 
@@ -264,7 +236,7 @@ impl TradeDetails {
 fn determine_schwab_trade_details(
     onchain_input_symbol: &str,
     onchain_output_symbol: &str,
-) -> Result<(EquitySymbol, Direction), OnChainError> {
+) -> Result<(Symbol, Direction), OnChainError> {
     // USDC input + tokenized stock output = sold tokenized stock onchain
     if onchain_input_symbol == "USDC" {
         if let Ok(tokenized) = TokenizedEquitySymbol::parse(onchain_output_symbol) {
@@ -296,6 +268,8 @@ mod tests {
         assert!(TokenizedEquitySymbol::parse("AAPL0x").is_ok());
         assert!(TokenizedEquitySymbol::parse("NVDAs1").is_ok());
         assert!(TokenizedEquitySymbol::parse("GME0x").is_ok());
+        assert!(TokenizedEquitySymbol::parse("tGME").is_ok());
+        assert!(TokenizedEquitySymbol::parse("tAAPL").is_ok());
         assert!(TokenizedEquitySymbol::parse("USDC").is_err());
         assert!(TokenizedEquitySymbol::parse("AAPL").is_err());
         assert!(TokenizedEquitySymbol::parse("").is_err());
@@ -313,18 +287,23 @@ mod tests {
         let symbol = TokenizedEquitySymbol::parse("GME0x").unwrap();
         assert_eq!(symbol.extract_base(), "GME");
 
-        // Test edge cases - suffix-only symbols should be invalid
+        let symbol = TokenizedEquitySymbol::parse("tGME").unwrap();
+        assert_eq!(symbol.extract_base(), "GME");
+
+        let symbol = TokenizedEquitySymbol::parse("tAAPL").unwrap();
+        assert_eq!(symbol.extract_base(), "AAPL");
+
+        // Test edge cases - marker-only symbols should be invalid
+        // These fail because after stripping the marker, we're left with an empty string
+        // which fails Symbol validation with "Symbol cannot be empty"
         let error = TokenizedEquitySymbol::parse("0x").unwrap_err();
-        assert!(matches!(
-            error,
-            OnChainError::Validation(TradeValidationError::NotTokenizedEquity(ref s)) if s.is_empty()
-        ));
+        assert!(matches!(error, OnChainError::Broker(_)));
 
         let error = TokenizedEquitySymbol::parse("s1").unwrap_err();
-        assert!(matches!(
-            error,
-            OnChainError::Validation(TradeValidationError::NotTokenizedEquity(ref s)) if s.is_empty()
-        ));
+        assert!(matches!(error, OnChainError::Broker(_)));
+
+        let error = TokenizedEquitySymbol::parse("t").unwrap_err();
+        assert!(matches!(error, OnChainError::Broker(_)));
     }
 
     #[test]
@@ -336,6 +315,14 @@ mod tests {
         let symbol = TokenizedEquitySymbol::parse("NVDAs1").unwrap();
         assert_eq!(symbol.to_string(), "NVDAs1");
         assert_eq!(symbol.extract_base(), "NVDA");
+
+        let symbol = TokenizedEquitySymbol::parse("tGME").unwrap();
+        assert_eq!(symbol.to_string(), "tGME");
+        assert_eq!(symbol.extract_base(), "GME");
+
+        let symbol = TokenizedEquitySymbol::parse("tAAPL").unwrap();
+        assert_eq!(symbol.to_string(), "tAAPL");
+        assert_eq!(symbol.extract_base(), "AAPL");
     }
 
     #[test]
@@ -461,6 +448,28 @@ mod tests {
     }
 
     #[test]
+    fn test_determine_schwab_trade_details_usdc_to_t() {
+        let result = determine_schwab_trade_details("USDC", "tGME").unwrap();
+        assert_eq!(result.0, symbol!("GME"));
+        assert_eq!(result.1, Direction::Sell);
+
+        let result = determine_schwab_trade_details("USDC", "tAAPL").unwrap();
+        assert_eq!(result.0, symbol!("AAPL"));
+        assert_eq!(result.1, Direction::Sell);
+    }
+
+    #[test]
+    fn test_determine_schwab_trade_details_t_to_usdc() {
+        let result = determine_schwab_trade_details("tGME", "USDC").unwrap();
+        assert_eq!(result.0, symbol!("GME"));
+        assert_eq!(result.1, Direction::Buy);
+
+        let result = determine_schwab_trade_details("tAAPL", "USDC").unwrap();
+        assert_eq!(result.0, symbol!("AAPL"));
+        assert_eq!(result.1, Direction::Buy);
+    }
+
+    #[test]
     fn test_determine_schwab_trade_details_invalid_configurations() {
         let result = determine_schwab_trade_details("BTC", "ETH");
         assert!(matches!(
@@ -529,6 +538,26 @@ mod tests {
     }
 
     #[test]
+    fn test_trade_details_try_from_io_usdc_to_t_equity() {
+        let details = TradeDetails::try_from_io("USDC", 100.0, "tGME", 0.5).unwrap();
+
+        assert_eq!(details.ticker(), &symbol!("GME"));
+        assert!((details.equity_amount().value() - 0.5).abs() < f64::EPSILON);
+        assert!((details.usdc_amount().value() - 100.0).abs() < f64::EPSILON);
+        assert_eq!(details.direction(), Direction::Sell);
+    }
+
+    #[test]
+    fn test_trade_details_try_from_io_t_equity_to_usdc() {
+        let details = TradeDetails::try_from_io("tAAPL", 0.25, "USDC", 50.0).unwrap();
+
+        assert_eq!(details.ticker(), &symbol!("AAPL"));
+        assert!((details.equity_amount().value() - 0.25).abs() < f64::EPSILON);
+        assert!((details.usdc_amount().value() - 50.0).abs() < f64::EPSILON);
+        assert_eq!(details.direction(), Direction::Buy);
+    }
+
+    #[test]
     fn test_trade_details_try_from_io_invalid_configurations() {
         let result = TradeDetails::try_from_io("USDC", 100.0, "USDC", 100.0);
         assert!(matches!(
@@ -565,11 +594,11 @@ mod tests {
         // Test that the macro creates valid symbols
         let aapl_symbol = tokenized_symbol!("AAPL0x");
         assert_eq!(aapl_symbol.to_string(), "AAPL0x");
-        assert_eq!(aapl_symbol.base().as_str(), "AAPL");
+        assert_eq!(aapl_symbol.base().to_string(), "AAPL");
 
         let nvda_symbol = tokenized_symbol!("NVDAs1");
         assert_eq!(nvda_symbol.to_string(), "NVDAs1");
-        assert_eq!(nvda_symbol.base().as_str(), "NVDA");
+        assert_eq!(nvda_symbol.base().to_string(), "NVDA");
 
         // Test that compile-time validation works (these should compile)
         let _valid_symbols = [
@@ -583,10 +612,10 @@ mod tests {
     fn test_symbol_macro() {
         // Test that the macro creates valid symbols
         let aapl_symbol = symbol!("AAPL");
-        assert_eq!(aapl_symbol.as_str(), "AAPL");
+        assert_eq!(aapl_symbol.to_string(), "AAPL");
 
         let nvda_symbol = symbol!("NVDA");
-        assert_eq!(nvda_symbol.as_str(), "NVDA");
+        assert_eq!(nvda_symbol.to_string(), "NVDA");
 
         // Test that compile-time validation works (these should compile)
         let _valid_symbols = [symbol!("MSFT"), symbol!("GOOG"), symbol!("TSLA")];
@@ -629,21 +658,26 @@ mod tests {
     }
 
     #[test]
-    fn test_gme_trades_with_different_suffixes_extract_same_ticker() {
-        // Test that GME0x and GMEs1 both map to base symbol "GME"
+    fn test_gme_trades_with_different_markers_extract_same_ticker() {
+        // Test that GME0x, GMEs1, and tGME all map to base symbol "GME"
         let gme_0x_details = TradeDetails::try_from_io("USDC", 5.2, "GME0x", 0.2).unwrap();
         let gme_s1_details = TradeDetails::try_from_io("USDC", 5.1, "GMEs1", 0.2).unwrap();
+        let gme_t_details = TradeDetails::try_from_io("USDC", 5.3, "tGME", 0.2).unwrap();
 
-        // Both should map to the same base ticker
+        // All should map to the same base ticker
         assert_eq!(gme_0x_details.ticker(), &symbol!("GME"));
         assert_eq!(gme_s1_details.ticker(), &symbol!("GME"));
+        assert_eq!(gme_t_details.ticker(), &symbol!("GME"));
         assert_eq!(gme_0x_details.ticker(), gme_s1_details.ticker());
+        assert_eq!(gme_0x_details.ticker(), gme_t_details.ticker());
 
         // Verify amounts are extracted correctly
         assert!((gme_0x_details.equity_amount().value() - 0.2).abs() < f64::EPSILON);
         assert!((gme_s1_details.equity_amount().value() - 0.2).abs() < f64::EPSILON);
+        assert!((gme_t_details.equity_amount().value() - 0.2).abs() < f64::EPSILON);
         assert!((gme_0x_details.usdc_amount().value() - 5.2).abs() < f64::EPSILON);
         assert!((gme_s1_details.usdc_amount().value() - 5.1).abs() < f64::EPSILON);
+        assert!((gme_t_details.usdc_amount().value() - 5.3).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -662,5 +696,29 @@ mod tests {
         assert_eq!(details.ticker(), &symbol!("BRK"));
         assert!((details.equity_amount().value() - 100.0).abs() < f64::EPSILON);
         assert!((details.usdc_amount().value() - 1_000_000.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_tokenized_equity_marker_variants() {
+        let t_marker = TokenizedEquityMarker::T;
+        let zerox_marker = TokenizedEquityMarker::ZeroX;
+        let s1_marker = TokenizedEquityMarker::S1;
+
+        assert_eq!(t_marker.as_str(), "t");
+        assert_eq!(zerox_marker.as_str(), "0x");
+        assert_eq!(s1_marker.as_str(), "s1");
+
+        assert!(t_marker.is_prefix());
+        assert!(!zerox_marker.is_prefix());
+        assert!(!s1_marker.is_prefix());
+    }
+
+    #[test]
+    fn test_invalid_marker_combinations() {
+        let gme_symbol = Symbol::new("GME0x").unwrap();
+        let t_symbol = TokenizedEquitySymbol::new(gme_symbol, TokenizedEquityMarker::T);
+
+        assert_eq!(t_symbol.to_string(), "tGME0x");
+        assert_eq!(t_symbol.extract_base(), "GME0x");
     }
 }

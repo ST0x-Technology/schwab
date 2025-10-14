@@ -1,7 +1,14 @@
 use crate::bindings::IOrderBookV4::{EvaluableV3, IO, OrderV3};
+use crate::offchain::execution::OffchainExecution;
+use crate::onchain::OnchainTrade;
 use crate::onchain::io::TokenizedEquitySymbol;
 use alloy::primitives::{LogData, U256, address, bytes, fixed_bytes};
 use alloy::rpc::types::Log;
+use chrono::Utc;
+use sqlx::SqlitePool;
+use st0x_broker::OrderState;
+use st0x_broker::schwab::{SchwabAuthEnv, SchwabTokens};
+use st0x_broker::{Direction, Shares, SupportedBroker, Symbol};
 
 /// Returns a test `OrderV3` instance that is shared across multiple
 /// unit-tests. The exact values are not important – only that the
@@ -69,8 +76,6 @@ pub(crate) fn get_test_log() -> Log {
     create_log(293)
 }
 
-use sqlx::SqlitePool;
-
 /// Centralized test database setup to eliminate duplication across test files.
 /// Creates an in-memory SQLite database with all migrations applied.
 pub(crate) async fn setup_test_db() -> SqlitePool {
@@ -79,8 +84,17 @@ pub(crate) async fn setup_test_db() -> SqlitePool {
     pool
 }
 
-use crate::onchain::OnchainTrade;
-use crate::schwab::{Direction, TradeState, execution::SchwabExecution};
+/// Centralized test token setup to eliminate duplication across test files.
+/// Creates and stores test tokens in the database for Schwab API authentication.
+pub(crate) async fn setup_test_tokens(pool: &SqlitePool, env: &SchwabAuthEnv) {
+    let tokens = SchwabTokens {
+        access_token: "test_access_token".to_string(),
+        access_token_fetched_at: Utc::now(),
+        refresh_token: "test_refresh_token".to_string(),
+        refresh_token_fetched_at: Utc::now(),
+    };
+    tokens.store(pool, &env.encryption_key).await.unwrap();
+}
 
 /// Builder for creating OnchainTrade test instances with sensible defaults.
 /// Reduces duplication in test data setup.
@@ -107,7 +121,14 @@ impl OnchainTradeBuilder {
                 amount: 1.0,
                 direction: Direction::Buy,
                 price_usdc: 150.0,
+                block_timestamp: None,
                 created_at: None,
+                gas_used: None,
+                effective_gas_price: None,
+                pyth_price: None,
+                pyth_confidence: None,
+                pyth_exponent: None,
+                pyth_publish_time: None,
             },
         }
     }
@@ -147,32 +168,33 @@ impl OnchainTradeBuilder {
     }
 }
 
-/// Builder for creating SchwabExecution test instances with sensible defaults.
+/// Builder for creating OffchainExecution test instances with sensible defaults.
 /// Reduces duplication in test data setup.
-pub(crate) struct SchwabExecutionBuilder {
-    execution: SchwabExecution,
+pub(crate) struct OffchainExecutionBuilder {
+    execution: OffchainExecution,
 }
 
-impl Default for SchwabExecutionBuilder {
+impl Default for OffchainExecutionBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl SchwabExecutionBuilder {
+impl OffchainExecutionBuilder {
     pub(crate) fn new() -> Self {
         Self {
-            execution: SchwabExecution {
+            execution: OffchainExecution {
                 id: None,
-                symbol: "AAPL".to_string(),
-                shares: 100,
+                symbol: Symbol::new("AAPL").unwrap(),
+                shares: Shares::new(100).unwrap(),
                 direction: Direction::Buy,
-                state: TradeState::Pending,
+                broker: SupportedBroker::Schwab,
+                state: OrderState::Pending,
             },
         }
     }
 
-    pub(crate) fn build(self) -> SchwabExecution {
+    pub(crate) fn build(self) -> OffchainExecution {
         self.execution
     }
 }

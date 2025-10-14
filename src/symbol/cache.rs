@@ -1,13 +1,16 @@
 use alloy::{primitives::Address, providers::Provider};
 use backon::{ExponentialBuilder, Retryable};
-use std::{collections::BTreeMap, sync::RwLock};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, RwLock},
+};
 
 use crate::bindings::{IERC20::IERC20Instance, IOrderBookV4::IO};
-use crate::error::{OnChainError, PersistenceError};
+use crate::error::OnChainError;
 
-#[derive(Debug, Default)]
-pub struct SymbolCache {
-    map: RwLock<BTreeMap<Address, String>>,
+#[derive(Debug, Default, Clone)]
+pub(crate) struct SymbolCache {
+    map: Arc<RwLock<BTreeMap<Address, String>>>,
 }
 
 impl Clone for SymbolCache {
@@ -29,10 +32,10 @@ impl SymbolCache {
         io: &IO,
     ) -> Result<String, OnChainError> {
         let maybe_symbol = {
-            let read_guard = self
-                .map
-                .read()
-                .map_err(|_| OnChainError::Persistence(PersistenceError::SymbolMapLock))?;
+            let read_guard = match self.map.read() {
+                Ok(guard) => guard,
+                Err(poison) => poison.into_inner(),
+            };
             read_guard.get(&io.token).cloned()
         };
 
@@ -47,10 +50,10 @@ impl SymbolCache {
             .retry(ExponentialBuilder::new().with_max_times(SYMBOL_FETCH_MAX_RETRIES))
             .await?;
 
-        self.map
-            .write()
-            .map_err(|_| OnChainError::Persistence(PersistenceError::SymbolMapLock))?
-            .insert(io.token, symbol.clone());
+        match self.map.write() {
+            Ok(mut guard) => guard.insert(io.token, symbol.clone()),
+            Err(poison) => poison.into_inner().insert(io.token, symbol.clone()),
+        };
 
         Ok(symbol)
     }

@@ -1,7 +1,5 @@
-use alloy::providers::{ProviderBuilder, WsConnect};
-use rocket::Config;
 use sqlx::SqlitePool;
-use tracing::{Instrument, debug, error, info, warn};
+use tracing::{error, info, warn};
 
 pub mod api;
 mod bindings;
@@ -10,55 +8,40 @@ mod conductor;
 pub mod env;
 mod error;
 mod lock;
+mod offchain;
 mod onchain;
 mod queue;
-pub mod schwab;
 mod symbol;
 mod trade_execution_link;
-mod trading_hours_controller;
 
 #[cfg(test)]
 pub mod test_utils;
 
-use crate::conductor::get_cutoff_block;
-use crate::env::Env;
-use crate::schwab::SchwabError;
-use crate::schwab::market_hours_cache::MarketHoursCache;
-use crate::symbol::cache::SymbolCache;
-use crate::trading_hours_controller::TradingHoursController;
-use bindings::IOrderBookV4::IOrderBookV4Instance;
+use crate::env::{BrokerConfig, Config};
+use st0x_broker::schwab::{SchwabConfig, SchwabError};
+use st0x_broker::{Broker, BrokerError, MockBrokerConfig, TryIntoBroker};
 
-#[tracing::instrument(skip_all, fields(component = "main"))]
-pub async fn launch(env: Env) -> anyhow::Result<()> {
-    let pool = env.get_sqlite_pool().await?;
+pub async fn launch(config: Config) -> anyhow::Result<()> {
+    let pool = config.get_sqlite_pool().await?;
 
-    // Run database migrations to ensure all tables exist
     sqlx::migrate!().run(&pool).await?;
 
-    let config = Config::figment()
-        .merge(("port", 8080))
+    let rocket_config = rocket::Config::figment()
+        .merge(("port", config.server_port))
         .merge(("address", "0.0.0.0"));
 
-    let rocket = rocket::custom(config)
+    let rocket = rocket::custom(rocket_config)
         .mount("/", api::routes())
         .manage(pool.clone())
-        .manage(env.clone());
+        .manage(config.clone());
 
-    let server_task = tokio::spawn(async move {
-        let span = tracing::info_span!("api_server_task", component = "main");
-        rocket.launch().instrument(span).await
-    });
+    let server_task = tokio::spawn(rocket.launch());
 
     let bot_pool = pool.clone();
     let bot_task = tokio::spawn(async move {
-        let span = tracing::info_span!("bot_main_task", component = "main");
-        async move {
-            if let Err(e) = run(env, bot_pool).await {
-                error!("Bot failed: {e}");
-            }
+        if let Err(e) = Box::pin(run(config, bot_pool)).await {
+            error!("Bot failed: {e}");
         }
-        .instrument(span)
-        .await;
     });
 
     tokio::select! {
@@ -82,128 +65,81 @@ pub async fn launch(env: Env) -> anyhow::Result<()> {
         }
     }
 
-    // Note: Span flushing is handled in the server binary
-
     info!("Shutdown complete");
     Ok(())
 }
 
-#[tracing::instrument(skip_all, fields(component = "main"))]
-async fn run(env: Env, pool: SqlitePool) -> anyhow::Result<()> {
-    let run_bot = {
-        let env = env.clone();
-        let pool = pool.clone();
-        move || {
-            let env = env.clone();
-            let pool = pool.clone();
-            async move {
-                debug!("Validating Schwab tokens...");
-                match schwab::tokens::SchwabTokens::refresh_if_needed(&pool, &env.schwab_auth).await
-                {
-                    Err(SchwabError::RefreshTokenExpired) => {
-                        warn!("Refresh token expired, waiting for manual authentication via API");
-                        return Err(anyhow::anyhow!("RefreshTokenExpired"));
-                    }
-                    Err(e) => return Err(anyhow::anyhow!("Token validation failed: {}", e)),
-                    Ok(_) => {
-                        info!("Token validation successful");
-                    }
-                }
-
-                let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
-                let provider = ProviderBuilder::new().connect_ws(ws).await?;
-                let cache = SymbolCache::default();
-                let orderbook = IOrderBookV4Instance::new(env.evm_env.orderbook, &provider);
-
-                schwab::tokens::SchwabTokens::spawn_automatic_token_refresh(
-                    pool.clone(),
-                    env.schwab_auth.clone(),
-                );
-
-                let mut clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
-                let mut take_stream = orderbook.TakeOrderV2_filter().watch().await?.into_stream();
-
-                let cutoff_block =
-                    get_cutoff_block(&mut clear_stream, &mut take_stream, &provider, &pool).await?;
-
-                onchain::backfill::backfill_events(
-                    &pool,
-                    &provider,
-                    &env.evm_env,
-                    cutoff_block - 1,
-                )
-                .await?;
-
-                // Start all services through unified background tasks management
-                conductor::run_live(env, pool, cache, provider, clear_stream, take_stream).await
-            }
-        }
-    };
-
+async fn run(config: Config, pool: SqlitePool) -> anyhow::Result<()> {
     const RERUN_DELAY_SECS: u64 = 10;
 
-    // Initialize market hours controller
-    let market_hours_cache = std::sync::Arc::new(MarketHoursCache::new());
-    let controller = TradingHoursController::new(
-        market_hours_cache,
-        env.schwab_auth.clone(),
-        std::sync::Arc::new(pool.clone()),
-    );
-
-    // Main market hours control loop
     loop {
-        // Wait until market opens
-        controller.wait_until_market_open().await?;
+        let result = Box::pin(run_bot_session(&config, &pool)).await;
 
-        // Run bot until market closes or completes
-        let run_result =
-            if let Some(time_until_close) = controller.time_until_market_close().await? {
-                let timeout_duration = time_until_close
-                    .to_std()
-                    .unwrap_or(std::time::Duration::from_secs(60 * 60)); // 1 hour fallback
-
-                info!(
-                    "Market is open, starting bot (will timeout in {} minutes)",
-                    timeout_duration.as_secs() / 60
-                );
-
-                tokio::select! {
-                    result = run_bot() => result,
-                    () = tokio::time::sleep(timeout_duration) => {
-                        info!("Market closing, shutting down bot gracefully");
-                        continue; // Go back to wait for next market open
-                    }
-                }
-            } else {
-                // Market already closed, continue to wait
-                warn!("Market already closed, waiting for next open");
-                continue;
-            };
-
-        // Handle bot result - simple retry for token expired, otherwise fail
-        match run_result {
+        match result {
             Ok(()) => {
-                info!("Bot completed successfully, continuing to next market session");
-            }
-            Err(e) if e.to_string().contains("RefreshTokenExpired") => {
-                warn!(
-                    "Refresh token expired, retrying in {} seconds",
-                    RERUN_DELAY_SECS
-                );
-                tokio::time::sleep(std::time::Duration::from_secs(RERUN_DELAY_SECS)).await;
+                info!("Bot session completed successfully");
+                break Ok(());
             }
             Err(e) => {
-                error!("Bot failed: {e}");
+                if let Some(broker_error) = e.downcast_ref::<BrokerError>() {
+                    if matches!(
+                        broker_error,
+                        BrokerError::Schwab(SchwabError::RefreshTokenExpired)
+                    ) {
+                        warn!(
+                            "Refresh token expired, retrying in {} seconds",
+                            RERUN_DELAY_SECS
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(RERUN_DELAY_SECS)).await;
+                        continue;
+                    }
+                }
+
+                error!("Bot session failed: {e}");
                 return Err(e);
             }
         }
     }
 }
 
+async fn run_bot_session(config: &Config, pool: &SqlitePool) -> anyhow::Result<()> {
+    match &config.broker {
+        BrokerConfig::DryRun => {
+            info!("Initializing test broker for dry-run mode");
+            let broker = MockBrokerConfig.try_into_broker().await?;
+            Box::pin(run_with_broker(config.clone(), pool.clone(), broker)).await
+        }
+        BrokerConfig::Schwab(schwab_auth) => {
+            info!("Initializing Schwab broker");
+            let schwab_config = SchwabConfig {
+                auth: schwab_auth.clone(),
+                pool: pool.clone(),
+            };
+            let broker = schwab_config.try_into_broker().await?;
+            Box::pin(run_with_broker(config.clone(), pool.clone(), broker)).await
+        }
+        BrokerConfig::Alpaca(alpaca_auth) => {
+            info!("Initializing Alpaca broker");
+            let broker = alpaca_auth.clone().try_into_broker().await?;
+            Box::pin(run_with_broker(config.clone(), pool.clone(), broker)).await
+        }
+    }
+}
+
+async fn run_with_broker<B: Broker + Clone + Send + 'static>(
+    config: Config,
+    pool: SqlitePool,
+    broker: B,
+) -> anyhow::Result<()> {
+    let broker_maintenance = broker.run_broker_maintenance().await;
+
+    conductor::run_market_hours_loop(broker, config, pool, broker_maintenance).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::env::tests::create_test_env;
+    use crate::env::tests::create_test_config;
 
     async fn create_test_pool() -> SqlitePool {
         let pool = SqlitePool::connect(":memory:").await.unwrap();
@@ -213,26 +149,26 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_function_websocket_connection_error() {
-        let mut env = create_test_env();
+        let mut config = create_test_config();
         let pool = create_test_pool().await;
-        env.evm_env.ws_rpc_url = "ws://invalid.nonexistent.url:8545".parse().unwrap();
-        run(env, pool).await.unwrap_err();
+        config.evm.ws_rpc_url = "ws://invalid.nonexistent.url:8545".parse().unwrap();
+        Box::pin(run(config, pool)).await.unwrap_err();
     }
 
     #[tokio::test]
     async fn test_run_function_invalid_orderbook_address() {
-        let mut env = create_test_env();
+        let mut config = create_test_config();
         let pool = create_test_pool().await;
-        env.evm_env.orderbook = alloy::primitives::Address::ZERO;
-        env.evm_env.ws_rpc_url = "ws://localhost:8545".parse().unwrap();
-        run(env, pool).await.unwrap_err();
+        config.evm.orderbook = alloy::primitives::Address::ZERO;
+        config.evm.ws_rpc_url = "ws://localhost:8545".parse().unwrap();
+        Box::pin(run(config, pool)).await.unwrap_err();
     }
 
     #[tokio::test]
     async fn test_run_function_error_propagation() {
-        let mut env = create_test_env();
-        env.database_url = "invalid://database/url".to_string();
+        let mut config = create_test_config();
+        config.evm.ws_rpc_url = "ws://invalid.nonexistent.localhost:9999".parse().unwrap();
         let pool = create_test_pool().await;
-        run(env, pool).await.unwrap_err();
+        Box::pin(run(config, pool)).await.unwrap_err();
     }
 }

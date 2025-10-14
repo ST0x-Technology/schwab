@@ -1,16 +1,13 @@
 use chrono::Utc;
+use rand::Rng;
 use sqlx::SqlitePool;
 use std::time::Duration;
-use tokio::sync::watch;
 use tokio::time::{Interval, interval};
 use tracing::{debug, error, info};
 
 use super::broker::Broker;
-use super::execution::{
-    find_execution_by_id, find_executions_by_symbol_and_status,
-    update_execution_status_within_transaction,
-};
-use super::{SchwabAuthEnv, SchwabError, TradeState, TradeStatus};
+use super::execution::find_execution_by_id;
+use super::{SchwabAuthEnv, SchwabError, TradeState};
 use crate::lock::{clear_execution_lease, clear_pending_execution_id};
 
 #[derive(Debug, Clone)]
@@ -33,7 +30,6 @@ pub(crate) struct OrderStatusPoller<B: Broker> {
     env: SchwabAuthEnv,
     pool: SqlitePool,
     interval: Interval,
-    shutdown_rx: watch::Receiver<bool>,
     broker: B,
 }
 
@@ -42,7 +38,6 @@ impl<B: Broker> OrderStatusPoller<B> {
         config: OrderPollerConfig,
         env: SchwabAuthEnv,
         pool: SqlitePool,
-        shutdown_rx: watch::Receiver<bool>,
         broker: B,
     ) -> Self {
         let interval = interval(config.polling_interval);
@@ -52,14 +47,12 @@ impl<B: Broker> OrderStatusPoller<B> {
             env,
             pool,
             interval,
-            shutdown_rx,
             broker,
         }
     }
 }
 
 impl<B: Broker> OrderStatusPoller<B> {
-    #[tracing::instrument(skip_all, fields(component = "order_poller"))]
     pub(crate) async fn run(mut self) -> Result<(), SchwabError> {
         info!(
             "Starting order status poller with interval: {:?}",
@@ -67,29 +60,18 @@ impl<B: Broker> OrderStatusPoller<B> {
         );
 
         loop {
-            tokio::select! {
-                _ = self.interval.tick() => {
-                    if let Err(e) = self.poll_pending_orders().await {
-                        error!("Polling cycle failed: {e}");
-                    }
-                }
-                _ = self.shutdown_rx.changed() => {
-                    if *self.shutdown_rx.borrow() {
-                        info!("Received shutdown signal, stopping order poller");
-                        break;
-                    }
-                }
+            self.interval.tick().await;
+            if let Err(e) = self.poll_pending_orders().await {
+                error!("Polling cycle failed: {e}");
             }
         }
-
-        Ok(())
     }
 
     async fn poll_pending_orders(&self) -> Result<(), SchwabError> {
         debug!("Starting polling cycle for submitted orders");
 
         let submitted_executions =
-            find_executions_by_symbol_and_status(&self.pool, "", TradeStatus::Submitted)
+            find_executions_by_symbol_and_status(&self.pool, "", "SUBMITTED")
                 .await
                 .map_err(|e| {
                     error!("Failed to query pending executions: {e}");
@@ -106,37 +88,29 @@ impl<B: Broker> OrderStatusPoller<B> {
         info!("Polling {} submitted orders", submitted_executions.len());
 
         for execution in submitted_executions {
-            if *self.shutdown_rx.borrow() {
-                info!("Shutdown signal received, stopping polling");
-                break;
-            }
-
             let Some(execution_id) = execution.id else {
                 continue;
             };
 
-            if let Err(e) = self.poll_execution_status(execution_id).await {
+            if let Err(e) = self.poll_execution_status(&execution).await {
                 error!("Failed to poll execution {execution_id}: {e}");
             }
 
-            self.add_jittered_delay(execution_id).await;
+            self.add_jittered_delay().await;
         }
 
         debug!("Completed polling cycle");
         Ok(())
     }
 
-    async fn poll_execution_status(&self, execution_id: i64) -> Result<(), SchwabError> {
-        let execution = find_execution_by_id(&self.pool, execution_id)
-            .await
-            .map_err(|e| {
-                error!("Failed to find execution {execution_id}: {e}");
-                SchwabError::InvalidConfiguration("Database query failed".to_string())
-            })?
-            .ok_or_else(|| {
-                error!("Execution {execution_id} not found in database");
-                SchwabError::InvalidConfiguration("Execution not found".to_string())
-            })?;
+    async fn poll_execution_status(
+        &self,
+        execution: &crate::schwab::execution::SchwabExecution,
+    ) -> Result<(), SchwabError> {
+        let Some(execution_id) = execution.id else {
+            error!("Execution missing ID: {execution:?}");
+            return Ok(());
+        };
 
         let order_id = match &execution.state {
             TradeState::Pending => {
@@ -165,7 +139,7 @@ impl<B: Broker> OrderStatusPoller<B> {
                 .await?;
         } else {
             debug!(
-                "Order {order_id} (execution {execution_id}) still pending with status: {:?}",
+                "Order {order_id} (execution {execution_id}) still pending with state: {:?}",
                 order_status.status
             );
         }
@@ -189,7 +163,7 @@ impl<B: Broker> OrderStatusPoller<B> {
                 SchwabError::InvalidConfiguration("Missing execution price".to_string())
             })?;
 
-        let new_state = TradeState::Filled {
+        let new_status = TradeState::Filled {
             executed_at: Utc::now(),
             order_id: order_status
                 .order_id
@@ -212,7 +186,7 @@ impl<B: Broker> OrderStatusPoller<B> {
                 SchwabError::InvalidConfiguration("Execution not found".to_string())
             })?;
 
-        update_execution_status_within_transaction(&mut tx, execution_id, new_state).await?;
+        new_status.store_update(&mut tx, execution_id).await?;
 
         // Clear pending execution ID and execution lease to unblock future executions
         clear_pending_execution_id(
@@ -262,9 +236,9 @@ impl<B: Broker> OrderStatusPoller<B> {
         execution_id: i64,
         order_status: &super::order_status::OrderStatusResponse,
     ) -> Result<(), SchwabError> {
-        let new_state = TradeState::Failed {
+        let new_status = TradeState::Failed {
             failed_at: Utc::now(),
-            error_reason: Some(format!("Order status: {:?}", order_status.status)),
+            error_reason: Some(format!("Order state: {:?}", order_status.status)),
         };
 
         let mut tx = self.pool.begin().await?;
@@ -281,7 +255,7 @@ impl<B: Broker> OrderStatusPoller<B> {
                 SchwabError::InvalidConfiguration("Execution not found".to_string())
             })?;
 
-        update_execution_status_within_transaction(&mut tx, execution_id, new_state).await?;
+        new_status.store_update(&mut tx, execution_id).await?;
 
         // Clear pending execution ID and execution lease to unblock future executions
         clear_pending_execution_id(
@@ -326,11 +300,11 @@ impl<B: Broker> OrderStatusPoller<B> {
         Ok(())
     }
 
-    async fn add_jittered_delay(&self, execution_id: i64) {
+    async fn add_jittered_delay(&self) {
         if self.config.max_jitter > Duration::ZERO {
-            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-            let jitter_millis =
-                (execution_id as u64 * 17 + 42) % self.config.max_jitter.as_millis() as u64;
+            #[allow(clippy::cast_possible_truncation)]
+            let max_jitter_millis = self.config.max_jitter.as_millis() as u64;
+            let jitter_millis = rand::thread_rng().gen_range(0..max_jitter_millis);
             let jitter = Duration::from_millis(jitter_millis);
             tokio::time::sleep(jitter).await;
         }
@@ -341,13 +315,16 @@ impl<B: Broker> OrderStatusPoller<B> {
 mod tests {
     use super::*;
     use crate::schwab::Direction;
+    use crate::schwab::TradeStatus;
     use crate::schwab::broker::Schwab;
     use crate::schwab::execution::SchwabExecution;
     use crate::test_utils::setup_test_db;
+    use alloy::primitives::FixedBytes;
     use httpmock::Mock;
     use httpmock::prelude::*;
     use serde_json::json;
-    use tokio::sync::watch;
+
+    const TEST_ENCRYPTION_KEY: FixedBytes<32> = FixedBytes::ZERO;
 
     #[tokio::test]
     async fn test_order_poller_config_default() {
@@ -365,11 +342,11 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: "https://api.schwabapi.com".to_string(),
             account_index: 0,
+            encryption_key: TEST_ENCRYPTION_KEY,
         };
         let pool = setup_test_db().await;
-        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        let poller = OrderStatusPoller::new(config.clone(), env, pool, shutdown_rx, Schwab);
+        let poller = OrderStatusPoller::new(config.clone(), env, pool, Schwab);
         assert_eq!(poller.config.polling_interval, config.polling_interval);
         assert_eq!(poller.config.max_jitter, config.max_jitter);
     }
@@ -383,11 +360,11 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: "https://api.schwabapi.com".to_string(),
             account_index: 0,
+            encryption_key: TEST_ENCRYPTION_KEY,
         };
         let pool = setup_test_db().await;
-        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        let poller = OrderStatusPoller::new(config, env, pool, shutdown_rx, Schwab);
+        let poller = OrderStatusPoller::new(config, env, pool, Schwab);
 
         let result = poller.poll_pending_orders().await;
         assert!(result.is_ok());
@@ -402,9 +379,9 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: "https://api.schwabapi.com".to_string(),
             account_index: 0,
+            encryption_key: TEST_ENCRYPTION_KEY,
         };
         let pool = setup_test_db().await;
-        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 
         let execution = SchwabExecution {
             id: None,
@@ -418,9 +395,14 @@ mod tests {
         let execution_id = execution.save_within_transaction(&mut tx).await.unwrap();
         tx.commit().await.unwrap();
 
-        let poller = OrderStatusPoller::new(config, env, pool, shutdown_rx, Schwab);
+        let poller = OrderStatusPoller::new(config, env, pool.clone(), Schwab);
 
-        let result = poller.poll_execution_status(execution_id).await;
+        // Fetch the execution to pass to poll_execution_status
+        let execution = find_execution_by_id(&pool, execution_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let result = poller.poll_execution_status(&execution).await;
         assert!(result.is_ok());
     }
 
@@ -437,6 +419,7 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: server.base_url(),
             account_index: 0,
+            encryption_key: TEST_ENCRYPTION_KEY,
         };
 
         // Setup test tokens in database
@@ -446,7 +429,7 @@ mod tests {
             refresh_token: "test_refresh_token".to_string(),
             refresh_token_fetched_at: chrono::Utc::now(),
         };
-        tokens.store(&pool).await.unwrap();
+        tokens.store(&pool, &env.encryption_key).await.unwrap();
 
         // Mock account hash endpoint
         let account_mock = server.mock(|when, then| {
@@ -482,7 +465,7 @@ mod tests {
         let saved_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
             "AAPL",
-            crate::schwab::TradeStatus::Submitted,
+            TradeStatus::Submitted,
         )
         .await
         .unwrap();
@@ -523,11 +506,14 @@ mod tests {
 
         // Step 4: Poll for status and let the poller find it's filled
         let config = OrderPollerConfig::default();
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let poller = OrderStatusPoller::new(config, env.clone(), pool.clone(), shutdown_rx, Schwab);
+        let poller = OrderStatusPoller::new(config, env.clone(), pool.clone(), Schwab);
 
         // Step 5: Poll for status and verify order gets updated to FILLED with actual price
-        let poll_result = poller.poll_execution_status(execution_id).await;
+        let execution = find_execution_by_id(&pool, execution_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let poll_result = poller.poll_execution_status(&execution).await;
 
         assert!(poll_result.is_ok());
 
@@ -547,20 +533,17 @@ mod tests {
         let submitted_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
             "AAPL",
-            crate::schwab::TradeStatus::Submitted,
+            TradeStatus::Submitted,
         )
         .await
         .unwrap();
         assert_eq!(submitted_executions.len(), 0);
 
         // Step 8: Verify there is now one FILLED execution
-        let filled_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
-            &pool,
-            "AAPL",
-            crate::schwab::TradeStatus::Filled,
-        )
-        .await
-        .unwrap();
+        let filled_executions =
+            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Filled)
+                .await
+                .unwrap();
         assert_eq!(filled_executions.len(), 1);
         assert_eq!(filled_executions[0].id, Some(execution_id));
 
@@ -597,9 +580,6 @@ mod tests {
         // Verify all mocks were called as expected
         account_mock.assert_hits(1); // Called during polling
         order_status_mock.assert();
-
-        // Trigger shutdown for clean test completion
-        shutdown_tx.send(true).unwrap();
     }
 
     #[tokio::test]
@@ -618,6 +598,7 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: server.base_url(),
             account_index: 0,
+            encryption_key: TEST_ENCRYPTION_KEY,
         };
 
         // Setup test tokens
@@ -627,7 +608,7 @@ mod tests {
             refresh_token: "test_refresh_token".to_string(),
             refresh_token_fetched_at: chrono::Utc::now(),
         };
-        tokens.store(&pool).await.unwrap();
+        tokens.store(&pool, &env.encryption_key).await.unwrap();
 
         // Mock account hash endpoint
         let account_mock = server.mock(|when, then| {
@@ -705,8 +686,7 @@ mod tests {
             max_jitter: std::time::Duration::from_millis(10),
         };
 
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let poller = OrderStatusPoller::new(config, env, pool.clone(), shutdown_rx, Schwab);
+        let poller = OrderStatusPoller::new(config, env, pool.clone(), Schwab);
 
         // Measure performance of concurrent polling
         let start_time = Instant::now();
@@ -714,7 +694,11 @@ mod tests {
         // Poll all executions sequentially (but time the batch)
         let mut results = Vec::new();
         for execution_id in execution_ids {
-            let result = poller.poll_execution_status(execution_id).await;
+            let execution = find_execution_by_id(&pool, execution_id)
+                .await
+                .unwrap()
+                .unwrap();
+            let result = poller.poll_execution_status(&execution).await;
             results.push(result);
         }
         let elapsed = start_time.elapsed();
@@ -733,7 +717,7 @@ mod tests {
         let filled_executions = crate::schwab::execution::find_executions_by_symbol_and_status(
             &pool,
             "", // Empty string finds all symbols
-            crate::schwab::TradeStatus::Filled,
+            TradeStatus::Filled,
         )
         .await
         .unwrap();
@@ -753,9 +737,6 @@ mod tests {
 
         // Verify mocks were called appropriately
         account_mock.assert_hits(num_orders); // Called once per order status check
-
-        // Trigger shutdown for clean test completion
-        shutdown_tx.send(true).unwrap();
     }
 
     async fn setup_failed_order_test() -> (MockServer, SqlitePool, SchwabAuthEnv, i64) {
@@ -768,6 +749,7 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: server.base_url(),
             account_index: 0,
+            encryption_key: TEST_ENCRYPTION_KEY,
         };
 
         let tokens = crate::schwab::SchwabTokens {
@@ -776,7 +758,7 @@ mod tests {
             refresh_token: "test_refresh_token".to_string(),
             refresh_token_fetched_at: chrono::Utc::now(),
         };
-        tokens.store(&pool).await.unwrap();
+        tokens.store(&pool, &env.encryption_key).await.unwrap();
 
         let execution = SchwabExecution {
             id: None,
@@ -893,16 +875,18 @@ mod tests {
         assert_eq!(row.pending_execution_id, Some(execution_id));
 
         let config = OrderPollerConfig::default();
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let poller = OrderStatusPoller::new(config, env, pool.clone(), shutdown_rx, Schwab);
+        let poller = OrderStatusPoller::new(config, env, pool.clone(), Schwab);
 
-        let poll_result = poller.poll_execution_status(execution_id).await;
+        let execution = find_execution_by_id(&pool, execution_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let poll_result = poller.poll_execution_status(&execution).await;
         assert!(poll_result.is_ok());
 
         verify_failed_order_cleanup(&pool, execution_id).await;
 
         account_mock.assert();
         order_status_mock.assert();
-        shutdown_tx.send(true).unwrap();
     }
 }
