@@ -1,14 +1,14 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 
 use super::OrderStatus;
-use crate::BrokerError;
+use crate::{BrokerError, Direction, Shares, SupportedBroker, Symbol};
 
 /// Database fields extracted from OrderState for storage
 #[derive(Debug)]
-pub struct OrderStateDbFields {
-    pub order_id: Option<String>,
-    pub price_cents: Option<i64>,
-    pub executed_at: Option<chrono::NaiveDateTime>,
+pub(crate) struct OrderStateDbFields {
+    pub(crate) order_id: Option<String>,
+    pub(crate) price_cents: Option<i64>,
+    pub(crate) executed_at: Option<chrono::NaiveDateTime>,
 }
 
 // Stateful enum with associated data for runtime use
@@ -27,13 +27,6 @@ pub enum OrderState {
         failed_at: DateTime<Utc>,
         error_reason: Option<String>,
     },
-}
-
-/// Trait for types that can be converted to a status string for database queries
-impl super::HasOrderStatus for OrderState {
-    fn status_str(&self) -> &'static str {
-        self.status().as_str()
-    }
 }
 
 impl OrderState {
@@ -73,9 +66,9 @@ impl OrderState {
                     reason: "FILLED requires executed_at".to_string(),
                 })?;
                 Ok(Self::Filled {
-                    executed_at: DateTime::<Utc>::from_naive_utc_and_offset(executed_at, Utc),
+                    executed_at: Utc.from_utc_datetime(&executed_at),
                     order_id,
-                    price_cents: u64::try_from(price_cents)?,
+                    price_cents: price_cents.try_into()?,
                 })
             }
             OrderStatus::Failed => {
@@ -83,16 +76,85 @@ impl OrderState {
                     reason: "FAILED requires executed_at timestamp".to_string(),
                 })?;
                 Ok(Self::Failed {
-                    failed_at: DateTime::<Utc>::from_naive_utc_and_offset(failed_at, Utc),
+                    failed_at: Utc.from_utc_datetime(&failed_at),
                     error_reason: None, // We don't store error_reason in database yet
                 })
             }
         }
     }
 
-    /// Extracts database-compatible values from OrderState for storage.
-    /// Returns (order_id, price_cents_i64, executed_at) tuple.
-    pub fn to_db_fields(&self) -> Result<OrderStateDbFields, BrokerError> {
+    pub async fn store_update(
+        &self,
+        sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        execution_id: i64,
+    ) -> Result<(), crate::PersistenceError> {
+        let status_str = self.status().as_str();
+        let db_fields = self.to_db_fields()?;
+
+        sqlx::query!(
+            "
+            UPDATE offchain_trades
+            SET status = ?1, order_id = ?2, price_cents = ?3, executed_at = ?4
+            WHERE id = ?5
+            ",
+            status_str,
+            db_fields.order_id,
+            db_fields.price_cents,
+            db_fields.executed_at,
+            execution_id
+        )
+        .execute(&mut **sql_tx)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn store(
+        &self,
+        sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        symbol: &Symbol,
+        shares: Shares,
+        direction: Direction,
+        broker: SupportedBroker,
+    ) -> Result<i64, crate::PersistenceError> {
+        let status_str = self.status().as_str();
+        let db_fields = self.to_db_fields()?;
+
+        let symbol_str = symbol.to_string();
+        let shares_i64 = i64::from(shares.value());
+        let direction_str = direction.as_str();
+        let broker_str = broker.to_string();
+
+        let result = sqlx::query!(
+            r#"
+            INSERT INTO offchain_trades (
+                symbol,
+                shares,
+                direction,
+                broker,
+                order_id,
+                price_cents,
+                status,
+                executed_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+            symbol_str,
+            shares_i64,
+            direction_str,
+            broker_str,
+            db_fields.order_id,
+            db_fields.price_cents,
+            status_str,
+            db_fields.executed_at
+        )
+        .execute(&mut **sql_tx)
+        .await?;
+
+        Ok(result.last_insert_rowid())
+    }
+
+    pub(crate) fn to_db_fields(&self) -> Result<OrderStateDbFields, BrokerError> {
         match self {
             Self::Pending => Ok(OrderStateDbFields {
                 order_id: None,
@@ -110,7 +172,7 @@ impl OrderState {
                 price_cents,
             } => Ok(OrderStateDbFields {
                 order_id: Some(order_id.clone()),
-                price_cents: Some(u64_to_i64_exact(*price_cents)?),
+                price_cents: Some((*price_cents).try_into()?),
                 executed_at: Some(executed_at.naive_utc()),
             }),
             Self::Failed {
@@ -122,20 +184,6 @@ impl OrderState {
                 executed_at: Some(failed_at.naive_utc()),
             }),
         }
-    }
-}
-
-/// Converts u64 to i64 for database storage with exact conversion.
-/// NEVER silently changes amounts - returns error if conversion would lose data.
-/// This is critical for financial applications where data integrity is paramount.
-fn u64_to_i64_exact(value: u64) -> Result<i64, BrokerError> {
-    if value > i64::MAX as u64 {
-        Err(BrokerError::InvalidOrder {
-            reason: format!("Value {value} exceeds maximum i64 range - conversion would lose data"),
-        })
-    } else {
-        #[allow(clippy::cast_possible_wrap)]
-        Ok(value as i64) // Safe: verified within i64 range
     }
 }
 
@@ -327,24 +375,5 @@ mod tests {
             .status(),
             OrderStatus::Failed
         );
-    }
-
-    #[test]
-    fn test_u64_to_i64_exact_normal_values() {
-        assert_eq!(u64_to_i64_exact(0).unwrap(), 0);
-        assert_eq!(u64_to_i64_exact(100).unwrap(), 100);
-        assert_eq!(u64_to_i64_exact(15000).unwrap(), 15000);
-    }
-
-    #[test]
-    fn test_u64_to_i64_exact_max_value() {
-        assert_eq!(u64_to_i64_exact(i64::MAX as u64).unwrap(), i64::MAX);
-    }
-
-    #[test]
-    fn test_u64_to_i64_exact_overflow() {
-        let overflow_value = (i64::MAX as u64) + 1;
-        let result = u64_to_i64_exact(overflow_value);
-        assert!(result.is_err()); // MUST fail, never silently change amounts
     }
 }

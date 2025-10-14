@@ -113,7 +113,7 @@ impl Broker for SchwabBroker {
             .place(&self.auth, &self.pool)
             .await
             .map_err(|e| {
-                BrokerError::OrderPlacement(format!("Schwab order placement failed: {e}"))
+                BrokerError::OrderPlacement(format!("Schwab order placement failed: {}", e))
             })?;
 
         Ok(OrderPlacement {
@@ -131,12 +131,12 @@ impl Broker for SchwabBroker {
         let order_response =
             crate::schwab::order::Order::get_order_status(order_id, &self.auth, &self.pool)
                 .await
-                .map_err(|e| BrokerError::Network(format!("Failed to get order status: {e}")))?;
+                .map_err(|e| BrokerError::Network(format!("Failed to get order status: {}", e)))?;
 
         if order_response.is_filled() {
             let price_cents = order_response
                 .price_in_cents()
-                .map_err(|e| BrokerError::Network(format!("Failed to calculate price: {e}")))?
+                .map_err(|e| BrokerError::Network(format!("Failed to calculate price: {}", e)))?
                 .ok_or_else(|| {
                     BrokerError::Network(
                         "Order marked as filled but price information is not available".to_string(),
@@ -149,7 +149,9 @@ impl Broker for SchwabBroker {
 
             let executed_at =
                 chrono::DateTime::parse_from_str(close_time_str, "%Y-%m-%dT%H:%M:%S%z")
-                    .map_err(|e| BrokerError::Network(format!("Failed to parse close_time: {e}")))?
+                    .map_err(|e| {
+                        BrokerError::Network(format!("Failed to parse close_time: {}", e))
+                    })?
                     .with_timezone(&chrono::Utc);
 
             Ok(OrderState::Filled {
@@ -163,7 +165,7 @@ impl Broker for SchwabBroker {
             })?;
 
             let failed_at = chrono::DateTime::parse_from_str(close_time_str, "%Y-%m-%dT%H:%M:%S%z")
-                .map_err(|e| BrokerError::Network(format!("Failed to parse close_time: {e}")))?
+                .map_err(|e| BrokerError::Network(format!("Failed to parse close_time: {}", e)))?
                 .with_timezone(&chrono::Utc);
 
             Ok(OrderState::Failed {
@@ -214,25 +216,21 @@ impl Broker for SchwabBroker {
 
                         let symbol =
                             Symbol::new(row.symbol).map_err(|e| BrokerError::InvalidOrder {
-                                reason: format!("Invalid symbol in database: {e}"),
+                                reason: format!("Invalid symbol in database: {}", e),
                             })?;
 
-                        let shares_u64 =
-                            u64::try_from(row.shares).map_err(|_| BrokerError::InvalidOrder {
-                                reason: "Invalid negative shares in database".to_string(),
-                            })?;
-
-                        let shares =
-                            Shares::new(shares_u64).map_err(|e| BrokerError::InvalidOrder {
-                                reason: format!("Invalid shares in database: {e}"),
-                            })?;
+                        let shares = Shares::new(row.shares as u64).map_err(|e| {
+                            BrokerError::InvalidOrder {
+                                reason: format!("Invalid shares in database: {}", e),
+                            }
+                        })?;
 
                         let direction =
                             row.direction
                                 .parse()
                                 .map_err(|e: crate::InvalidDirectionError| {
                                     BrokerError::InvalidOrder {
-                                        reason: format!("Invalid direction in database: {e}"),
+                                        reason: format!("Invalid direction in database: {}", e),
                                     }
                                 })?;
 
@@ -250,6 +248,7 @@ impl Broker for SchwabBroker {
                 Err(e) => {
                     // Log error but continue with other orders
                     info!("Failed to get status for order {}: {}", order_id_value, e);
+                    continue;
                 }
             }
         }
@@ -291,6 +290,7 @@ mod tests {
     use crate::schwab::SchwabError;
     use crate::schwab::auth::SchwabAuthEnv;
     use crate::schwab::tokens::SchwabTokens;
+    use crate::test_utils::{TEST_ENCRYPTION_KEY, setup_test_db};
     use chrono::{Duration, Utc};
     use httpmock::prelude::*;
     use serde_json::json;
@@ -303,6 +303,7 @@ mod tests {
             schwab_redirect_uri: "https://127.0.0.1".to_string(),
             schwab_base_url: "https://test.com".to_string(),
             schwab_account_index: 0,
+            encryption_key: TEST_ENCRYPTION_KEY,
         }
     }
 
@@ -313,13 +314,8 @@ mod tests {
             schwab_redirect_uri: "https://127.0.0.1".to_string(),
             schwab_base_url: server.base_url(),
             schwab_account_index: 0,
+            encryption_key: TEST_ENCRYPTION_KEY,
         }
-    }
-
-    async fn setup_test_db() -> SqlitePool {
-        let pool = SqlitePool::connect(":memory:").await.unwrap();
-        sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
-        pool
     }
 
     #[tokio::test]
@@ -347,7 +343,10 @@ mod tests {
             refresh_token: "valid_refresh_token".to_string(),
             refresh_token_fetched_at: Utc::now() - Duration::days(1),
         };
-        valid_tokens.store(&pool).await.unwrap();
+        valid_tokens
+            .store(&pool, &TEST_ENCRYPTION_KEY)
+            .await
+            .unwrap();
 
         let config = (auth, pool);
         let result = SchwabBroker::try_from_config(config).await;
@@ -370,7 +369,10 @@ mod tests {
             refresh_token: "valid_refresh_token".to_string(),
             refresh_token_fetched_at: Utc::now() - Duration::days(1), // Valid
         };
-        tokens_needing_refresh.store(&pool).await.unwrap();
+        tokens_needing_refresh
+            .store(&pool, &TEST_ENCRYPTION_KEY)
+            .await
+            .unwrap();
 
         // Mock the token refresh endpoint
         let refresh_mock = server.mock(|when, then| {
@@ -396,7 +398,9 @@ mod tests {
         refresh_mock.assert();
 
         // Verify tokens were updated
-        let updated_tokens = SchwabTokens::load(&pool).await.unwrap();
+        let updated_tokens = SchwabTokens::load(&pool, &TEST_ENCRYPTION_KEY)
+            .await
+            .unwrap();
         assert_eq!(updated_tokens.access_token, "refreshed_access_token");
         assert_eq!(updated_tokens.refresh_token, "new_refresh_token");
     }
@@ -414,7 +418,10 @@ mod tests {
             refresh_token: "expired_refresh_token".to_string(),
             refresh_token_fetched_at: Utc::now() - Duration::days(8), // Expired
         };
-        expired_tokens.store(&pool).await.unwrap();
+        expired_tokens
+            .store(&pool, &TEST_ENCRYPTION_KEY)
+            .await
+            .unwrap();
 
         let config = (auth, pool);
         let result = SchwabBroker::try_from_config(config).await;
@@ -439,7 +446,10 @@ mod tests {
             refresh_token: "valid_refresh_token".to_string(),
             refresh_token_fetched_at: Utc::now() - Duration::days(1),
         };
-        valid_tokens.store(&pool).await.unwrap();
+        valid_tokens
+            .store(&pool, &TEST_ENCRYPTION_KEY)
+            .await
+            .unwrap();
 
         // Mock market hours API to return open market
         // Use today's date with market hours that encompass current time
@@ -483,8 +493,9 @@ mod tests {
         let result = broker.wait_until_market_open().await;
 
         assert!(result.is_ok());
-        let duration_opt = result.unwrap();
-        assert_eq!(duration_opt, None); // Market is open, no wait needed
+        let duration = result.unwrap();
+        // Market is open, returns time until close
+        assert!(duration.as_secs() > 0);
         market_hours_mock.assert();
     }
 
@@ -501,7 +512,10 @@ mod tests {
             refresh_token: "valid_refresh_token".to_string(),
             refresh_token_fetched_at: Utc::now() - Duration::days(1),
         };
-        valid_tokens.store(&pool).await.unwrap();
+        valid_tokens
+            .store(&pool, &TEST_ENCRYPTION_KEY)
+            .await
+            .unwrap();
 
         // Mock market hours API to return closed market
         let market_hours_mock = server.mock(|when, then| {
@@ -530,13 +544,15 @@ mod tests {
         });
 
         let broker = SchwabBroker { auth, pool };
-        let result = broker.wait_until_market_open().await;
+        // This test should not complete because the method loops when market is closed
+        // We'll just verify it starts correctly by not panicking immediately
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            broker.wait_until_market_open(),
+        )
+        .await
+        .expect_err("Should timeout since market is closed and method loops");
 
-        assert!(result.is_ok());
-        let duration_opt = result.unwrap();
-        assert!(duration_opt.is_some()); // Market is closed, should return wait duration
-        let duration = duration_opt.unwrap();
-        assert!(duration.as_secs() > 0); // Should be positive duration
         market_hours_mock.assert();
     }
 
@@ -553,7 +569,10 @@ mod tests {
             refresh_token: "valid_refresh_token".to_string(),
             refresh_token_fetched_at: Utc::now() - Duration::days(1),
         };
-        valid_tokens.store(&pool).await.unwrap();
+        valid_tokens
+            .store(&pool, &TEST_ENCRYPTION_KEY)
+            .await
+            .unwrap();
 
         // Mock market hours API to return error
         let market_hours_mock = server.mock(|when, then| {

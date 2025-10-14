@@ -10,7 +10,7 @@ use sqlx::SqlitePool;
 #[cfg(test)]
 use st0x_broker::PersistenceError;
 #[cfg(test)]
-use st0x_broker::{OrderStatus, SupportedBroker};
+use st0x_broker::{OrderStatus, Shares, SupportedBroker, Symbol};
 
 /// Links individual onchain trades to their contributing Schwab executions.
 ///
@@ -178,7 +178,7 @@ impl TradeExecutionLink {
         tokenized_symbol: &TokenizedEquitySymbol,
     ) -> Result<Vec<AuditTrailEntry>, OnChainError> {
         let symbol = tokenized_symbol.to_string();
-        let base_symbol = tokenized_symbol.base().as_str();
+        let base_symbol = tokenized_symbol.base().to_string();
 
         let rows = sqlx::query!(
             r#"
@@ -346,8 +346,8 @@ mod tests {
 
         let execution = OffchainExecution {
             id: None,
-            symbol: "AAPL".to_string(),
-            shares: 1,
+            symbol: Symbol::new("AAPL").unwrap(),
+            shares: Shares::new(1).unwrap(),
             direction: Direction::Sell,
             broker: SupportedBroker::Schwab,
             state: OrderState::Pending,
@@ -432,8 +432,8 @@ mod tests {
 
         let execution = OffchainExecution {
             id: None,
-            symbol: "MSFT".to_string(),
-            shares: 1,
+            symbol: Symbol::new("MSFT").unwrap(),
+            shares: Shares::new(1).unwrap(),
             direction: Direction::Buy,
             broker: SupportedBroker::Schwab,
             state: OrderState::Filled {
@@ -483,8 +483,8 @@ mod tests {
 
         let execution = OffchainExecution {
             id: None,
-            symbol: "AAPL".to_string(),
-            shares: 1,
+            symbol: Symbol::new("AAPL").unwrap(),
+            shares: Shares::new(1).unwrap(),
             direction: Direction::Sell,
             broker: SupportedBroker::Schwab,
             state: OrderState::Pending,
@@ -575,8 +575,8 @@ mod tests {
 
         let execution = OffchainExecution {
             id: None,
-            symbol: "AAPL".to_string(),
-            shares: 1,
+            symbol: Symbol::new("AAPL").unwrap(),
+            shares: Shares::new(1).unwrap(),
             direction: Direction::Buy,
             broker: SupportedBroker::Schwab,
             state: OrderState::Pending,

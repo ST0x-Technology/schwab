@@ -5,6 +5,7 @@ services:
     environment:
       - OTEL_METRICS_EXPORTER_ENDPOINT=http://grafana:4318
       - DATABASE_URL=sqlite:///data/schwab.db
+      - ENCRYPTION_KEY
     env_file:
       - .env
     volumes:
@@ -19,6 +20,7 @@ services:
     environment:
       - OTEL_METRICS_EXPORTER_ENDPOINT=http://grafana:4318
       - DATABASE_URL=sqlite:///data/alpaca.db
+      - ENCRYPTION_KEY
     env_file:
       - .env
     volumes:

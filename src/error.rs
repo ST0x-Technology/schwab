@@ -3,8 +3,11 @@
 
 use alloy::primitives::{B256, ruint::FromUintError};
 use alloy::transports::{RpcError, TransportErrorKind};
-use st0x_broker::PersistenceError;
+use st0x_broker::order::status::ParseOrderStatusError;
+use st0x_broker::{InvalidBrokerError, PersistenceError};
 use std::num::ParseFloatError;
+
+use crate::onchain::position_calculator::ConversionError;
 
 /// Business logic validation errors for trade processing rules.
 #[derive(Debug, thiserror::Error)]
@@ -95,25 +98,13 @@ pub(crate) enum OrderPollingError {
     Database(#[from] sqlx::Error),
     #[error("Persistence error: {0}")]
     Persistence(#[from] PersistenceError),
-    #[error("Configuration error: {0}")]
-    Configuration(String),
+    #[error("Onchain error: {0}")]
+    OnChain(#[from] OnChainError),
 }
 
 impl From<st0x_broker::BrokerError> for OrderPollingError {
     fn from(err: st0x_broker::BrokerError) -> Self {
         Self::Broker(Box::new(err))
-    }
-}
-
-impl From<OnChainError> for OrderPollingError {
-    fn from(err: OnChainError) -> Self {
-        match err {
-            OnChainError::Persistence(p) => Self::Persistence(p),
-            OnChainError::Alloy(e) => Self::Configuration(format!("Blockchain error: {e}")),
-            OnChainError::Validation(e) => Self::Configuration(format!("Validation error: {e}")),
-            OnChainError::Broker(e) => Self::Broker(Box::new(e)),
-            OnChainError::EventQueue(e) => Self::Configuration(format!("Event queue error: {e}")),
-        }
     }
 }
 
@@ -131,6 +122,12 @@ pub(crate) enum OnChainError {
     Broker(#[from] st0x_broker::BrokerError),
     #[error("Event queue error: {0}")]
     EventQueue(#[from] EventQueueError),
+    #[error("Order status parse error: {0}")]
+    OrderStatusParse(#[from] ParseOrderStatusError),
+    #[error("Invalid broker: {0}")]
+    InvalidBroker(#[from] InvalidBrokerError),
+    #[error("Numeric conversion error: {0}")]
+    Conversion(#[from] ConversionError),
 }
 
 impl From<sqlx::Error> for OnChainError {

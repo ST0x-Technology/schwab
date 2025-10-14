@@ -1,3 +1,4 @@
+use alloy::primitives::FixedBytes;
 use backon::{ExponentialBuilder, Retryable};
 use base64::prelude::*;
 use chrono::Utc;
@@ -21,6 +22,8 @@ pub struct SchwabAuthEnv {
     pub schwab_base_url: String,
     #[clap(long, env, default_value = "0")]
     pub schwab_account_index: usize,
+    #[clap(long, env)]
+    pub encryption_key: FixedBytes<32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -237,7 +240,7 @@ impl SchwabAuthEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::setup_test_db;
+    use crate::test_utils::{TEST_ENCRYPTION_KEY, setup_test_db};
     use chrono::{Duration, Utc};
     use httpmock::prelude::*;
     use serde_json::json;
@@ -249,6 +252,7 @@ mod tests {
             schwab_redirect_uri: "https://127.0.0.1".to_string(),
             schwab_base_url: "https://api.schwabapi.com".to_string(),
             schwab_account_index: 0,
+            encryption_key: TEST_ENCRYPTION_KEY,
         }
     }
 
@@ -259,6 +263,7 @@ mod tests {
             schwab_redirect_uri: "https://127.0.0.1".to_string(),
             schwab_base_url: mock_server.base_url(),
             schwab_account_index: 0,
+            encryption_key: TEST_ENCRYPTION_KEY,
         }
     }
 
@@ -277,6 +282,7 @@ mod tests {
             schwab_redirect_uri: "https://custom.redirect.com".to_string(),
             schwab_base_url: "https://custom.api.com".to_string(),
             schwab_account_index: 0,
+            encryption_key: TEST_ENCRYPTION_KEY,
         };
         let expected_url = "https://custom.api.com/v1/oauth/authorize?client_id=custom_key&redirect_uri=https%3A%2F%2Fcustom.redirect.com";
         assert_eq!(env.get_auth_url(), expected_url);
@@ -290,6 +296,7 @@ mod tests {
             schwab_redirect_uri: "https://example.com/callback?param=value&other=test".to_string(),
             schwab_base_url: "https://api.schwabapi.com".to_string(),
             schwab_account_index: 0,
+            encryption_key: TEST_ENCRYPTION_KEY,
         };
         let expected_url = "https://api.schwabapi.com/v1/oauth/authorize?client_id=test%20key%20with%20spaces%20%26%20symbols%21&redirect_uri=https%3A%2F%2Fexample.com%2Fcallback%3Fparam%3Dvalue%26other%3Dtest";
         assert_eq!(env.get_auth_url(), expected_url);
@@ -563,6 +570,7 @@ mod tests {
             schwab_redirect_uri: "https://127.0.0.1".to_string(),
             schwab_base_url: "https://api.schwabapi.com".to_string(),
             schwab_account_index: 0,
+            encryption_key: TEST_ENCRYPTION_KEY,
         };
 
         assert_eq!(env.schwab_redirect_uri, "https://127.0.0.1");

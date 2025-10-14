@@ -1,3 +1,4 @@
+use num_traits::ToPrimitive;
 use rand::Rng;
 use sqlx::SqlitePool;
 use std::time::Duration;
@@ -6,19 +7,10 @@ use tracing::{debug, error, info};
 
 use super::execution::{
     OffchainExecution, find_execution_by_id, find_executions_by_symbol_status_and_broker,
-    update_execution_status_within_transaction,
 };
-use crate::error::OrderPollingError;
+use crate::error::{OnChainError, OrderPollingError};
 use crate::lock::{clear_execution_lease, clear_pending_execution_id};
-use crate::onchain::io::EquitySymbol;
 use st0x_broker::{Broker, OrderState, OrderStatus, PersistenceError};
-
-fn parse_execution_symbol(symbol: &str) -> Result<EquitySymbol, OrderPollingError> {
-    symbol.parse().map_err(|e| {
-        error!("Failed to parse symbol {symbol}: {e}");
-        OrderPollingError::Persistence(PersistenceError::InvalidSymbol(symbol.to_string()))
-    })
-}
 
 #[derive(Debug, Clone)]
 pub struct OrderPollerConfig {
@@ -75,15 +67,11 @@ impl<B: Broker> OrderStatusPoller<B> {
         let broker = self.broker.to_supported_broker();
         let submitted_executions = find_executions_by_symbol_status_and_broker(
             &self.pool,
-            "",
+            None,
             OrderStatus::Submitted,
             Some(broker),
         )
-        .await
-        .map_err(|e| {
-            error!("Failed to query pending executions: {e}");
-            OrderPollingError::from(e)
-        })?;
+        .await?;
 
         if submitted_executions.is_empty() {
             debug!("No submitted orders to poll");
@@ -169,46 +157,18 @@ impl<B: Broker> OrderStatusPoller<B> {
 
         let mut tx = self.pool.begin().await?;
 
-        let execution = find_execution_by_id(&self.pool, execution_id)
-            .await
-            .map_err(|e| {
-                error!("Failed to find execution {execution_id}: {e}");
-                OrderPollingError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "Database query failed".to_string(),
-                ))
-            })?
-            .ok_or_else(|| {
-                error!("Execution {execution_id} not found in database");
-                OrderPollingError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "Execution not found".to_string(),
-                ))
-            })?;
+        let Some(execution) = find_execution_by_id(&self.pool, execution_id).await? else {
+            error!("Execution {execution_id} not found in database");
+            return Err(OrderPollingError::OnChain(OnChainError::Persistence(
+                PersistenceError::InvalidTradeStatus("Execution not found".to_string()),
+            )));
+        };
 
-        update_execution_status_within_transaction(&mut tx, execution_id, &new_status).await?;
+        new_status.store_update(&mut tx, execution_id).await?;
 
-        let symbol = parse_execution_symbol(&execution.symbol)?;
+        clear_pending_execution_id(&mut tx, &execution.symbol).await?;
 
-        clear_pending_execution_id(&mut tx, &symbol)
-            .await
-            .map_err(|e| {
-                error!(
-                    "Failed to clear pending execution ID for symbol {}: {e}",
-                    execution.symbol
-                );
-                OrderPollingError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "Failed to clear pending execution ID".to_string(),
-                ))
-            })?;
-
-        clear_execution_lease(&mut tx, &symbol).await.map_err(|e| {
-            error!(
-                "Failed to clear execution lease for symbol {}: {e}",
-                execution.symbol
-            );
-            OrderPollingError::Persistence(PersistenceError::InvalidTradeStatus(
-                "Failed to clear execution lease".to_string(),
-            ))
-        })?;
+        clear_execution_lease(&mut tx, &execution.symbol).await?;
 
         tx.commit().await?;
 
@@ -236,46 +196,18 @@ impl<B: Broker> OrderStatusPoller<B> {
 
         let mut tx = self.pool.begin().await?;
 
-        let execution = find_execution_by_id(&self.pool, execution_id)
-            .await
-            .map_err(|e| {
-                error!("Failed to find execution {execution_id}: {e}");
-                OrderPollingError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "Database query failed".to_string(),
-                ))
-            })?
-            .ok_or_else(|| {
-                error!("Execution {execution_id} not found in database");
-                OrderPollingError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "Execution not found".to_string(),
-                ))
-            })?;
+        let Some(execution) = find_execution_by_id(&self.pool, execution_id).await? else {
+            error!("Execution {execution_id} not found in database");
+            return Err(OrderPollingError::OnChain(OnChainError::Persistence(
+                PersistenceError::InvalidTradeStatus("Execution not found".to_string()),
+            )));
+        };
 
-        update_execution_status_within_transaction(&mut tx, execution_id, &new_status).await?;
+        new_status.store_update(&mut tx, execution_id).await?;
 
-        let symbol = parse_execution_symbol(&execution.symbol)?;
+        clear_pending_execution_id(&mut tx, &execution.symbol).await?;
 
-        clear_pending_execution_id(&mut tx, &symbol)
-            .await
-            .map_err(|e| {
-                error!(
-                    "Failed to clear pending execution ID for symbol {}: {e}",
-                    execution.symbol
-                );
-                OrderPollingError::Persistence(PersistenceError::InvalidTradeStatus(
-                    "Failed to clear pending execution ID".to_string(),
-                ))
-            })?;
-
-        clear_execution_lease(&mut tx, &symbol).await.map_err(|e| {
-            error!(
-                "Failed to clear execution lease for symbol {}: {e}",
-                execution.symbol
-            );
-            OrderPollingError::Persistence(PersistenceError::InvalidTradeStatus(
-                "Failed to clear execution lease".to_string(),
-            ))
-        })?;
+        clear_execution_lease(&mut tx, &execution.symbol).await?;
 
         tx.commit().await?;
 
@@ -289,8 +221,8 @@ impl<B: Broker> OrderStatusPoller<B> {
 
     async fn add_jittered_delay(&self) {
         if self.config.max_jitter > Duration::ZERO {
-            #[allow(clippy::cast_possible_truncation)]
-            let max_jitter_millis = self.config.max_jitter.as_millis() as u64;
+            let max_jitter_u128 = self.config.max_jitter.as_millis().min(u128::from(u64::MAX));
+            let max_jitter_millis = max_jitter_u128.to_u64().unwrap_or(u64::MAX);
             let jitter_millis = rand::thread_rng().gen_range(0..max_jitter_millis);
             let jitter = Duration::from_millis(jitter_millis);
             tokio::time::sleep(jitter).await;

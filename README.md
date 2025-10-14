@@ -41,9 +41,43 @@ Before you begin, ensure you have:
   - Alpaca Markets account (simpler setup, supports paper trading)
 - **Ethereum node** - WebSocket RPC endpoint for blockchain monitoring
 
-### Step 1: Clone and Setup Development Environment
+Follow the steps in the **Development** section below for complete setup
+instructions.
 
-Clone the repository, enter the Nix shell, and build dependencies:
+## Security
+
+### Token Encryption
+
+OAuth tokens (access tokens and refresh tokens) are encrypted at rest using
+AES-256-GCM authenticated encryption. This prevents unauthorized access to
+sensitive authentication credentials stored in the database.
+
+**Generating an encryption key:**
+
+```bash
+openssl rand -hex 32
+```
+
+This generates a 32-byte (256-bit) key encoded as 64 hexadecimal characters.
+
+**Setting the encryption key:**
+
+The encryption key must be provided via the `ENCRYPTION_KEY` environment
+variable. The key is never written to disk in plain text.
+
+```bash
+export ENCRYPTION_KEY=your_64_char_hex_key
+```
+
+For production deployments, the key should be stored as a secret in your
+deployment system (e.g., GitHub Actions secrets) and passed directly to the
+container environment.
+
+## Development
+
+### With Nix
+
+Enter the development shell with all dependencies:
 
 ```bash
 git clone https://github.com/ST0x-Technology/st0x.liquidity.git

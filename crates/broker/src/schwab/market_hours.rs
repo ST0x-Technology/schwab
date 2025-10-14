@@ -16,17 +16,6 @@ pub enum MarketSession {
     AfterHours,
 }
 
-impl MarketSession {
-    #[cfg(test)]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::PreMarket => "PRE_MARKET",
-            Self::Regular => "REGULAR",
-            Self::AfterHours => "AFTER_HOURS",
-        }
-    }
-}
-
 impl std::str::FromStr for MarketSession {
     type Err = String;
 
@@ -45,15 +34,6 @@ impl std::str::FromStr for MarketSession {
 pub enum MarketStatus {
     Open,
     Closed,
-}
-
-impl MarketStatus {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Open => "OPEN",
-            Self::Closed => "CLOSED",
-        }
-    }
 }
 
 /// Market hours information for a specific date and session.
@@ -90,18 +70,6 @@ impl MarketHours {
         } else {
             MarketStatus::Closed
         }
-    }
-
-    /// Get the next market open time in UTC.
-    #[cfg(test)]
-    pub fn next_market_open(&self) -> Option<DateTime<Utc>> {
-        self.start.map(|dt| dt.with_timezone(&Utc))
-    }
-
-    /// Convert end time to system timezone.
-    #[cfg(test)]
-    pub fn end_in_local(&self) -> Option<DateTime<Utc>> {
-        self.end.map(|dt| dt.with_timezone(&Utc))
     }
 }
 
@@ -321,8 +289,7 @@ fn parse_datetime(datetime_str: &str, date: NaiveDate) -> Result<DateTime<Utc>, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::setup_test_db;
-    use chrono::TimeZone;
+    use crate::test_utils::{TEST_ENCRYPTION_KEY, setup_test_db, setup_test_tokens};
     use httpmock::prelude::*;
     use serde_json::json;
 
@@ -333,17 +300,8 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: mock_server.base_url(),
             account_index: 0,
+            encryption_key: TEST_ENCRYPTION_KEY,
         }
-    }
-
-    async fn setup_test_tokens(pool: &SqlitePool) {
-        let tokens = SchwabTokens {
-            access_token: "test_access_token".to_string(),
-            access_token_fetched_at: Utc::now(),
-            refresh_token: "test_refresh_token".to_string(),
-            refresh_token_fetched_at: Utc::now(),
-        };
-        tokens.store(pool).await.unwrap();
     }
 
     #[tokio::test]
@@ -351,7 +309,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let mock_response = json!({
             "equity": {
@@ -410,7 +368,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let mock_response = json!({
             "equity": {
@@ -457,7 +415,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let mock = server.mock(|when, then| {
             when.method(GET).path("/marketdata/v1/markets/equity");
@@ -481,7 +439,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let mock = server.mock(|when, then| {
             when.method(GET).path("/marketdata/v1/markets/equity");
@@ -494,13 +452,6 @@ mod tests {
 
         mock.assert();
         assert!(matches!(result.unwrap_err(), SchwabError::Reqwest(_)));
-    }
-
-    #[test]
-    fn test_market_session_as_str() {
-        assert_eq!(MarketSession::PreMarket.as_str(), "PRE_MARKET");
-        assert_eq!(MarketSession::Regular.as_str(), "REGULAR");
-        assert_eq!(MarketSession::AfterHours.as_str(), "AFTER_HOURS");
     }
 
     #[test]
@@ -521,12 +472,6 @@ mod tests {
         let result = "INVALID".parse::<MarketSession>();
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Invalid market session: INVALID");
-    }
-
-    #[test]
-    fn test_market_status_as_str() {
-        assert_eq!(MarketStatus::Open.as_str(), "OPEN");
-        assert_eq!(MarketStatus::Closed.as_str(), "CLOSED");
     }
 
     #[test]
@@ -567,25 +512,5 @@ mod tests {
             SchwabError::RequestFailed { action, .. }
             if action == "parse datetime"
         ));
-    }
-
-    #[test]
-    fn test_market_hours_timezone_conversion() {
-        let start_et = Eastern.with_ymd_and_hms(2025, 1, 3, 9, 30, 0).unwrap();
-        let end_et = Eastern.with_ymd_and_hms(2025, 1, 3, 16, 0, 0).unwrap();
-
-        let market_hours = MarketHours {
-            date: NaiveDate::from_ymd_opt(2025, 1, 3).unwrap(),
-            session_type: MarketSession::Regular,
-            start: Some(start_et),
-            end: Some(end_et),
-            is_open: true,
-        };
-
-        let start_utc = market_hours.next_market_open().unwrap();
-        let end_utc = market_hours.end_in_local().unwrap();
-
-        assert_eq!(start_utc, start_et.with_timezone(&Utc));
-        assert_eq!(end_utc, end_et.with_timezone(&Utc));
     }
 }

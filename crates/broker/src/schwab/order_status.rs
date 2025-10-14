@@ -1,7 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::price_cents_from_db_i64;
-use crate::error::PersistenceError;
+use crate::BrokerError;
 
 /// Deserialize orderId from Schwab API as int64 and convert to string for database compatibility.
 ///
@@ -92,16 +91,13 @@ impl OrderStatusResponse {
     }
 
     /// Convert price to cents for database storage
-    pub(crate) fn price_in_cents(&self) -> Result<Option<u64>, PersistenceError> {
-        self.calculate_weighted_average_price().map_or_else(
-            || Ok(None),
-            |price| {
-                // Convert dollars to cents and round
-                #[allow(clippy::cast_possible_truncation)]
-                let cents = (price * 100.0).round() as i64;
-                price_cents_from_db_i64(cents).map(Some)
-            },
-        )
+    pub(crate) fn price_in_cents(&self) -> Result<Option<u64>, BrokerError> {
+        self.calculate_weighted_average_price()
+            .map(|price| {
+                let cents_i64: i64 = (price * 100.0).round() as i64;
+                Ok(cents_i64.try_into()?)
+            })
+            .transpose()
     }
 
     /// Check if order is completely filled

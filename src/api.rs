@@ -8,13 +8,13 @@ use crate::env::{BrokerConfig, Config};
 use st0x_broker::schwab::extract_code_from_url;
 
 #[derive(Serialize, Deserialize)]
-pub struct HealthResponse {
-    pub status: String,
-    pub timestamp: DateTime<Utc>,
+struct HealthResponse {
+    status: String,
+    timestamp: DateTime<Utc>,
 }
 
 #[get("/health")]
-pub fn health() -> Json<HealthResponse> {
+fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "healthy".to_string(),
         timestamp: Utc::now(),
@@ -22,13 +22,13 @@ pub fn health() -> Json<HealthResponse> {
 }
 
 #[derive(Deserialize, Serialize)]
-pub struct AuthRefreshRequest {
-    pub redirect_url: String,
+struct AuthRefreshRequest {
+    redirect_url: String,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "success")]
-pub enum AuthRefreshResponse {
+enum AuthRefreshResponse {
     #[serde(rename = "true")]
     Success { message: String },
     #[serde(rename = "false")]
@@ -36,7 +36,7 @@ pub enum AuthRefreshResponse {
 }
 
 #[post("/auth/refresh", format = "json", data = "<request>")]
-pub async fn auth_refresh(
+async fn auth_refresh(
     request: Json<AuthRefreshRequest>,
     pool: &State<SqlitePool>,
     config: &State<Config>,
@@ -65,7 +65,10 @@ pub async fn auth_refresh(
         }
     };
 
-    if let Err(e) = tokens.store(pool.inner()).await {
+    if let Err(e) = tokens
+        .store(pool.inner(), &schwab_auth.encryption_key)
+        .await
+    {
         return Json(AuthRefreshResponse::Error {
             error: format!("Failed to store tokens: {e}"),
         });
@@ -76,14 +79,13 @@ pub async fn auth_refresh(
     })
 }
 
-// Route Configuration
-pub fn routes() -> Vec<Route> {
+pub(crate) fn routes() -> Vec<Route> {
     routes![health, auth_refresh]
 }
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::address;
+    use alloy::primitives::{FixedBytes, address};
     use backon::{ExponentialBuilder, Retryable};
     use clap::Parser;
     use httpmock::{Mock, MockServer};
@@ -100,7 +102,9 @@ mod tests {
     use crate::launch;
     use crate::onchain::EvmEnv;
     use crate::test_utils::setup_test_db;
-    use st0x_broker::schwab::auth::SchwabAuthEnv;
+    use st0x_broker::schwab::SchwabAuthEnv;
+
+    const TEST_ENCRYPTION_KEY: FixedBytes<32> = FixedBytes::ZERO;
 
     fn create_test_config_with_mock_server(mock_server: &MockServer) -> Config {
         Config {
@@ -121,6 +125,7 @@ mod tests {
                 schwab_redirect_uri: "https://127.0.0.1".to_string(),
                 schwab_base_url: mock_server.base_url(),
                 schwab_account_index: 0,
+                encryption_key: TEST_ENCRYPTION_KEY,
             }),
         }
     }

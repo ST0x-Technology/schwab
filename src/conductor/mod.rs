@@ -11,7 +11,7 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tracing::{debug, error, info, trace};
 
-use st0x_broker::{Broker, MarketOrder, Shares, SupportedBroker, Symbol};
+use st0x_broker::{Broker, MarketOrder, SupportedBroker};
 
 use crate::bindings::IOrderBookV4::{ClearV2, IOrderBookV4Instance, TakeOrderV2};
 use crate::env::Config;
@@ -729,8 +729,8 @@ async fn execute_pending_offchain_execution<B: Broker + Clone + Send + 'static>(
     info!("Executing offchain order: {execution:?}");
 
     let market_order = MarketOrder {
-        symbol: Symbol::new(execution.symbol.clone())?,
-        shares: Shares::new(execution.shares)?,
+        symbol: execution.symbol.clone(),
+        shares: execution.shares,
         direction: execution.direction,
     };
 

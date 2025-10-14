@@ -5,8 +5,8 @@ use tracing::Level;
 use crate::offchain::order_poller::OrderPollerConfig;
 use crate::onchain::EvmEnv;
 use st0x_broker::SupportedBroker;
-use st0x_broker::alpaca::auth::AlpacaAuthEnv;
-use st0x_broker::schwab::auth::SchwabAuthEnv;
+use st0x_broker::alpaca::AlpacaAuthEnv;
+use st0x_broker::schwab::SchwabAuthEnv;
 
 #[derive(Debug, Clone)]
 pub enum BrokerConfig {
@@ -143,9 +143,11 @@ pub fn setup_tracing(log_level: &LogLevel) {
 pub mod tests {
     use super::*;
     use crate::onchain::EvmEnv;
-    use alloy::primitives::address;
-    use st0x_broker::schwab::auth::SchwabAuthEnv;
+    use alloy::primitives::{FixedBytes, address};
+    use st0x_broker::schwab::{SchwabAuthEnv, SchwabConfig};
     use st0x_broker::{MockBrokerConfig, TryIntoBroker};
+
+    const TEST_ENCRYPTION_KEY: FixedBytes<32> = FixedBytes::ZERO;
 
     pub fn create_test_config_with_order_owner(order_owner: alloy::primitives::Address) -> Config {
         Config {
@@ -166,6 +168,7 @@ pub mod tests {
                 schwab_redirect_uri: "https://127.0.0.1".to_string(),
                 schwab_base_url: "https://test.com".to_string(),
                 schwab_account_index: 0,
+                encryption_key: TEST_ENCRYPTION_KEY,
             }),
         }
     }
@@ -213,7 +216,7 @@ pub mod tests {
         let BrokerConfig::Schwab(schwab_auth) = &config.broker else {
             panic!("Expected Schwab broker config");
         };
-        let schwab_config = st0x_broker::schwab::broker::SchwabConfig {
+        let schwab_config = SchwabConfig {
             auth: schwab_auth.clone(),
             pool: pool.clone(),
         };

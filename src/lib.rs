@@ -18,8 +18,8 @@ mod trade_execution_link;
 pub mod test_utils;
 
 use crate::env::{BrokerConfig, Config};
-use st0x_broker::schwab::SchwabError;
-use st0x_broker::{Broker, BrokerError, MockBrokerConfig, SchwabConfig, TryIntoBroker};
+use st0x_broker::schwab::{SchwabConfig, SchwabError};
+use st0x_broker::{Broker, BrokerError, MockBrokerConfig, TryIntoBroker};
 
 pub async fn launch(config: Config) -> anyhow::Result<()> {
     let pool = config.get_sqlite_pool().await?;

@@ -23,6 +23,7 @@ must_use_candidate = "allow"
 redundant_pub_crate = "allow"
 
 [workspace.dependencies]
+alloy = { version = "1.0.38", features = ["full"] }
 async-trait = "0.1.81"
 sqlx = { version = "0.8.6", features = [
   "sqlite",
@@ -46,6 +47,7 @@ url = { version = "2.5.4", features = ["serde"] }
 urlencoding = "2.1"
 rand = "0.8"
 chrono-tz = "0.10.4"
+num-traits = "0.2"
 
 [package]
 name = "st0x-hedge"
@@ -53,7 +55,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-alloy = { version = "1.0.9", features = ["full"] }
+alloy.workspace = true
 anyhow = "1.0.98"
 async-trait.workspace = true
 st0x-broker = { path = "crates/broker" }
@@ -79,7 +81,9 @@ itertools = "0.14.0"
 rand.workspace = true
 rocket = { version = "0.5.1", features = ["json"] }
 chrono-tz.workspace = true
+aes-gcm = "0.10.3"
 rust_decimal = "1.38.0"
+num-traits.workspace = true
 
 [dev-dependencies]
 httpmock.workspace = true
