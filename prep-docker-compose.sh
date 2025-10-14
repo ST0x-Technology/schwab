@@ -34,6 +34,10 @@ if [ "$PROD_MODE" = true ]; then
     echo "ERROR: DATA_VOLUME_PATH environment variable is required for --prod mode"
     exit 1
   fi
+  if [ -z "${GRAFANA_ADMIN_PASSWORD:-}" ]; then
+    echo "ERROR: GRAFANA_ADMIN_PASSWORD environment variable is required for --prod mode"
+    exit 1
+  fi
 
   export DOCKER_IMAGE="registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}"
   export PULL_POLICY="always"
@@ -51,7 +55,7 @@ fi
 
 # Generate docker-compose.yaml from template
 echo "==> Generating docker-compose.yaml"
-envsubst < docker-compose.template.yaml > docker-compose.yaml
+envsubst '$DOCKER_IMAGE $DATA_VOLUME_PATH $PULL_POLICY $GRAFANA_ADMIN_PASSWORD' < docker-compose.template.yaml > docker-compose.yaml
 
 echo "==> docker-compose.yaml generated successfully"
 echo "    DOCKER_IMAGE=$DOCKER_IMAGE"

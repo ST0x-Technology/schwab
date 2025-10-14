@@ -6,6 +6,7 @@ use thiserror::Error;
 
 pub(crate) mod auth;
 pub(crate) mod broker;
+pub(crate) mod encryption;
 pub(crate) mod execution;
 pub(crate) mod market_hours;
 pub(crate) mod market_hours_cache;
@@ -129,6 +130,8 @@ pub(crate) enum SchwabError {
         response_text: String,
         parse_error: String,
     },
+    #[error("Encryption error: {0}")]
+    Encryption(#[from] encryption::EncryptionError),
 }
 
 pub(crate) async fn run_oauth_flow(
@@ -150,7 +153,7 @@ pub(crate) async fn run_oauth_flow(
     println!("Extracted code: {code}");
 
     let tokens = env.get_tokens_from_code(&code).await?;
-    tokens.store(pool).await?;
+    tokens.store(pool, &env.encryption_key).await?;
 
     Ok(())
 }
@@ -193,8 +196,11 @@ pub(crate) fn extract_code_from_url(url: &str) -> Result<String, SchwabError> {
 mod tests {
     use super::*;
     use crate::test_utils::setup_test_db;
+    use alloy::primitives::FixedBytes;
     use httpmock::prelude::*;
     use serde_json::json;
+
+    const TEST_ENCRYPTION_KEY: FixedBytes<32> = FixedBytes::ZERO;
 
     fn create_test_env_with_mock_server(mock_server: &MockServer) -> SchwabAuthEnv {
         SchwabAuthEnv {
@@ -203,6 +209,7 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: mock_server.base_url(),
             account_index: 0,
+            encryption_key: TEST_ENCRYPTION_KEY,
         }
     }
 
@@ -234,7 +241,7 @@ mod tests {
         });
 
         let tokens = env.get_tokens_from_code("test_code").await.unwrap();
-        tokens.store(&pool).await.unwrap();
+        tokens.store(&pool, &env.encryption_key).await.unwrap();
 
         mock.assert();
     }

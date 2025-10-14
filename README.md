@@ -69,6 +69,35 @@ cargo run --bin cli -- auth
 
 Follow the OAuth flow to obtain and store your access and refresh tokens.
 
+## Security
+
+### Token Encryption
+
+OAuth tokens (access tokens and refresh tokens) are encrypted at rest using
+AES-256-GCM authenticated encryption. This prevents unauthorized access to
+sensitive authentication credentials stored in the database.
+
+**Generating an encryption key:**
+
+```bash
+openssl rand -hex 32
+```
+
+This generates a 32-byte (256-bit) key encoded as 64 hexadecimal characters.
+
+**Setting the encryption key:**
+
+The encryption key must be provided via the `ENCRYPTION_KEY` environment
+variable. The key is never written to disk in plain text.
+
+```bash
+export ENCRYPTION_KEY=your_64_char_hex_key
+```
+
+For production deployments, the key should be stored as a secret in your
+deployment system (e.g., GitHub Actions secrets) and passed directly to the
+container environment.
+
 ### 5. Run the Bot
 
 ```bash

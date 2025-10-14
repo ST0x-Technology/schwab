@@ -164,12 +164,14 @@ impl TradingHoursController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schwab::tokens::SchwabTokens;
-    use crate::test_utils::setup_test_db;
+    use crate::test_utils::{setup_test_db, setup_test_tokens};
+    use alloy::primitives::FixedBytes;
     use chrono::TimeZone;
     use chrono_tz::US::Eastern;
     use httpmock::prelude::*;
     use serde_json::json;
+
+    const TEST_ENCRYPTION_KEY: FixedBytes<32> = FixedBytes::ZERO;
 
     fn create_test_env_with_mock_server(mock_server: &MockServer) -> SchwabAuthEnv {
         SchwabAuthEnv {
@@ -178,17 +180,8 @@ mod tests {
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: mock_server.base_url(),
             account_index: 0,
+            encryption_key: TEST_ENCRYPTION_KEY,
         }
-    }
-
-    async fn setup_test_tokens(pool: &SqlitePool) {
-        let tokens = SchwabTokens {
-            access_token: "test_access_token".to_string(),
-            access_token_fetched_at: Utc::now(),
-            refresh_token: "test_refresh_token".to_string(),
-            refresh_token_fetched_at: Utc::now(),
-        };
-        tokens.store(pool).await.unwrap();
     }
 
     #[tokio::test]
@@ -196,7 +189,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = Arc::new(setup_test_db().await);
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let cache = Arc::new(MarketHoursCache::new());
         let controller = TradingHoursController::new(cache, env, pool);
@@ -246,7 +239,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = Arc::new(setup_test_db().await);
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let cache = Arc::new(MarketHoursCache::new());
         let controller = TradingHoursController::new(cache, env, pool);
@@ -285,7 +278,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = Arc::new(setup_test_db().await);
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let cache = Arc::new(MarketHoursCache::new());
         let controller = TradingHoursController::new(cache, env, pool);
@@ -324,7 +317,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = Arc::new(setup_test_db().await);
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let cache = Arc::new(MarketHoursCache::new());
         let controller = TradingHoursController::new(cache, env, pool);
@@ -379,7 +372,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = Arc::new(setup_test_db().await);
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let cache = Arc::new(MarketHoursCache::new());
         let controller = TradingHoursController::new(cache, env, pool);
@@ -425,7 +418,7 @@ mod tests {
         let server = MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = Arc::new(setup_test_db().await);
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let cache = Arc::new(MarketHoursCache::new());
         let controller = TradingHoursController::new(cache, env, pool);

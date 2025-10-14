@@ -145,7 +145,7 @@ impl Conductor {
                     warn!("Refresh token expired, waiting for manual authentication via API");
                     anyhow::anyhow!("RefreshTokenExpired")
                 }
-                e => anyhow::anyhow!("Token validation failed: {}", e),
+                e => anyhow::anyhow!("Token validation failed: {e}"),
             })?;
 
         info!("Token validation successful");

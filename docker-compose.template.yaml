@@ -6,6 +6,7 @@ services:
     command: ["server"]
     environment:
       - OTEL_METRICS_EXPORTER_ENDPOINT=http://grafana:4318
+      - ENCRYPTION_KEY
     env_file:
       - .env
     volumes:
