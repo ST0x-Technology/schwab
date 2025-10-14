@@ -11,11 +11,13 @@ pub mod schwab;
 #[cfg(test)]
 pub mod test_utils;
 
-pub use alpaca::{AlpacaAuthEnv, AlpacaBroker, AlpacaClient, MarketHoursError};
+pub use alpaca::AlpacaBroker;
 pub use error::PersistenceError;
 pub use mock::{MockBroker, MockBrokerConfig};
 pub use order::{MarketOrder, OrderPlacement, OrderState, OrderStatus, OrderUpdate};
 pub use schwab::SchwabBroker;
+
+use alpaca::{AlpacaAuthEnv, MarketHoursError};
 
 #[async_trait]
 pub trait Broker: Send + Sync + 'static {
@@ -166,6 +168,7 @@ impl std::str::FromStr for SupportedBroker {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "schwab" => Ok(Self::Schwab),
+            "alpaca" => Ok(Self::Alpaca),
             "dry_run" => Ok(Self::DryRun),
             _ => Err(InvalidBrokerError(s.to_string())),
         }
@@ -245,6 +248,12 @@ pub enum BrokerError {
 
     #[error("Numeric conversion error: {0}")]
     NumericConversion(#[from] std::num::TryFromIntError),
+
+    #[error("Date/time parse error: {0}")]
+    DateTimeParse(#[from] chrono::ParseError),
+
+    #[error("Price conversion failed: {price} cannot be converted to cents")]
+    PriceConversion { price: f64 },
 }
 
 impl From<apca::Error> for BrokerError {

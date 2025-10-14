@@ -109,12 +109,7 @@ impl Broker for SchwabBroker {
         );
 
         // Place the order using Schwab API
-        let response = schwab_order
-            .place(&self.auth, &self.pool)
-            .await
-            .map_err(|e| {
-                BrokerError::OrderPlacement(format!("Schwab order placement failed: {}", e))
-            })?;
+        let response = schwab_order.place(&self.auth, &self.pool).await?;
 
         Ok(OrderPlacement {
             order_id: response.order_id,
@@ -129,29 +124,21 @@ impl Broker for SchwabBroker {
         info!("Getting order status for: {}", order_id);
 
         let order_response =
-            crate::schwab::order::Order::get_order_status(order_id, &self.auth, &self.pool)
-                .await
-                .map_err(|e| BrokerError::Network(format!("Failed to get order status: {}", e)))?;
+            crate::schwab::order::Order::get_order_status(order_id, &self.auth, &self.pool).await?;
 
         if order_response.is_filled() {
-            let price_cents = order_response
-                .price_in_cents()
-                .map_err(|e| BrokerError::Network(format!("Failed to calculate price: {}", e)))?
-                .ok_or_else(|| {
-                    BrokerError::Network(
-                        "Order marked as filled but price information is not available".to_string(),
-                    )
-                })?;
+            let price_cents = order_response.price_in_cents()?.ok_or_else(|| {
+                BrokerError::Network(
+                    "Order marked as filled but price information is not available".to_string(),
+                )
+            })?;
 
             let close_time_str = order_response.close_time.as_ref().ok_or_else(|| {
                 BrokerError::Network("Order marked as filled but close_time is missing".to_string())
             })?;
 
             let executed_at =
-                chrono::DateTime::parse_from_str(close_time_str, "%Y-%m-%dT%H:%M:%S%z")
-                    .map_err(|e| {
-                        BrokerError::Network(format!("Failed to parse close_time: {}", e))
-                    })?
+                chrono::DateTime::parse_from_str(close_time_str, "%Y-%m-%dT%H:%M:%S%z")?
                     .with_timezone(&chrono::Utc);
 
             Ok(OrderState::Filled {
@@ -164,9 +151,9 @@ impl Broker for SchwabBroker {
                 BrokerError::Network("Order marked as failed but close_time is missing".to_string())
             })?;
 
-            let failed_at = chrono::DateTime::parse_from_str(close_time_str, "%Y-%m-%dT%H:%M:%S%z")
-                .map_err(|e| BrokerError::Network(format!("Failed to parse close_time: {}", e)))?
-                .with_timezone(&chrono::Utc);
+            let failed_at =
+                chrono::DateTime::parse_from_str(close_time_str, "%Y-%m-%dT%H:%M:%S%z")?
+                    .with_timezone(&chrono::Utc);
 
             Ok(OrderState::Failed {
                 failed_at,
@@ -216,13 +203,16 @@ impl Broker for SchwabBroker {
 
                         let symbol =
                             Symbol::new(row.symbol).map_err(|e| BrokerError::InvalidOrder {
-                                reason: format!("Invalid symbol in database: {}", e),
+                                reason: format!("Invalid symbol in database: {e}"),
                             })?;
 
-                        let shares = Shares::new(row.shares as u64).map_err(|e| {
+                        let shares = Shares::new(row.shares.try_into().map_err(|_| {
                             BrokerError::InvalidOrder {
-                                reason: format!("Invalid shares in database: {}", e),
+                                reason: format!("Shares value {} is negative", row.shares),
                             }
+                        })?)
+                        .map_err(|e| BrokerError::InvalidOrder {
+                            reason: format!("Invalid shares in database: {e}"),
                         })?;
 
                         let direction =
@@ -230,7 +220,7 @@ impl Broker for SchwabBroker {
                                 .parse()
                                 .map_err(|e: crate::InvalidDirectionError| {
                                     BrokerError::InvalidOrder {
-                                        reason: format!("Invalid direction in database: {}", e),
+                                        reason: format!("Invalid direction in database: {e}"),
                                     }
                                 })?;
 
@@ -248,7 +238,6 @@ impl Broker for SchwabBroker {
                 Err(e) => {
                     // Log error but continue with other orders
                     info!("Failed to get status for order {}: {}", order_id_value, e);
-                    continue;
                 }
             }
         }

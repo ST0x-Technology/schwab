@@ -1,3 +1,4 @@
+use num_traits::ToPrimitive;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::BrokerError;
@@ -94,8 +95,10 @@ impl OrderStatusResponse {
     pub(crate) fn price_in_cents(&self) -> Result<Option<u64>, BrokerError> {
         self.calculate_weighted_average_price()
             .map(|price| {
-                let cents_i64: i64 = (price * 100.0).round() as i64;
-                Ok(cents_i64.try_into()?)
+                (price * 100.0)
+                    .round()
+                    .to_u64()
+                    .ok_or(BrokerError::PriceConversion { price })
             })
             .transpose()
     }

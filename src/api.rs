@@ -421,6 +421,8 @@ mod tests {
             &base_url,
             "--schwab-account-index",
             "0",
+            "--encryption-key",
+            "0x0000000000000000000000000000000000000000000000000000000000000000",
             "--alpaca-api-key-id",
             "",
             "--alpaca-api-secret-key",

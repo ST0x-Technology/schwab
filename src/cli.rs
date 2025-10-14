@@ -674,7 +674,7 @@ mod tests {
             refresh_token_fetched_at: Utc::now() - Duration::days(8),
         };
         expired_tokens
-            .store(&pool, get_schwab_auth_from_config(&config).encryption_key)
+            .store(&pool, &get_schwab_auth_from_config(&config).encryption_key)
             .await
             .unwrap();
 
@@ -703,7 +703,7 @@ mod tests {
             refresh_token_fetched_at: Utc::now() - Duration::days(1),
         };
         tokens_needing_refresh
-            .store(&pool, get_schwab_auth_from_config(&config).encryption_key)
+            .store(&pool, &get_schwab_auth_from_config(&config).encryption_key)
             .await
             .unwrap();
 
@@ -764,7 +764,7 @@ mod tests {
         order_mock.assert();
 
         let stored_tokens =
-            SchwabTokens::load(&pool, get_schwab_auth_from_config(&config).encryption_key)
+            SchwabTokens::load(&pool, &get_schwab_auth_from_config(&config).encryption_key)
                 .await
                 .unwrap();
         assert_eq!(stored_tokens.access_token, "refreshed_access_token");
@@ -812,7 +812,7 @@ mod tests {
         order_mock.assert();
 
         let stored_tokens =
-            SchwabTokens::load(&pool, get_schwab_auth_from_config(&config).encryption_key)
+            SchwabTokens::load(&pool, &get_schwab_auth_from_config(&config).encryption_key)
                 .await
                 .unwrap();
         assert_eq!(stored_tokens.access_token, "test_access_token");
@@ -926,7 +926,7 @@ mod tests {
             refresh_token_fetched_at: Utc::now() - Duration::days(8),
         };
         expired_tokens
-            .store(&pool, get_schwab_auth_from_config(&config).encryption_key)
+            .store(&pool, &get_schwab_auth_from_config(&config).encryption_key)
             .await
             .unwrap();
 
@@ -1336,7 +1336,7 @@ mod tests {
             refresh_token_fetched_at: chrono::Utc::now() - chrono::Duration::days(1), // Valid refresh token
         };
         expired_tokens
-            .store(&pool, get_schwab_auth_from_config(&config).encryption_key)
+            .store(&pool, &get_schwab_auth_from_config(&config).encryption_key)
             .await
             .unwrap();
 
@@ -1391,7 +1391,7 @@ mod tests {
             refresh_token_fetched_at: chrono::Utc::now() - chrono::Duration::days(1),
         };
         expired_tokens
-            .store(&pool, get_schwab_auth_from_config(&config).encryption_key)
+            .store(&pool, &get_schwab_auth_from_config(&config).encryption_key)
             .await
             .unwrap();
 
@@ -1453,7 +1453,7 @@ mod tests {
 
         // Verify that new tokens were stored in database
         let stored_tokens =
-            SchwabTokens::load(&pool, get_schwab_auth_from_config(&config).encryption_key)
+            SchwabTokens::load(&pool, &get_schwab_auth_from_config(&config).encryption_key)
                 .await
                 .unwrap();
         assert_eq!(stored_tokens.access_token, "new_access_token");

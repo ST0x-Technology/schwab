@@ -375,8 +375,8 @@ mod tests {
 
         let schwab_execution = OffchainExecution {
             id: None,
-            symbol: "AAPL".to_string(),
-            shares: 100,
+            symbol: Symbol::new("AAPL").unwrap(),
+            shares: Shares::new(100).unwrap(),
             direction: Direction::Buy,
             broker: SupportedBroker::Schwab,
             state: OrderState::Pending,
@@ -384,8 +384,8 @@ mod tests {
 
         let alpaca_execution = OffchainExecution {
             id: None,
-            symbol: "TSLA".to_string(),
-            shares: 50,
+            symbol: Symbol::new("TSLA").unwrap(),
+            shares: Shares::new(50).unwrap(),
             direction: Direction::Sell,
             broker: SupportedBroker::Alpaca,
             state: OrderState::Pending,
@@ -393,8 +393,8 @@ mod tests {
 
         let dry_run_execution = OffchainExecution {
             id: None,
-            symbol: "MSFT".to_string(),
-            shares: 25,
+            symbol: Symbol::new("MSFT").unwrap(),
+            shares: Shares::new(25).unwrap(),
             direction: Direction::Buy,
             broker: SupportedBroker::DryRun,
             state: OrderState::Pending,
@@ -426,34 +426,35 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(schwab_retrieved.broker, SupportedBroker::Schwab);
-        assert_eq!(schwab_retrieved.symbol, "AAPL");
-        assert_eq!(schwab_retrieved.shares, 100);
+        assert_eq!(schwab_retrieved.symbol, Symbol::new("AAPL").unwrap());
+        assert_eq!(schwab_retrieved.shares, Shares::new(100).unwrap());
 
         let alpaca_retrieved = find_execution_by_id(&pool, alpaca_id)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(alpaca_retrieved.broker, SupportedBroker::Alpaca);
-        assert_eq!(alpaca_retrieved.symbol, "TSLA");
-        assert_eq!(alpaca_retrieved.shares, 50);
+        assert_eq!(alpaca_retrieved.symbol, Symbol::new("TSLA").unwrap());
+        assert_eq!(alpaca_retrieved.shares, Shares::new(50).unwrap());
 
         let dry_run_retrieved = find_execution_by_id(&pool, dry_run_id)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(dry_run_retrieved.broker, SupportedBroker::DryRun);
-        assert_eq!(dry_run_retrieved.symbol, "MSFT");
-        assert_eq!(dry_run_retrieved.shares, 25);
+        assert_eq!(dry_run_retrieved.symbol, Symbol::new("MSFT").unwrap());
+        assert_eq!(dry_run_retrieved.shares, Shares::new(25).unwrap());
 
-        let all_pending = find_executions_by_symbol_status_and_broker(&pool, "", "PENDING", None)
-            .await
-            .unwrap();
+        let all_pending =
+            find_executions_by_symbol_status_and_broker(&pool, None, OrderStatus::Pending, None)
+                .await
+                .unwrap();
         assert_eq!(all_pending.len(), 3);
 
         let schwab_only = find_executions_by_symbol_status_and_broker(
             &pool,
-            "",
-            "PENDING",
+            None,
+            OrderStatus::Pending,
             Some(SupportedBroker::Schwab),
         )
         .await
@@ -463,8 +464,8 @@ mod tests {
 
         let alpaca_only = find_executions_by_symbol_status_and_broker(
             &pool,
-            "",
-            "PENDING",
+            None,
+            OrderStatus::Pending,
             Some(SupportedBroker::Alpaca),
         )
         .await
@@ -474,8 +475,8 @@ mod tests {
 
         let dry_run_only = find_executions_by_symbol_status_and_broker(
             &pool,
-            "",
-            "PENDING",
+            None,
+            OrderStatus::Pending,
             Some(SupportedBroker::DryRun),
         )
         .await
