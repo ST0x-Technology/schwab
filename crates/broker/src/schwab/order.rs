@@ -76,7 +76,7 @@ impl Order {
             client
                 .post(format!(
                     "{}/trader/v1/accounts/{}/orders",
-                    env.base_url, account_hash
+                    env.schwab_base_url, account_hash
                 ))
                 .headers(headers.clone())
                 .body(order_json.clone())
@@ -127,7 +127,7 @@ impl Order {
             client
                 .get(format!(
                     "{}/trader/v1/accounts/{}/orders/{}",
-                    env.base_url, account_hash, order_id
+                    env.schwab_base_url, account_hash, order_id
                 ))
                 .headers(headers.clone())
                 .send()

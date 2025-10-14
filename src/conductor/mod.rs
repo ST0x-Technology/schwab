@@ -14,7 +14,7 @@ use tracing::{debug, error, info, trace};
 use st0x_broker::{Broker, MarketOrder, SupportedBroker};
 
 use crate::bindings::IOrderBookV4::{ClearV2, IOrderBookV4Instance, TakeOrderV2};
-use crate::env::Env;
+use crate::env::Config;
 use crate::error::EventProcessingError;
 use crate::offchain::execution::{OffchainExecution, find_execution_by_id};
 use crate::offchain::order_poller::OrderStatusPoller;
@@ -40,7 +40,7 @@ pub(crate) struct Conductor {
 
 pub(crate) async fn run_market_hours_loop<B: Broker + Clone + Send + 'static>(
     broker: B,
-    env: Env,
+    config: Config,
     pool: SqlitePool,
     broker_maintenance: Option<JoinHandle<()>>,
 ) -> anyhow::Result<()> {
@@ -58,22 +58,23 @@ pub(crate) async fn run_market_hours_loop<B: Broker + Clone + Send + 'static>(
         info!("Starting conductor (no market hours restrictions)");
     }
 
-    let mut conductor =
-        match Conductor::start(&env, &pool, broker.clone(), broker_maintenance).await {
-            Ok(c) => c,
-            Err(e) => {
-                error!(
-                    "Failed to start conductor: {e}, retrying in {} seconds",
-                    RERUN_DELAY_SECS
-                );
+    let mut conductor = match Conductor::start(&config, &pool, broker.clone(), broker_maintenance)
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            error!(
+                "Failed to start conductor: {e}, retrying in {} seconds",
+                RERUN_DELAY_SECS
+            );
 
-                tokio::time::sleep(std::time::Duration::from_secs(RERUN_DELAY_SECS)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(RERUN_DELAY_SECS)).await;
 
-                let new_maintenance = broker.run_broker_maintenance().await;
+            let new_maintenance = broker.run_broker_maintenance().await;
 
-                return Box::pin(run_market_hours_loop(broker, env, pool, new_maintenance)).await;
-            }
-        };
+            return Box::pin(run_market_hours_loop(broker, config, pool, new_maintenance)).await;
+        }
+    };
 
     info!("Market opened, conductor running");
 
@@ -90,22 +91,22 @@ pub(crate) async fn run_market_hours_loop<B: Broker + Clone + Send + 'static>(
             conductor.abort_trading_tasks();
             let next_maintenance = conductor.broker_maintenance;
             info!("Trading tasks shutdown, DEX events buffering");
-            Box::pin(run_market_hours_loop(broker, env, pool, next_maintenance)).await
+            Box::pin(run_market_hours_loop(broker, config, pool, next_maintenance)).await
         }
     }
 }
 
 impl Conductor {
     pub(crate) async fn start<B: Broker + Clone + Send + 'static>(
-        env: &Env,
+        config: &Config,
         pool: &SqlitePool,
         broker: B,
         broker_maintenance: Option<JoinHandle<()>>,
     ) -> anyhow::Result<Self> {
-        let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
+        let ws = WsConnect::new(config.evm.ws_rpc_url.as_str());
         let provider = ProviderBuilder::new().connect_ws(ws).await?;
         let cache = SymbolCache::default();
-        let orderbook = IOrderBookV4Instance::new(env.evm_env.orderbook, &provider);
+        let orderbook = IOrderBookV4Instance::new(config.evm.orderbook, &provider);
 
         let mut clear_stream = orderbook.ClearV2_filter().watch().await?.into_stream();
         let mut take_stream = orderbook.TakeOrderV2_filter().watch().await?.into_stream();
@@ -113,10 +114,10 @@ impl Conductor {
         let cutoff_block =
             get_cutoff_block(&mut clear_stream, &mut take_stream, &provider, pool).await?;
 
-        backfill_events(pool, &provider, &env.evm_env, cutoff_block - 1).await?;
+        backfill_events(pool, &provider, &config.evm, cutoff_block - 1).await?;
 
         Ok(
-            ConductorBuilder::new(env.clone(), pool.clone(), cache, provider, broker)
+            ConductorBuilder::new(config.clone(), pool.clone(), cache, provider, broker)
                 .with_broker_maintenance(broker_maintenance)
                 .with_dex_event_streams(clear_stream, take_stream)
                 .spawn(),
@@ -199,17 +200,17 @@ impl Conductor {
 }
 
 fn spawn_order_poller<B: Broker + Clone + Send + 'static>(
-    env: &Env,
+    config: &Config,
     pool: &SqlitePool,
     broker: B,
 ) -> JoinHandle<()> {
-    let config = env.get_order_poller_config();
+    let poller_config = config.get_order_poller_config();
     info!(
         "Starting order status poller with interval: {:?}, max jitter: {:?}",
-        config.polling_interval, config.max_jitter
+        poller_config.polling_interval, poller_config.max_jitter
     );
 
-    let poller = OrderStatusPoller::new(config, pool.clone(), broker);
+    let poller = OrderStatusPoller::new(poller_config, pool.clone(), broker);
     tokio::spawn(async move {
         if let Err(e) = poller.run().await {
             error!("Order poller failed: {e}");
@@ -259,18 +260,18 @@ fn spawn_queue_processor<
     B: Broker + Clone + Send + 'static,
 >(
     broker: B,
-    env: &Env,
+    config: &Config,
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: P,
 ) -> JoinHandle<()> {
     info!("Starting queue processor service");
-    let env_clone = env.clone();
+    let config_clone = config.clone();
     let pool_clone = pool.clone();
     let cache_clone = cache.clone();
 
     tokio::spawn(async move {
-        run_queue_processor(&broker, &env_clone, &pool_clone, &cache_clone, provider).await;
+        run_queue_processor(&broker, &config_clone, &pool_clone, &cache_clone, provider).await;
     })
 }
 
@@ -404,7 +405,7 @@ async fn process_live_event(
 
 async fn run_queue_processor<P: Provider + Clone, B: Broker + Clone>(
     broker: &B,
-    env: &Env,
+    config: &Config,
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: P,
@@ -428,7 +429,7 @@ async fn run_queue_processor<P: Provider + Clone, B: Broker + Clone>(
     let broker_type = broker.to_supported_broker();
 
     loop {
-        match process_next_queued_event(broker_type, env, pool, cache, &provider, &feed_id_cache)
+        match process_next_queued_event(broker_type, config, pool, cache, &provider, &feed_id_cache)
             .await
         {
             Ok(Some(execution)) => {
@@ -452,7 +453,7 @@ async fn run_queue_processor<P: Provider + Clone, B: Broker + Clone>(
 
 async fn process_next_queued_event<P: Provider + Clone>(
     broker_type: SupportedBroker,
-    env: &Env,
+    config: &Config,
     pool: &SqlitePool,
     cache: &SymbolCache,
     provider: &P,
@@ -466,7 +467,7 @@ async fn process_next_queued_event<P: Provider + Clone>(
     let event_id = extract_event_id(&queued_event)?;
 
     let onchain_trade =
-        convert_event_to_trade(env, cache, provider, &queued_event, feed_id_cache).await?;
+        convert_event_to_trade(config, cache, provider, &queued_event, feed_id_cache).await?;
 
     let Some(trade) = onchain_trade else {
         return handle_filtered_event(pool, &queued_event, event_id).await;
@@ -484,18 +485,18 @@ fn extract_event_id(queued_event: &QueuedEvent) -> Result<i64, EventProcessingEr
 }
 
 async fn convert_event_to_trade<P: Provider + Clone>(
-    env: &Env,
+    config: &Config,
     cache: &SymbolCache,
     provider: &P,
     queued_event: &QueuedEvent,
     feed_id_cache: &FeedIdCache,
 ) -> Result<Option<OnchainTrade>, EventProcessingError> {
-    let reconstructed_log = reconstruct_log_from_queued_event(&env.evm_env, queued_event);
+    let reconstructed_log = reconstruct_log_from_queued_event(&config.evm, queued_event);
 
     let onchain_trade = match &queued_event.event {
         TradeEvent::ClearV2(clear_event) => {
             OnchainTrade::try_from_clear_v2(
-                &env.evm_env,
+                &config.evm,
                 cache,
                 provider,
                 *clear_event.clone(),
@@ -510,7 +511,7 @@ async fn convert_event_to_trade<P: Provider + Clone>(
                 provider,
                 *take_event.clone(),
                 reconstructed_log,
-                env.evm_env.order_owner,
+                config.evm.order_owner,
                 feed_id_cache,
             )
             .await?
@@ -827,7 +828,7 @@ async fn buffer_live_events<S1, S2>(
 mod tests {
     use super::*;
     use crate::bindings::IOrderBookV4::{ClearConfig, ClearV2};
-    use crate::env::tests::create_test_env;
+    use crate::env::tests::create_test_config;
     use crate::onchain::trade::OnchainTrade;
     use crate::test_utils::{OnchainTradeBuilder, setup_test_db};
     use crate::tokenized_symbol;
@@ -836,12 +837,12 @@ mod tests {
     use alloy::providers::mock::Asserter;
     use alloy::sol_types;
     use futures_util::stream;
-    use st0x_broker::Direction;
+    use st0x_broker::{Direction, MockBrokerConfig, TryIntoBroker};
 
     #[tokio::test]
     async fn test_event_enqueued_when_trade_conversion_returns_none() {
         let pool = setup_test_db().await;
-        let _env = create_test_env();
+        let _config = create_test_config();
 
         let clear_event = ClearV2 {
             sender: address!("0x1111111111111111111111111111111111111111"),
@@ -942,7 +943,7 @@ mod tests {
     #[tokio::test]
     async fn test_complete_event_processing_flow() {
         let pool = setup_test_db().await;
-        let env = create_test_env();
+        let config = create_test_config();
 
         let clear_event = ClearV2 {
             sender: address!("0x1111111111111111111111111111111111111111"),
@@ -978,7 +979,7 @@ mod tests {
 
             let feed_id_cache = FeedIdCache::default();
             if let Ok(Some(trade)) = OnchainTrade::try_from_clear_v2(
-                &env.evm_env,
+                &config.evm,
                 &cache,
                 &http_provider,
                 *boxed_clear_event,
@@ -1008,7 +1009,7 @@ mod tests {
     #[tokio::test]
     async fn test_idempotency_bot_restart_during_processing() {
         let pool = setup_test_db().await;
-        let _env = create_test_env();
+        let _config = create_test_config();
 
         let event1 = ClearV2 {
             sender: address!("0x1111111111111111111111111111111111111111"),
@@ -1185,7 +1186,7 @@ mod tests {
     #[tokio::test]
     async fn test_process_queued_event_deserialization() {
         let pool = setup_test_db().await;
-        let env = create_test_env();
+        let config = create_test_config();
 
         let clear_event = ClearV2 {
             sender: address!("0x1111111111111111111111111111111111111111"),
@@ -1216,8 +1217,8 @@ mod tests {
 
         assert!(matches!(queued_event.event, TradeEvent::ClearV2(_)));
 
-        let reconstructed_log = reconstruct_log_from_queued_event(&env.evm_env, &queued_event);
-        assert_eq!(reconstructed_log.inner.address, env.evm_env.orderbook);
+        let reconstructed_log = reconstruct_log_from_queued_event(&config.evm, &queued_event);
+        assert_eq!(reconstructed_log.inner.address, config.evm.orderbook);
         assert_eq!(
             reconstructed_log.transaction_hash.unwrap(),
             queued_event.tx_hash
@@ -1406,7 +1407,7 @@ mod tests {
     #[tokio::test]
     async fn test_clear_v2_event_filtering_without_errors() {
         let pool = setup_test_db().await;
-        let env = create_test_env();
+        let config = create_test_config();
         let cache = SymbolCache::default();
         let feed_id_cache = FeedIdCache::default();
         let asserter = Asserter::new();
@@ -1442,7 +1443,7 @@ mod tests {
 
         let result = process_next_queued_event(
             SupportedBroker::DryRun,
-            &env,
+            &config,
             &pool,
             &cache,
             &provider,
@@ -1460,18 +1461,19 @@ mod tests {
     #[tokio::test]
     async fn test_execute_pending_offchain_execution_not_found() {
         let pool = setup_test_db().await;
-        let env = create_test_env();
-        let broker = env.get_test_broker().await.unwrap();
+        let broker = MockBrokerConfig.try_into_broker().await.unwrap();
 
         let result = execute_pending_offchain_execution(&broker, &pool, 99999).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not found"));
+        assert!(matches!(
+            result.unwrap_err(),
+            EventProcessingError::AccumulatorProcessing(_)
+        ));
     }
 
     #[tokio::test]
     async fn test_conductor_abort_all() {
         let pool = setup_test_db().await;
-        let env = create_test_env();
+        let config = create_test_config();
         let cache = SymbolCache::default();
         let asserter = Asserter::new();
         let provider = alloy::providers::ProviderBuilder::new().connect_mocked_client(asserter);
@@ -1479,9 +1481,9 @@ mod tests {
         let clear_stream = stream::empty();
         let take_stream = stream::empty();
 
-        let broker = env.get_test_broker().await.unwrap();
+        let broker = MockBrokerConfig.try_into_broker().await.unwrap();
 
-        let conductor = ConductorBuilder::new(env, pool, cache, provider, broker)
+        let conductor = ConductorBuilder::new(config, pool, cache, provider, broker)
             .with_broker_maintenance(None)
             .with_dex_event_streams(clear_stream, take_stream)
             .spawn();
@@ -1499,7 +1501,7 @@ mod tests {
     #[tokio::test]
     async fn test_conductor_individual_abort() {
         let pool = setup_test_db().await;
-        let env = create_test_env();
+        let config = create_test_config();
         let cache = SymbolCache::default();
         let asserter = Asserter::new();
         let provider = alloy::providers::ProviderBuilder::new().connect_mocked_client(asserter);
@@ -1507,9 +1509,9 @@ mod tests {
         let clear_stream = stream::empty();
         let take_stream = stream::empty();
 
-        let broker = env.get_test_broker().await.unwrap();
+        let broker = MockBrokerConfig.try_into_broker().await.unwrap();
 
-        let conductor = ConductorBuilder::new(env, pool, cache, provider, broker)
+        let conductor = ConductorBuilder::new(config, pool, cache, provider, broker)
             .with_broker_maintenance(None)
             .with_dex_event_streams(clear_stream, take_stream)
             .spawn();
@@ -1540,7 +1542,7 @@ mod tests {
     #[tokio::test]
     async fn test_conductor_builder_returns_immediately() {
         let pool = setup_test_db().await;
-        let env = create_test_env();
+        let config = create_test_config();
         let cache = SymbolCache::default();
         let asserter = Asserter::new();
         let provider = alloy::providers::ProviderBuilder::new().connect_mocked_client(asserter);
@@ -1550,9 +1552,9 @@ mod tests {
 
         let start_time = std::time::Instant::now();
 
-        let broker = env.get_test_broker().await.unwrap();
+        let broker = MockBrokerConfig.try_into_broker().await.unwrap();
 
-        let conductor = ConductorBuilder::new(env, pool, cache, provider, broker)
+        let conductor = ConductorBuilder::new(config, pool, cache, provider, broker)
             .with_broker_maintenance(None)
             .with_dex_event_streams(clear_stream, take_stream)
             .spawn();

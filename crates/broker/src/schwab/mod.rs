@@ -11,7 +11,7 @@ mod tokens;
 
 // Re-export only what's needed for broker construction
 pub use auth::SchwabAuthEnv;
-pub use broker::SchwabBroker;
+pub use broker::{SchwabBroker, SchwabConfig};
 
 // Re-export for auth CLI command (Schwab-specific, not part of generic broker API)
 pub use tokens::SchwabTokens;

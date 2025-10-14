@@ -69,7 +69,7 @@ jobs:
           host: ${{ secrets.DROPLET_HOST }}
           username: root
           key: ${{ secrets.DROPLET_SSH_KEY }}
-          envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_OWNER,DEPLOYMENT_BLOCK,APP_KEY,APP_SECRET,ENCRYPTION_KEY,ENV_TEMPLATE,DOCKER_COMPOSE_TEMPLATE,GRAFANA_DOCKERFILE,GRAFANA_DATASOURCE_YAML,GRAFANA_ADMIN_PASSWORD
+          envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_OWNER,DEPLOYMENT_BLOCK,APP_KEY,APP_SECRET,ALPACA_KEY,ALPACA_SECRET,ENCRYPTION_KEY,ENV_TEMPLATE,DOCKER_COMPOSE_TEMPLATE,GRAFANA_DOCKERFILE,GRAFANA_DATASOURCE_YAML,GRAFANA_ADMIN_PASSWORD
           script: |
             set -euo pipefail
 
@@ -155,22 +155,37 @@ jobs:
               exit 1
             fi
 
+            if ! docker ps --format "{{.Names}}" | grep -q "^alpacabot$"; then
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - Alpacabot container not found in docker ps" | tee -a "${DEPLOY_LOG}" >&2
+              docker compose logs alpacabot 2>&1 | tee -a "${DEPLOY_LOG}"
+              exit 1
+            fi
+
             if ! docker ps --format "{{.Names}}" | grep -q "^grafana$"; then
               echo "$(date '+%Y-%m-%d %H:%M:%S') - Grafana container not found in docker ps" | tee -a "${DEPLOY_LOG}" >&2
               docker compose logs grafana 2>&1 | tee -a "${DEPLOY_LOG}"
               exit 1
             fi
 
-            echo "$(date '+%Y-%m-%d %H:%M:%S') - Both containers confirmed running" | tee -a "${DEPLOY_LOG}"
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - All containers confirmed running" | tee -a "${DEPLOY_LOG}"
 
             # Capture initial container logs
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Services started successfully, capturing logs..." | tee -a "${DEPLOY_LOG}"
             docker compose logs schwarbot 2>&1 | tee "${DOCKER_LOG}"
+            docker compose logs alpacabot 2>&1 | tee -a "${DOCKER_LOG}"
 
             # Check for errors in schwarbot logs
             if docker compose logs schwarbot 2>&1 | grep -q "error\|panic\|failed"; then
-              echo "$(date '+%Y-%m-%d %H:%M:%S') - Application errors detected in logs" | tee -a "${DEPLOY_LOG}" >&2
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - Schwarbot errors detected in logs" | tee -a "${DEPLOY_LOG}" >&2
               docker compose logs --tail 20 schwarbot 2>&1 | tee -a "${DEPLOY_LOG}"
+              echo "Full container logs saved to: ${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}" >&2
+              exit 1
+            fi
+
+            # Check for errors in alpacabot logs
+            if docker compose logs alpacabot 2>&1 | grep -q "error\|panic\|failed"; then
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - Alpacabot errors detected in logs" | tee -a "${DEPLOY_LOG}" >&2
+              docker compose logs --tail 20 alpacabot 2>&1 | tee -a "${DEPLOY_LOG}"
               echo "Full container logs saved to: ${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}" >&2
               exit 1
             fi
@@ -196,6 +211,8 @@ jobs:
           WS_RPC_URL: ${{ secrets.WS_RPC_URL }}
           APP_KEY: ${{ secrets.APP_KEY }}
           APP_SECRET: ${{ secrets.APP_SECRET }}
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
           ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
           ENV_TEMPLATE: ${{ env.ENV_TEMPLATE }}

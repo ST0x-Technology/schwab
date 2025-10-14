@@ -10,7 +10,7 @@ use tracing::info;
 use st0x_broker::Broker;
 
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
-use crate::env::Env;
+use crate::env::Config;
 use crate::onchain::trade::TradeEvent;
 use crate::symbol::cache::SymbolCache;
 
@@ -24,7 +24,7 @@ type TakeStream =
     Box<dyn Stream<Item = Result<(TakeOrderV2, Log), sol_types::Error>> + Unpin + Send>;
 
 struct CommonFields<P, B> {
-    env: Env,
+    config: Config,
     pool: SqlitePool,
     cache: SymbolCache,
     provider: P,
@@ -54,7 +54,7 @@ impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
     ConductorBuilder<P, B, Initial>
 {
     pub(crate) fn new(
-        env: Env,
+        config: Config,
         pool: SqlitePool,
         cache: SymbolCache,
         provider: P,
@@ -62,7 +62,7 @@ impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
     ) -> Self {
         Self {
             common: CommonFields {
-                env,
+                config,
                 pool,
                 cache,
                 provider,
@@ -128,7 +128,7 @@ impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
         }
 
         let order_poller = spawn_order_poller(
-            &self.common.env,
+            &self.common.config,
             &self.common.pool,
             self.common.broker.clone(),
         );
@@ -145,7 +145,7 @@ impl<P: Provider + Clone + Send + 'static, B: Broker + Clone + Send + 'static>
         );
         let queue_processor = spawn_queue_processor(
             self.common.broker,
-            &self.common.env,
+            &self.common.config,
             &self.common.pool,
             &self.common.cache,
             self.common.provider,

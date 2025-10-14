@@ -22,9 +22,15 @@ url.workspace = true
 rand.workspace = true
 serde_json.workspace = true
 chrono-tz.workspace = true
+num-traits.workspace = true
+apca = "0.30.0"
+uuid = { version = "1.10.0", features = ["v4", "serde"] }
 aes-gcm = "0.10.3"
 
 [dev-dependencies]
 httpmock.workspace = true
 serde_json.workspace = true
 serial_test.workspace = true
+
+[lints]
+workspace = true

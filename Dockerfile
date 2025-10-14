@@ -15,14 +15,16 @@ COPY flake.nix flake.lock ./
 RUN nix develop --command echo "Nix dev env ready"
 
 COPY Cargo.toml Cargo.lock ./
+COPY crates/broker/Cargo.toml ./crates/broker/
 
-RUN mkdir -p src/bin && \
+RUN mkdir -p src/bin crates/broker/src && \
     echo 'fn main() {}' > src/lib.rs && \
-    echo 'fn main() {}' > src/bin/server.rs
+    echo 'fn main() {}' > src/bin/server.rs && \
+    echo 'fn main() {}' > crates/broker/src/lib.rs
 
 RUN nix develop --command cargo chef prepare --recipe-path recipe.json
 
-RUN rm -rf src
+RUN rm -rf src crates
 
 RUN nix develop --command cargo chef cook --release --recipe-path recipe.json
 
@@ -56,7 +58,8 @@ FROM debian:12-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    useradd -m -u 1000 schwab
 
 WORKDIR /app
 
@@ -65,5 +68,7 @@ COPY --from=builder /app/target/release/server ./
 COPY --from=builder /app/migrations ./migrations
 
 RUN chown -R schwab:schwab /app
+
+USER schwab
 
 ENTRYPOINT ["./server"]

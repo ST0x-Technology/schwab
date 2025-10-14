@@ -2,6 +2,26 @@
 members = [".", "crates/broker"]
 resolver = "2"
 
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+enum_glob_use = "deny"
+
+# `priority = -1` allow for allowing lints enabled by a group to be re-disabled
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+
+doc_markdown = "allow"
+items_after_statements = "allow"
+missing_const_for_fn = "allow"
+missing_docs_in_private_items = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+redundant_pub_crate = "allow"
+
 [workspace.dependencies]
 alloy = { version = "1.0.38", features = ["full"] }
 async-trait = "0.1.81"
@@ -69,22 +89,5 @@ num-traits.workspace = true
 httpmock.workspace = true
 serial_test.workspace = true
 
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-unwrap_used = "deny"
-enum_glob_use = "deny"
-
-# `priority = -1` allow for allowing lints enabled by a group to be re-disabled
-pedantic = { level = "deny", priority = -1 }
-nursery = { level = "deny", priority = -1 }
-
-doc_markdown = "allow"
-items_after_statements = "allow"
-missing_const_for_fn = "allow"
-missing_docs_in_private_items = "allow"
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-must_use_candidate = "allow"
-redundant_pub_crate = "allow"
+[lints]
+workspace = true
