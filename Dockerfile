@@ -58,7 +58,8 @@ FROM debian:12-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    useradd -m -u 1000 schwab
 
 WORKDIR /app
 
@@ -67,5 +68,7 @@ COPY --from=builder /app/target/release/server ./
 COPY --from=builder /app/migrations ./migrations
 
 RUN chown -R schwab:schwab /app
+
+USER schwab
 
 ENTRYPOINT ["./server"]
