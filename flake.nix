@@ -30,6 +30,7 @@
               # Misc
               yamlfmt.enable = true;
               yamlfmt.settings.lint-only = false;
+              shellcheck.enable = true;
             };
           };
         };
