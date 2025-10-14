@@ -45,35 +45,43 @@ compatibility.
 
 **Script**: Support both local testing and prod deployment. Generate
 docker-compose.yaml from template using envsubst with different variable values
-based on mode.
+based on mode. Note: schwarbot and alpacabot containers use the SAME image,
+differentiated by BROKER env var. Grafana is built separately.
 
-- [ ] Copy script from feat/pnl branch as starting point
-- [ ] Support `--prod` flag for CI deployment mode
-- [ ] Support `--local` (default) for local testing mode
-- [ ] In local mode: build image with debug profile, use `./data` volume path,
-      pull_policy=never
-- [ ] In local mode: run
+- [x] Copy script from feat/pnl branch as starting point
+- [x] Analyze current docker-compose.template.yaml structure
+- [x] Support `--prod` flag for CI deployment mode
+- [x] Support `--local` (default) for local testing mode
+- [x] In local mode: build image with debug profile, use `./data` volume path,
+      pull_policy=never, image=schwarbot:local
+- [x] In local mode: run
       `docker build --build-arg BUILD_PROFILE=debug -t schwarbot:local .`
-- [ ] In prod mode: validate required env vars (REGISTRY_NAME, SHORT_SHA,
+- [x] In prod mode: validate required env vars (REGISTRY_NAME, SHORT_SHA,
       DATA_VOLUME_PATH, GRAFANA_ADMIN_PASSWORD)
-- [ ] In prod mode: use registry image, use `/mnt/volume_nyc3_01` volume path,
+- [x] In prod mode: use registry image, use DATA_VOLUME_PATH from env,
       pull_policy=always
-- [ ] Generate docker-compose.yaml using
-      `envsubst '$DOCKER_IMAGE $DATA_VOLUME_PATH $PULL_POLICY $GRAFANA_ADMIN_PASSWORD'`
+- [x] Generate docker-compose.yaml using envsubst with proper variables
 
 ## Task 4. Update docker-compose.template.yaml
 
-**Changes**: Update template to use variable substitution for image, paths, and
-policies. Set broker-specific environment variables per container.
+**Changes**: Update template to use variable substitution for image and pull
+policy. Add CRITICAL missing BROKER environment variables. Both schwarbot and
+alpacabot use the same image, differentiated by BROKER env var.
 
-- [ ] Replace hardcoded registry image with `image: ${DOCKER_IMAGE}`
+**Current Issues**:
+- No BROKER env var set (both containers will fail without this!)
+- Both have ENCRYPTION_KEY but only schwab needs it
+- Hardcoded image path (should use variable)
+- No pull_policy specified
+- Volume paths already use ${DATA_VOLUME_PATH} ✓
+
+**Changes needed**:
+- [ ] Replace hardcoded image with `image: ${DOCKER_IMAGE}` for both containers
 - [ ] Add `pull_policy: ${PULL_POLICY}` to both schwarbot and alpacabot
-- [ ] Set `BROKER=schwab` in schwarbot environment section
-- [ ] Set `BROKER=alpaca` in alpacabot environment section
-- [ ] Add `ENCRYPTION_KEY` to schwarbot environment (NOT alpacabot)
-- [ ] Replace hardcoded volume paths with `${DATA_VOLUME_PATH}:/data`
-- [ ] Update grafana database volume mounts to use
-      `${DATA_VOLUME_PATH}/schwab.db` and `${DATA_VOLUME_PATH}/alpaca.db`
+- [ ] Add `BROKER=schwab` to schwarbot environment section (CRITICAL)
+- [ ] Add `BROKER=alpaca` to alpacabot environment section (CRITICAL)
+- [ ] Remove `ENCRYPTION_KEY` from alpacabot (keep only on schwarbot)
+- [ ] Verify volume paths still use ${DATA_VOLUME_PATH}
 
 ## Task 5. Update Dockerfile with BUILD_PROFILE support
 
