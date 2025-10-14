@@ -15,6 +15,52 @@ pub use order::{MarketOrder, OrderPlacement, OrderState, OrderStatus, OrderUpdat
 pub use schwab::SchwabBroker;
 pub use test::TestBroker;
 
+#[async_trait]
+pub trait Broker: Send + Sync + 'static {
+    type Error: std::error::Error + Send + Sync + 'static;
+    type OrderId: Display + Debug + Send + Sync + Clone;
+    type Config: Send + Sync + Clone + 'static;
+
+    /// Create and validate broker instance from config
+    /// All initialization and validation happens here
+    async fn try_from_config(config: Self::Config) -> Result<Self, Self::Error>
+    where
+        Self: Sized;
+
+    /// Wait until market opens (blocks if market closed), then return time until market close
+    /// Implementations without market hours should return a very long duration
+    async fn wait_until_market_open(&self) -> Result<std::time::Duration, Self::Error>;
+
+    /// Place a market order for the specified symbol and quantity
+    /// Returns order placement details including broker-assigned order ID
+    async fn place_market_order(
+        &self,
+        order: MarketOrder,
+    ) -> Result<OrderPlacement<Self::OrderId>, Self::Error>;
+
+    /// Get the current status of a specific order
+    /// Used to check if pending orders have been filled or failed
+    async fn get_order_status(&self, order_id: &Self::OrderId) -> Result<OrderState, Self::Error>;
+
+    /// Poll all pending orders for status updates
+    /// More efficient than individual get_order_status calls for multiple orders
+    async fn poll_pending_orders(&self) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error>;
+
+    /// Return the enum variant representing this broker type
+    /// Used for database storage and conditional logic
+    fn to_supported_broker(&self) -> SupportedBroker;
+
+    /// Convert a string representation to the broker's OrderId type
+    /// This is needed for converting database-stored order IDs back to broker types
+    fn parse_order_id(&self, order_id_str: &str) -> Result<Self::OrderId, Self::Error>;
+
+    /// Run broker-specific maintenance tasks (token refresh, connection health, etc.)
+    /// Returns None if no maintenance needed, Some(handle) if maintenance task spawned
+    /// Tasks should run indefinitely and be aborted by the caller when shutdown is needed
+    /// Errors are logged inside the task and do not propagate to the caller
+    async fn run_broker_maintenance(&self) -> Option<JoinHandle<()>>;
+}
+
 /// Stock symbol newtype wrapper with validation
 ///
 /// Ensures symbols are non-empty and provides type safety to prevent
@@ -27,7 +73,8 @@ impl Symbol {
     ///
     /// # Errors
     /// Returns `BrokerError::InvalidOrder` if symbol is empty
-    pub fn new(symbol: String) -> Result<Self, BrokerError> {
+    pub fn new(symbol: impl Into<String>) -> Result<Self, BrokerError> {
+        let symbol = symbol.into();
         if symbol.is_empty() {
             return Err(BrokerError::InvalidOrder {
                 reason: "Symbol cannot be empty".to_string(),
@@ -190,65 +237,19 @@ pub enum BrokerError {
     NumericConversion(#[from] std::num::TryFromIntError),
 }
 
-#[async_trait]
-pub trait Broker: Send + Sync + 'static {
-    type Error: std::error::Error + Send + Sync + 'static;
-    type OrderId: Display + Debug + Send + Sync + Clone;
-    type Config: Send + Sync + Clone + 'static;
-
-    /// Create and validate broker instance from config
-    /// All initialization and validation happens here
-    async fn try_from_config(config: Self::Config) -> Result<Self, Self::Error>
-    where
-        Self: Sized;
-
-    /// Wait until market opens (blocks if market closed), then return time until market close
-    /// Implementations without market hours should return a very long duration
-    async fn wait_until_market_open(&self) -> Result<std::time::Duration, Self::Error>;
-
-    /// Place a market order for the specified symbol and quantity
-    /// Returns order placement details including broker-assigned order ID
-    async fn place_market_order(
-        &self,
-        order: MarketOrder,
-    ) -> Result<OrderPlacement<Self::OrderId>, Self::Error>;
-
-    /// Get the current status of a specific order
-    /// Used to check if pending orders have been filled or failed
-    async fn get_order_status(&self, order_id: &Self::OrderId) -> Result<OrderState, Self::Error>;
-
-    /// Poll all pending orders for status updates
-    /// More efficient than individual get_order_status calls for multiple orders
-    async fn poll_pending_orders(&self) -> Result<Vec<OrderUpdate<Self::OrderId>>, Self::Error>;
-
-    /// Return the enum variant representing this broker type
-    /// Used for database storage and conditional logic
-    fn to_supported_broker(&self) -> SupportedBroker;
-
-    /// Convert a string representation to the broker's OrderId type
-    /// This is needed for converting database-stored order IDs back to broker types
-    fn parse_order_id(&self, order_id_str: &str) -> Result<Self::OrderId, Self::Error>;
-
-    /// Run broker-specific maintenance tasks (token refresh, connection health, etc.)
-    /// Returns None if no maintenance needed, Some(handle) if maintenance task spawned
-    /// Tasks should run indefinitely and be aborted by the caller when shutdown is needed
-    /// Errors are logged inside the task and do not propagate to the caller
-    async fn run_broker_maintenance(&self) -> Option<JoinHandle<()>>;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_symbol_new_valid() {
-        let symbol = Symbol::new("AAPL".to_string()).unwrap();
+        let symbol = Symbol::new("AAPL").unwrap();
         assert_eq!(symbol.to_string(), "AAPL");
     }
 
     #[test]
     fn test_symbol_new_empty_fails() {
-        let result = Symbol::new("".to_string());
+        let result = Symbol::new("");
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -258,10 +259,10 @@ mod tests {
 
     #[test]
     fn test_symbol_new_boundary_valid() {
-        let symbol = Symbol::new("A".to_string()).unwrap();
+        let symbol = Symbol::new("A").unwrap();
         assert_eq!(symbol.to_string(), "A");
 
-        let symbol = Symbol::new("ABCDEFGHIJ".to_string()).unwrap(); // 10 chars
+        let symbol = Symbol::new("ABCDEFGHIJ").unwrap(); // 10 chars
         assert_eq!(symbol.to_string(), "ABCDEFGHIJ");
     }
 

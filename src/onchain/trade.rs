@@ -248,7 +248,7 @@ impl OnchainTrade {
         let pyth_pricing = match PythPricing::try_from_tx_hash(
             tx_hash,
             &provider,
-            tokenized_symbol.base().as_str(),
+            &tokenized_symbol.base().to_string(),
             feed_id_cache,
         )
         .await

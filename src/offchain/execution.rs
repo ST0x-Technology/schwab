@@ -55,7 +55,7 @@ fn row_to_execution(
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct OffchainExecution {
     pub(crate) id: Option<i64>,
     pub(crate) symbol: Symbol,
@@ -73,52 +73,24 @@ pub(crate) async fn find_executions_by_symbol_status_and_broker(
 ) -> Result<Vec<OffchainExecution>, OnChainError> {
     let status_str = status.as_str();
 
-    let (query, params): (String, Vec<String>) = if symbol.is_none() {
-        broker.map_or_else(
-            || {
-                (
-                    "SELECT * FROM offchain_trades WHERE status = ?1 ORDER BY id ASC".to_string(),
-                    vec![status_str.to_string()],
-                )
-            },
-            |broker| {
-                (
-                    "SELECT * FROM offchain_trades WHERE status = ?1 AND broker = ?2 ORDER BY id ASC"
-                        .to_string(),
-                    vec![status_str.to_string(), broker.to_string()],
-                )
-            },
-        )
-    } else {
-        let symbol_str = symbol.unwrap().to_string();
-        broker.map_or_else(
-            || {
-                (
-                    "SELECT * FROM offchain_trades WHERE symbol = ?1 AND status = ?2 ORDER BY id ASC"
-                        .to_string(),
-                    vec![symbol_str.clone(), status_str.to_string()],
-                )
-            },
-            |broker| {
-                (
-                    "SELECT * FROM offchain_trades WHERE symbol = ?1 AND status = ?2 AND broker = ?3 ORDER BY id ASC"
-                        .to_string(),
-                    vec![
-                        symbol_str.clone(),
-                        status_str.to_string(),
-                        broker.to_string(),
-                    ],
-                )
-            },
-        )
+    let rows = match (symbol, broker) {
+        (None, None) => query_by_status(pool, status_str).await?,
+        (None, Some(broker)) => {
+            query_by_status_and_broker(pool, status_str, &broker.to_string()).await?
+        }
+        (Some(symbol), None) => {
+            query_by_symbol_and_status(pool, &symbol.to_string(), status_str).await?
+        }
+        (Some(symbol), Some(broker)) => {
+            query_by_symbol_status_and_broker(
+                pool,
+                &symbol.to_string(),
+                status_str,
+                &broker.to_string(),
+            )
+            .await?
+        }
     };
-
-    let mut query_builder = sqlx::query_as::<_, ExecutionRow>(&query);
-    for param in params {
-        query_builder = query_builder.bind(param);
-    }
-
-    let rows = query_builder.fetch_all(pool).await?;
 
     rows.into_iter()
         .map(row_to_execution)
@@ -149,6 +121,118 @@ pub(crate) async fn find_execution_by_id(
     } else {
         Ok(None)
     }
+}
+
+async fn query_by_status(
+    pool: &SqlitePool,
+    status_str: &str,
+) -> Result<Vec<ExecutionRow>, sqlx::Error> {
+    sqlx::query_as::<_, ExecutionRow>(
+        "
+        SELECT
+            id,
+            symbol,
+            shares,
+            direction,
+            broker,
+            order_id,
+            price_cents,
+            status,
+            executed_at
+        FROM offchain_trades
+        WHERE status = ?1
+        ORDER BY id ASC
+        ",
+    )
+    .bind(status_str)
+    .fetch_all(pool)
+    .await
+}
+
+async fn query_by_status_and_broker(
+    pool: &SqlitePool,
+    status_str: &str,
+    broker_str: &str,
+) -> Result<Vec<ExecutionRow>, sqlx::Error> {
+    sqlx::query_as::<_, ExecutionRow>(
+        "
+        SELECT
+            id,
+            symbol,
+            shares,
+            direction,
+            broker,
+            order_id,
+            price_cents,
+            status,
+            executed_at
+        FROM offchain_trades
+        WHERE status = ?1 AND broker = ?2
+        ORDER BY id ASC
+        ",
+    )
+    .bind(status_str)
+    .bind(broker_str)
+    .fetch_all(pool)
+    .await
+}
+
+async fn query_by_symbol_and_status(
+    pool: &SqlitePool,
+    symbol_str: &str,
+    status_str: &str,
+) -> Result<Vec<ExecutionRow>, sqlx::Error> {
+    sqlx::query_as::<_, ExecutionRow>(
+        "
+        SELECT
+            id,
+            symbol,
+            shares,
+            direction,
+            broker,
+            order_id,
+            price_cents,
+            status,
+            executed_at
+        FROM offchain_trades
+        WHERE symbol = ?1 AND status = ?2
+        ORDER BY id ASC
+        ",
+    )
+    .bind(symbol_str)
+    .bind(status_str)
+    .fetch_all(pool)
+    .await
+}
+
+async fn query_by_symbol_status_and_broker(
+    pool: &SqlitePool,
+    symbol_str: &str,
+    status_str: &str,
+    broker_str: &str,
+) -> Result<Vec<ExecutionRow>, sqlx::Error> {
+    sqlx::query_as::<_, ExecutionRow>(
+        "
+        SELECT
+            id,
+            symbol,
+            shares,
+            direction,
+            broker,
+            order_id,
+            price_cents,
+            status,
+            executed_at
+        FROM offchain_trades
+        WHERE symbol = ?1 AND status = ?2 AND broker = ?3
+        ORDER BY id ASC
+        ",
+    )
+    .bind(symbol_str)
+    .bind(status_str)
+    .bind(broker_str)
+    .fetch_all(pool)
+    .await
 }
 
 impl OffchainExecution {
@@ -203,7 +287,7 @@ mod tests {
 
         let execution1 = OffchainExecution {
             id: None,
-            symbol: Symbol::new("AAPL".to_string()).unwrap(),
+            symbol: Symbol::new("AAPL").unwrap(),
             shares: Shares::new(50).unwrap(),
             direction: Direction::Buy,
             broker: SupportedBroker::Schwab,
@@ -212,7 +296,7 @@ mod tests {
 
         let execution2 = OffchainExecution {
             id: None,
-            symbol: Symbol::new("AAPL".to_string()).unwrap(),
+            symbol: Symbol::new("AAPL").unwrap(),
             shares: Shares::new(25).unwrap(),
             direction: Direction::Sell,
             broker: SupportedBroker::Schwab,
@@ -225,7 +309,7 @@ mod tests {
 
         let execution3 = OffchainExecution {
             id: None,
-            symbol: Symbol::new("MSFT".to_string()).unwrap(),
+            symbol: Symbol::new("MSFT").unwrap(),
             shares: Shares::new(10).unwrap(),
             direction: Direction::Buy,
             broker: SupportedBroker::Schwab,
@@ -255,7 +339,7 @@ mod tests {
 
         let pending_aapl = find_executions_by_symbol_status_and_broker(
             &pool,
-            Some(Symbol::new("AAPL".to_string()).unwrap()),
+            Some(Symbol::new("AAPL").unwrap()),
             OrderStatus::Pending,
             None,
         )
@@ -268,7 +352,7 @@ mod tests {
 
         let completed_aapl = find_executions_by_symbol_status_and_broker(
             &pool,
-            Some(Symbol::new("AAPL".to_string()).unwrap()),
+            Some(Symbol::new("AAPL").unwrap()),
             OrderStatus::Filled,
             None,
         )

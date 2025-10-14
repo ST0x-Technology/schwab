@@ -11,7 +11,7 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tracing::{debug, error, info, trace};
 
-use st0x_broker::{Broker, MarketOrder, Shares, SupportedBroker, Symbol};
+use st0x_broker::{Broker, MarketOrder, SupportedBroker};
 
 use crate::bindings::IOrderBookV4::{ClearV2, IOrderBookV4Instance, TakeOrderV2};
 use crate::env::Env;

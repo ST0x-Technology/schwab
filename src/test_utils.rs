@@ -8,7 +8,7 @@ use chrono::Utc;
 use sqlx::SqlitePool;
 use st0x_broker::OrderState;
 use st0x_broker::schwab::{SchwabAuthEnv, SchwabTokens};
-use st0x_broker::{Direction, SupportedBroker};
+use st0x_broker::{Direction, Shares, SupportedBroker, Symbol};
 
 /// Returns a test `OrderV3` instance that is shared across multiple
 /// unit-tests. The exact values are not important – only that the
@@ -185,8 +185,8 @@ impl OffchainExecutionBuilder {
         Self {
             execution: OffchainExecution {
                 id: None,
-                symbol: "AAPL".to_string(),
-                shares: 100,
+                symbol: Symbol::new("AAPL").unwrap(),
+                shares: Shares::new(100).unwrap(),
                 direction: Direction::Buy,
                 broker: SupportedBroker::Schwab,
                 state: OrderState::Pending,

@@ -1713,7 +1713,7 @@ mod tests {
         // Executions are now in SUBMITTED status with order_id stored for order status polling
         let executions = find_executions_by_symbol_status_and_broker(
             &pool,
-            Some(st0x_broker::Symbol::new("AAPL".to_string()).unwrap()),
+            Some(st0x_broker::Symbol::new("AAPL").unwrap()),
             OrderStatus::Submitted,
             None,
         )

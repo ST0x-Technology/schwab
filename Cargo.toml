@@ -27,6 +27,7 @@ url = { version = "2.5.4", features = ["serde"] }
 urlencoding = "2.1"
 rand = "0.8"
 chrono-tz = "0.10.4"
+num-traits = "0.2"
 
 [package]
 name = "st0x-hedge"
@@ -62,6 +63,7 @@ rocket = { version = "0.5.1", features = ["json"] }
 chrono-tz.workspace = true
 aes-gcm = "0.10.3"
 rust_decimal = "1.38.0"
+num-traits.workspace = true
 
 [dev-dependencies]
 httpmock.workspace = true

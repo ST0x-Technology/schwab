@@ -1,9 +1,20 @@
+use num_traits::ToPrimitive;
+
 const SCHWAB_MINIMUM_WHOLE_SHARES: f64 = 1.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccumulationBucket {
     LongExposure,
     ShortExposure,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ConversionError {
+    #[error("Failed to convert u64 {value} to f64: precision loss would occur")]
+    U64ToF64PrecisionLoss { value: u64 },
+
+    #[error("Failed to convert f64 {value} to u64: value out of range or invalid")]
+    F64ToU64OutOfRange { value: f64 },
 }
 
 /// Handles position tracking and threshold checking logic.
@@ -65,23 +76,31 @@ impl PositionCalculator {
         }
     }
 
-    pub(crate) fn reduce_accumulation(&mut self, execution_type: AccumulationBucket, shares: u64) {
-        // precision loss only occurs beyond 2^53 shares (unrealistic for equity trading)
-        #[allow(clippy::cast_precision_loss)]
-        let shares_amount = shares as f64;
+    pub(crate) fn reduce_accumulation(
+        &mut self,
+        execution_type: AccumulationBucket,
+        shares: u64,
+    ) -> Result<(), ConversionError> {
+        let shares_f64 = shares
+            .to_f64()
+            .ok_or(ConversionError::U64ToF64PrecisionLoss { value: shares })?;
 
         match execution_type {
             AccumulationBucket::LongExposure => {
-                self.accumulated_long -= shares_amount;
+                self.accumulated_long -= shares_f64;
             }
             AccumulationBucket::ShortExposure => {
-                self.accumulated_short -= shares_amount;
+                self.accumulated_short -= shares_f64;
             }
         }
+
+        Ok(())
     }
 
-    pub(crate) fn calculate_executable_shares(&self) -> u64 {
-        self.net_position().abs().floor().max(0.0) as u64
+    pub(crate) fn calculate_executable_shares(&self) -> Result<u64, ConversionError> {
+        let net = self.net_position().abs().floor();
+        net.to_u64()
+            .ok_or(ConversionError::F64ToU64OutOfRange { value: net })
     }
 }
 
@@ -114,7 +133,7 @@ mod tests {
             calc.determine_execution_type(),
             Some(AccumulationBucket::ShortExposure)
         );
-        assert_eq!(calc.calculate_executable_shares(), 1);
+        assert_eq!(calc.calculate_executable_shares().unwrap(), 1);
     }
 
     #[test]
@@ -126,7 +145,7 @@ mod tests {
             calc.determine_execution_type(),
             Some(AccumulationBucket::LongExposure)
         );
-        assert_eq!(calc.calculate_executable_shares(), 1);
+        assert_eq!(calc.calculate_executable_shares().unwrap(), 1);
     }
 
     #[test]
@@ -138,7 +157,7 @@ mod tests {
             calc.determine_execution_type(),
             Some(AccumulationBucket::ShortExposure)
         );
-        assert_eq!(calc.calculate_executable_shares(), 2);
+        assert_eq!(calc.calculate_executable_shares().unwrap(), 2);
     }
 
     #[test]
@@ -150,7 +169,7 @@ mod tests {
             calc.determine_execution_type(),
             Some(AccumulationBucket::LongExposure)
         );
-        assert_eq!(calc.calculate_executable_shares(), 1);
+        assert_eq!(calc.calculate_executable_shares().unwrap(), 1);
     }
 
     #[test]
@@ -178,7 +197,7 @@ mod tests {
             calc.determine_execution_type(),
             Some(AccumulationBucket::LongExposure)
         );
-        assert_eq!(calc.calculate_executable_shares(), 3);
+        assert_eq!(calc.calculate_executable_shares().unwrap(), 3);
     }
 
     #[test]
@@ -223,11 +242,13 @@ mod tests {
     #[test]
     fn test_reduce_accumulation() {
         let mut calc = PositionCalculator::with_positions(2.5, 3.0);
-        calc.reduce_accumulation(AccumulationBucket::LongExposure, 2);
+        calc.reduce_accumulation(AccumulationBucket::LongExposure, 2)
+            .unwrap();
         assert!((calc.accumulated_long - 0.5).abs() < f64::EPSILON);
         assert!((calc.net_position() - (-2.5)).abs() < f64::EPSILON); // 0.5 - 3.0 = -2.5
 
-        calc.reduce_accumulation(AccumulationBucket::ShortExposure, 1);
+        calc.reduce_accumulation(AccumulationBucket::ShortExposure, 1)
+            .unwrap();
         assert!((calc.accumulated_short - 2.0).abs() < f64::EPSILON);
         assert!((calc.net_position() - (-1.5)).abs() < f64::EPSILON); // 0.5 - 2.0 = -1.5
     }
@@ -236,14 +257,14 @@ mod tests {
     fn test_calculate_executable_shares() {
         // Test positive net position
         let calc = PositionCalculator::with_positions(2.7, 0.0);
-        assert_eq!(calc.calculate_executable_shares(), 2);
+        assert_eq!(calc.calculate_executable_shares().unwrap(), 2);
 
         // Test negative net position
         let calc = PositionCalculator::with_positions(0.0, 3.2);
-        assert_eq!(calc.calculate_executable_shares(), 3);
+        assert_eq!(calc.calculate_executable_shares().unwrap(), 3);
 
         // Test zero net position
         let calc = PositionCalculator::with_positions(1.0, 1.0);
-        assert_eq!(calc.calculate_executable_shares(), 0);
+        assert_eq!(calc.calculate_executable_shares().unwrap(), 0);
     }
 }
