@@ -182,17 +182,7 @@ jobs:
             echo "${DIGITALOCEAN_ACCESS_TOKEN}" | \
               docker login registry.digitalocean.com -u unused --password-stdin 2>&1 | tee -a "${DEPLOY_LOG}"
 
-            # Decode and create files from base64-encoded content
-            echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating configuration files from templates" | tee -a "${DEPLOY_LOG}"
-
-            # Create required files in deployment directory
-            echo "$DOCKER_COMPOSE_TEMPLATE" | base64 -d > /mnt/volume_nyc3_01/docker-compose.template.yaml
-            echo "$GRAFANA_DOCKERFILE" | base64 -d > /mnt/volume_nyc3_01/Dockerfile.grafana
-            echo "$GRAFANA_DATASOURCE_YAML" | base64 -d > /mnt/volume_nyc3_01/grafana-datasource.yaml
-            echo "$PREP_SCRIPT" | base64 -d > /mnt/volume_nyc3_01/prep-docker-compose.sh
-            chmod +x /mnt/volume_nyc3_01/prep-docker-compose.sh
-
-            # Backup current working configuration for rollback capability
+            # Backup current working configuration for rollback capability BEFORE overwriting
             cd /mnt/volume_nyc3_01
             if [ -f "docker-compose.yaml" ] && [ -f ".env" ]; then
               echo "$(date '+%Y-%m-%d %H:%M:%S') - Backing up current configuration for rollback" | tee -a "${DEPLOY_LOG}"
@@ -205,6 +195,16 @@ jobs:
             else
               echo "$(date '+%Y-%m-%d %H:%M:%S') - No existing configuration to backup (first deployment)" | tee -a "${DEPLOY_LOG}"
             fi
+
+            # Decode and create files from base64-encoded content
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating configuration files from templates" | tee -a "${DEPLOY_LOG}"
+
+            # Create required files in deployment directory
+            echo "$DOCKER_COMPOSE_TEMPLATE" | base64 -d > /mnt/volume_nyc3_01/docker-compose.template.yaml
+            echo "$GRAFANA_DOCKERFILE" | base64 -d > /mnt/volume_nyc3_01/Dockerfile.grafana
+            echo "$GRAFANA_DATASOURCE_YAML" | base64 -d > /mnt/volume_nyc3_01/grafana-datasource.yaml
+            echo "$PREP_SCRIPT" | base64 -d > /mnt/volume_nyc3_01/prep-docker-compose.sh
+            chmod +x /mnt/volume_nyc3_01/prep-docker-compose.sh
 
             # Generate docker-compose.yaml using prep script
             log_exec ./prep-docker-compose.sh --prod
