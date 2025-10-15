@@ -4,6 +4,7 @@ use tracing::Level;
 
 use crate::offchain::order_poller::OrderPollerConfig;
 use crate::onchain::EvmEnv;
+use crate::telemetry::HyperDxConfig;
 use st0x_broker::SupportedBroker;
 use st0x_broker::alpaca::AlpacaAuthEnv;
 use st0x_broker::schwab::SchwabAuthEnv;
@@ -67,9 +68,7 @@ pub struct Config {
     pub(crate) order_polling_interval: u64,
     pub(crate) order_polling_max_jitter: u64,
     pub(crate) broker: BrokerConfig,
-    pub hyperdx_api_key: Option<String>,
-    pub hyperdx_service_name: String,
-    pub hyperdx_endpoint: String,
+    pub hyperdx: Option<HyperDxConfig>,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -98,12 +97,9 @@ pub struct Env {
     /// HyperDX API key for observability (optional)
     #[clap(long, env)]
     hyperdx_api_key: Option<String>,
-    /// Service name for HyperDX traces
+    /// Service name for HyperDX traces (only used when hyperdx_api_key is set)
     #[clap(long, env, default_value = "st0x-hedge")]
     hyperdx_service_name: String,
-    /// HyperDX OTLP endpoint
-    #[clap(long, env, default_value = "https://in-otel.hyperdx.io/v1/traces")]
-    hyperdx_endpoint: String,
 }
 
 impl Env {
@@ -114,6 +110,11 @@ impl Env {
             SupportedBroker::DryRun => BrokerConfig::DryRun,
         };
 
+        let hyperdx = self.hyperdx_api_key.map(|api_key| HyperDxConfig {
+            api_key,
+            service_name: self.hyperdx_service_name,
+        });
+
         Config {
             database_url: self.database_url,
             log_level: self.log_level,
@@ -122,9 +123,7 @@ impl Env {
             order_polling_interval: self.order_polling_interval,
             order_polling_max_jitter: self.order_polling_max_jitter,
             broker,
-            hyperdx_api_key: self.hyperdx_api_key,
-            hyperdx_service_name: self.hyperdx_service_name,
-            hyperdx_endpoint: self.hyperdx_endpoint,
+            hyperdx,
         }
     }
 }
@@ -185,9 +184,7 @@ pub mod tests {
                 schwab_account_index: 0,
                 encryption_key: TEST_ENCRYPTION_KEY,
             }),
-            hyperdx_api_key: None,
-            hyperdx_service_name: "st0x-hedge".to_string(),
-            hyperdx_endpoint: "https://in-otel.hyperdx.io/v1/traces".to_string(),
+            hyperdx: None,
         }
     }
 

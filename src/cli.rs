@@ -1000,9 +1000,7 @@ mod tests {
                 schwab_account_index: 0,
                 encryption_key: TEST_ENCRYPTION_KEY,
             }),
-            hyperdx_api_key: None,
-            hyperdx_service_name: "st0x-hedge".to_string(),
-            hyperdx_endpoint: "https://in-otel.hyperdx.io/v1/traces".to_string(),
+            hyperdx: None,
         }
     }
 

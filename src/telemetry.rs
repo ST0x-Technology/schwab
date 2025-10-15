@@ -70,6 +70,12 @@ use thiserror::Error;
 use tracing_subscriber::Registry;
 use tracing_subscriber::layer::{Layer, SubscriberExt};
 
+#[derive(Debug, Clone)]
+pub struct HyperDxConfig {
+    pub(crate) api_key: String,
+    pub(crate) service_name: String,
+}
+
 #[derive(Debug, Error)]
 pub enum TelemetryError {
     #[error("Failed to build OTLP exporter")]
@@ -91,7 +97,19 @@ pub struct TelemetryGuard {
 
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
-        let _ = self.tracer_provider.force_flush();
+        // Flush any pending spans to HyperDX before shutdown.
+        // This blocks until all pending exports complete or timeout.
+        // The BatchSpanProcessor uses scheduled_delay (3s) as its export interval,
+        // and force_flush waits for pending exports with its own internal timeout.
+        if let Err(e) = self.tracer_provider.force_flush() {
+            eprintln!("Failed to flush telemetry spans: {e:?}");
+        }
+
+        // Shutdown the tracer provider to clean up background threads and resources.
+        // This ensures the BatchSpanProcessor's background thread terminates cleanly.
+        if let Err(e) = self.tracer_provider.shutdown() {
+            eprintln!("Failed to shutdown telemetry provider: {e:?}");
+        }
     }
 }
 
@@ -114,10 +132,10 @@ impl Drop for TelemetryGuard {
 const TRACER_NAME: &str = "st0x-tracer";
 
 pub fn setup_telemetry(
-    api_key: String,
+    config: &HyperDxConfig,
     log_level: tracing::Level,
 ) -> Result<TelemetryGuard, TelemetryError> {
-    let headers = HashMap::from([("authorization".to_string(), api_key)]);
+    let headers = HashMap::from([("authorization".to_string(), config.api_key.clone())]);
 
     let http_client = std::thread::spawn(|| {
         reqwest::blocking::Client::builder()
@@ -151,7 +169,7 @@ pub fn setup_telemetry(
         .with_span_processor(batch_exporter)
         .with_resource(
             Resource::builder()
-                .with_service_name("st0x-hedge")
+                .with_service_name(config.service_name.clone())
                 .with_attributes(vec![KeyValue::new("deployment.environment", "production")])
                 .build(),
         )
