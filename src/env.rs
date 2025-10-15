@@ -1,12 +1,29 @@
 use clap::Parser;
 use sqlx::SqlitePool;
-use std::sync::Arc;
 use tracing::Level;
 
+use crate::offchain::order_poller::OrderPollerConfig;
 use crate::onchain::EvmEnv;
-use crate::schwab::OrderPollerConfig;
-use crate::schwab::SchwabAuthEnv;
-use crate::schwab::broker::{DynBroker, LogBroker, Schwab};
+use st0x_broker::SupportedBroker;
+use st0x_broker::alpaca::AlpacaAuthEnv;
+use st0x_broker::schwab::SchwabAuthEnv;
+
+#[derive(Debug, Clone)]
+pub enum BrokerConfig {
+    Schwab(SchwabAuthEnv),
+    Alpaca(AlpacaAuthEnv),
+    DryRun,
+}
+
+impl BrokerConfig {
+    pub fn to_supported_broker(&self) -> SupportedBroker {
+        match self {
+            Self::Schwab(_) => SupportedBroker::Schwab,
+            Self::Alpaca(_) => SupportedBroker::Alpaca,
+            Self::DryRun => SupportedBroker::DryRun,
+        }
+    }
+}
 
 #[derive(clap::ValueEnum, Debug, Clone)]
 pub enum LogLevel {
@@ -41,29 +58,63 @@ impl From<&LogLevel> for Level {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub(crate) database_url: String,
+    pub log_level: LogLevel,
+    pub(crate) server_port: u16,
+    pub(crate) evm: EvmEnv,
+    pub(crate) order_polling_interval: u64,
+    pub(crate) order_polling_max_jitter: u64,
+    pub(crate) broker: BrokerConfig,
+}
+
 #[derive(Parser, Debug, Clone)]
 pub struct Env {
     #[clap(long = "db", env)]
-    pub database_url: String,
+    database_url: String,
     #[clap(long, env, default_value = "debug")]
-    pub log_level: LogLevel,
+    log_level: LogLevel,
     #[clap(long, env, default_value = "8080")]
-    pub server_port: u16,
+    server_port: u16,
     #[clap(flatten)]
-    pub schwab_auth: SchwabAuthEnv,
+    schwab_auth: SchwabAuthEnv,
     #[clap(flatten)]
-    pub evm_env: EvmEnv,
+    alpaca_auth: AlpacaAuthEnv,
+    #[clap(flatten)]
+    pub(crate) evm: EvmEnv,
     /// Interval in seconds between order status polling checks
     #[clap(long, env, default_value = "15")]
-    pub order_polling_interval: u64,
+    order_polling_interval: u64,
     /// Maximum jitter in seconds for order polling to prevent thundering herd
     #[clap(long, env, default_value = "5")]
-    pub order_polling_max_jitter: u64,
-    #[clap(long, env, default_value = "false")]
-    pub dry_run: bool,
+    order_polling_max_jitter: u64,
+    /// Broker to use for trading (required: schwab, alpaca, or dry-run)
+    #[clap(long, env)]
+    broker: SupportedBroker,
 }
 
 impl Env {
+    pub fn into_config(self) -> Config {
+        let broker = match self.broker {
+            SupportedBroker::Schwab => BrokerConfig::Schwab(self.schwab_auth),
+            SupportedBroker::Alpaca => BrokerConfig::Alpaca(self.alpaca_auth),
+            SupportedBroker::DryRun => BrokerConfig::DryRun,
+        };
+
+        Config {
+            database_url: self.database_url,
+            log_level: self.log_level,
+            server_port: self.server_port,
+            evm: self.evm,
+            order_polling_interval: self.order_polling_interval,
+            order_polling_max_jitter: self.order_polling_max_jitter,
+            broker,
+        }
+    }
+}
+
+impl Config {
     pub async fn get_sqlite_pool(&self) -> Result<SqlitePool, sqlx::Error> {
         SqlitePool::connect(&self.database_url).await
     }
@@ -74,19 +125,11 @@ impl Env {
             max_jitter: std::time::Duration::from_secs(self.order_polling_max_jitter),
         }
     }
-
-    pub(crate) fn get_broker(&self) -> DynBroker {
-        if self.dry_run {
-            Arc::new(LogBroker::new())
-        } else {
-            Arc::new(Schwab)
-        }
-    }
 }
 
 pub fn setup_tracing(log_level: &LogLevel) {
     let level: Level = log_level.into();
-    let default_filter = format!("rain_schwab={level},auth={level},main={level}");
+    let default_filter = format!("st0x_hedge={level},auth={level},main={level}");
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -100,22 +143,18 @@ pub fn setup_tracing(log_level: &LogLevel) {
 pub mod tests {
     use super::*;
     use crate::onchain::EvmEnv;
-    use crate::schwab::SchwabAuthEnv;
-    use alloy::primitives::address;
+    use alloy::primitives::{FixedBytes, address};
+    use st0x_broker::schwab::{SchwabAuthEnv, SchwabConfig};
+    use st0x_broker::{MockBrokerConfig, TryIntoBroker};
 
-    pub fn create_test_env_with_order_owner(order_owner: alloy::primitives::Address) -> Env {
-        Env {
+    const TEST_ENCRYPTION_KEY: FixedBytes<32> = FixedBytes::ZERO;
+
+    pub fn create_test_config_with_order_owner(order_owner: alloy::primitives::Address) -> Config {
+        Config {
             database_url: ":memory:".to_string(),
             log_level: LogLevel::Debug,
             server_port: 8080,
-            schwab_auth: SchwabAuthEnv {
-                app_key: "test_key".to_string(),
-                app_secret: "test_secret".to_string(),
-                redirect_uri: "https://127.0.0.1".to_string(),
-                base_url: "https://test.com".to_string(),
-                account_index: 0,
-            },
-            evm_env: EvmEnv {
+            evm: EvmEnv {
                 ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
                 orderbook: address!("0x1111111111111111111111111111111111111111"),
                 order_owner,
@@ -123,12 +162,19 @@ pub mod tests {
             },
             order_polling_interval: 15,
             order_polling_max_jitter: 5,
-            dry_run: false,
+            broker: BrokerConfig::Schwab(SchwabAuthEnv {
+                schwab_app_key: "test_key".to_string(),
+                schwab_app_secret: "test_secret".to_string(),
+                schwab_redirect_uri: "https://127.0.0.1".to_string(),
+                schwab_base_url: "https://test.com".to_string(),
+                schwab_account_index: 0,
+                encryption_key: TEST_ENCRYPTION_KEY,
+            }),
         }
     }
 
-    pub fn create_test_env() -> Env {
-        create_test_env_with_order_owner(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
+    pub fn create_test_config() -> Config {
+        create_test_config_with_order_owner(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
     }
 
     #[test]
@@ -155,32 +201,39 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn test_env_sqlite_pool_creation() {
-        let env = create_test_env();
-        let pool_result = env.get_sqlite_pool().await;
+    async fn test_config_sqlite_pool_creation() {
+        let config = create_test_config();
+        let pool_result = config.get_sqlite_pool().await;
         assert!(pool_result.is_ok());
     }
 
-    #[test]
-    fn test_get_broker_dry_run_modes() {
-        // Test dry_run = false (should return Schwab broker)
-        let mut env = create_test_env();
-        env.dry_run = false;
-        let broker = env.get_broker();
-        assert_eq!(format!("{broker:?}"), "Schwab");
+    #[tokio::test]
+    async fn test_get_broker_types() {
+        let config = create_test_config();
+        let pool = crate::test_utils::setup_test_db().await;
 
-        // Test dry_run = true (should return LogBroker)
-        env.dry_run = true;
-        let broker = env.get_broker();
-        assert!(format!("{broker:?}").contains("LogBroker"));
+        // SchwabBroker creation should fail without valid tokens
+        let BrokerConfig::Schwab(schwab_auth) = &config.broker else {
+            panic!("Expected Schwab broker config");
+        };
+        let schwab_config = SchwabConfig {
+            auth: schwab_auth.clone(),
+            pool: pool.clone(),
+        };
+        let schwab_result = schwab_config.try_into_broker().await;
+        assert!(schwab_result.is_err());
+
+        // MockBroker should always work
+        let test_broker = MockBrokerConfig.try_into_broker().await.unwrap();
+        assert!(format!("{test_broker:?}").contains("MockBroker"));
     }
 
     #[test]
-    fn test_env_construction() {
-        let env = create_test_env();
-        assert_eq!(env.database_url, ":memory:");
-        assert!(matches!(env.log_level, LogLevel::Debug));
-        assert_eq!(env.schwab_auth.app_key, "test_key");
-        assert_eq!(env.evm_env.deployment_block, 1);
+    fn test_config_construction() {
+        let config = create_test_config();
+        assert_eq!(config.database_url, ":memory:");
+        assert!(matches!(config.log_level, LogLevel::Debug));
+        assert!(matches!(config.broker, BrokerConfig::Schwab(_)));
+        assert_eq!(config.evm.deployment_block, 1);
     }
 }

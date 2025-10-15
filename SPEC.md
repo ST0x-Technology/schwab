@@ -15,9 +15,9 @@ tokenized equities and their traditional market counterparts.
 
 The bot monitors Raindex Orders from a specific owner that continuously offer
 tokenized equities at spreads around Pyth oracle prices. When a solver clears
-any of these orders, the bot immediately executes an offsetting trade on Charles
-Schwab, maintaining market-neutral positions while capturing the spread
-differential.
+any of these orders, the bot immediately executes an offsetting trade on a
+supported brokerage (Charles Schwab or Alpaca Markets), hedging directional
+exposure while capturing the spread differential.
 
 The focus is on getting a functional system live quickly. There are known risks
 that will be addressed in future iterations as total value locked (TVL) grows
@@ -37,7 +37,7 @@ and the system proves market fit.
 
 **Offchain Infrastructure:**
 
-- Charles Schwab brokerage account with API access
+- Brokerage account with API access (Charles Schwab or Alpaca Markets)
 - Arbitrage bot monitoring and execution engine
 - Basic terminal/logging interface for system overview
 
@@ -55,19 +55,28 @@ and the system proves market fit.
    owner address
 3. Bot records onchain trades and accumulates net position changes per symbol
 4. When accumulated net position reaches an absolute value of ≥1.0 share,
-   execute offsetting trade for floor(abs(net_position)) shares on Charles
-   Schwab, using the sign of the net position to determine side (positive = sell
-   to reduce a long, negative = buy to cover a short), and continue tracking the
-   remaining fractional share (net_position minus the executed floor) with its
-   sign for future batching
+   execute offsetting trade for floor(abs(net_position)) shares on the selected
+   brokerage, using the sign of the net position to determine side (positive =
+   sell to reduce a long, negative = buy to cover a short), and continue
+   tracking the remaining fractional share (net_position minus the executed
+   floor) with its sign for future batching
 5. Bot maintains running inventory of positions across both venues
 6. Periodic rebalancing via st0x bridge to normalize inventory levels
+
+**Note on Fractional Share Handling:**
+
+- **Charles Schwab**: Does not support fractional shares via their API. Batching
+  to whole shares is required (as described above).
+- **Alpaca Markets**: Supports fractional share trading (minimum $1 worth). The
+  current implementation uses the same batching logic for both brokers, but this
+  may be reconfigured to allow immediate fractional execution when using Alpaca,
+  reducing unhedged exposure.
 
 Example (Offchain Batching):
 
 - Onchain trades: 0.3 AAPL sold, 0.5 AAPL sold, 0.4 AAPL sold → net 1.2 AAPL
   sold
-- Bot executes: Buy 1 AAPL share on Schwab (floor of 1.2), continues tracking
+- Bot executes: Buy 1 AAPL share on broker (floor of 1.2), continues tracking
   0.2 AAPL net exposure
 - Continue accumulating fractional amount until next whole share threshold is
   reached
@@ -101,24 +110,35 @@ excellent async ecosystem for handling concurrent trading flows.
 - Each blockchain event spawns an independent async execution flow using Rust's
   async/await
 - Multiple trade flows run concurrently without blocking each other
-- Handles throughput mismatch: fast onchain events vs slower Schwab
+- Handles throughput mismatch: fast onchain events vs slower broker
   execution/confirmation
 - No artificial concurrency limits - process events as fast as they arrive
 - Tokio async runtime manages hundreds of concurrent trades efficiently on
   limited hardware
 - Each flow: Parse Event → Event Queue → Deduplication Check → Position
-  Accumulation → Schwab Execution (when threshold reached) → Record Result
+  Accumulation → Broker Execution (when threshold reached) → Record Result
 - Failed flows retry independently without affecting other trades
 
 ### **Trade Execution**
 
-**Charles Schwab API Integration:**
+**Broker API Integration:**
+
+The bot supports multiple brokers through a unified trait interface:
+
+**Charles Schwab:**
 
 - OAuth 2.0 authentication flow with token refresh
 - Connection pooling and retry logic for API calls with exponential backoff
 - Rate limiting compliance and queue management
 - Market order execution for immediate fills
 - Order status tracking and confirmation with polling
+
+**Alpaca Markets:**
+
+- API key-based authentication (simpler than OAuth)
+- Market order execution through Alpaca Trading API v2
+- Order status polling and updates
+- Support for both paper trading and live trading environments
 - Position querying for inventory management
 - Account balance monitoring for available capital
 
@@ -129,8 +149,8 @@ excellent async ecosystem for handling concurrent trading flows.
 - Check event queue before processing any event to prevent duplicates
 - Onchain trades are recorded immediately upon event processing
 - Position accumulation happens in dedicated accumulators table per symbol
-- Schwab executions track status ('PENDING', 'COMPLETED', 'FAILED') with retry
-  logic
+- Broker executions track status ('PENDING', 'SUBMITTED', 'FILLED', 'FAILED')
+  with broker type field for multi-broker support
 - Complete audit trail maintained linking individual trades to batch executions
 - Proper error handling and structured error logging
 
@@ -139,16 +159,18 @@ excellent async ecosystem for handling concurrent trading flows.
 **SQLite Trade Database:**
 
 The bot uses a multi-table SQLite database to track trades and manage state. Key
-tables include: onchain trade records, Schwab execution tracking, position
+tables include: onchain trade records, broker execution tracking, position
 accumulators for batching fractional shares, audit trail linking, OAuth token
 storage, and event queue for idempotency. The complete database schema is
 defined in `migrations/20250703115746_trades.sql`.
 
 - Store each onchain trade with symbol, amount, direction, and price
-- Track Schwab executions separately with whole share amounts and status
+- Track broker executions separately with whole share amounts, status, and
+  broker type ('schwab', 'alpaca', 'dry_run')
 - Accumulate fractional positions per symbol until execution thresholds are
-  reached
-- Maintain complete audit trail linking onchain trades to Schwab executions
+  reached (required for Charles Schwab; used uniformly across all brokers in
+  current implementation)
+- Maintain complete audit trail linking onchain trades to broker executions
 - Handle concurrent database writes safely with per-symbol locking
 
 **Pyth Price Extraction:**
@@ -206,18 +228,21 @@ implementation. Solutions will be developed in later iterations.
 
 ### **Offchain Risks**
 
-- **Fractional Share Exposure**: Charles Schwab API doesn't support fractional
-  shares, requiring offchain batching until net positions reach whole share
-  amounts. This creates temporary unhedged exposure for fractional amounts that
-  haven't reached the execution threshold.
-- **Missed Trade Execution**: The bot fails to execute offsetting trades on
-  Charles Schwab when onchain trades occur, creating unhedged exposure. For
+- **Fractional Share Exposure**: Charles Schwab does not support fractional
+  share trading, requiring offchain batching until net positions reach whole
+  share amounts. This creates temporary unhedged exposure for fractional amounts
+  that haven't reached the execution threshold. Note: Alpaca Markets supports
+  fractional share trading (minimum $1 worth of shares), but we currently use
+  the same batching logic for both brokers. This may be reconfigured in the
+  future to allow immediate fractional execution when using Alpaca.
+- **Missed Trade Execution**: The bot fails to execute offsetting trades on the
+  selected brokerage when onchain trades occur, creating unhedged exposure. For
   example:
   - Bot downtime while onchain order remains active
   - Bot detects onchain trade but fails to execute offchain trade
-  - Charles Schwab API failures or rate limiting during critical periods
+  - Broker API failures or rate limiting during critical periods
 - **After-Hours Trading Gap**: Pyth oracle may continue operating when
-  traditional markets are closed, allowing onchain trades while Schwab markets
+  traditional markets are closed, allowing onchain trades while broker markets
   are unavailable. Creates guaranteed daily exposure windows.
 
 ### **Onchain Risks**

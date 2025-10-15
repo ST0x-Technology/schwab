@@ -5,7 +5,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use crate::error::{OnChainError, TradeValidationError};
-use crate::schwab::Direction;
+use st0x_broker::{Direction, Symbol};
 
 /// Macro to create a TokenizedEquitySymbol.
 /// This macro provides a convenient way to create tokenized equity symbols.
@@ -18,12 +18,12 @@ macro_rules! tokenized_symbol {
 
 // The macro is available via the crate::tokenized_symbol path
 
-/// Macro to create an EquitySymbol.
-/// This macro provides a convenient way to create equity symbols.
+/// Macro to create a Symbol.
+/// This macro provides a convenient way to create symbols.
 #[macro_export]
 macro_rules! symbol {
     ($symbol:expr) => {
-        EquitySymbol::new($symbol).unwrap()
+        st0x_broker::Symbol::new($symbol).unwrap()
     };
 }
 
@@ -61,50 +61,6 @@ impl Usdc {
     }
 }
 
-/// Represents a validated base equity symbol (e.g., "AAPL", "MSFT")
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct EquitySymbol(String);
-
-impl EquitySymbol {
-    /// Creates a new EquitySymbol with validation
-    pub(crate) fn new(symbol: &str) -> Result<Self, OnChainError> {
-        // Reject USDC as it's not an equity
-        if symbol == "USDC" {
-            return Err(OnChainError::Validation(
-                TradeValidationError::NotTokenizedEquity(symbol.to_string()),
-            ));
-        }
-
-        // Basic validation - no whitespace, reasonable length, not empty
-        if symbol.chars().any(char::is_whitespace) || symbol.len() > 32 || symbol.is_empty() {
-            return Err(OnChainError::Validation(
-                TradeValidationError::NotTokenizedEquity(symbol.to_string()),
-            ));
-        }
-
-        Ok(Self(symbol.to_string()))
-    }
-
-    /// Gets the base symbol string
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for EquitySymbol {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl FromStr for EquitySymbol {
-    type Err = OnChainError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::new(s)
-    }
-}
-
 /// The marker for tokenized equity symbols (can be prefix or suffix)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TokenizedEquityMarker {
@@ -137,13 +93,13 @@ impl fmt::Display for TokenizedEquityMarker {
 /// Composed of a base equity symbol and a tokenized marker (prefix or suffix)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TokenizedEquitySymbol {
-    base: EquitySymbol,
+    base: Symbol,
     marker: TokenizedEquityMarker,
 }
 
 impl TokenizedEquitySymbol {
     /// Creates a new TokenizedEquitySymbol from components
-    pub(crate) const fn new(base: EquitySymbol, marker: TokenizedEquityMarker) -> Self {
+    pub(crate) fn new(base: Symbol, marker: TokenizedEquityMarker) -> Self {
         Self { base, marker }
     }
 
@@ -151,18 +107,18 @@ impl TokenizedEquitySymbol {
     pub(crate) fn parse(symbol: &str) -> Result<Self, OnChainError> {
         // Try to extract prefix first
         if let Some(stripped) = symbol.strip_prefix('t') {
-            let base = EquitySymbol::new(stripped)?;
+            let base = Symbol::new(stripped)?;
             return Ok(Self::new(base, TokenizedEquityMarker::T));
         }
 
         // Try to extract suffix
         if let Some(stripped) = symbol.strip_suffix("0x") {
-            let base = EquitySymbol::new(stripped)?;
+            let base = Symbol::new(stripped)?;
             return Ok(Self::new(base, TokenizedEquityMarker::ZeroX));
         }
 
         if let Some(stripped) = symbol.strip_suffix("s1") {
-            let base = EquitySymbol::new(stripped)?;
+            let base = Symbol::new(stripped)?;
             return Ok(Self::new(base, TokenizedEquityMarker::S1));
         }
 
@@ -173,13 +129,13 @@ impl TokenizedEquitySymbol {
     }
 
     /// Gets the base equity symbol
-    pub(crate) const fn base(&self) -> &EquitySymbol {
+    pub(crate) fn base(&self) -> &Symbol {
         &self.base
     }
 
     /// Extract the base symbol (equivalent to the old extract_base_from_tokenized)
     pub(crate) fn extract_base(&self) -> String {
-        self.base.as_str().to_string()
+        self.base.to_string()
     }
 }
 
@@ -204,7 +160,7 @@ impl FromStr for TokenizedEquitySymbol {
 /// Trade details extracted from symbol pair processing
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct TradeDetails {
-    ticker: EquitySymbol,
+    ticker: Symbol,
     equity_amount: Shares,
     usdc_amount: Usdc,
     direction: Direction,
@@ -213,7 +169,7 @@ pub(crate) struct TradeDetails {
 impl TradeDetails {
     /// Gets the ticker symbol
     #[cfg(test)]
-    pub(crate) fn ticker(&self) -> &EquitySymbol {
+    pub(crate) fn ticker(&self) -> &Symbol {
         &self.ticker
     }
 
@@ -280,7 +236,7 @@ impl TradeDetails {
 fn determine_schwab_trade_details(
     onchain_input_symbol: &str,
     onchain_output_symbol: &str,
-) -> Result<(EquitySymbol, Direction), OnChainError> {
+) -> Result<(Symbol, Direction), OnChainError> {
     // USDC input + tokenized stock output = sold tokenized stock onchain
     if onchain_input_symbol == "USDC" {
         if let Ok(tokenized) = TokenizedEquitySymbol::parse(onchain_output_symbol) {
@@ -338,23 +294,16 @@ mod tests {
         assert_eq!(symbol.extract_base(), "AAPL");
 
         // Test edge cases - marker-only symbols should be invalid
+        // These fail because after stripping the marker, we're left with an empty string
+        // which fails Symbol validation with "Symbol cannot be empty"
         let error = TokenizedEquitySymbol::parse("0x").unwrap_err();
-        assert!(matches!(
-            error,
-            OnChainError::Validation(TradeValidationError::NotTokenizedEquity(ref s)) if s.is_empty()
-        ));
+        assert!(matches!(error, OnChainError::Broker(_)));
 
         let error = TokenizedEquitySymbol::parse("s1").unwrap_err();
-        assert!(matches!(
-            error,
-            OnChainError::Validation(TradeValidationError::NotTokenizedEquity(ref s)) if s.is_empty()
-        ));
+        assert!(matches!(error, OnChainError::Broker(_)));
 
         let error = TokenizedEquitySymbol::parse("t").unwrap_err();
-        assert!(matches!(
-            error,
-            OnChainError::Validation(TradeValidationError::NotTokenizedEquity(ref s)) if s.is_empty()
-        ));
+        assert!(matches!(error, OnChainError::Broker(_)));
     }
 
     #[test]
@@ -645,11 +594,11 @@ mod tests {
         // Test that the macro creates valid symbols
         let aapl_symbol = tokenized_symbol!("AAPL0x");
         assert_eq!(aapl_symbol.to_string(), "AAPL0x");
-        assert_eq!(aapl_symbol.base().as_str(), "AAPL");
+        assert_eq!(aapl_symbol.base().to_string(), "AAPL");
 
         let nvda_symbol = tokenized_symbol!("NVDAs1");
         assert_eq!(nvda_symbol.to_string(), "NVDAs1");
-        assert_eq!(nvda_symbol.base().as_str(), "NVDA");
+        assert_eq!(nvda_symbol.base().to_string(), "NVDA");
 
         // Test that compile-time validation works (these should compile)
         let _valid_symbols = [
@@ -663,10 +612,10 @@ mod tests {
     fn test_symbol_macro() {
         // Test that the macro creates valid symbols
         let aapl_symbol = symbol!("AAPL");
-        assert_eq!(aapl_symbol.as_str(), "AAPL");
+        assert_eq!(aapl_symbol.to_string(), "AAPL");
 
         let nvda_symbol = symbol!("NVDA");
-        assert_eq!(nvda_symbol.as_str(), "NVDA");
+        assert_eq!(nvda_symbol.to_string(), "NVDA");
 
         // Test that compile-time validation works (these should compile)
         let _valid_symbols = [symbol!("MSFT"), symbol!("GOOG"), symbol!("TSLA")];
@@ -766,7 +715,7 @@ mod tests {
 
     #[test]
     fn test_invalid_marker_combinations() {
-        let gme_symbol = EquitySymbol::new("GME0x").unwrap();
+        let gme_symbol = Symbol::new("GME0x").unwrap();
         let t_symbol = TokenizedEquitySymbol::new(gme_symbol, TokenizedEquityMarker::T);
 
         assert_eq!(t_symbol.to_string(), "tGME0x");

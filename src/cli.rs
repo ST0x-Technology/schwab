@@ -4,20 +4,20 @@ use std::io::Write;
 use thiserror::Error;
 use tracing::{error, info};
 
-use crate::env::{Env, LogLevel};
+use crate::env::{BrokerConfig, Config, Env};
 use crate::error::OnChainError;
-use crate::onchain::pyth::{FeedIdCache, extract_pyth_price};
-use crate::onchain::{EvmEnv, OnchainTrade, accumulator};
-use crate::schwab::SchwabAuthEnv;
-use crate::schwab::market_hours::{MarketStatus as MarketStatusEnum, fetch_market_hours};
-use crate::schwab::order::{Instruction, Order};
-use crate::schwab::run_oauth_flow;
-use crate::schwab::tokens::SchwabTokens;
+use crate::onchain::pyth::FeedIdCache;
+use crate::onchain::{OnchainTrade, accumulator};
 use crate::symbol::cache::SymbolCache;
 use alloy::primitives::B256;
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
-use chrono::Utc;
-use chrono_tz::US::Eastern;
+use st0x_broker::schwab::{
+    SchwabAuthEnv, SchwabConfig, SchwabError, SchwabTokens, extract_code_from_url,
+};
+use st0x_broker::{
+    Broker, Direction, MarketOrder, MockBrokerConfig, OrderPlacement, OrderState, Shares, Symbol,
+    TryIntoBroker,
+};
 
 #[derive(Debug, Error)]
 pub enum CliError {
@@ -66,21 +66,6 @@ pub enum Commands {
     },
     /// Perform Charles Schwab OAuth authentication flow
     Auth,
-    /// Check current market status and hours
-    MarketStatus {
-        /// Date to check market hours for (format: YYYY-MM-DD, defaults to current day)
-        #[arg(long = "date")]
-        date: Option<String>,
-    },
-    /// Extract Pyth oracle price from transaction trace
-    GetPythPrice {
-        /// Transaction hash (0x prefixed, 64 hex characters)
-        #[arg(long = "tx-hash")]
-        tx_hash: B256,
-        /// Symbol to validate price feed (e.g., AAPL, TSLA) - required to ensure correct price extraction
-        #[arg(long = "symbol")]
-        symbol: String,
-    },
 }
 
 #[derive(Debug, Parser)]
@@ -88,37 +73,18 @@ pub enum Commands {
 #[command(about = "A CLI tool for Charles Schwab stock trading")]
 #[command(version)]
 pub struct CliEnv {
-    #[clap(long = "db", env, default_value = "schwab.db")]
-    pub database_url: String,
-    #[clap(long, env, default_value = "info")]
-    pub log_level: LogLevel,
-    #[clap(long, env, default_value = "8080")]
-    pub server_port: u16,
     #[clap(flatten)]
-    pub schwab_auth: SchwabAuthEnv,
-    #[clap(flatten)]
-    pub evm_env: EvmEnv,
+    env: Env,
     #[command(subcommand)]
     pub command: Commands,
 }
 
 impl CliEnv {
-    /// Parse CLI arguments and convert to internal Env struct
-    pub fn parse_and_convert() -> anyhow::Result<(Env, Commands)> {
+    /// Parse CLI arguments and convert to internal Config struct
+    pub fn parse_and_convert() -> anyhow::Result<(Config, Commands)> {
         let cli_env = Self::parse();
-
-        let env = Env {
-            database_url: cli_env.database_url,
-            log_level: cli_env.log_level,
-            server_port: cli_env.server_port,
-            schwab_auth: cli_env.schwab_auth,
-            evm_env: cli_env.evm_env,
-            order_polling_interval: 15,
-            order_polling_max_jitter: 5,
-            dry_run: false,
-        };
-
-        Ok((env, cli_env.command))
+        let config = cli_env.env.into_config();
+        Ok((config, cli_env.command))
     }
 }
 
@@ -136,26 +102,26 @@ fn validate_ticker(ticker: &str) -> Result<String, CliError> {
     Ok(ticker)
 }
 
-pub async fn run(env: Env) -> anyhow::Result<()> {
+pub async fn run(config: Config) -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let pool = env.get_sqlite_pool().await?;
-    run_command_with_writers(env, cli.command, &pool, &mut std::io::stdout()).await
+    let pool = config.get_sqlite_pool().await?;
+    run_command_with_writers(config, cli.command, &pool, &mut std::io::stdout()).await
 }
 
-pub async fn run_command(env: Env, command: Commands) -> anyhow::Result<()> {
-    let pool = env.get_sqlite_pool().await?;
-    run_command_with_writers(env, command, &pool, &mut std::io::stdout()).await
+pub async fn run_command(config: Config, command: Commands) -> anyhow::Result<()> {
+    let pool = config.get_sqlite_pool().await?;
+    run_command_with_writers(config, command, &pool, &mut std::io::stdout()).await
 }
 
 async fn run_command_with_writers<W: Write>(
-    env: Env,
+    config: Config,
     command: Commands,
     pool: &SqlitePool,
     stdout: &mut W,
 ) -> anyhow::Result<()> {
     match command {
         Commands::Buy { ticker, quantity } => {
-            ensure_authentication(pool, &env.schwab_auth, stdout).await?;
+            ensure_schwab_authentication(pool, &config.broker, stdout).await?;
             let validated_ticker = validate_ticker(&ticker)?;
             if quantity == 0 {
                 return Err(CliError::InvalidQuantity { value: quantity }.into());
@@ -164,15 +130,15 @@ async fn run_command_with_writers<W: Write>(
             execute_order_with_writers(
                 validated_ticker,
                 quantity,
-                Instruction::Buy,
-                &env,
+                Direction::Buy,
+                &config,
                 pool,
                 stdout,
             )
             .await?;
         }
         Commands::Sell { ticker, quantity } => {
-            ensure_authentication(pool, &env.schwab_auth, stdout).await?;
+            ensure_schwab_authentication(pool, &config.broker, stdout).await?;
             let validated_ticker = validate_ticker(&ticker)?;
             if quantity == 0 {
                 return Err(CliError::InvalidQuantity { value: quantity }.into());
@@ -181,8 +147,8 @@ async fn run_command_with_writers<W: Write>(
             execute_order_with_writers(
                 validated_ticker,
                 quantity,
-                Instruction::Sell,
-                &env,
+                Direction::Sell,
+                &config,
                 pool,
                 stdout,
             )
@@ -190,12 +156,16 @@ async fn run_command_with_writers<W: Write>(
         }
         Commands::ProcessTx { tx_hash } => {
             info!("Processing transaction: tx_hash={tx_hash}");
-            let ws = WsConnect::new(env.evm_env.ws_rpc_url.as_str());
+            let ws = WsConnect::new(config.evm.ws_rpc_url.as_str());
             let provider = ProviderBuilder::new().connect_ws(ws).await?;
             let cache = SymbolCache::default();
-            process_tx_with_provider(tx_hash, &env, pool, stdout, &provider, &cache).await?;
+            process_tx_with_provider(tx_hash, &config, pool, stdout, &provider, &cache).await?;
         }
         Commands::Auth => {
+            let BrokerConfig::Schwab(schwab_auth) = &config.broker else {
+                anyhow::bail!("Auth command is only supported for Schwab broker")
+            };
+
             info!("Starting OAuth authentication flow");
             writeln!(
                 stdout,
@@ -206,7 +176,7 @@ async fn run_command_with_writers<W: Write>(
                 "   You will be guided through the authentication process."
             )?;
 
-            match run_oauth_flow(pool, &env.schwab_auth).await {
+            match run_oauth_flow(pool, schwab_auth).await {
                 Ok(()) => {
                     info!("OAuth authentication completed successfully");
                     writeln!(stdout, "✅ Authentication successful!")?;
@@ -226,138 +196,21 @@ async fn run_command_with_writers<W: Write>(
                 }
             }
         }
-        Commands::MarketStatus { date } => {
-            info!(
-                "Checking market status for date: {:?}",
-                date.as_deref().unwrap_or("today")
-            );
-            ensure_authentication(pool, &env.schwab_auth, stdout).await?;
-            display_market_status(&env, pool, date.as_deref(), stdout).await?;
-        }
-        Commands::GetPythPrice { tx_hash, symbol } => {
-            info!("Extracting Pyth price for transaction: {tx_hash}, symbol: {symbol}");
-            get_pyth_price(tx_hash, &symbol, &env, stdout).await?;
-        }
     }
 
     info!("CLI operation completed successfully");
     Ok(())
 }
 
-async fn get_pyth_price<W: Write>(
-    tx_hash: B256,
-    symbol: &str,
-    env: &Env,
-    stdout: &mut W,
-) -> anyhow::Result<()> {
-    writeln!(stdout, "🔍 Extracting Pyth price from tx: {tx_hash}")?;
-    writeln!(stdout, "   Filtering for symbol: {symbol}")?;
-    writeln!(stdout)?;
-
-    let ws_url = &env.evm_env.ws_rpc_url;
-    let ws = WsConnect::new(ws_url.as_str());
-    let provider = ProviderBuilder::new().connect_ws(ws).await?;
-
-    let cache = FeedIdCache::new();
-
-    let price = extract_pyth_price(tx_hash, &provider, symbol, &cache)
-        .await
-        .map_err(|e| anyhow::Error::new(e).context("extracting Pyth price"))?;
-
-    writeln!(stdout, "✅ Successfully extracted Pyth price:")?;
-    writeln!(stdout, "   Raw price value: {}", price.price)?;
-    writeln!(stdout, "   Exponent: {}", price.expo)?;
-    writeln!(stdout, "   Confidence: {}", price.conf)?;
-    writeln!(stdout, "   Publish time: {}", price.publishTime)?;
-
-    match price.to_decimal() {
-        Ok(decimal_price) => {
-            writeln!(stdout, "   Decimal price: {decimal_price}")?;
-        }
-        Err(e) => {
-            writeln!(stdout, "   ⚠️  Failed to convert to decimal: {e}")?;
-        }
-    }
-
-    writeln!(stdout)?;
-
-    Ok(())
-}
-
-async fn display_market_status<W: Write>(
-    env: &Env,
+async fn ensure_schwab_authentication<W: Write>(
     pool: &SqlitePool,
-    date: Option<&str>,
+    broker: &BrokerConfig,
     stdout: &mut W,
 ) -> anyhow::Result<()> {
-    match fetch_market_hours(&env.schwab_auth, pool, date).await {
-        Ok(market_hours) => {
-            let status = market_hours.current_status();
-            let date_display = market_hours.date.format("%A, %B %d, %Y");
+    let BrokerConfig::Schwab(schwab_auth) = broker else {
+        anyhow::bail!("Authentication is only required for Schwab broker")
+    };
 
-            writeln!(stdout, "Market Status: {}", status.as_str())?;
-
-            if market_hours.is_open {
-                if let (Some(start), Some(end)) = (market_hours.start, market_hours.end) {
-                    let start_et = start.format("%I:%M %p ET");
-                    let end_et = end.format("%I:%M %p ET");
-
-                    writeln!(
-                        stdout,
-                        "{date_display}: Regular Hours: {start_et} - {end_et}"
-                    )?;
-
-                    let now = Utc::now().with_timezone(&Eastern);
-                    if status == MarketStatusEnum::Open {
-                        if now < end {
-                            let time_until_close = end.signed_duration_since(now);
-                            let hours = time_until_close.num_hours();
-                            let minutes = time_until_close.num_minutes() % 60;
-
-                            if hours > 0 {
-                                writeln!(stdout, "Market closes in {hours}h {minutes}m")?;
-                            } else {
-                                writeln!(stdout, "Market closes in {minutes}m")?;
-                            }
-                        }
-                    } else if now < start {
-                        let time_until_open = start.signed_duration_since(now);
-                        let days = time_until_open.num_days();
-                        let hours = time_until_open.num_hours() % 24;
-                        let minutes = time_until_open.num_minutes() % 60;
-
-                        if days > 0 {
-                            writeln!(stdout, "Market opens in {days}d {hours}h {minutes}m")?;
-                        } else if hours > 0 {
-                            writeln!(stdout, "Market opens in {hours}h {minutes}m")?;
-                        } else {
-                            writeln!(stdout, "Market opens in {minutes}m")?;
-                        }
-                    }
-                }
-            } else {
-                writeln!(stdout, "{date_display}: Market Closed")?;
-
-                if date.is_none() {
-                    writeln!(stdout, "Next trading day: Check weekday market hours")?;
-                }
-            }
-        }
-        Err(e) => {
-            error!("Failed to fetch market hours: {e:?}");
-            writeln!(stdout, "❌ Failed to fetch market hours: {e}")?;
-            return Err(e.into());
-        }
-    }
-
-    Ok(())
-}
-
-async fn ensure_authentication<W: Write>(
-    pool: &SqlitePool,
-    schwab_auth: &crate::schwab::SchwabAuthEnv,
-    stdout: &mut W,
-) -> anyhow::Result<()> {
     info!("Refreshing authentication tokens if needed");
 
     match SchwabTokens::get_valid_access_token(pool, schwab_auth).await {
@@ -365,7 +218,7 @@ async fn ensure_authentication<W: Write>(
             info!("Authentication tokens are valid, access token obtained");
             return Ok(());
         }
-        Err(crate::schwab::SchwabError::RefreshTokenExpired) => {
+        Err(st0x_broker::schwab::SchwabError::RefreshTokenExpired) => {
             info!("Refresh token has expired, launching interactive OAuth flow");
             writeln!(
                 stdout,
@@ -404,33 +257,68 @@ async fn ensure_authentication<W: Write>(
     }
 }
 
+async fn run_oauth_flow(pool: &SqlitePool, schwab_auth: &SchwabAuthEnv) -> Result<(), SchwabError> {
+    println!(
+        "Authenticate portfolio brokerage account (not dev account) and paste URL: {}",
+        schwab_auth.get_auth_url()
+    );
+    print!("Paste the full redirect URL you were sent to: ");
+    std::io::stdout().flush()?;
+
+    let mut redirect_url = String::new();
+    std::io::stdin().read_line(&mut redirect_url)?;
+    let redirect_url = redirect_url.trim();
+
+    let code = extract_code_from_url(redirect_url)?;
+    println!("Extracted code: {code}");
+
+    let tokens = schwab_auth.get_tokens_from_code(&code).await?;
+    tokens.store(pool, &schwab_auth.encryption_key).await?;
+
+    Ok(())
+}
+
 async fn execute_order_with_writers<W: Write>(
     ticker: String,
     quantity: u64,
-    instruction: Instruction,
-    env: &Env,
+    direction: Direction,
+    config: &Config,
     pool: &SqlitePool,
     stdout: &mut W,
 ) -> anyhow::Result<()> {
-    let order = Order::new(ticker.clone(), instruction.clone(), quantity);
+    let BrokerConfig::Schwab(schwab_auth) = &config.broker else {
+        anyhow::bail!("execute_order_with_writers only supports Schwab broker")
+    };
 
-    info!("Created order: ticker={ticker}, instruction={instruction:?}, quantity={quantity}");
+    let schwab_config = SchwabConfig {
+        auth: schwab_auth.clone(),
+        pool: pool.clone(),
+    };
+    let broker = schwab_config.try_into_broker().await?;
 
-    match order.place(&env.schwab_auth, pool).await {
-        Ok(response) => {
+    let market_order = MarketOrder {
+        symbol: Symbol::new(ticker.clone())?,
+        shares: Shares::new(quantity)?,
+        direction,
+    };
+
+    info!("Created order: ticker={ticker}, direction={direction:?}, quantity={quantity}");
+
+    match broker.place_market_order(market_order).await {
+        Ok(placement) => {
             info!(
-                "Order placed successfully: ticker={ticker}, instruction={instruction:?}, quantity={quantity}, order_id={}",
-                response.order_id
+                "Order placed successfully: ticker={ticker}, direction={direction:?}, quantity={quantity}, order_id={}",
+                placement.order_id
             );
             writeln!(stdout, "✅ Order placed successfully!")?;
             writeln!(stdout, "   Ticker: {ticker}")?;
-            writeln!(stdout, "   Action: {instruction:?}")?;
-            writeln!(stdout, "   Order ID: {}", response.order_id)?;
+            writeln!(stdout, "   Action: {direction:?}")?;
+            writeln!(stdout, "   Order ID: {}", placement.order_id)?;
             writeln!(stdout, "   Quantity: {quantity}")?;
         }
         Err(e) => {
             error!(
-                "Failed to place order: ticker={ticker}, instruction={instruction:?}, quantity={quantity}, error={e:?}"
+                "Failed to place order: ticker={ticker}, direction={direction:?}, quantity={quantity}, error={e:?}"
             );
             writeln!(stdout, "❌ Failed to place order: {e}")?;
             return Err(e.into());
@@ -442,18 +330,18 @@ async fn execute_order_with_writers<W: Write>(
 
 async fn process_tx_with_provider<W: Write, P: Provider + Clone>(
     tx_hash: B256,
-    env: &Env,
+    config: &Config,
     pool: &SqlitePool,
     stdout: &mut W,
     provider: &P,
     cache: &SymbolCache,
 ) -> anyhow::Result<()> {
-    let evm_env = &env.evm_env;
-    let feed_id_cache = FeedIdCache::default();
+    let evm_env = &config.evm;
+    let feed_id_cache = FeedIdCache::new();
 
     match OnchainTrade::try_from_tx_hash(tx_hash, provider, cache, evm_env, &feed_id_cache).await {
         Ok(Some(onchain_trade)) => {
-            process_found_trade(onchain_trade, env, pool, stdout).await?;
+            process_found_trade(onchain_trade, config, pool, stdout).await?;
         }
         Ok(None) => {
             writeln!(
@@ -483,9 +371,57 @@ async fn process_tx_with_provider<W: Write, P: Provider + Clone>(
     Ok(())
 }
 
+async fn execute_broker_order<W: Write>(
+    config: &Config,
+    pool: &SqlitePool,
+    market_order: st0x_broker::MarketOrder,
+    stdout: &mut W,
+) -> anyhow::Result<OrderPlacement<String>> {
+    match &config.broker {
+        BrokerConfig::Schwab(schwab_auth) => {
+            ensure_schwab_authentication(pool, &config.broker, stdout).await?;
+            writeln!(stdout, "🔄 Executing Schwab order...")?;
+            let schwab_config = SchwabConfig {
+                auth: schwab_auth.clone(),
+                pool: pool.clone(),
+            };
+            let broker = schwab_config.try_into_broker().await?;
+            let placement = broker.place_market_order(market_order).await?;
+            writeln!(
+                stdout,
+                "✅ Schwab order placed with ID: {}",
+                placement.order_id
+            )?;
+            Ok(placement)
+        }
+        BrokerConfig::Alpaca(alpaca_auth) => {
+            writeln!(stdout, "🔄 Executing Alpaca order...")?;
+            let broker = alpaca_auth.clone().try_into_broker().await?;
+            let placement = broker.place_market_order(market_order).await?;
+            writeln!(
+                stdout,
+                "✅ Alpaca order placed with ID: {}",
+                placement.order_id
+            )?;
+            Ok(placement)
+        }
+        BrokerConfig::DryRun => {
+            writeln!(stdout, "🔄 Executing dry-run order...")?;
+            let broker = MockBrokerConfig.try_into_broker().await?;
+            let placement = broker.place_market_order(market_order).await?;
+            writeln!(
+                stdout,
+                "✅ Dry-run order placed with ID: {}",
+                placement.order_id
+            )?;
+            Ok(placement)
+        }
+    }
+}
+
 async fn process_found_trade<W: Write>(
     onchain_trade: OnchainTrade,
-    env: &Env,
+    config: &Config,
     pool: &SqlitePool,
     stdout: &mut W,
 ) -> anyhow::Result<()> {
@@ -494,24 +430,41 @@ async fn process_found_trade<W: Write>(
     writeln!(stdout, "🔄 Processing trade with TradeAccumulator...")?;
 
     let mut sql_tx = pool.begin().await?;
-    let execution = accumulator::process_onchain_trade(&mut sql_tx, onchain_trade).await?;
+    let execution = accumulator::process_onchain_trade(
+        &mut sql_tx,
+        onchain_trade,
+        config.broker.to_supported_broker(),
+    )
+    .await?;
     sql_tx.commit().await?;
 
     if let Some(execution) = execution {
         let execution_id = execution
             .id
-            .ok_or_else(|| anyhow::anyhow!("SchwabExecution missing ID after accumulation"))?;
+            .ok_or_else(|| anyhow::anyhow!("OffchainExecution missing ID after accumulation"))?;
         writeln!(
             stdout,
-            "✅ Trade triggered Schwab execution (ID: {execution_id})"
+            "✅ Trade triggered execution for {:?} (ID: {execution_id})",
+            config.broker.to_supported_broker()
         )?;
-        ensure_authentication(pool, &env.schwab_auth, stdout).await?;
-        writeln!(stdout, "🔄 Executing Schwab order...")?;
-        let broker = env.get_broker();
-        broker
-            .execute_order(env, pool, execution)
-            .await
-            .map_err(anyhow::Error::from)?;
+
+        let market_order = MarketOrder {
+            symbol: execution.symbol,
+            shares: execution.shares,
+            direction: execution.direction,
+        };
+
+        let placement = execute_broker_order(config, pool, market_order, stdout).await?;
+
+        let submitted_state = OrderState::Submitted {
+            order_id: placement.order_id.to_string(),
+        };
+
+        let mut sql_tx = pool.begin().await?;
+        submitted_state
+            .store_update(&mut sql_tx, execution_id)
+            .await?;
+        sql_tx.commit().await?;
         writeln!(stdout, "🎯 Trade processing completed!")?;
     } else {
         writeln!(
@@ -547,40 +500,47 @@ fn display_trade_details<W: Write>(
     Ok(())
 }
 
-// Old ArbTrade-based functions removed - now using unified TradeAccumulator system
-
-// Tests temporarily disabled during migration to new system
-// TODO: Update tests to use OnchainTrade + TradeAccumulator instead of ArbTrade
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::bindings::IERC20::symbolCall;
     use crate::bindings::IOrderBookV4::{AfterClear, ClearConfig, ClearStateChange, ClearV2};
     use crate::env::LogLevel;
+    use crate::offchain::execution::find_executions_by_symbol_status_and_broker;
+    use crate::onchain::EvmEnv;
     use crate::onchain::trade::OnchainTrade;
-    use crate::schwab::Direction;
-    use crate::schwab::TradeStatus;
-    use crate::schwab::execution::find_executions_by_symbol_and_status;
     use crate::test_utils::get_test_order;
     use crate::test_utils::setup_test_db;
+    use crate::test_utils::setup_test_tokens;
     use crate::tokenized_symbol;
-    use crate::{onchain::EvmEnv, schwab::SchwabAuthEnv};
     use alloy::hex;
-    use alloy::primitives::{IntoLogData, U256, address, fixed_bytes};
+    use alloy::primitives::{FixedBytes, IntoLogData, U256, address, fixed_bytes};
     use alloy::providers::mock::Asserter;
     use alloy::sol_types::{SolCall, SolEvent};
     use chrono::{Duration, Utc};
     use clap::CommandFactory;
     use httpmock::MockServer;
     use serde_json::json;
+    use st0x_broker::Direction;
+    use st0x_broker::OrderStatus;
+    use st0x_broker::schwab::SchwabAuthEnv;
     use std::str::FromStr;
+
+    const TEST_ENCRYPTION_KEY: FixedBytes<32> = FixedBytes::ZERO;
+
+    fn get_schwab_auth_from_config(config: &Config) -> &SchwabAuthEnv {
+        match &config.broker {
+            BrokerConfig::Schwab(auth) => auth,
+            _ => panic!("Expected Schwab broker config in tests"),
+        }
+    }
 
     #[tokio::test]
     async fn test_run_buy_order() {
         let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
+        let config = create_test_config_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, get_schwab_auth_from_config(&config)).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -606,8 +566,8 @@ mod tests {
         execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
-            &env,
+            Direction::Buy,
+            &config,
             &pool,
             &mut std::io::sink(),
         )
@@ -621,9 +581,9 @@ mod tests {
     #[tokio::test]
     async fn test_run_sell_order() {
         let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
+        let config = create_test_config_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, get_schwab_auth_from_config(&config)).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -649,8 +609,8 @@ mod tests {
         execute_order_with_writers(
             "TSLA".to_string(),
             50,
-            Instruction::Sell,
-            &env,
+            Direction::Sell,
+            &config,
             &pool,
             &mut std::io::sink(),
         )
@@ -664,9 +624,9 @@ mod tests {
     #[tokio::test]
     async fn test_execute_order_failure() {
         let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
+        let config = create_test_config_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, get_schwab_auth_from_config(&config)).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -689,8 +649,8 @@ mod tests {
         let result = execute_order_with_writers(
             "INVALID".to_string(),
             100,
-            Instruction::Buy,
-            &env,
+            Direction::Buy,
+            &config,
             &pool,
             &mut std::io::sink(),
         )
@@ -704,40 +664,48 @@ mod tests {
     #[tokio::test]
     async fn test_run_with_expired_refresh_token() {
         let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
+        let config = create_test_config_for_cli(&server);
         let pool = setup_test_db().await;
 
-        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+        let expired_tokens = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: Utc::now() - Duration::minutes(35),
             refresh_token: "expired_refresh_token".to_string(),
             refresh_token_fetched_at: Utc::now() - Duration::days(8),
         };
-        expired_tokens.store(&pool).await.unwrap();
+        expired_tokens
+            .store(&pool, &get_schwab_auth_from_config(&config).encryption_key)
+            .await
+            .unwrap();
 
-        let result =
-            crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
-                .await;
+        let BrokerConfig::Schwab(schwab_auth) = &config.broker else {
+            panic!("Expected Schwab broker")
+        };
+
+        let result = SchwabTokens::get_valid_access_token(&pool, schwab_auth).await;
 
         assert!(matches!(
             result.unwrap_err(),
-            crate::schwab::SchwabError::RefreshTokenExpired
+            st0x_broker::schwab::SchwabError::RefreshTokenExpired
         ));
     }
 
     #[tokio::test]
     async fn test_run_with_successful_token_refresh() {
         let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
+        let config = create_test_config_for_cli(&server);
         let pool = setup_test_db().await;
 
-        let tokens_needing_refresh = crate::schwab::tokens::SchwabTokens {
+        let tokens_needing_refresh = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: Utc::now() - Duration::minutes(35),
             refresh_token: "valid_refresh_token".to_string(),
             refresh_token_fetched_at: Utc::now() - Duration::days(1),
         };
-        tokens_needing_refresh.store(&pool).await.unwrap();
+        tokens_needing_refresh
+            .store(&pool, &get_schwab_auth_from_config(&config).encryption_key)
+            .await
+            .unwrap();
 
         let refresh_mock = server.mock(|when, then| {
             when.method(httpmock::Method::POST)
@@ -771,17 +739,20 @@ mod tests {
                 .header("location", "/trader/v1/accounts/ABC123DEF456/orders/12345");
         });
 
-        let access_token =
-            crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
-                .await
-                .unwrap();
+        let BrokerConfig::Schwab(schwab_auth) = &config.broker else {
+            panic!("Expected Schwab broker")
+        };
+
+        let access_token = SchwabTokens::get_valid_access_token(&pool, schwab_auth)
+            .await
+            .unwrap();
         assert_eq!(access_token, "refreshed_access_token");
 
         execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
-            &env,
+            Direction::Buy,
+            &config,
             &pool,
             &mut std::io::sink(),
         )
@@ -792,9 +763,10 @@ mod tests {
         account_mock.assert();
         order_mock.assert();
 
-        let stored_tokens = crate::schwab::tokens::SchwabTokens::load(&pool)
-            .await
-            .unwrap();
+        let stored_tokens =
+            SchwabTokens::load(&pool, &get_schwab_auth_from_config(&config).encryption_key)
+                .await
+                .unwrap();
         assert_eq!(stored_tokens.access_token, "refreshed_access_token");
         assert_eq!(stored_tokens.refresh_token, "new_refresh_token");
     }
@@ -802,9 +774,9 @@ mod tests {
     #[tokio::test]
     async fn test_run_with_valid_tokens_no_refresh_needed() {
         let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
+        let config = create_test_config_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, get_schwab_auth_from_config(&config)).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -828,8 +800,8 @@ mod tests {
         execute_order_with_writers(
             "TSLA".to_string(),
             50,
-            Instruction::Sell,
-            &env,
+            Direction::Sell,
+            &config,
             &pool,
             &mut std::io::sink(),
         )
@@ -839,18 +811,19 @@ mod tests {
         account_mock.assert();
         order_mock.assert();
 
-        let stored_tokens = crate::schwab::tokens::SchwabTokens::load(&pool)
-            .await
-            .unwrap();
+        let stored_tokens =
+            SchwabTokens::load(&pool, &get_schwab_auth_from_config(&config).encryption_key)
+                .await
+                .unwrap();
         assert_eq!(stored_tokens.access_token, "test_access_token");
     }
 
     #[tokio::test]
     async fn test_execute_order_success_stdout_output() {
         let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
+        let config = create_test_config_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, get_schwab_auth_from_config(&config)).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -875,8 +848,8 @@ mod tests {
         let result = execute_order_with_writers(
             "AAPL".to_string(),
             123,
-            Instruction::Buy,
-            &env,
+            Direction::Buy,
+            &config,
             &pool,
             &mut stdout_buffer,
         )
@@ -897,9 +870,9 @@ mod tests {
     #[tokio::test]
     async fn test_execute_order_failure_stderr_output() {
         let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
+        let config = create_test_config_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, get_schwab_auth_from_config(&config)).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -924,8 +897,8 @@ mod tests {
         let result = execute_order_with_writers(
             "TSLA".to_string(),
             50,
-            Instruction::Sell,
-            &env,
+            Direction::Sell,
+            &config,
             &pool,
             &mut stdout_buffer,
         )
@@ -943,24 +916,29 @@ mod tests {
     #[tokio::test]
     async fn test_authentication_with_oauth_flow_on_expired_refresh_token() {
         let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
+        let config = create_test_config_for_cli(&server);
         let pool = setup_test_db().await;
 
-        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+        let expired_tokens = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: Utc::now() - Duration::minutes(35),
             refresh_token: "expired_refresh_token".to_string(),
             refresh_token_fetched_at: Utc::now() - Duration::days(8),
         };
-        expired_tokens.store(&pool).await.unwrap();
+        expired_tokens
+            .store(&pool, &get_schwab_auth_from_config(&config).encryption_key)
+            .await
+            .unwrap();
 
-        let result =
-            crate::schwab::tokens::SchwabTokens::get_valid_access_token(&pool, &env.schwab_auth)
-                .await;
+        let BrokerConfig::Schwab(schwab_auth) = &config.broker else {
+            panic!("Expected Schwab broker")
+        };
+
+        let result = SchwabTokens::get_valid_access_token(&pool, schwab_auth).await;
 
         assert!(matches!(
             result.unwrap_err(),
-            crate::schwab::SchwabError::RefreshTokenExpired
+            st0x_broker::schwab::SchwabError::RefreshTokenExpired
         ));
 
         let mut stdout_buffer = Vec::new();
@@ -1001,19 +979,12 @@ mod tests {
         assert!(error_msg.contains("greater than zero"));
     }
 
-    fn create_test_env_for_cli(mock_server: &MockServer) -> Env {
-        Env {
+    fn create_test_config_for_cli(mock_server: &MockServer) -> Config {
+        Config {
             database_url: ":memory:".to_string(),
             log_level: LogLevel::Debug,
             server_port: 8080,
-            schwab_auth: SchwabAuthEnv {
-                app_key: "test_app_key".to_string(),
-                app_secret: "test_app_secret".to_string(),
-                redirect_uri: "https://127.0.0.1".to_string(),
-                base_url: mock_server.base_url(),
-                account_index: 0,
-            },
-            evm_env: EvmEnv {
+            evm: EvmEnv {
                 ws_rpc_url: url::Url::parse("ws://localhost:8545").unwrap(),
                 orderbook: address!("0x1234567890123456789012345678901234567890"),
                 order_owner: address!("0x0000000000000000000000000000000000000000"),
@@ -1021,18 +992,15 @@ mod tests {
             },
             order_polling_interval: 15,
             order_polling_max_jitter: 5,
-            dry_run: false,
+            broker: BrokerConfig::Schwab(SchwabAuthEnv {
+                schwab_app_key: "test_app_key".to_string(),
+                schwab_app_secret: "test_app_secret".to_string(),
+                schwab_redirect_uri: "https://127.0.0.1".to_string(),
+                schwab_base_url: mock_server.base_url(),
+                schwab_account_index: 0,
+                encryption_key: TEST_ENCRYPTION_KEY,
+            }),
         }
-    }
-
-    async fn setup_test_tokens(pool: &SqlitePool) {
-        let tokens = crate::schwab::tokens::SchwabTokens {
-            access_token: "test_access_token".to_string(),
-            access_token_fetched_at: chrono::Utc::now(),
-            refresh_token: "test_refresh_token".to_string(),
-            refresh_token_fetched_at: chrono::Utc::now(),
-        };
-        tokens.store(pool).await.unwrap();
     }
 
     struct MockBlockchainData {
@@ -1129,10 +1097,8 @@ mod tests {
         output_symbol: &str,
     ) -> impl Provider + Clone {
         let asserter = Asserter::new();
-        // Add mock transaction receipt for gas tracking - first call from try_from_tx_hash
         asserter.push_success(&mock_data.receipt_json);
         asserter.push_success(&json!([mock_data.after_clear_log]));
-        // Add mock transaction receipt for gas tracking - second call from try_from_order_and_fill_details
         asserter.push_success(&mock_data.receipt_json);
         asserter.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &input_symbol.to_string(),
@@ -1263,9 +1229,9 @@ mod tests {
     #[tokio::test]
     async fn test_integration_buy_command_end_to_end() {
         let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
+        let config = create_test_config_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, get_schwab_auth_from_config(&config)).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1295,7 +1261,7 @@ mod tests {
             quantity: 100,
         };
 
-        let result = run_command_with_writers(env, buy_command, &pool, &mut stdout).await;
+        let result = run_command_with_writers(config, buy_command, &pool, &mut stdout).await;
 
         assert!(
             result.is_ok(),
@@ -1311,9 +1277,9 @@ mod tests {
     #[tokio::test]
     async fn test_integration_sell_command_end_to_end() {
         let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
+        let config = create_test_config_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, get_schwab_auth_from_config(&config)).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1343,7 +1309,7 @@ mod tests {
             quantity: 50,
         };
 
-        let result = run_command_with_writers(env, sell_command, &pool, &mut stdout).await;
+        let result = run_command_with_writers(config, sell_command, &pool, &mut stdout).await;
 
         assert!(
             result.is_ok(),
@@ -1359,17 +1325,20 @@ mod tests {
     #[tokio::test]
     async fn test_integration_authentication_failure_scenarios() {
         let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
+        let config = create_test_config_for_cli(&server);
         let pool = setup_test_db().await;
 
         // Set up expired access token but valid refresh token that will trigger a refresh attempt
-        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+        let expired_tokens = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: chrono::Utc::now() - chrono::Duration::minutes(35),
             refresh_token: "valid_but_rejected_refresh_token".to_string(),
             refresh_token_fetched_at: chrono::Utc::now() - chrono::Duration::days(1), // Valid refresh token
         };
-        expired_tokens.store(&pool).await.unwrap();
+        expired_tokens
+            .store(&pool, &get_schwab_auth_from_config(&config).encryption_key)
+            .await
+            .unwrap();
 
         // Mock the token refresh to fail
         let token_refresh_mock = server.mock(|when, then| {
@@ -1389,8 +1358,8 @@ mod tests {
         let result = execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
-            &env,
+            Direction::Buy,
+            &config,
             &pool,
             &mut stdout,
         )
@@ -1402,28 +1371,29 @@ mod tests {
         );
         token_refresh_mock.assert();
 
-        let stdout_str = String::from_utf8(stdout).unwrap();
-        assert!(
-            stdout_str.contains("authentication")
-                || stdout_str.contains("refresh token")
-                || stdout_str.contains("expired")
-        );
+        // The function fails early when creating the broker, so no output is written
+        // The error should be related to authentication issues
+        let error_msg = format!("{}", result.unwrap_err());
+        assert!(error_msg.contains("Refresh token expired"));
     }
 
     #[tokio::test]
     async fn test_integration_token_refresh_flow() {
         let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
+        let config = create_test_config_for_cli(&server);
         let pool = setup_test_db().await;
 
         // Set up expired tokens
-        let expired_tokens = crate::schwab::tokens::SchwabTokens {
+        let expired_tokens = SchwabTokens {
             access_token: "expired_access_token".to_string(),
             access_token_fetched_at: chrono::Utc::now() - chrono::Duration::minutes(35),
             refresh_token: "valid_refresh_token".to_string(),
             refresh_token_fetched_at: chrono::Utc::now() - chrono::Duration::days(1),
         };
-        expired_tokens.store(&pool).await.unwrap();
+        expired_tokens
+            .store(&pool, &get_schwab_auth_from_config(&config).encryption_key)
+            .await
+            .unwrap();
 
         let token_refresh_mock = server.mock(|when, then| {
             when.method(httpmock::Method::POST)
@@ -1466,8 +1436,8 @@ mod tests {
         let result = execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
-            &env,
+            Direction::Buy,
+            &config,
             &pool,
             &mut stdout,
         )
@@ -1482,9 +1452,10 @@ mod tests {
         order_mock.assert();
 
         // Verify that new tokens were stored in database
-        let stored_tokens = crate::schwab::tokens::SchwabTokens::load(&pool)
-            .await
-            .unwrap();
+        let stored_tokens =
+            SchwabTokens::load(&pool, &get_schwab_auth_from_config(&config).encryption_key)
+                .await
+                .unwrap();
         assert_eq!(stored_tokens.access_token, "new_access_token");
         assert_eq!(stored_tokens.refresh_token, "new_refresh_token");
     }
@@ -1492,7 +1463,7 @@ mod tests {
     #[tokio::test]
     async fn test_integration_database_operations() {
         let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
+        let config = create_test_config_for_cli(&server);
         let pool = setup_test_db().await;
 
         // Test that CLI properly handles database without tokens
@@ -1501,23 +1472,22 @@ mod tests {
         let result = execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
-            &env,
+            Direction::Buy,
+            &config,
             &pool,
             &mut stdout,
         )
         .await;
 
         assert!(result.is_err(), "CLI should fail when no tokens are stored");
-        let stdout_str = String::from_utf8(stdout).unwrap();
-        assert!(
-            stdout_str.contains("no rows returned")
-                || stdout_str.contains("Database error")
-                || stdout_str.contains("Failed to place order")
-        );
+
+        // The function fails early when creating the broker, so no output is written
+        // The error should be related to missing authentication tokens
+        let error_msg = format!("{}", result.unwrap_err());
+        assert!(error_msg.contains("no rows returned"));
 
         // Now add tokens and verify database integration works
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, get_schwab_auth_from_config(&config)).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1542,8 +1512,8 @@ mod tests {
         let result2 = execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
-            &env,
+            Direction::Buy,
+            &config,
             &pool,
             &mut stdout2,
         )
@@ -1560,9 +1530,9 @@ mod tests {
     #[tokio::test]
     async fn test_integration_network_error_handling() {
         let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
+        let config = create_test_config_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, get_schwab_auth_from_config(&config)).await;
 
         // Mock network timeout/connection error
         let account_mock = server.mock(|when, then| {
@@ -1578,8 +1548,8 @@ mod tests {
         let result = execute_order_with_writers(
             "AAPL".to_string(),
             100,
-            Instruction::Buy,
-            &env,
+            Direction::Buy,
+            &config,
             &pool,
             &mut stdout,
         )
@@ -1598,7 +1568,7 @@ mod tests {
     #[tokio::test]
     async fn test_process_tx_command_transaction_not_found() {
         let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
+        let config = create_test_config_for_cli(&server);
         let pool = setup_test_db().await;
 
         let tx_hash =
@@ -1612,7 +1582,7 @@ mod tests {
         let cache = SymbolCache::default();
 
         let result =
-            process_tx_with_provider(tx_hash, &env, &pool, &mut stdout, &provider, &cache).await;
+            process_tx_with_provider(tx_hash, &config, &pool, &mut stdout, &provider, &cache).await;
 
         assert!(
             result.is_ok(),
@@ -1629,9 +1599,9 @@ mod tests {
     #[tokio::test]
     async fn test_integration_invalid_order_parameters() {
         let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
+        let config = create_test_config_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, get_schwab_auth_from_config(&config)).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1660,8 +1630,8 @@ mod tests {
         let result = execute_order_with_writers(
             "INVALID".to_string(),
             999_999,
-            Instruction::Buy,
-            &env,
+            Direction::Buy,
+            &config,
             &pool,
             &mut stdout,
         )
@@ -1685,24 +1655,24 @@ mod tests {
     #[tokio::test]
     async fn test_process_tx_with_database_integration_success() {
         let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
+        let config = create_test_config_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, get_schwab_auth_from_config(&config)).await;
 
         let tx_hash =
             fixed_bytes!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
 
         // Create mock blockchain data for 9 AAPL shares trade
         let mock_data = create_mock_blockchain_data(
-            env.evm_env.orderbook,
+            config.evm.orderbook,
             tx_hash,
             "9000000000000000000", // 9 shares (18 decimals)
             100_000_000,           // 100 USDC (6 decimals)
         );
 
-        // Update env to have the correct order owner
-        let mut env = env;
-        env.evm_env.order_owner = mock_data.order_owner;
+        // Update config to have the correct order owner
+        let mut config = config;
+        config.evm.order_owner = mock_data.order_owner;
 
         // Set up Schwab API mocks
         let (account_mock, order_mock) = setup_schwab_api_mocks(&server);
@@ -1715,11 +1685,12 @@ mod tests {
 
         // Test the function with the mocked provider
         let result =
-            process_tx_with_provider(tx_hash, &env, &pool, &mut stdout, &provider, &cache).await;
+            process_tx_with_provider(tx_hash, &config, &pool, &mut stdout, &provider, &cache).await;
 
         assert!(
             result.is_ok(),
-            "process_tx should succeed with proper mocking"
+            "process_tx should succeed with proper mocking: {:?}",
+            result.as_ref().err()
         );
 
         // Verify the OnchainTrade was saved to database
@@ -1729,20 +1700,24 @@ mod tests {
         assert_eq!(trade.symbol.to_string(), "AAPL0x"); // Tokenized symbol
         assert!((trade.amount - 9.0).abs() < f64::EPSILON); // Amount from the test data
 
-        // Verify SchwabExecution was created (due to TradeAccumulator)
+        // Verify OffchainExecution was created (due to TradeAccumulator)
         // Executions are now in SUBMITTED status with order_id stored for order status polling
-        let executions =
-            find_executions_by_symbol_and_status(&pool, "AAPL", TradeStatus::Submitted)
-                .await
-                .unwrap();
+        let executions = find_executions_by_symbol_status_and_broker(
+            &pool,
+            Some(st0x_broker::Symbol::new("AAPL").unwrap()),
+            OrderStatus::Submitted,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(executions.len(), 1);
-        assert_eq!(executions[0].shares, 9);
+        assert_eq!(executions[0].shares, st0x_broker::Shares::new(9).unwrap());
         assert_eq!(executions[0].direction, Direction::Buy);
 
         // Verify order_id was stored in database
         let execution_id = executions[0].id.unwrap();
         let row = sqlx::query!(
-            "SELECT order_id FROM schwab_executions WHERE id = ?1",
+            "SELECT order_id FROM offchain_trades WHERE id = ?1",
             execution_id
         )
         .fetch_one(&pool)
@@ -1760,31 +1735,31 @@ mod tests {
         // Verify stdout output
         let stdout_str = String::from_utf8(stdout).unwrap();
         assert!(stdout_str.contains("Processing trade with TradeAccumulator"));
-        assert!(stdout_str.contains("Trade triggered Schwab execution"));
+        assert!(stdout_str.contains("Trade triggered execution for Schwab"));
         assert!(stdout_str.contains("Trade processing completed"));
     }
 
     #[tokio::test]
     async fn test_process_tx_database_duplicate_handling() {
         let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
+        let config = create_test_config_for_cli(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, get_schwab_auth_from_config(&config)).await;
 
         let tx_hash =
             fixed_bytes!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
 
         // Create mock blockchain data for 5 TSLA shares trade
         let mock_data = create_mock_blockchain_data(
-            env.evm_env.orderbook,
+            config.evm.orderbook,
             tx_hash,
             "5000000000000000000", // 5 shares (18 decimals)
             50_000_000,            // 50 USDC (6 decimals)
         );
 
-        // Update env to have the correct order owner
-        let mut env = env;
-        env.evm_env.order_owner = mock_data.order_owner;
+        // Update config to have the correct order owner
+        let mut config = config;
+        config.evm.order_owner = mock_data.order_owner;
 
         // Set up Schwab API mocks for first call
         let account_mock = server.mock(|when, then| {
@@ -1810,10 +1785,8 @@ mod tests {
 
         // Set up the mock provider for first call
         let asserter1 = Asserter::new();
-        // Add mock transaction receipt for gas tracking - first call from try_from_tx_hash
         asserter1.push_success(&mock_data.receipt_json);
         asserter1.push_success(&json!([mock_data.after_clear_log]));
-        // Add mock transaction receipt for gas tracking - second call from try_from_order_and_fill_details
         asserter1.push_success(&mock_data.receipt_json);
         asserter1.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
@@ -1829,8 +1802,13 @@ mod tests {
 
         // Process the transaction for the first time
         let result1 =
-            process_tx_with_provider(tx_hash, &env, &pool, &mut stdout1, &provider1, &cache1).await;
-        assert!(result1.is_ok(), "First process_tx should succeed");
+            process_tx_with_provider(tx_hash, &config, &pool, &mut stdout1, &provider1, &cache1)
+                .await;
+        assert!(
+            result1.is_ok(),
+            "First process_tx should succeed: {:?}",
+            result1.as_ref().err()
+        );
 
         // Verify the OnchainTrade was saved to database
         let trade = OnchainTrade::find_by_tx_hash_and_log_index(&pool, tx_hash, 0)
@@ -1847,10 +1825,8 @@ mod tests {
         // Note: We still need to mock the provider responses because the function will still
         // fetch the transaction data, but it should detect the duplicate in the database
         let asserter2 = Asserter::new();
-        // Add mock transaction receipt for gas tracking - first call from try_from_tx_hash
         asserter2.push_success(&mock_data.receipt_json);
         asserter2.push_success(&json!([mock_data.after_clear_log]));
-        // Add mock transaction receipt for gas tracking - second call from try_from_order_and_fill_details
         asserter2.push_success(&mock_data.receipt_json);
         asserter2.push_success(&<symbolCall as SolCall>::abi_encode_returns(
             &"USDC".to_string(),
@@ -1866,7 +1842,8 @@ mod tests {
 
         // Process the same transaction again (should handle duplicate gracefully)
         let result2 =
-            process_tx_with_provider(tx_hash, &env, &pool, &mut stdout2, &provider2, &cache2).await;
+            process_tx_with_provider(tx_hash, &config, &pool, &mut stdout2, &provider2, &cache2)
+                .await;
         assert!(
             result2.is_ok(),
             "Second process_tx should succeed with graceful duplicate handling"
@@ -1896,185 +1873,6 @@ mod tests {
         assert!(help_output.contains("auth"));
         assert!(help_output.contains("OAuth"));
         assert!(help_output.contains("authentication"));
-    }
-
-    #[test]
-    fn test_market_status_command_cli_help_text() {
-        let mut cmd = Cli::command();
-
-        // Verify that the market-status command is properly defined in the CLI
-        let help_output = cmd.render_help().to_string();
-        assert!(help_output.contains("market-status"));
-        assert!(help_output.contains("Check current market status and hours"));
-
-        // Test specific subcommand help
-        let subcommand_help = cmd
-            .find_subcommand_mut("market-status")
-            .unwrap()
-            .render_help()
-            .to_string();
-        assert!(subcommand_help.contains("Date to check market hours for"));
-        assert!(subcommand_help.contains("YYYY-MM-DD"));
-        assert!(subcommand_help.contains("defaults to current day"));
-    }
-
-    #[tokio::test]
-    async fn test_market_status_command_open_market() {
-        let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
-        let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
-
-        let mock_response = json!({
-            "equity": {
-                "EQ": {
-                    "date": "2025-01-03",
-                    "marketType": "EQUITY",
-                    "exchange": "NYSE",
-                    "category": "EQUITY",
-                    "product": "EQ",
-                    "productName": "Equity",
-                    "isOpen": true,
-                    "sessionHours": {
-                        "regularMarket": [{
-                            "start": "2025-01-03T09:30:00-05:00",
-                            "end": "2025-01-03T16:00:00-05:00"
-                        }]
-                    }
-                }
-            }
-        });
-
-        let mock = server.mock(|when, then| {
-            when.method(httpmock::Method::GET)
-                .path("/marketdata/v1/markets/equity")
-                .header("authorization", "Bearer test_access_token")
-                .header("accept", "application/json");
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(mock_response);
-        });
-
-        let mut stdout = Vec::new();
-        let market_status_command = Commands::MarketStatus { date: None };
-
-        let result = run_command_with_writers(env, market_status_command, &pool, &mut stdout).await;
-
-        assert!(
-            result.is_ok(),
-            "Market status command should succeed: {result:?}"
-        );
-        mock.assert();
-
-        let stdout_str = String::from_utf8(stdout).unwrap();
-        assert!(stdout_str.contains("Market Status:"));
-        assert!(stdout_str.contains("Friday, January 03, 2025: Regular Hours:"));
-        assert!(stdout_str.contains("09:30 AM ET - 04:00 PM ET"));
-    }
-
-    #[tokio::test]
-    async fn test_market_status_command_closed_market() {
-        let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
-        let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
-
-        let mock_response = json!({
-            "equity": {
-                "EQ": {
-                    "date": "2025-01-04",
-                    "marketType": "EQUITY",
-                    "exchange": "NYSE",
-                    "category": "EQUITY",
-                    "product": "EQ",
-                    "productName": "Equity",
-                    "isOpen": false
-                }
-            }
-        });
-
-        let mock = server.mock(|when, then| {
-            when.method(httpmock::Method::GET)
-                .path("/marketdata/v1/markets/equity")
-                .query_param("date", "2025-01-04")
-                .header("authorization", "Bearer test_access_token")
-                .header("accept", "application/json");
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(mock_response);
-        });
-
-        let mut stdout = Vec::new();
-        let market_status_command = Commands::MarketStatus {
-            date: Some("2025-01-04".to_string()),
-        };
-
-        let result = run_command_with_writers(env, market_status_command, &pool, &mut stdout).await;
-
-        assert!(
-            result.is_ok(),
-            "Market status command should succeed: {result:?}"
-        );
-        mock.assert();
-
-        let stdout_str = String::from_utf8(stdout).unwrap();
-        assert!(stdout_str.contains("Market Status: CLOSED"));
-        assert!(stdout_str.contains("Saturday, January 04, 2025: Market Closed"));
-    }
-
-    #[tokio::test]
-    async fn test_market_status_command_authentication_failure() {
-        let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
-        let pool = setup_test_db().await;
-        // Don't set up tokens - should fail authentication
-
-        let mut stdout = Vec::new();
-        let market_status_command = Commands::MarketStatus { date: None };
-
-        let result = run_command_with_writers(env, market_status_command, &pool, &mut stdout).await;
-
-        assert!(
-            result.is_err(),
-            "Market status command should fail without authentication"
-        );
-
-        let stdout_str = String::from_utf8(stdout).unwrap();
-        assert!(
-            stdout_str.contains("no rows returned")
-                || stdout_str.contains("Authentication failed")
-                || stdout_str.contains("refresh token")
-        );
-    }
-
-    #[tokio::test]
-    async fn test_market_status_command_api_error() {
-        let server = MockServer::start();
-        let env = create_test_env_for_cli(&server);
-        let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
-
-        let mock = server.mock(|when, then| {
-            when.method(httpmock::Method::GET)
-                .path("/marketdata/v1/markets/equity");
-            then.status(500)
-                .header("content-type", "application/json")
-                .json_body(json!({"error": "Internal server error"}));
-        });
-
-        let mut stdout = Vec::new();
-        let market_status_command = Commands::MarketStatus { date: None };
-
-        let result = run_command_with_writers(env, market_status_command, &pool, &mut stdout).await;
-
-        assert!(
-            result.is_err(),
-            "Market status command should fail on API error"
-        );
-        mock.assert();
-
-        let stdout_str = String::from_utf8(stdout).unwrap();
-        assert!(stdout_str.contains("❌ Failed to fetch market hours"));
     }
 
     #[tokio::test]

@@ -2,17 +2,9 @@ use backon::{ExponentialBuilder, Retryable};
 use reqwest::header::{self, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use std::time::Duration;
-use tracing::{error, info};
+use tracing::error;
 
-use chrono::Utc;
-
-#[cfg(test)]
-use super::execution::find_execution_by_id;
-use super::{
-    SchwabAuthEnv, SchwabError, SchwabTokens, TradeState,
-    execution::update_execution_status_within_transaction,
-};
+use super::{SchwabAuthEnv, SchwabError, SchwabTokens, order_status::OrderStatusResponse};
 
 /// Response from Schwab order placement API.
 /// According to Schwab OpenAPI spec, successful order placement (201) returns
@@ -25,7 +17,7 @@ pub(crate) struct OrderPlacementResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[allow(clippy::struct_field_names)]
-pub(crate) struct Order {
+pub struct Order {
     pub order_type: OrderType,
     pub session: Session,
     pub duration: OrderDuration,
@@ -55,8 +47,6 @@ impl Order {
         }
     }
 
-    /// Place order with bounded retries.
-    /// Retries only transport errors and 5xx server errors to avoid duplicate orders on 4xx client errors.
     pub async fn place(
         &self,
         env: &SchwabAuthEnv,
@@ -81,38 +71,19 @@ impl Order {
 
         let order_json = serde_json::to_string(self)?;
 
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()?;
-
+        let client = reqwest::Client::new();
         let response = (|| async {
-            let response = client
+            client
                 .post(format!(
                     "{}/trader/v1/accounts/{}/orders",
-                    env.base_url, account_hash
+                    env.schwab_base_url, account_hash
                 ))
                 .headers(headers.clone())
                 .body(order_json.clone())
                 .send()
-                .await?;
-
-            // Only retry on 5xx server errors or transport failures
-            // Do not retry 4xx client errors which indicate permanent failures
-            if response.status().is_server_error() {
-                return Err(SchwabError::RequestFailed {
-                    action: "place order (server error)".to_string(),
-                    status: response.status(),
-                    body: "Server error, will retry".to_string(),
-                });
-            }
-
-            Ok(response)
+                .await
         })
-        .retry(
-            ExponentialBuilder::default()
-                .with_max_times(2)
-                .with_jitter(),
-        )
+        .retry(ExponentialBuilder::default())
         .await?;
 
         if !response.status().is_success() {
@@ -129,6 +100,80 @@ impl Order {
         let order_id = extract_order_id_from_location_header(&response)?;
 
         Ok(OrderPlacementResponse { order_id })
+    }
+
+    /// Get the status of a specific order from Schwab API.
+    /// Returns the order status response containing fill information and execution details.
+    pub async fn get_order_status(
+        order_id: &str,
+        env: &SchwabAuthEnv,
+        pool: &SqlitePool,
+    ) -> Result<OrderStatusResponse, SchwabError> {
+        let access_token = SchwabTokens::get_valid_access_token(pool, env).await?;
+        let account_hash = env.get_account_hash(pool).await?;
+
+        let headers = [
+            (
+                header::AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {access_token}"))?,
+            ),
+            (header::ACCEPT, HeaderValue::from_str("application/json")?),
+        ]
+        .into_iter()
+        .collect::<HeaderMap>();
+
+        let client = reqwest::Client::new();
+        let response = (|| async {
+            client
+                .get(format!(
+                    "{}/trader/v1/accounts/{}/orders/{}",
+                    env.schwab_base_url, account_hash, order_id
+                ))
+                .headers(headers.clone())
+                .send()
+                .await
+        })
+        .retry(ExponentialBuilder::default())
+        .await?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(SchwabError::RequestFailed {
+                action: "get order status".to_string(),
+                status,
+                body: format!("Order ID {order_id} not found"),
+            });
+        }
+
+        if !response.status().is_success() {
+            let error_body = response.text().await.unwrap_or_default();
+            return Err(SchwabError::RequestFailed {
+                action: "get order status".to_string(),
+                status,
+                body: error_body,
+            });
+        }
+
+        // Capture response text for debugging parse errors
+        let response_text = response.text().await?;
+
+        // Log successful response in debug mode to understand API structure
+        tracing::debug!("Schwab order status response: {}", response_text);
+
+        match serde_json::from_str::<OrderStatusResponse>(&response_text) {
+            Ok(order_status) => Ok(order_status),
+            Err(parse_error) => {
+                error!(
+                    order_id = %order_id,
+                    response_text = %response_text,
+                    parse_error = %parse_error,
+                    "Failed to parse Schwab order status response"
+                );
+                Err(SchwabError::InvalidConfiguration(format!(
+                    "Failed to parse order status response: {parse_error}"
+                )))
+            }
+        }
     }
 }
 
@@ -202,7 +247,7 @@ pub(crate) enum OrderType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub(crate) enum Instruction {
+pub enum Instruction {
     Buy,
     Sell,
     BuyToCover,
@@ -264,85 +309,10 @@ pub(crate) struct Instrument {
     pub asset_type: AssetType,
 }
 
-pub(crate) async fn handle_execution_success(
-    pool: &SqlitePool,
-    execution_id: i64,
-    order_id: String,
-) -> Result<(), SchwabError> {
-    info!("Successfully placed Schwab order for execution: id={execution_id}, order_id={order_id}");
-
-    let mut sql_tx = pool.begin().await.map_err(|e| {
-        error!(
-            "Failed to start transaction for execution success: id={}, error={:?}",
-            execution_id, e
-        );
-        e
-    })?;
-
-    // Update status to Submitted with order_id so order poller can track the order and update with real fill price
-    update_execution_status_within_transaction(
-        &mut sql_tx,
-        execution_id,
-        TradeState::Submitted { order_id },
-    )
-    .await?;
-
-    sql_tx.commit().await.map_err(|e| {
-        error!("Failed to commit execution success transaction: id={execution_id}, error={e:?}",);
-        e
-    })?;
-
-    Ok(())
-}
-
-pub(crate) async fn handle_execution_failure(
-    pool: &SqlitePool,
-    execution_id: i64,
-    error: SchwabError,
-) -> Result<(), SchwabError> {
-    error!(
-        "Failed to place Schwab order after retries for execution: id={execution_id}, error={error:?}",
-    );
-
-    let mut sql_tx =
-        pool.begin().await.map_err(|e| {
-            error!(
-                "Failed to start transaction for execution failure: id={execution_id}, error={e:?}",
-            );
-            e
-        })?;
-
-    if let Err(update_err) = update_execution_status_within_transaction(
-        &mut sql_tx,
-        execution_id,
-        TradeState::Failed {
-            failed_at: Utc::now(),
-            error_reason: Some(error.to_string()),
-        },
-    )
-    .await
-    {
-        error!(
-            "Failed to update execution status to FAILED: id={execution_id}, error={update_err:?}",
-        );
-        let _ = sql_tx.rollback().await;
-        return Err(SchwabError::ExecutionPersistence(update_err));
-    }
-
-    sql_tx.commit().await.map_err(|e| {
-        error!("Failed to commit execution failure transaction: id={execution_id}, error={e:?}",);
-        e
-    })?;
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schwab::broker::{Broker, Schwab};
-    use crate::test_utils::setup_test_db;
-    use chrono::Utc;
+    use crate::test_utils::{TEST_ENCRYPTION_KEY, setup_test_db, setup_test_tokens};
     use serde_json::json;
 
     #[test]
@@ -476,7 +446,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -513,7 +483,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -544,26 +514,15 @@ mod tests {
         );
     }
 
-    fn create_test_env_with_mock_server(
-        mock_server: &httpmock::MockServer,
-    ) -> super::SchwabAuthEnv {
-        super::SchwabAuthEnv {
+    fn create_test_env_with_mock_server(mock_server: &httpmock::MockServer) -> SchwabAuthEnv {
+        SchwabAuthEnv {
             app_key: "test_app_key".to_string(),
             app_secret: "test_app_secret".to_string(),
             redirect_uri: "https://127.0.0.1".to_string(),
             base_url: mock_server.base_url(),
             account_index: 0,
+            encryption_key: TEST_ENCRYPTION_KEY,
         }
-    }
-
-    async fn setup_test_tokens(pool: &sqlx::SqlitePool) {
-        let tokens = super::super::tokens::SchwabTokens {
-            access_token: "test_access_token".to_string(),
-            access_token_fetched_at: Utc::now(),
-            refresh_token: "test_refresh_token".to_string(),
-            refresh_token_fetched_at: Utc::now(),
-        };
-        tokens.store(pool).await.unwrap();
     }
 
     #[tokio::test]
@@ -571,7 +530,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -605,7 +564,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -642,7 +601,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -683,7 +642,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -714,7 +673,7 @@ mod tests {
         assert!(matches!(
             error,
             SchwabError::RequestFailed { action, status, .. }
-            if action == "place order (server error)" && status.as_u16() == 502
+            if action == "place order" && status.as_u16() == 502
         ));
 
         // At least one attempt should have been made
@@ -729,7 +688,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -753,16 +712,12 @@ mod tests {
         let result = order.place(&env, &pool).await;
 
         account_mock.assert();
-        // With retries enabled, expect multiple attempts for 5xx errors
-        assert!(
-            order_mock.hits() >= 1,
-            "Expected at least one API call attempt"
-        );
+        order_mock.assert();
         let error = result.unwrap_err();
         assert!(matches!(
             error,
             SchwabError::RequestFailed { action, status, .. }
-            if action == "place order (server error)" && status.as_u16() == 500
+            if action == "place order" && status.as_u16() == 500
         ));
     }
 
@@ -771,7 +726,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -808,7 +763,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -830,7 +785,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -864,123 +819,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execution_success_handling() {
-        use super::super::execution::SchwabExecution;
-        use crate::schwab::Direction;
-        use crate::schwab::TradeState;
-
-        let pool = setup_test_db().await;
-
-        // Create a test execution using a transaction
-        let mut sql_tx = pool.begin().await.unwrap();
-        let execution = SchwabExecution {
-            id: None,
-            symbol: "AAPL".to_string(),
-            shares: 100,
-            direction: Direction::Buy,
-            state: TradeState::Pending,
-        };
-
-        let execution_id = execution
-            .save_within_transaction(&mut sql_tx)
-            .await
-            .unwrap();
-        sql_tx.commit().await.unwrap();
-
-        // Test successful execution handling
-        handle_execution_success(&pool, execution_id, "1004055538123".to_string())
-            .await
-            .unwrap();
-
-        // Verify execution is now Submitted with order_id stored in database
-        let updated_execution = find_execution_by_id(&pool, execution_id)
-            .await
-            .unwrap()
-            .unwrap();
-
-        // Status should be Submitted with order_id since order poller will update it when filled
-        assert!(matches!(
-            updated_execution.state,
-            TradeState::Submitted { ref order_id } if order_id == "1004055538123"
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_execution_failure_handling() {
-        use super::super::execution::SchwabExecution;
-        use crate::schwab::TradeState;
-        use crate::schwab::{Direction, SchwabError};
-
-        let pool = setup_test_db().await;
-
-        // Create a test execution using a transaction
-        let mut sql_tx = pool.begin().await.unwrap();
-        let execution = SchwabExecution {
-            id: None,
-            symbol: "TSLA".to_string(),
-            shares: 50,
-            direction: Direction::Sell,
-            state: TradeState::Pending,
-        };
-
-        let execution_id = execution
-            .save_within_transaction(&mut sql_tx)
-            .await
-            .unwrap();
-        sql_tx.commit().await.unwrap();
-
-        // Test failure handling
-        let test_error = SchwabError::RequestFailed {
-            action: "test failure".to_string(),
-            status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-            body: "Test error body".to_string(),
-        };
-
-        handle_execution_failure(&pool, execution_id, test_error)
-            .await
-            .unwrap();
-
-        // Verify execution status was updated to failed
-        let updated_execution = find_execution_by_id(&pool, execution_id)
-            .await
-            .unwrap()
-            .unwrap();
-        match &updated_execution.state {
-            TradeState::Failed { .. } => {
-                // Test passes - execution was properly marked as failed
-                // Note: error_reason is not persisted in database yet, so we don't test it
-            }
-            other => panic!("Expected Failed status but got: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_handle_execution_failure_database_failure() {
-        let pool = setup_test_db().await;
-
-        // Close pool to simulate database failure
-        pool.close().await;
-
-        let test_error = SchwabError::RequestFailed {
-            action: "test".to_string(),
-            status: reqwest::StatusCode::BAD_REQUEST,
-            body: "test error".to_string(),
-        };
-
-        assert!(matches!(
-            handle_execution_failure(&pool, 123, test_error)
-                .await
-                .unwrap_err(),
-            SchwabError::Sqlx(_)
-        ));
-    }
-
-    #[tokio::test]
     async fn test_get_order_status_success_filled() {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1019,8 +862,7 @@ mod tests {
                 }));
         });
 
-        let broker = Schwab;
-        let result = broker.get_order_status("1004055538123", &env, &pool).await;
+        let result = Order::get_order_status("1004055538123", &env, &pool).await;
 
         account_mock.assert();
         order_status_mock.assert();
@@ -1038,7 +880,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1069,8 +911,7 @@ mod tests {
                 }));
         });
 
-        let broker = Schwab;
-        let result = broker.get_order_status("1004055538456", &env, &pool).await;
+        let result = Order::get_order_status("1004055538456", &env, &pool).await;
 
         account_mock.assert();
         order_status_mock.assert();
@@ -1087,7 +928,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1134,8 +975,7 @@ mod tests {
                 }));
         });
 
-        let broker = Schwab;
-        let result = broker.get_order_status("1004055538789", &env, &pool).await;
+        let result = Order::get_order_status("1004055538789", &env, &pool).await;
 
         account_mock.assert();
         order_status_mock.assert();
@@ -1157,7 +997,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1178,8 +1018,7 @@ mod tests {
                 .json_body(json!({"error": "Order not found"}));
         });
 
-        let broker = Schwab;
-        let result = broker.get_order_status("NONEXISTENT", &env, &pool).await;
+        let result = Order::get_order_status("NONEXISTENT", &env, &pool).await;
 
         account_mock.assert();
         order_status_mock.assert();
@@ -1198,7 +1037,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1219,8 +1058,7 @@ mod tests {
                 .json_body(json!({"error": "Unauthorized"}));
         });
 
-        let broker = Schwab;
-        let result = broker.get_order_status("1004055538123", &env, &pool).await;
+        let result = Order::get_order_status("1004055538123", &env, &pool).await;
 
         account_mock.assert();
         order_status_mock.assert();
@@ -1237,7 +1075,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1258,20 +1096,15 @@ mod tests {
                 .json_body(json!({"error": "Internal server error"}));
         });
 
-        let broker = Schwab;
-        let result = broker.get_order_status("1004055538123", &env, &pool).await;
+        let result = Order::get_order_status("1004055538123", &env, &pool).await;
 
         account_mock.assert();
-        // With retries enabled, expect multiple attempts for 5xx errors
-        assert!(
-            order_status_mock.hits() >= 1,
-            "Expected at least one API call attempt"
-        );
+        order_status_mock.assert();
         let error = result.unwrap_err();
         assert!(matches!(
             error,
             SchwabError::RequestFailed { action, status, .. }
-            if action == "get order status (server error)" && status == reqwest::StatusCode::INTERNAL_SERVER_ERROR
+            if action == "get order status" && status == reqwest::StatusCode::INTERNAL_SERVER_ERROR
         ));
     }
 
@@ -1280,7 +1113,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1301,14 +1134,12 @@ mod tests {
                 .body("invalid json response");
         });
 
-        let broker = Schwab;
-        let result = broker.get_order_status("1004055538123", &env, &pool).await;
+        let result = Order::get_order_status("1004055538123", &env, &pool).await;
 
         account_mock.assert();
         order_status_mock.assert();
         let error = result.unwrap_err();
-        // Updated to handle new ApiResponseParse error type for JSON parsing failures
-        assert!(matches!(error, SchwabError::ApiResponseParse { .. }));
+        assert!(matches!(error, SchwabError::InvalidConfiguration(_)));
     }
 
     #[tokio::test]
@@ -1316,7 +1147,7 @@ mod tests {
         let server = httpmock::MockServer::start();
         let env = create_test_env_with_mock_server(&server);
         let pool = setup_test_db().await;
-        setup_test_tokens(&pool).await;
+        setup_test_tokens(&pool, &env).await;
 
         let account_mock = server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1338,8 +1169,7 @@ mod tests {
                 .json_body(json!({"error": "Bad Gateway"}));
         });
 
-        let broker = Schwab;
-        let result = broker.get_order_status("1004055538123", &env, &pool).await;
+        let result = Order::get_order_status("1004055538123", &env, &pool).await;
 
         account_mock.assert();
         // Should have made at least one request (retry logic is handled by backon)
@@ -1348,7 +1178,7 @@ mod tests {
         assert!(matches!(
             error,
             SchwabError::RequestFailed { action, status, .. }
-            if action == "get order status (server error)" && status == reqwest::StatusCode::BAD_GATEWAY
+            if action == "get order status" && status == reqwest::StatusCode::BAD_GATEWAY
         ));
     }
 
