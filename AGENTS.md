@@ -105,58 +105,24 @@ This project uses a Cargo workspace with:
 multiple trading platforms while maintaining type safety and zero-cost
 abstractions.
 
-**Broker Trait (`st0x-broker` crate)**:
+**Key Architecture Points**:
 
-- Generic interface for executing trades across different brokers
-- Associated types for `Error`, `OrderId`, and `Config` allow broker-specific
-  implementations
-- Key methods: `try_from_config()`, `wait_until_market_open()`,
-  `place_market_order()`, `get_order_status()`
-- Runtime broker selection via `--dry-run` flag (TestBroker vs SchwabBroker)
+- Generic `Broker` trait with associated types (`Error`, `OrderId`, `Config`)
+- Main crate stays broker-agnostic via trait; broker-specific logic in
+  `st0x-broker` crate
+- Newtypes (`Symbol`, `Shares`, `Direction`) and enums prevent invalid states
+- Supported brokers: SchwabBroker (production), AlpacaBroker (production),
+  TestBroker (mock)
 
-**Supported Brokers**:
+**Benefits**:
 
-- **SchwabBroker**: Production Charles Schwab API integration with OAuth 2.0,
-  market hours validation, and real order execution
-- **TestBroker**: Mock implementation for testing and dry-run scenarios with
-  configurable failure modes
+- Zero changes to core bot logic when adding brokers
+- Type safety via compile-time verification
+- Independent testing per broker
+- Zero-cost abstractions via generics (no dynamic dispatch)
 
-**Type Safety Features**:
-
-- Newtypes: `Symbol`, `Shares`, `Direction` prevent mixing incompatible values
-- Order lifecycle modeling: `OrderState` enum encodes valid order states
-- Compile-time broker configuration validation
-
-**Integration with Main Application**:
-
-- Main crate remains broker-agnostic using generic `Broker` trait
-- Broker-specific logic (token refresh, market hours) handled through trait
-  methods
-- Clean separation: broker concerns stay in `st0x-broker` crate, orchestration
-  in main crate
-
-#### Requirements for New Brokers
-
-- **Implement all trait methods**: Especially `try_from_config()`,
-  `place_market_order()`, and `get_order_status()`
-- **Handle authentication**: Manage API keys, tokens, or session management as
-  needed
-- **Market hours support**: Implement `wait_until_market_open()` for the
-  broker's supported markets
-- **Error handling**: Map broker-specific errors to `BrokerError` enum
-- **Testing**: Add comprehensive unit tests using the broker's sandbox/paper
-  trading environment
-- **Documentation**: Add broker-specific setup instructions and API
-  documentation
-
-#### Benefits of This Architecture
-
-- **Zero changes to core bot logic**: Main application remains broker-agnostic
-- **Type safety**: Compile-time verification of broker compatibility
-- **Independent testing**: Each broker can be tested in isolation
-- **Extensible**: Easy to add new brokers without affecting existing ones
-- **Performance**: Zero-cost abstractions via generics (no dynamic dispatch in
-  hot paths)
+For detailed broker implementation requirements, module organization, and adding
+new brokers, see @crates/broker/AGENTS.md
 
 ### Core Event Processing Flow
 
@@ -386,16 +352,12 @@ fn shares_to_db_i64(value: u64) -> Result<i64, ConversionError> {
 ```rust
 // ❌ DANGEROUS - Hides conversion errors
 fn parse_price(input: &str) -> f64 {
-    input.parse().unwrap_or(0.0)  // WRONG: 0.0 is not a safe fallback for prices
+    input.parse().unwrap_or(0.0)  // WRONG
 }
 
 // ✅ CORRECT - Parse with explicit error
 fn parse_price(input: &str) -> Result<Decimal, ParseError> {
-    Decimal::from_str(input)
-        .map_err(|e| ParseError::InvalidPrice {
-            input: input.to_string(),
-            source: e
-        })
+    Decimal::from_str(input).map_err(|e| ParseError::InvalidPrice { input: input.to_string(), source: e })
 }
 ```
 
@@ -404,40 +366,32 @@ fn parse_price(input: &str) -> Result<Decimal, ParseError> {
 ```rust
 // ❌ DANGEROUS - Silent precision loss
 fn convert_to_cents(dollars: f64) -> i64 {
-    (dollars * 100.0) as i64  // WRONG: Truncates fractional cents
+    (dollars * 100.0) as i64  // WRONG: Truncates
 }
 
-// ✅ CORRECT - Checked arithmetic for precision-critical operations
+// ✅ CORRECT - Checked arithmetic
 fn convert_to_cents(dollars: Decimal) -> Result<i64, ArithmeticError> {
-    let cents = dollars.checked_mul(Decimal::from(100))
-        .ok_or(ArithmeticError::Overflow)?;
-
+    let cents = dollars.checked_mul(Decimal::from(100)).ok_or(ArithmeticError::Overflow)?;
     if cents.fract() != Decimal::ZERO {
         return Err(ArithmeticError::FractionalCents { value: cents });
     }
-
-    cents.to_i64()
-        .ok_or(ArithmeticError::ConversionFailed { value: cents })
+    cents.to_i64().ok_or(ArithmeticError::ConversionFailed { value: cents })
 }
 ```
 
 #### Database Constraints
 
 ```rust
-// ❌ DANGEROUS - Masks database constraint violations
-async fn save_trade_amount(amount: Decimal, pool: &Pool) -> Result<(), Error> {
-    let safe_amount = amount.min(Decimal::MAX).max(Decimal::ZERO);  // WRONG
-    sqlx::query!("INSERT INTO trades (amount) VALUES (?)", safe_amount)
-        .execute(pool).await?;
+// ❌ DANGEROUS - Masks constraint violations
+async fn save_amount(amount: Decimal, pool: &Pool) -> Result<(), Error> {
+    let safe = amount.min(Decimal::MAX).max(Decimal::ZERO);  // WRONG
+    sqlx::query!("INSERT INTO trades (amount) VALUES (?)", safe).execute(pool).await?;
     Ok(())
 }
 
-// ✅ CORRECT - Let database constraints fail naturally
-async fn save_trade_amount(amount: Decimal, pool: &Pool) -> Result<(), DatabaseError> {
-    sqlx::query!("INSERT INTO trades (amount) VALUES (?)", amount)
-        .execute(pool)
-        .await
-        .map_err(DatabaseError::from)?;
+// ✅ CORRECT - Let constraints fail naturally
+async fn save_amount(amount: Decimal, pool: &Pool) -> Result<(), Error> {
+    sqlx::query!("INSERT INTO trades (amount) VALUES (?)", amount).execute(pool).await?;
     Ok(())
 }
 ```
@@ -954,51 +908,31 @@ fn place_order(symbol: Symbol, account: AccountId, amount: Shares, price: PriceC
 
 ##### The Typestate Pattern:
 
-The typestate pattern encodes information about an object's runtime state in its
-compile-time type. This moves state-related errors from runtime to compile time,
-eliminating runtime checks and making illegal states unrepresentable.
+Encodes runtime state in compile-time types, eliminating runtime checks.
 
 ```rust
-// ✅ Good: Typestate pattern with zero-cost state transitions
+// ✅ Good: State transitions enforced at compile time
 struct Start;
 struct InProgress;
 struct Complete;
 
-// Generic struct with state parameter
-struct Task<State> {
-    data: TaskData,
-    state: State,  // Can store state-specific data
-}
+struct Task<State> { data: TaskData, state: State }
 
-// Operations only available in Start state
 impl Task<Start> {
-    fn new() -> Self {
-        Task { data: TaskData::new(), state: Start }
-    }
-    
     fn begin(self) -> Task<InProgress> {
-        // Consumes self, returns new state
         Task { data: self.data, state: InProgress }
     }
 }
 
-// Operations only available in InProgress state
 impl Task<InProgress> {
-    fn work(&mut self) {
-        // Can mutate without changing state
-    }
-    
     fn complete(self) -> Task<Complete> {
-        // State transition consumes self
         Task { data: self.data, state: Complete }
     }
 }
 
-// Operations available in multiple states
+// Operations available in all states
 impl<S> Task<S> {
-    fn description(&self) -> &str {
-        &self.data.description
-    }
+    fn description(&self) -> &str { &self.data.description }
 }
 ```
 
@@ -1008,40 +942,20 @@ impl<S> Task<S> {
 // ✅ Good: Enforce protocol sequences at compile time
 struct Unauthenticated;
 struct Authenticated { token: String };
-struct Active { token: String, session_id: u64 };
+struct Active { session_id: u64 };
 
-struct Connection<State> {
-    socket: TcpStream,
-    state: State,
-}
+struct Connection<State> { socket: TcpStream, state: State }
 
 impl Connection<Unauthenticated> {
-    fn authenticate(self, credentials: &Credentials) 
-        -> Result<Connection<Authenticated>, AuthError> {
-        let token = perform_auth(&self.socket, credentials)?;
-        Ok(Connection {
-            socket: self.socket,
-            state: Authenticated { token },
-        })
+    fn authenticate(self, creds: &Credentials) -> Result<Connection<Authenticated>, Error> {
+        let token = perform_auth(&self.socket, creds)?;
+        Ok(Connection { socket: self.socket, state: Authenticated { token } })
     }
 }
 
 impl Connection<Authenticated> {
     fn start_session(self) -> Connection<Active> {
-        let session_id = generate_session_id();
-        Connection {
-            socket: self.socket,
-            state: Active { 
-                token: self.state.token,
-                session_id,
-            },
-        }
-    }
-}
-
-impl Connection<Active> {
-    fn send_message(&mut self, msg: &Message) {
-        // Can only send messages in active state
+        Connection { socket: self.socket, state: Active { session_id: gen_id() } }
     }
 }
 ```
@@ -1052,69 +966,23 @@ impl Connection<Active> {
 // ✅ Good: Can't build incomplete objects at compile time
 struct NoUrl;
 struct HasUrl;
-struct NoMethod;
-struct HasMethod;
 
-struct RequestBuilder<U, M> {
+struct RequestBuilder<U> {
     url: Option<String>,
-    method: Option<Method>,
-    headers: Vec<Header>,
-    _url: PhantomData<U>,
-    _method: PhantomData<M>,
+    _marker: PhantomData<U>,
 }
 
-impl RequestBuilder<NoUrl, NoMethod> {
-    fn new() -> Self {
-        RequestBuilder {
-            url: None,
-            method: None,
-            headers: Vec::new(),
-            _url: PhantomData,
-            _method: PhantomData,
-        }
+impl RequestBuilder<NoUrl> {
+    fn url(self, url: String) -> RequestBuilder<HasUrl> {
+        RequestBuilder { url: Some(url), _marker: PhantomData }
     }
 }
 
-impl<M> RequestBuilder<NoUrl, M> {
-    fn url(self, url: String) -> RequestBuilder<HasUrl, M> {
-        RequestBuilder {
-            url: Some(url),
-            method: self.method,
-            headers: self.headers,
-            _url: PhantomData,
-            _method: PhantomData,
-        }
-    }
-}
-
-impl<U> RequestBuilder<U, NoMethod> {
-    fn method(self, method: Method) -> RequestBuilder<U, HasMethod> {
-        RequestBuilder {
-            url: self.url,
-            method: Some(method),
-            headers: self.headers,
-            _url: PhantomData,
-            _method: PhantomData,
-        }
-    }
-}
-
-// Can only build when we have both URL and method
-impl RequestBuilder<HasUrl, HasMethod> {
+impl RequestBuilder<HasUrl> {
     fn build(self) -> Request {
-        Request {
-            url: self.url.unwrap(), // Safe due to typestate
-            method: self.method.unwrap(), // Safe due to typestate
-            headers: self.headers,
-        }
+        Request { url: self.url.unwrap() } // Safe due to typestate
     }
 }
-
-// Usage: won't compile without setting both url and method
-let request = RequestBuilder::new()
-    .url("https://api.example.com".into())
-    .method(Method::GET)
-    .build();
 ```
 
 #### Avoid deep nesting
@@ -1215,65 +1083,18 @@ This pattern is particularly useful for:
 
 ##### Extract functions for complex logic:
 
-Instead of
+Instead of deeply nested event processing:
 
 ```rust
-fn process_blockchain_event(event: &Event, db: &Database) -> Result<(), ProcessingError> {
-    match event.event_type {
-        EventType::ClearV2 => {
-            if let Some(trade_data) = &event.trade_data {
-                for trade in &trade_data.trades {
-                    if trade.token_pair.len() == 2 {
-                        if let (Some(token_a), Some(token_b)) = (&trade.token_pair[0], &trade.token_pair[1]) {
-                            if token_a.symbol.ends_with("0x") || token_b.symbol.ends_with("0x") {
-                                let (equity_token, usdc_token) = if token_a.symbol.ends_with("0x") {
-                                    (token_a, token_b)
-                                } else {
-                                    (token_b, token_a)
-                                };
-                                
-                                if usdc_token.symbol == "USDC" {
-                                    if let Ok(existing) = db.find_trade(&event.tx_hash, event.log_index) {
-                                        if existing.status != TradeStatus::Completed {
-                                            // Process retry logic
-                                            if existing.retry_count < 3 {
-                                                match schwab_client.execute_trade(&trade) {
-                                                    Ok(result) => {
-                                                        db.update_trade_status(&existing.id, TradeStatus::Completed)?;
-                                                    }
-                                                    Err(e) => {
-                                                        db.increment_retry_count(&existing.id)?;
-                                                        if existing.retry_count >= 2 {
-                                                            db.update_trade_status(&existing.id, TradeStatus::Failed)?;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        // New trade processing
-                                        let new_trade = Trade::new(equity_token, usdc_token, &trade)?;
-                                        db.insert_trade(&new_trade)?;
-                                        match schwab_client.execute_trade(&new_trade) {
-                                            Ok(result) => {
-                                                db.update_trade_status(&new_trade.id, TradeStatus::Completed)?;
-                                            }
-                                            Err(e) => {
-                                                db.update_trade_status(&new_trade.id, TradeStatus::Failed)?;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+fn process_event(event: &Event) -> Result<(), Error> {
+    if let Some(data) = &event.data {
+        for item in &data.items {
+            if item.valid {
+                if let Some(result) = process_item(item) {
+                    // ... many more nested levels
                 }
             }
         }
-        EventType::TakeOrderV2 => {
-            // Similar deeply nested logic for TakeOrderV2...
-        }
-        _ => return Err(ProcessingError::UnsupportedEventType),
     }
     Ok(())
 }
@@ -1282,120 +1103,58 @@ fn process_blockchain_event(event: &Event, db: &Database) -> Result<(), Processi
 Write
 
 ```rust
-fn process_blockchain_event(event: &Event, db: &Database) -> Result<(), ProcessingError> {
-    match event.event_type {
-        EventType::ClearV2 => process_clear_event(event, db),
-        EventType::TakeOrderV2 => process_take_order_event(event, db),
-        _ => Err(ProcessingError::UnsupportedEventType),
-    }
-}
+fn process_event(event: &Event) -> Result<(), Error> {
+    let data = event.data.as_ref().ok_or(Error::NoData)?;
 
-fn process_clear_event(event: &Event, db: &Database) -> Result<(), ProcessingError> {
-    let trade_data = event.trade_data.as_ref().ok_or(ProcessingError::NoTradeData)?;
-    
-    for trade in &trade_data.trades {
-        if let Some((equity_token, usdc_token)) = extract_valid_token_pair(trade)? {
-            handle_trade_processing(event, trade, equity_token, usdc_token, db)?;
+    for item in &data.items {
+        if let Some(result) = validate_and_process(item)? {
+            handle_result(result)?;
         }
     }
     Ok(())
 }
 
-fn extract_valid_token_pair(trade: &TradeInfo) -> Result<Option<(&Token, &Token)>, ProcessingError> {
-    if trade.token_pair.len() != 2 {
+fn validate_and_process(item: &Item) -> Result<Option<ProcessResult>, Error> {
+    if !item.valid {
         return Ok(None);
     }
-    
-    let (token_a, token_b) = (&trade.token_pair[0], &trade.token_pair[1]);
-    let (equity_token, usdc_token) = if token_a.symbol.ends_with("0x") {
-        (token_a, token_b)
-    } else if token_b.symbol.ends_with("0x") {
-        (token_b, token_a)
-    } else {
-        return Ok(None);
-    };
-    
-    if usdc_token.symbol == "USDC" {
-        Ok(Some((equity_token, usdc_token)))
-    } else {
-        Ok(None)
-    }
-}
-
-fn handle_trade_processing(
-    event: &Event,
-    trade: &TradeInfo, 
-    equity_token: &Token,
-    usdc_token: &Token,
-    db: &Database
-) -> Result<(), ProcessingError> {
-    if let Ok(existing) = db.find_trade(&event.tx_hash, event.log_index) {
-        handle_existing_trade(existing, trade, db)
-    } else {
-        handle_new_trade(event, trade, equity_token, usdc_token, db)
-    }
+    process_item(item).map(Some)
 }
 ```
 
 ##### Use pattern matching with guards:
 
-Instead of
-
 ```rust
+// Instead of nested if-let
 if let Some(data) = input {
-    if state == State::Ready {
-        if data.is_valid() {
-            process(data)
-        } else {
-            Err(Error::InvalidData)
-        }
-    } else {
-        Err(Error::NotReady)
-    }
-} else {
-    if state == State::Ready {
-        Err(Error::NoData)
-    } else {
-        Err(Error::NotReady)
-    }
-}
-```
+    if state == State::Ready && data.is_valid() {
+        process(data)
+    } else { Err(Error::Invalid) }
+} else { Err(Error::NoData) }
 
-Write
-
-```rust
+// Write
 match (input, state) {
     (Some(data), State::Ready) if data.is_valid() => process(data),
     (Some(_), State::Ready) => Err(Error::InvalidData),
-    (None, _) => Err(Error::NoData),
-    _ => Err(Error::NotReady),
+    _ => Err(Error::NoData),
 }
 ```
 
 ##### Prefer iterator chains over nested loops:
 
-Instead of
-
 ```rust
+// Instead of imperative loops
 let mut results = Vec::new();
 for trade in &trades {
     if trade.is_valid() {
-        match process_trade(trade) {
-            Ok(result) => results.push(result),
-            Err(e) => return Err(e),
-        }
+        results.push(process_trade(trade)?);
     }
 }
-Ok(results)
-```
 
-Write
-
-```rust
-trades
-    .iter()
+// Write functional chains
+trades.iter()
     .filter(|t| t.is_valid())
-    .map(|t| process_trade(t))
+    .map(process_trade)
     .collect::<Result<Vec<_>, _>>()
 ```
 
