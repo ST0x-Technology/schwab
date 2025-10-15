@@ -60,6 +60,10 @@ else
 
   if [ "$SKIP_BUILD" = false ]; then
     # Build Docker image with debug profile
+    if ! command -v docker &> /dev/null; then
+      echo "ERROR: docker command not found. Please install Docker."
+      exit 1
+    fi
     echo "==> Building Docker image with debug profile..."
     docker build --build-arg BUILD_PROFILE=debug -t "${DOCKER_IMAGE}" .
   else

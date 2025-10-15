@@ -8,6 +8,11 @@ use st0x_broker::SupportedBroker;
 use st0x_broker::alpaca::AlpacaAuthEnv;
 use st0x_broker::schwab::SchwabAuthEnv;
 
+// Dummy program name required by clap when parsing from environment variables.
+// clap's try_parse_from expects argv[0] to be the program name, but we only
+// care about environment variables, so this is just a placeholder.
+const DUMMY_PROGRAM_NAME: &[&str] = &["server"];
+
 #[derive(Debug, Clone)]
 pub enum BrokerConfig {
     Schwab(SchwabAuthEnv),
@@ -94,11 +99,11 @@ impl Env {
     pub fn into_config(self) -> Result<Config, clap::Error> {
         let broker = match self.broker {
             SupportedBroker::Schwab => {
-                let schwab_auth = SchwabAuthEnv::try_parse_from(&["server"])?;
+                let schwab_auth = SchwabAuthEnv::try_parse_from(DUMMY_PROGRAM_NAME)?;
                 BrokerConfig::Schwab(schwab_auth)
             }
             SupportedBroker::Alpaca => {
-                let alpaca_auth = AlpacaAuthEnv::try_parse_from(&["server"])?;
+                let alpaca_auth = AlpacaAuthEnv::try_parse_from(DUMMY_PROGRAM_NAME)?;
                 BrokerConfig::Alpaca(alpaca_auth)
             }
             SupportedBroker::DryRun => BrokerConfig::DryRun,

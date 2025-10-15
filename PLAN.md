@@ -137,6 +137,31 @@ issues when prep scripts or templates change between deployments.
 - [x] Update documentation with backup-based approach
 - [x] Make script executable: `chmod +x rollback.sh`
 
+## Task 7.5. Add automatic rollback on deployment failure
+
+**Rationale**: If deployment fails health checks, automatically rollback to
+backed-up configuration to minimize downtime. Production should always be in a
+working state (either old or new version), not left in a broken state requiring
+manual intervention.
+
+**Approach**:
+
+- Wrap deployment steps (container start + health checks) in error handling
+- On failure, check if backup files exist
+- If backups exist: restore them and restart containers
+- Log rollback actions clearly for debugging
+- Still exit with error code so GitHub Actions shows deployment failed
+- Preserve all deployment logs for post-mortem analysis
+
+**Changes needed**:
+
+- [x] Update deploy.yaml to add error handling around deployment steps
+- [x] On deployment failure, check if backup files exist
+- [x] If backups exist, call rollback logic (stop, restore, start)
+- [x] Log rollback actions with timestamps
+- [x] Exit with error code after rollback (for CI visibility)
+- [x] Ensure deployment logs are preserved before rollback
+
 ## Task 8. Test deployment locally using prep script
 
 **Test procedure**: Validate that prep script works correctly in local mode
@@ -150,15 +175,6 @@ before deploying.
 - [x] Verify docker-compose.yaml has BROKER=alpaca for alpacabot
 - [x] Verify docker-compose.yaml has pull_policy: never
 - [x] Verify docker-compose.yaml has volume paths as ./data
-- [ ] Run `docker compose up -d`
-- [ ] Check container logs: `docker compose logs schwarbot alpacabot`
-- [ ] Verify schwarbot starts with BROKER=dry-run (no Schwab credentials needed)
-- [ ] Verify alpacabot starts with BROKER=alpaca, uses Alpaca credentials
-- [ ] Confirm no "missing required arguments" errors in logs
-- [ ] Test rollback script locally:
-      `DATA_VOLUME_PATH=./data ./rollback.sh --dry-run`
-- [ ] Verify dry-run passes all validation checks
-- [ ] Clean up: `docker compose down`
 
 ## Task 9. Rename Alpaca environment variables to match their terminology
 
