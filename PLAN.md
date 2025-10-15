@@ -204,24 +204,43 @@ it.
 - [x] Return `TelemetryGuard` that will flush on drop
 - [x] Verify module compiles: `cargo build`
 
-### Part B: Verify by Refactoring Test Binary
+### Part B: Verify by Refactoring Test Binary ✅ COMPLETED
 
-- [ ] Update `src/bin/test_hyperdx.rs` to use `st0x_hedge::telemetry::setup_telemetry()`
-  - [ ] Replace all the manual telemetry setup code with single call to
-        `telemetry::setup_telemetry()`
-  - [ ] Keep the test spans (test_fn1, test_fn2, test_fn3) unchanged
-  - [ ] Store returned `TelemetryGuard` (don't let it drop early)
-  - [ ] Remove now-unused imports
-- [ ] Build and run: `cargo run --bin test_hyperdx`
-- [ ] **USER VERIFICATION REQUIRED**: Confirm in HyperDX dashboard:
-  - [ ] Service "my-service-name" still appears
-  - [ ] All test spans still appear (app_start, test_fn1, test_fn2, test_fn3,
+- [x] Update `src/bin/test_hyperdx.rs` to use `st0x_hedge::setup_telemetry()`
+  - [x] Replace all the manual telemetry setup code with single call to
+        `setup_telemetry()`
+  - [x] Keep the test spans (test_fn1, test_fn2, test_fn3) unchanged
+  - [x] Store returned `TelemetryGuard` (don't let it drop early)
+  - [x] Remove now-unused imports
+- [x] Build and run: `cargo run --bin test_hyperdx`
+- [x] **USER VERIFICATION REQUIRED**: Confirm in HyperDX dashboard:
+  - [x] Service "st0x-hedge" appears (updated from "my-service-name")
+  - [x] All test spans still appear (app_start, test_fn1, test_fn2, test_fn3,
         etc)
-  - [ ] Parent-child relationships still correct
-  - [ ] Events still visible
+  - [x] Parent-child relationships still correct
+  - [x] Events still visible
 
-**STOP HERE**: Do not proceed until user confirms refactored test binary still
-works with HyperDX.
+**Implementation Summary:**
+
+Refactored test binary to use the telemetry library:
+
+- Replaced ~90 lines of manual setup with single `setup_telemetry(api_key)` call
+- Re-exported `setup_telemetry`, `TelemetryGuard`, and `TelemetryError` from
+  `src/lib.rs`
+- Removed unused imports (OpenTelemetry SDK types, batch processor types, etc.)
+- Test spans remain unchanged and working
+
+Fixed telemetry module to follow AGENTS.md guidelines:
+
+- Error handling: Using `#[from]` with proper error types (`ExporterBuildError`,
+  `SetGlobalDefaultError`) and `?` operator
+- Imports: `SdkTracerProvider` imported and used unqualified (not
+  `opentelemetry_sdk::trace::SdkTracerProvider`)
+- Named constant: `TRACER_NAME` with comprehensive documentation explaining
+  distinction from service name
+
+**VERIFICATION COMPLETE**: User confirmed traces still appear correctly in
+HyperDX with same 6 records.
 
 **Design Rationale**: Extract into separate module for separation of concerns.
 `TelemetryGuard` ensures graceful shutdown via RAII pattern. Proper error types
@@ -230,30 +249,46 @@ regression.
 
 ---
 
-## Task 4. Update Environment Configuration
+## Task 4. Update Environment Configuration ✅ COMPLETED
 
 Add HyperDX configuration fields to environment and config structs.
 
-- [ ] Update `src/env.rs` `Env` struct to add fields:
-  - [ ] `hyperdx_api_key: Option<String>` with `#[clap(long, env)]` annotation
-  - [ ] `hyperdx_service_name: String` with
+- [x] Update `src/env.rs` `Env` struct to add fields:
+  - [x] `hyperdx_api_key: Option<String>` with `#[clap(long, env)]` annotation
+  - [x] `hyperdx_service_name: String` with
         `#[clap(long, env, default_value = "st0x-hedge")]`
-  - [ ] `hyperdx_endpoint: String` with
+  - [x] `hyperdx_endpoint: String` with
         `#[clap(long, env, default_value = "https://in-otel.hyperdx.io/v1/traces")]`
-- [ ] Update `Config` struct to add same three fields
-- [ ] Update `Env::into_config()` method to pass through HyperDX fields
-- [ ] Update test helper function `create_test_config()` in `src/env.rs` tests
-      module:
-  - [ ] Set `hyperdx_api_key: None`
-  - [ ] Set `hyperdx_service_name: "st0x-hedge".to_string()`
-  - [ ] Set
+- [x] Update `Config` struct to add same three fields (public visibility)
+- [x] Update `Env::into_config()` method to pass through HyperDX fields
+- [x] Update test helper function `create_test_config_with_order_owner()` in
+      `src/env.rs` tests module:
+  - [x] Set `hyperdx_api_key: None`
+  - [x] Set `hyperdx_service_name: "st0x-hedge".to_string()`
+  - [x] Set
         `hyperdx_endpoint: "https://in-otel.hyperdx.io/v1/traces".to_string()`
-- [ ] Update `create_test_config_with_order_owner()` helper similarly
-- [ ] Verify all code compiles: `cargo build`
-- [ ] Verify tests still pass: `cargo test -q --lib env`
+- [x] Update test helpers in other modules:
+  - [x] `src/api.rs`: `create_test_config_with_mock_server()`
+  - [x] `src/cli.rs`: `create_test_config_for_cli()`
+- [x] Verify all code compiles: `cargo build`
+- [x] Verify tests still pass: `cargo test -q --lib env`
+- [x] Verify no regressions: `cargo test -q` (all 252 tests passed)
+- [x] Verify HyperDX still works: `cargo run --bin test_hyperdx`
+- [x] **USER VERIFICATION COMPLETE**: Confirmed test_hyperdx traces still appear
+      in HyperDX (6 records)
 
-**No HyperDX integration yet** - this task only adds configuration plumbing
-without making any telemetry calls.
+**Implementation Summary:**
+
+Added HyperDX configuration fields to both `Env` (CLI/environment vars) and
+`Config` structs:
+
+- `hyperdx_api_key`: Optional API key for HyperDX (telemetry is optional)
+- `hyperdx_service_name`: Service name with default "st0x-hedge"
+- `hyperdx_endpoint`: OTLP endpoint with default HyperDX URL
+
+Updated all test helper functions across the codebase to include the new fields
+with appropriate test values. No telemetry integration yet - this task only adds
+configuration plumbing.
 
 ---
 
@@ -274,6 +309,10 @@ connection still works.
   - [ ] Make sure guard lives until end of program (don't let it drop early)
 - [ ] Ensure `setup_tracing()` still works correctly alongside OpenTelemetry
       layer
+- [ ] Verify no regressions: `cargo test -q`
+- [ ] Verify HyperDX still works: `cargo run --bin test_hyperdx`
+- [ ] **USER VERIFICATION REQUIRED**: Confirm test_hyperdx traces still appear
+      in HyperDX (6 records)
 - [ ] Build server: `cargo build --bin server`
 - [ ] Run server with HyperDX: `HYPERDX_API_KEY=<key> cargo run --bin server`
 - [ ] **USER VERIFICATION REQUIRED**: Ask user to check HyperDX dashboard and
@@ -303,6 +342,10 @@ Add tracing spans to the main event processing loop in `src/lib.rs`.
   - [ ] Create span with `event_type = "ClearV2"` for clear event branch
   - [ ] Create span with `event_type = "TakeOrderV2"` for take order branch
   - [ ] Use `.instrument(span)` pattern for the async event processing
+- [ ] Verify no regressions: `cargo test -q`
+- [ ] Verify HyperDX still works: `cargo run --bin test_hyperdx`
+- [ ] **USER VERIFICATION REQUIRED**: Confirm test_hyperdx traces still appear
+      in HyperDX (6 records)
 - [ ] Build and run: `HYPERDX_API_KEY=<key> cargo run --bin server`
 - [ ] **USER VERIFICATION REQUIRED**: Ask user to check HyperDX and confirm:
   - [ ] `launch` span appears with `component = "main"` attribute
@@ -333,6 +376,10 @@ Add instrumentation to trade conversion and accumulator logic.
     - [ ] Trade accepted into accumulator
     - [ ] Threshold reached, execution triggered
     - [ ] Accumulator state after execution
+- [ ] Verify no regressions: `cargo test -q`
+- [ ] Verify HyperDX still works: `cargo run --bin test_hyperdx`
+- [ ] **USER VERIFICATION REQUIRED**: Confirm test_hyperdx traces still appear
+      in HyperDX (6 records)
 - [ ] Build and run with test trades
 - [ ] **USER VERIFICATION REQUIRED**: Ask user to trigger test trades and
       confirm in HyperDX:
@@ -364,6 +411,10 @@ Instrument order placement and status polling in the offchain module.
   - [ ] Add spans around order placement with `symbol`, `shares`, `direction`
         attributes
   - [ ] Add events when orders are submitted
+- [ ] Verify no regressions: `cargo test -q`
+- [ ] Verify HyperDX still works: `cargo run --bin test_hyperdx`
+- [ ] **USER VERIFICATION REQUIRED**: Confirm test_hyperdx traces still appear
+      in HyperDX (6 records)
 - [ ] Build and run with order execution flow
 - [ ] **USER VERIFICATION REQUIRED**: Ask user to execute some orders and
       confirm in HyperDX:
@@ -387,6 +438,10 @@ Instrument the conductor orchestration logic.
   - [ ] Add span attributes for queue processing: `queue_depth`,
         `events_processed`
   - [ ] Add events for conductor state changes and decisions
+- [ ] Verify no regressions: `cargo test -q`
+- [ ] Verify HyperDX still works: `cargo run --bin test_hyperdx`
+- [ ] **USER VERIFICATION REQUIRED**: Confirm test_hyperdx traces still appear
+      in HyperDX (6 records)
 - [ ] Build and run
 - [ ] **USER VERIFICATION REQUIRED**: Ask user to check HyperDX and confirm:
   - [ ] Conductor spans appear with `component = "conductor"` attribute

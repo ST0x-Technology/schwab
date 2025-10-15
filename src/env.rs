@@ -67,6 +67,9 @@ pub struct Config {
     pub(crate) order_polling_interval: u64,
     pub(crate) order_polling_max_jitter: u64,
     pub(crate) broker: BrokerConfig,
+    pub hyperdx_api_key: Option<String>,
+    pub hyperdx_service_name: String,
+    pub hyperdx_endpoint: String,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -92,6 +95,15 @@ pub struct Env {
     /// Broker to use for trading (required: schwab, alpaca, or dry-run)
     #[clap(long, env)]
     broker: SupportedBroker,
+    /// HyperDX API key for observability (optional)
+    #[clap(long, env)]
+    hyperdx_api_key: Option<String>,
+    /// Service name for HyperDX traces
+    #[clap(long, env, default_value = "st0x-hedge")]
+    hyperdx_service_name: String,
+    /// HyperDX OTLP endpoint
+    #[clap(long, env, default_value = "https://in-otel.hyperdx.io/v1/traces")]
+    hyperdx_endpoint: String,
 }
 
 impl Env {
@@ -110,6 +122,9 @@ impl Env {
             order_polling_interval: self.order_polling_interval,
             order_polling_max_jitter: self.order_polling_max_jitter,
             broker,
+            hyperdx_api_key: self.hyperdx_api_key,
+            hyperdx_service_name: self.hyperdx_service_name,
+            hyperdx_endpoint: self.hyperdx_endpoint,
         }
     }
 }
@@ -170,6 +185,9 @@ pub mod tests {
                 schwab_account_index: 0,
                 encryption_key: TEST_ENCRYPTION_KEY,
             }),
+            hyperdx_api_key: None,
+            hyperdx_service_name: "st0x-hedge".to_string(),
+            hyperdx_endpoint: "https://in-otel.hyperdx.io/v1/traces".to_string(),
         }
     }
 
