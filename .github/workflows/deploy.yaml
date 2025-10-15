@@ -148,7 +148,8 @@ jobs:
               for var in REGISTRY_NAME SHORT_SHA DATA_VOLUME_PATH GRAFANA_ADMIN_PASSWORD \
                          WS_RPC_URL SCHWAB_APP_KEY SCHWAB_APP_SECRET ALPACA_API_KEY \
                          ALPACA_API_SECRET ENCRYPTION_KEY; do
-                if [ -z "${!var}" ]; then
+                local value="${!var:-}"
+                if [ -z "$value" ]; then
                   missing_vars+=("$var")
                 fi
               done
