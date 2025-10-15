@@ -12,7 +12,10 @@ mod offchain;
 mod onchain;
 mod queue;
 mod symbol;
+mod telemetry;
 mod trade_execution_link;
+
+pub use telemetry::{TelemetryError, TelemetryGuard, setup_telemetry};
 
 #[cfg(test)]
 pub mod test_utils;

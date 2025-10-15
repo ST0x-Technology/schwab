@@ -1,16 +1,7 @@
 use opentelemetry::KeyValue;
-use opentelemetry::trace::TracerProvider as _;
-use opentelemetry_otlp::{WithExportConfig, WithHttpConfig};
-use opentelemetry_sdk::Resource;
-use opentelemetry_sdk::trace::{BatchConfigBuilder, BatchSpanProcessor};
-use std::time::Duration;
 use tokio::task::JoinHandle;
 use tracing::{Instrument, error, info, span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
-use tracing_subscriber::Registry;
-use tracing_subscriber::layer::SubscriberExt;
-
-const IS_BATCH_EXPORTER: bool = true; // false for simple exporter, true for batch exporter
 
 #[tokio::main]
 async fn main() {
@@ -18,95 +9,7 @@ async fn main() {
 
     let api_key = std::env::var("HYPERDX_API_KEY").unwrap();
 
-    let mut headers = std::collections::HashMap::new();
-    // for hyperdx, api key must be used without Bearer token
-    headers.insert("authorization".to_string(), api_key);
-
-    let otlp_http_exporter_builder = if IS_BATCH_EXPORTER {
-        // for batch exporter we need blocking reqwest client initiated on a separate thread
-        // because batch exporter uses a thread pool to export spans in the background that
-        // would conflict with tokio main runtime if initiated normally because BatchSpanProcessor
-        // will try to close this main tokio runtime once it starts operating
-        // read the BatchSpanProcessor docs for more info
-        let http_client = std::thread::spawn(move || {
-            reqwest::blocking::Client::builder()
-                .gzip(true) // enable gzip compression for less data usage
-                .build()
-                .unwrap_or_else(|_| reqwest::blocking::Client::new())
-        })
-        .join()
-        .unwrap();
-        opentelemetry_otlp::SpanExporter::builder()
-            .with_http()
-            .with_http_client(http_client)
-    } else {
-        // for simple exporter we can use normal async reqwest client
-        // there seems to be some difference in simple vs batch exporter that the simple exporter
-        // also automatically captures reqwest internal calls as DEBUG events when a span ends and
-        // gets exported, not sure why though, probably because normal reqwest client has internal
-        // tracing enabled by default
-        let http_client = reqwest::Client::builder()
-            .gzip(true) // enable gzip compression for less data usage
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-        opentelemetry_otlp::SpanExporter::builder()
-            .with_http()
-            .with_http_client(http_client)
-    };
-
-    // build http exporter
-    let otlp_exporter = otlp_http_exporter_builder
-        .with_endpoint("https://in-otel.hyperdx.io/v1/traces")
-        .with_headers(headers)
-        .with_protocol(opentelemetry_otlp::Protocol::Grpc) // fastest
-        .build()
-        .unwrap();
-
-    let tracer_provider_builder = if IS_BATCH_EXPORTER {
-        // create batch span processor with custom config
-        // also can build simple span processor or even custom
-        // processors with implementation of SpanProcessor trait
-        let batch_exporter = BatchSpanProcessor::builder(otlp_exporter)
-            .with_batch_config(
-                BatchConfigBuilder::default()
-                    .with_max_export_batch_size(512)
-                    .with_max_queue_size(2048)
-                    .with_scheduled_delay(Duration::from_secs(3))
-                    // .with_max_concurrent_exports() // experimental feature flag for the otel crate
-                    .build(),
-            )
-            .build();
-
-        // build batch exporter provider builder with batch exporter
-        opentelemetry_sdk::trace::SdkTracerProvider::builder().with_span_processor(batch_exporter)
-    } else {
-        // build simple exporter provider builder with otlp exporter
-        opentelemetry_sdk::trace::SdkTracerProvider::builder().with_simple_exporter(otlp_exporter)
-    };
-
-    // build tracer provider
-    let tracer_provider = tracer_provider_builder
-        .with_resource(
-            Resource::builder()
-                .with_service_name("my-service-name")
-                .with_attributes(vec![
-                    KeyValue::new("deployment.environment", "production"), // these attributes will be in every span
-                ])
-                .build(),
-        )
-        .build();
-
-    // make a tracer
-    let tracer = tracer_provider.tracer("my_tracer");
-
-    // Create a tracing layer with the configured tracer
-    let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-
-    // Use the tracing subscriber `Registry`, or any other subscriber that impls `LookupSpan`
-    let subscriber = Registry::default().with(telemetry);
-
-    // set as global default to make sure all spans are captured
-    tracing::subscriber::set_global_default(subscriber).unwrap();
+    let _telemetry_guard = st0x_hedge::setup_telemetry(api_key).unwrap();
 
     // lets make a top level span to be the parent of all other spans
     // for making parent-child relationships when spans are not already
@@ -139,10 +42,6 @@ async fn main() {
     // this will NOT be a child of root_span because it is outside the scope
     let _ = test_fn3().await;
 
-    // force a flush to ensure all spans are exported before exit
-    let _ = tracer_provider.force_flush();
-
-    // wait a bit to ensure all spans are exported before exit
     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
 }
 

@@ -124,51 +124,65 @@ client, thread spawn, gRPC protocol) that are critical for HyperDX to work.
 
 ---
 
-## Task 2. Verify Test Binary Works with HyperDX
+## Task 2. Verify Test Binary Works with HyperDX ✅ COMPLETED
 
 Run the test binary and have the user confirm traces appear in HyperDX
 dashboard.
 
-- [ ] Replace hardcoded `"api-key"` string in test binary with actual API key
+- [x] Replace hardcoded `"api-key"` string in test binary with actual API key
       from environment variable
-- [ ] Run test binary: `HYPERDX_API_KEY=<real-key> cargo run --bin test_hyperdx`
-- [ ] Wait for the 10 second sleep to complete
-- [ ] **USER VERIFICATION REQUIRED**: Ask user to check HyperDX dashboard and
+- [x] Run test binary: `HYPERDX_API_KEY=<real-key> cargo run --bin test_hyperdx`
+- [x] Wait for the 10 second sleep to complete
+- [x] **USER VERIFICATION REQUIRED**: Ask user to check HyperDX dashboard and
       confirm:
-  - [ ] Service "my-service-name" appears
-  - [ ] Root span `app_start` is visible with `work_units = 2` attribute
-  - [ ] Child span `app_start_child` appears under `app_start`
-  - [ ] Span `test_fn1` appears with `component = "websocket"` attribute
-  - [ ] Span `test_fn2` appears as child of `test_fn1`
-  - [ ] Span `test_fn3` and `queue_processor_task` appear
-  - [ ] Events are visible (error events, custom events with attributes)
-  - [ ] Parent-child relationships are correct in the trace tree
+  - [x] Service "my-service-name" appears
+  - [x] Root span `app_start` is visible with `work_units = 2` attribute
+  - [x] Child span `app_start_child` appears under `app_start`
+  - [x] Span `test_fn1` appears with `component = "websocket"` attribute
+  - [x] Span `test_fn2` appears as child of `test_fn1`
+  - [x] Span `test_fn3` and `queue_processor_task` appear
+  - [x] Events are visible (error events, custom events with attributes)
+  - [x] Parent-child relationships are correct in the trace tree
 
-**STOP HERE**: Do not proceed until user confirms HyperDX traces are working. If
-traces don't appear, debug the test binary first before any integration work.
+**Implementation Summary:**
+
+Updated test binary to load `.env` file and read `HYPERDX_API_KEY` from
+environment:
+
+- Added `dotenvy::dotenv().ok()` call at start of main
+- Replaced hardcoded `"api-key"` with
+  `std::env::var("HYPERDX_API_KEY").unwrap()`
+- User confirmed traces appear correctly in HyperDX dashboard
+- All test spans, events, and parent-child relationships verified working
+
+**VERIFICATION COMPLETE**: HyperDX integration confirmed working with reference
+implementation. Ready to proceed with integration into main codebase.
 
 ---
 
 ## Task 3. Create Telemetry Module
 
 Extract telemetry setup from test binary into a proper module following our code
-structure guidelines.
+structure guidelines, then verify it works by refactoring the test binary to use
+it.
 
-- [ ] Create `src/telemetry.rs` module file
-- [ ] Add `mod telemetry;` to `src/lib.rs`
-- [ ] Define `TelemetryError` enum with variants:
-  - [ ] `ExporterBuild(String)` - Failed to build OTLP exporter
-  - [ ] `ProviderSetup(String)` - Failed to setup tracer provider
-  - [ ] `SubscriberSetup(String)` - Failed to set global subscriber
-- [ ] Define `TelemetryGuard` struct:
+### Part A: Create Module
+
+- [x] Create `src/telemetry.rs` module file
+- [x] Add `mod telemetry;` to `src/lib.rs`
+- [x] Define `TelemetryError` enum with variants:
+  - [x] `ExporterBuild(String)` - Failed to build OTLP exporter
+  - [x] `ProviderSetup(String)` - Failed to setup tracer provider
+  - [x] `SubscriberSetup(String)` - Failed to set global subscriber
+- [x] Define `TelemetryGuard` struct:
   ```rust
   pub struct TelemetryGuard {
       tracer_provider: SdkTracerProvider,
   }
   ```
-- [ ] Implement `Drop` for `TelemetryGuard` that calls `force_flush()` on the
+- [x] Implement `Drop` for `TelemetryGuard` that calls `force_flush()` on the
       tracer provider
-- [ ] Create public function with signature:
+- [x] Create public function with signature:
   ```rust
   pub fn setup_telemetry(
       api_key: String,
@@ -176,23 +190,43 @@ structure guidelines.
       endpoint: String
   ) -> Result<TelemetryGuard, TelemetryError>
   ```
-- [ ] Move batch exporter setup code from test binary into `setup_telemetry()`:
-  - [ ] Keep the blocking reqwest client thread spawn (critical for batch
+- [x] Move batch exporter setup code from test binary into `setup_telemetry()`:
+  - [x] Keep the blocking reqwest client thread spawn (critical for batch
         processor)
-  - [ ] Use gRPC protocol (fastest according to reference)
-  - [ ] Use batch config with same parameters as reference (512 batch size, 2048
+  - [x] Use gRPC protocol (fastest according to reference)
+  - [x] Use batch config with same parameters as reference (512 batch size, 2048
         queue, 3s delay)
-  - [ ] Set resource attributes: `service.name` and `deployment.environment`
-- [ ] Replace all `.unwrap()` calls with proper error handling using `?`
+  - [x] Set resource attributes: `service.name` and `deployment.environment`
+- [x] Replace all `.unwrap()` calls with proper error handling using `?`
       operator
-- [ ] Use `tracing_subscriber::layer::SubscriberExt` to add OpenTelemetry layer
+- [x] Use `tracing_subscriber::layer::SubscriberExt` to add OpenTelemetry layer
       to existing subscriber
-- [ ] Return `TelemetryGuard` that will flush on drop
-- [ ] Verify module compiles: `cargo build`
+- [x] Return `TelemetryGuard` that will flush on drop
+- [x] Verify module compiles: `cargo build`
+
+### Part B: Verify by Refactoring Test Binary
+
+- [ ] Update `src/bin/test_hyperdx.rs` to use `st0x_hedge::telemetry::setup_telemetry()`
+  - [ ] Replace all the manual telemetry setup code with single call to
+        `telemetry::setup_telemetry()`
+  - [ ] Keep the test spans (test_fn1, test_fn2, test_fn3) unchanged
+  - [ ] Store returned `TelemetryGuard` (don't let it drop early)
+  - [ ] Remove now-unused imports
+- [ ] Build and run: `cargo run --bin test_hyperdx`
+- [ ] **USER VERIFICATION REQUIRED**: Confirm in HyperDX dashboard:
+  - [ ] Service "my-service-name" still appears
+  - [ ] All test spans still appear (app_start, test_fn1, test_fn2, test_fn3,
+        etc)
+  - [ ] Parent-child relationships still correct
+  - [ ] Events still visible
+
+**STOP HERE**: Do not proceed until user confirms refactored test binary still
+works with HyperDX.
 
 **Design Rationale**: Extract into separate module for separation of concerns.
 `TelemetryGuard` ensures graceful shutdown via RAII pattern. Proper error types
-instead of unwrapping for production code.
+instead of unwrapping for production code. Verification step ensures no
+regression.
 
 ---
 
