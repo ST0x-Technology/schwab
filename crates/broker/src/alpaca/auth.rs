@@ -23,13 +23,13 @@ impl AlpacaTradingMode {
 /// Alpaca API authentication environment configuration
 #[derive(Parser, Clone)]
 pub struct AlpacaAuthEnv {
-    /// Alpaca API key ID
+    /// Alpaca API key
     #[clap(long, env)]
-    pub alpaca_api_key_id: String,
+    pub alpaca_api_key: String,
 
-    /// Alpaca API secret key
+    /// Alpaca API secret
     #[clap(long, env)]
-    pub alpaca_api_secret_key: String,
+    pub alpaca_api_secret: String,
 
     /// Trading mode: paper or live (defaults to paper for safety)
     #[clap(long, env, default_value = "paper")]
@@ -39,8 +39,8 @@ pub struct AlpacaAuthEnv {
 impl std::fmt::Debug for AlpacaAuthEnv {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AlpacaAuthEnv")
-            .field("alpaca_api_key_id", &"[REDACTED]")
-            .field("alpaca_api_secret_key", &"[REDACTED]")
+            .field("alpaca_api_key", &"[REDACTED]")
+            .field("alpaca_api_secret", &"[REDACTED]")
             .field("alpaca_trading_mode", &self.alpaca_trading_mode)
             .finish()
     }
@@ -57,8 +57,8 @@ pub struct AlpacaClient {
     client: Client,
     trading_mode: AlpacaTradingMode,
     base_url: String,
-    api_key_id: String,
-    api_secret_key: String,
+    api_key: String,
+    api_secret: String,
 }
 
 impl std::fmt::Debug for AlpacaClient {
@@ -67,8 +67,8 @@ impl std::fmt::Debug for AlpacaClient {
             .field("client", &"<Client>")
             .field("trading_mode", &self.trading_mode)
             .field("base_url", &self.base_url)
-            .field("api_key_id", &"[REDACTED]")
-            .field("api_secret_key", &"[REDACTED]")
+            .field("api_key", &"[REDACTED]")
+            .field("api_secret", &"[REDACTED]")
             .finish()
     }
 }
@@ -76,11 +76,8 @@ impl std::fmt::Debug for AlpacaClient {
 impl AlpacaClient {
     pub(crate) fn new(env: &AlpacaAuthEnv) -> Result<Self, crate::BrokerError> {
         let base_url = env.base_url();
-        let api_info = apca::ApiInfo::from_parts(
-            base_url,
-            &env.alpaca_api_key_id,
-            &env.alpaca_api_secret_key,
-        )?;
+        let api_info =
+            apca::ApiInfo::from_parts(base_url, &env.alpaca_api_key, &env.alpaca_api_secret)?;
 
         let client = Client::new(api_info);
 
@@ -88,8 +85,8 @@ impl AlpacaClient {
             client,
             trading_mode: env.alpaca_trading_mode,
             base_url: base_url.to_string(),
-            api_key_id: env.alpaca_api_key_id.clone(),
-            api_secret_key: env.alpaca_api_secret_key.clone(),
+            api_key: env.alpaca_api_key.clone(),
+            api_secret: env.alpaca_api_secret.clone(),
         })
     }
 
@@ -107,39 +104,22 @@ impl AlpacaClient {
     }
 }
 
-impl Clone for AlpacaClient {
-    fn clone(&self) -> Self {
-        let api_info =
-            apca::ApiInfo::from_parts(&self.base_url, &self.api_key_id, &self.api_secret_key)
-                .expect("Cloning AlpacaClient with validated credentials should not fail");
-        let client = Client::new(api_info);
-
-        Self {
-            client,
-            trading_mode: self.trading_mode,
-            base_url: self.base_url.clone(),
-            api_key_id: self.api_key_id.clone(),
-            api_secret_key: self.api_secret_key.clone(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn create_test_paper_config() -> AlpacaAuthEnv {
         AlpacaAuthEnv {
-            alpaca_api_key_id: "test_key_id".to_string(),
-            alpaca_api_secret_key: "test_secret_key".to_string(),
+            alpaca_api_key: "test_key_id".to_string(),
+            alpaca_api_secret: "test_secret_key".to_string(),
             alpaca_trading_mode: AlpacaTradingMode::Paper,
         }
     }
 
     fn create_test_live_config() -> AlpacaAuthEnv {
         AlpacaAuthEnv {
-            alpaca_api_key_id: "test_key_id".to_string(),
-            alpaca_api_secret_key: "test_secret_key".to_string(),
+            alpaca_api_key: "test_key_id".to_string(),
+            alpaca_api_secret: "test_secret_key".to_string(),
             alpaca_trading_mode: AlpacaTradingMode::Live,
         }
     }
@@ -177,8 +157,8 @@ mod tests {
     #[test]
     fn test_alpaca_client_new_empty_credentials() {
         let empty_config = AlpacaAuthEnv {
-            alpaca_api_key_id: "".to_string(),
-            alpaca_api_secret_key: "".to_string(),
+            alpaca_api_key: "".to_string(),
+            alpaca_api_secret: "".to_string(),
             alpaca_trading_mode: AlpacaTradingMode::Paper,
         };
 
@@ -203,8 +183,8 @@ mod tests {
     #[test]
     fn test_alpaca_auth_env_debug_redacts_secrets() {
         let config = AlpacaAuthEnv {
-            alpaca_api_key_id: "secret_key_id_123".to_string(),
-            alpaca_api_secret_key: "super_secret_key_456".to_string(),
+            alpaca_api_key: "secret_key_id_123".to_string(),
+            alpaca_api_secret: "super_secret_key_456".to_string(),
             alpaca_trading_mode: AlpacaTradingMode::Paper,
         };
 

@@ -138,8 +138,8 @@ SCHWAB_REDIRECT_URI=https://127.0.0.1
 Add credentials to `.env`:
 
 ```bash
-ALPACA_API_KEY_ID=your_api_key_id
-ALPACA_API_SECRET_KEY=your_secret_key
+ALPACA_API_KEY=your_api_key
+ALPACA_API_SECRET=your_secret
 ALPACA_BASE_URL=https://paper-api.alpaca.markets  # or https://api.alpaca.markets for live
 ```
 

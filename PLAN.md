@@ -182,13 +182,31 @@ before deploying.
 and "API secret key". Current names are confusing and don't match Alpaca's
 documentation.
 
-**Changes needed**:
+**Changes completed**:
 
-- [ ] Rename `ALPACA_API_KEY_ID` to `ALPACA_API_KEY` in
+- [x] Rename `ALPACA_API_KEY_ID` to `ALPACA_API_KEY` in
       crates/broker/src/alpaca/auth.rs
-- [ ] Rename `ALPACA_API_SECRET_KEY` to `ALPACA_API_SECRET` in
+- [x] Rename `ALPACA_API_SECRET_KEY` to `ALPACA_API_SECRET` in
       crates/broker/src/alpaca/auth.rs
-- [ ] Update .env.example with new variable names
-- [ ] Update GitHub Actions workflow secrets mapping
-- [ ] Update all documentation references
-- [ ] Test that Alpaca authentication still works with renamed variables
+- [x] Update .env.example with new variable names
+- [x] Update GitHub Actions workflow secrets mapping
+- [x] Update all documentation references (README.md)
+- [x] Update test code in crates/broker/src/alpaca/broker.rs
+
+**Implementation details**:
+
+Updated all references to Alpaca environment variables across the codebase:
+
+1. **auth.rs**: Renamed struct fields `alpaca_api_key_id` → `alpaca_api_key` and
+   `alpaca_api_secret_key` → `alpaca_api_secret` in `AlpacaAuthEnv` struct,
+   along with all usages in `AlpacaClient` struct and methods
+2. **broker.rs tests**: Updated test helper function `create_test_auth_env` to
+   use new field names
+3. **.env.example**: Updated environment variable names in configuration
+   template
+4. **deploy.yaml**: Updated GitHub Actions workflow to use new variable names in
+   both the `envs` list and `env` section
+5. **README.md**: Updated Alpaca setup documentation with correct variable names
+
+Variables now match Alpaca's official terminology as documented in their API
+documentation.
