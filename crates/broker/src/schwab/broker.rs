@@ -86,6 +86,7 @@ impl Broker for SchwabBroker {
         }
     }
 
+    #[tracing::instrument(skip(self), fields(symbol = %order.symbol, shares = %order.shares, direction = %order.direction), level = tracing::Level::INFO)]
     async fn place_market_order(
         &self,
         order: MarketOrder,
@@ -120,6 +121,7 @@ impl Broker for SchwabBroker {
         })
     }
 
+    #[tracing::instrument(skip(self), fields(order_id), level = tracing::Level::DEBUG)]
     async fn get_order_status(&self, order_id: &Self::OrderId) -> Result<OrderState, Self::Error> {
         info!("Getting order status for: {}", order_id);
 

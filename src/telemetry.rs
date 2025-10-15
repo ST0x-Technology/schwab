@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use thiserror::Error;
 use tracing_subscriber::Registry;
-use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::layer::{Layer, SubscriberExt};
 
 #[derive(Debug, Error)]
 pub enum TelemetryError {
@@ -51,9 +51,12 @@ impl Drop for TelemetryGuard {
 /// Since we use a single tracer for all application code without library
 /// auto-instrumentation, this distinction is somewhat artificial but
 /// maintained for semantic clarity.
-const TRACER_NAME: &str = "st0x_tracer";
+const TRACER_NAME: &str = "st0x-tracer";
 
-pub fn setup_telemetry(api_key: String) -> Result<TelemetryGuard, TelemetryError> {
+pub fn setup_telemetry(
+    api_key: String,
+    log_level: tracing::Level,
+) -> Result<TelemetryGuard, TelemetryError> {
     let headers = HashMap::from([("authorization".to_string(), api_key)]);
 
     let http_client = std::thread::spawn(|| {
@@ -98,7 +101,18 @@ pub fn setup_telemetry(api_key: String) -> Result<TelemetryGuard, TelemetryError
 
     let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
-    let subscriber = Registry::default().with(telemetry_layer);
+    let default_filter = format!("st0x_hedge={log_level},st0x_broker={log_level}");
+
+    let fmt_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| default_filter.clone().into());
+
+    let telemetry_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| default_filter.into());
+
+    let fmt_layer = tracing_subscriber::fmt::layer().with_filter(fmt_filter);
+    let telemetry_layer = telemetry_layer.with_filter(telemetry_filter);
+
+    let subscriber = Registry::default().with(fmt_layer).with(telemetry_layer);
 
     tracing::subscriber::set_global_default(subscriber)?;
 

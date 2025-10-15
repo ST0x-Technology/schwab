@@ -41,6 +41,7 @@ pub(crate) async fn backfill_events<P: Provider + Clone>(
     backfill_events_with_retry_strat(pool, provider, evm_env, end_block, retry_strat).await
 }
 
+#[tracing::instrument(skip(pool, provider, evm_env, retry_strategy), fields(end_block), level = tracing::Level::INFO)]
 async fn backfill_events_with_retry_strat<P: Provider + Clone, B: BackoffBuilder + Clone>(
     pool: &SqlitePool,
     provider: &P,
@@ -114,6 +115,7 @@ async fn backfill_events_with_retry_strat<P: Provider + Clone, B: BackoffBuilder
     Ok(())
 }
 
+#[tracing::instrument(skip(pool, provider, evm_env, retry_strategy), fields(batch_start, batch_end), level = tracing::Level::DEBUG)]
 async fn enqueue_batch_events<P: Provider + Clone, B: BackoffBuilder + Clone>(
     pool: &SqlitePool,
     provider: &P,
