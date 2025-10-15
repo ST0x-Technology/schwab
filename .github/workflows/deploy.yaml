@@ -107,8 +107,17 @@ jobs:
             echo "$PREP_SCRIPT" | base64 -d > /mnt/volume_nyc3_01/prep-docker-compose.sh
             chmod +x /mnt/volume_nyc3_01/prep-docker-compose.sh
 
-            # Generate docker-compose.yaml using prep script
+            # Backup current working configuration for rollback capability
             cd /mnt/volume_nyc3_01
+            if [ -f "docker-compose.yaml" ] && [ -f ".env" ]; then
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - Backing up current configuration for rollback" | tee -a "${DEPLOY_LOG}"
+              cp docker-compose.yaml docker-compose.yaml.backup
+              cp .env .env.backup
+            else
+              echo "$(date '+%Y-%m-%d %H:%M:%S') - No existing configuration to backup (first deployment)" | tee -a "${DEPLOY_LOG}"
+            fi
+
+            # Generate docker-compose.yaml using prep script
             export DATA_VOLUME_PATH="/mnt/volume_nyc3_01"
             log_exec ./prep-docker-compose.sh --prod
 
@@ -207,10 +216,6 @@ jobs:
             cd /var/log/schwarbot
             ls -t deploy-*.log 2>/dev/null | tail -n +11 | xargs -r rm -f || true
             ls -t docker-*.log 2>/dev/null | tail -n +11 | xargs -r rm -f || true
-
-            # Save deployed SHA for rollback capability
-            echo "${SHORT_SHA}" > /mnt/volume_nyc3_01/.last-deployed-sha
-            echo "$(date '+%Y-%m-%d %H:%M:%S') - Saved deployed SHA: ${SHORT_SHA}" | tee -a "${DEPLOY_LOG}"
 
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Deployment completed successfully!" | tee -a "${DEPLOY_LOG}"
             echo "Deployment logs: ${DEPLOY_LOG}"

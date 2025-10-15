@@ -110,44 +110,54 @@ prep script. Map GitHub secrets to correct CLI variable names.
 - [x] Replace with: export REGISTRY_NAME, SHORT_SHA, DATA_VOLUME_PATH,
       GRAFANA_ADMIN_PASSWORD
 - [x] Replace with: call `./prep-docker-compose.sh --prod`
-- [x] After deployment succeeds, save SHA:
-      `echo "${SHORT_SHA}" > /mnt/volume_nyc3_01/.last-deployed-sha`
+- [x] Backup config files before deployment for rollback capability
 
 ## Task 7. Create rollback script
 
-**Implementation**: Track last-deployed SHA in state file. Script reads previous
-SHA and regenerates docker-compose.yaml with old image.
+**Implementation**: Backup working configuration files before deployment.
+Rollback restores the backed-up config instead of regenerating. This ensures
+rollback uses EXACT working configuration from before deployment, avoiding
+issues when prep scripts or templates change between deployments.
 
-- [ ] Create `rollback.sh` script in repo root
-- [ ] Script accepts optional SHA argument, defaults to reading
-      `/mnt/volume_nyc3_01/.last-deployed-sha`
-- [ ] Script exports: REGISTRY_NAME=stox, SHORT_SHA=(from arg or file),
-      DATA_VOLUME_PATH=/mnt/volume_nyc3_01
-- [ ] Script reads GRAFANA_ADMIN_PASSWORD from environment
-- [ ] Script calls `./prep-docker-compose.sh --prod`
-- [ ] Script runs
-      `cd /mnt/volume_nyc3_01 && docker compose down && docker compose up -d`
-- [ ] Make script executable: `chmod +x rollback.sh`
-- [ ] Document usage in script header comments
+**Approach**:
+
+- Deployment backs up `docker-compose.yaml` and `.env` before generating new
+  config
+- Rollback stops containers, restores backup files, and restarts
+- No SHA tracking needed - backup files are the rollback point
+
+- [x] Update deploy.yaml to backup config files before deployment
+- [x] Rewrite `rollback.sh` to restore backed-up configuration files
+- [x] Remove SHA tracking logic from rollback.sh
+- [x] Remove prep script regeneration from rollback.sh
+- [x] Script stops containers, restores `.env.backup` and
+      `docker-compose.yaml.backup`, restarts
+- [x] Support DATA_VOLUME_PATH env var (default `/mnt/volume_nyc3_01`)
+- [x] Keep `--dry-run` mode with validation checks
+- [x] Update documentation with backup-based approach
+- [x] Make script executable: `chmod +x rollback.sh`
 
 ## Task 8. Test deployment locally using prep script
 
 **Test procedure**: Validate that prep script works correctly in local mode
 before deploying.
 
-- [ ] Set required environment variables locally (blockchain config + Alpaca
+- [x] Set required environment variables locally (blockchain config + Alpaca
       credentials)
-- [ ] Run `./prep-docker-compose.sh --skip-build` to regenerate
+- [x] Run `./prep-docker-compose.sh --skip-build` to regenerate
       docker-compose.yaml
-- [ ] Verify docker-compose.yaml has BROKER=dry-run for schwarbot
-- [ ] Verify docker-compose.yaml has BROKER=alpaca for alpacabot
-- [ ] Verify docker-compose.yaml has pull_policy: never
-- [ ] Verify docker-compose.yaml has volume paths as ./data
+- [x] Verify docker-compose.yaml has BROKER=dry-run for schwarbot
+- [x] Verify docker-compose.yaml has BROKER=alpaca for alpacabot
+- [x] Verify docker-compose.yaml has pull_policy: never
+- [x] Verify docker-compose.yaml has volume paths as ./data
 - [ ] Run `docker compose up -d`
 - [ ] Check container logs: `docker compose logs schwarbot alpacabot`
 - [ ] Verify schwarbot starts with BROKER=dry-run (no Schwab credentials needed)
 - [ ] Verify alpacabot starts with BROKER=alpaca, uses Alpaca credentials
 - [ ] Confirm no "missing required arguments" errors in logs
+- [ ] Test rollback script locally:
+      `DATA_VOLUME_PATH=./data ./rollback.sh --dry-run`
+- [ ] Verify dry-run passes all validation checks
 - [ ] Clean up: `docker compose down`
 
 ## Task 9. Rename Alpaca environment variables to match their terminology
