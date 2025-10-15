@@ -93,7 +93,7 @@ jobs:
 
               cd /mnt/volume_nyc3_01
 
-              # Check if backup files exist
+              # Check if required backup files exist
               if [ ! -f "docker-compose.yaml.backup" ] || [ ! -f ".env.backup" ]; then
                 echo "$(date '+%Y-%m-%d %H:%M:%S') - No backup files found, cannot rollback (possibly first deployment)" | tee -a "${DEPLOY_LOG}" >&2
                 echo "$(date '+%Y-%m-%d %H:%M:%S') - Deployment failed without rollback capability" | tee -a "${DEPLOY_LOG}" >&2
@@ -111,6 +111,21 @@ jobs:
               cp docker-compose.yaml.backup docker-compose.yaml
               cp .env.backup .env
 
+              # Conditionally restore grafana config files if backups exist
+              if [ -f "grafana-datasource.yaml.backup" ]; then
+                echo "$(date '+%Y-%m-%d %H:%M:%S') - Restoring grafana-datasource.yaml from backup" | tee -a "${DEPLOY_LOG}"
+                cp grafana-datasource.yaml.backup grafana-datasource.yaml
+              else
+                echo "$(date '+%Y-%m-%d %H:%M:%S') - No backup found for grafana-datasource.yaml, skipping" | tee -a "${DEPLOY_LOG}"
+              fi
+
+              if [ -f "Dockerfile.grafana.backup" ]; then
+                echo "$(date '+%Y-%m-%d %H:%M:%S') - Restoring Dockerfile.grafana from backup" | tee -a "${DEPLOY_LOG}"
+                cp Dockerfile.grafana.backup Dockerfile.grafana
+              else
+                echo "$(date '+%Y-%m-%d %H:%M:%S') - No backup found for Dockerfile.grafana, skipping" | tee -a "${DEPLOY_LOG}"
+              fi
+
               # Restart with old configuration
               echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting containers with restored configuration..." | tee -a "${DEPLOY_LOG}"
               docker compose up -d 2>&1 | tee -a "${DEPLOY_LOG}"
@@ -126,10 +141,37 @@ jobs:
               exit 1
             }
 
+            # Function to validate required environment variables
+            validate_required_env() {
+              local missing_vars=()
+
+              for var in REGISTRY_NAME SHORT_SHA DATA_VOLUME_PATH GRAFANA_ADMIN_PASSWORD \
+                         WS_RPC_URL SCHWAB_APP_KEY SCHWAB_APP_SECRET ALPACA_API_KEY \
+                         ALPACA_API_SECRET ENCRYPTION_KEY; do
+                if [ -z "${!var}" ]; then
+                  missing_vars+=("$var")
+                fi
+              done
+
+              if [ ${#missing_vars[@]} -gt 0 ]; then
+                echo "$(date '+%Y-%m-%d %H:%M:%S') - ERROR: Required environment variables are missing:" | tee -a "${DEPLOY_LOG}" >&2
+                for var in "${missing_vars[@]}"; do
+                  echo "  - $var" | tee -a "${DEPLOY_LOG}" >&2
+                done
+                echo "$(date '+%Y-%m-%d %H:%M:%S') - Deployment aborted due to missing configuration" | tee -a "${DEPLOY_LOG}" >&2
+                exit 1
+              fi
+            }
+
             # Start deployment logging
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting deployment of schwarbot:${SHORT_SHA}" | tee "${DEPLOY_LOG}"
             echo "Deployment logs: ${DEPLOY_LOG}" | tee -a "${DEPLOY_LOG}"
             echo "Container logs will be saved to: ${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}"
+
+            # Validate all required environment variables
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Validating required environment variables..." | tee -a "${DEPLOY_LOG}"
+            validate_required_env
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - All required environment variables present" | tee -a "${DEPLOY_LOG}"
 
             # Docker login
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Logging into Docker registry" | tee -a "${DEPLOY_LOG}"
@@ -152,6 +194,10 @@ jobs:
               echo "$(date '+%Y-%m-%d %H:%M:%S') - Backing up current configuration for rollback" | tee -a "${DEPLOY_LOG}"
               cp docker-compose.yaml docker-compose.yaml.backup
               cp .env .env.backup
+
+              # Also backup grafana config files if they exist
+              [ -f "grafana-datasource.yaml" ] && cp grafana-datasource.yaml grafana-datasource.yaml.backup
+              [ -f "Dockerfile.grafana" ] && cp Dockerfile.grafana Dockerfile.grafana.backup
             else
               echo "$(date '+%Y-%m-%d %H:%M:%S') - No existing configuration to backup (first deployment)" | tee -a "${DEPLOY_LOG}"
             fi
@@ -266,8 +312,8 @@ jobs:
           WS_RPC_URL: ${{ secrets.WS_RPC_URL }}
           SCHWAB_APP_KEY: ${{ secrets.APP_KEY }}
           SCHWAB_APP_SECRET: ${{ secrets.APP_SECRET }}
-          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
-          ALPACA_API_SECRET: ${{ secrets.ALPACA_API_SECRET }}
+          ALPACA_API_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_API_SECRET: ${{ secrets.ALPACA_SECRET }}
           ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
           ENV_TEMPLATE: ${{ env.ENV_TEMPLATE }}

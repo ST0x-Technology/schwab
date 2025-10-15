@@ -31,7 +31,7 @@ jobs:
 
       - name: Encode rollback script
         run: |
-          echo "ROLLBACK_SCRIPT=$(base64 -w 0 rollback.sh)" >> $GITHUB_ENV
+          echo "ROLLBACK_SCRIPT=$(base64 -w 0 rollback.sh)" >> "$GITHUB_ENV"
 
       - name: Execute rollback on droplet
         uses: appleboy/ssh-action@v1.0.3
@@ -47,13 +47,6 @@ jobs:
             mkdir -p /var/log/schwarbot
             TIMESTAMP=$(date +%Y-%m-%d-%H%M%S)
             ROLLBACK_LOG="/var/log/schwarbot/rollback-${TIMESTAMP}.log"
-
-            # Function to log and execute commands
-            log_exec() {
-              echo "$(date '+%Y-%m-%d %H:%M:%S') - $*" | tee -a "${ROLLBACK_LOG}"
-              "$@" 2>&1 | tee -a "${ROLLBACK_LOG}"
-              return ${PIPESTATUS[0]}
-            }
 
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting deployment rollback" | tee "${ROLLBACK_LOG}"
             echo "Rollback logs: ${ROLLBACK_LOG}" | tee -a "${ROLLBACK_LOG}"

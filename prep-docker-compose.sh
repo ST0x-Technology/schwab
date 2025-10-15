@@ -58,6 +58,9 @@ else
   export SCHWAB_BROKER="dry-run"
   export ALPACA_BROKER="alpaca"
 
+  # Ensure data directory exists for local development
+  mkdir -p "${DATA_VOLUME_PATH}"
+
   if [ "$SKIP_BUILD" = false ]; then
     # Build Docker image with debug profile
     if ! command -v docker &> /dev/null; then
