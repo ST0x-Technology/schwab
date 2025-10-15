@@ -69,6 +69,7 @@ policy. Add CRITICAL missing BROKER environment variables. Both schwarbot and
 alpacabot use the same image, differentiated by BROKER env var.
 
 **Current Issues**:
+
 - No BROKER env var set (both containers will fail without this!)
 - Both have ENCRYPTION_KEY but only schwab needs it
 - Hardcoded image path (should use variable)
@@ -76,23 +77,24 @@ alpacabot use the same image, differentiated by BROKER env var.
 - Volume paths already use ${DATA_VOLUME_PATH} ✓
 
 **Changes needed**:
-- [ ] Replace hardcoded image with `image: ${DOCKER_IMAGE}` for both containers
-- [ ] Add `pull_policy: ${PULL_POLICY}` to both schwarbot and alpacabot
-- [ ] Add `BROKER=schwab` to schwarbot environment section (CRITICAL)
-- [ ] Add `BROKER=alpaca` to alpacabot environment section (CRITICAL)
-- [ ] Remove `ENCRYPTION_KEY` from alpacabot (keep only on schwarbot)
-- [ ] Verify volume paths still use ${DATA_VOLUME_PATH}
+
+- [x] Replace hardcoded image with `image: ${DOCKER_IMAGE}` for both containers
+- [x] Add `pull_policy: ${PULL_POLICY}` to both schwarbot and alpacabot
+- [x] Add `BROKER=schwab` to schwarbot environment section (CRITICAL)
+- [x] Add `BROKER=alpaca` to alpacabot environment section (CRITICAL)
+- [x] Remove `ENCRYPTION_KEY` from alpacabot (keep only on schwarbot)
+- [x] Verify volume paths still use ${DATA_VOLUME_PATH}
 
 ## Task 5. Update Dockerfile with BUILD_PROFILE support
 
 **Changes**: Add build argument to support both debug and release builds.
 Reference feat/pnl branch for exact implementation.
 
-- [ ] Add `ARG BUILD_PROFILE=release` at builder stage
-- [ ] Add conditional cargo build: if release then `--release`, else debug
-- [ ] Update binary copy to handle both `target/release/server` and
+- [x] Add `ARG BUILD_PROFILE=release` at builder stage
+- [x] Add conditional cargo build: if release then `--release`, else debug
+- [x] Update binary copy to handle both `target/release/server` and
       `target/debug/server` based on profile
-- [ ] Test local build with `docker build --build-arg BUILD_PROFILE=debug`
+- [x] Test local build with `docker build --build-arg BUILD_PROFILE=debug`
 
 ## Task 6. Update GitHub Actions workflow to use prep script
 
@@ -133,15 +135,34 @@ SHA and regenerates docker-compose.yaml with old image.
 **Test procedure**: Validate that prep script works correctly in local mode
 before deploying.
 
-- [ ] Set required environment variables locally (all Schwab/Alpaca credentials)
-- [ ] Run `./prep-docker-compose.sh` (defaults to local mode)
-- [ ] Verify docker-compose.yaml generated with correct image tag
-      (schwarbot:local)
+- [ ] Set required environment variables locally (blockchain config + Alpaca
+      credentials)
+- [ ] Run `./prep-docker-compose.sh --skip-build` to regenerate
+      docker-compose.yaml
+- [ ] Verify docker-compose.yaml has BROKER=dry-run for schwarbot
+- [ ] Verify docker-compose.yaml has BROKER=alpaca for alpacabot
 - [ ] Verify docker-compose.yaml has pull_policy: never
 - [ ] Verify docker-compose.yaml has volume paths as ./data
 - [ ] Run `docker compose up -d`
 - [ ] Check container logs: `docker compose logs schwarbot alpacabot`
-- [ ] Verify schwarbot starts with BROKER=schwab, has ENCRYPTION_KEY
+- [ ] Verify schwarbot starts with BROKER=dry-run (no Schwab credentials needed)
 - [ ] Verify alpacabot starts with BROKER=alpaca, uses Alpaca credentials
 - [ ] Confirm no "missing required arguments" errors in logs
 - [ ] Clean up: `docker compose down`
+
+## Task 9. Rename Alpaca environment variables to match their terminology
+
+**Rationale**: Alpaca calls these "API key" and "API secret", not "API key ID"
+and "API secret key". Current names are confusing and don't match Alpaca's
+documentation.
+
+**Changes needed**:
+
+- [ ] Rename `ALPACA_API_KEY_ID` to `ALPACA_API_KEY` in
+      crates/broker/src/alpaca/auth.rs
+- [ ] Rename `ALPACA_API_SECRET_KEY` to `ALPACA_API_SECRET` in
+      crates/broker/src/alpaca/auth.rs
+- [ ] Update .env.example with new variable names
+- [ ] Update GitHub Actions workflow secrets mapping
+- [ ] Update all documentation references
+- [ ] Test that Alpaca authentication still works with renamed variables

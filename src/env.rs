@@ -91,20 +91,20 @@ pub struct Env {
 }
 
 impl Env {
-    pub fn into_config(self) -> Config {
+    pub fn into_config(self) -> Result<Config, clap::Error> {
         let broker = match self.broker {
             SupportedBroker::Schwab => {
-                let schwab_auth = SchwabAuthEnv::parse();
+                let schwab_auth = SchwabAuthEnv::try_parse_from(&["server"])?;
                 BrokerConfig::Schwab(schwab_auth)
             }
             SupportedBroker::Alpaca => {
-                let alpaca_auth = AlpacaAuthEnv::parse();
+                let alpaca_auth = AlpacaAuthEnv::try_parse_from(&["server"])?;
                 BrokerConfig::Alpaca(alpaca_auth)
             }
             SupportedBroker::DryRun => BrokerConfig::DryRun,
         };
 
-        Config {
+        Ok(Config {
             database_url: self.database_url,
             log_level: self.log_level,
             server_port: self.server_port,
@@ -112,7 +112,7 @@ impl Env {
             order_polling_interval: self.order_polling_interval,
             order_polling_max_jitter: self.order_polling_max_jitter,
             broker,
-        }
+        })
     }
 }
 
@@ -131,7 +131,7 @@ impl Config {
 
 pub fn setup_tracing(log_level: &LogLevel) {
     let level: Level = log_level.into();
-    let default_filter = format!("st0x_hedge={level},auth={level},main={level}");
+    let default_filter = format!("st0x_hedge={level},st0x_broker={level}");
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -258,7 +258,7 @@ pub mod tests {
         ];
 
         let env = Env::try_parse_from(args).unwrap();
-        let config = env.into_config();
+        let config = env.into_config().unwrap();
         assert!(matches!(config.broker, BrokerConfig::DryRun));
     }
 }

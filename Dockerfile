@@ -1,5 +1,7 @@
 FROM ubuntu:latest AS builder
 
+ARG BUILD_PROFILE=release
+
 RUN apt update -y
 RUN apt install curl git -y
 RUN curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install linux \
@@ -26,7 +28,12 @@ RUN nix develop --command cargo chef prepare --recipe-path recipe.json
 
 RUN rm -rf src crates
 
-RUN nix develop --command cargo chef cook --release --recipe-path recipe.json
+RUN nix develop --command bash -c ' \
+    if [ "$BUILD_PROFILE" = "release" ]; then \
+        cargo chef cook --release --recipe-path recipe.json; \
+    else \
+        cargo chef cook --recipe-path recipe.json; \
+    fi'
 
 COPY . .
 
@@ -45,15 +52,20 @@ RUN nix develop --command bash -c ' \
 
 RUN nix develop --command bash -c ' \
     export DATABASE_URL=sqlite:///tmp/build_db.sqlite && \
-    cargo build --release --bin server \
-'
+    if [ "$BUILD_PROFILE" = "release" ]; then \
+        cargo build --release --bin server; \
+    else \
+        cargo build --bin server; \
+    fi'
 
 # Fix binary interpreter path to use standard Linux paths
 RUN apt-get update && apt-get install -y patchelf && \
-    patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 /app/target/release/server && \
+    patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 /app/target/${BUILD_PROFILE}/server && \
     apt-get remove -y patchelf && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
 FROM debian:12-slim
+
+ARG BUILD_PROFILE=release
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -64,7 +76,7 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Copy only the compiled binaries from builder stage (now with fixed interpreter paths)
-COPY --from=builder /app/target/release/server ./
+COPY --from=builder /app/target/${BUILD_PROFILE}/server ./
 COPY --from=builder /app/migrations ./migrations
 
 RUN chown -R schwab:schwab /app

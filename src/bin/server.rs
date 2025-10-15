@@ -6,7 +6,7 @@ use st0x_hedge::launch;
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv_override().ok();
     let parsed_env = Env::parse();
-    let config = parsed_env.into_config();
+    let config = parsed_env.into_config()?;
     setup_tracing(&config.log_level);
 
     launch(config).await?;
