@@ -1,3 +1,63 @@
+//! HyperDX observability integration for trace export.
+//!
+//! This module provides optional OpenTelemetry trace export to HyperDX for real-time
+//! monitoring and debugging of bot operations. When enabled via the `HYPERDX_API_KEY`
+//! environment variable, traces are batched and exported to HyperDX. When disabled,
+//! the bot runs normally with console-only logging.
+//!
+//! # Architecture
+//!
+//! Uses OpenTelemetry's [`BatchSpanProcessor`] for efficient trace export:
+//! - **Batch size**: 512 spans per batch
+//! - **Queue size**: 2048 spans maximum
+//! - **Export interval**: 3 seconds
+//! - **Protocol**: gRPC via OTLP
+//!
+//! ## Blocking HTTP Client Requirement
+//!
+//! **CRITICAL**: The [`BatchSpanProcessor`] spawns background threads that run outside
+//! the tokio runtime. These threads require a blocking HTTP client (from `reqwest::blocking`)
+//! rather than an async client. Using an async client would panic with "no reactor running"
+//! because the background threads have no tokio runtime available.
+//!
+//! The blocking client is created in a separate thread to avoid blocking the main tokio
+//! runtime during initialization.
+//!
+//! # Usage
+//!
+//! ```no_run
+//! # use st0x_hedge::setup_telemetry;
+//! # use tracing::Level;
+//! // Optional telemetry setup
+//! let telemetry_guard = if let Some(api_key) = std::env::var("HYPERDX_API_KEY").ok() {
+//!     match setup_telemetry(api_key, Level::INFO) {
+//!         Ok(guard) => Some(guard),
+//!         Err(e) => {
+//!             eprintln!("Failed to setup telemetry: {e}");
+//!             None
+//!         }
+//!     }
+//! } else {
+//!     None
+//! };
+//!
+//! // Bot runs normally regardless of telemetry availability
+//! // ...
+//!
+//! // Guard flushes remaining traces on drop
+//! drop(telemetry_guard);
+//! ```
+//!
+//! # Trace Filtering
+//!
+//! The module sets up per-layer filtering to control what gets logged to console vs
+//! exported to HyperDX:
+//! - Console layer: Respects `RUST_LOG` environment variable, defaults to bot crates only
+//! - Telemetry layer: Independent filter, defaults to bot crates only
+//!
+//! This prevents external crate spam (e.g., from `alloy`, `rocket`) from cluttering
+//! traces while still allowing those logs in console if needed.
+
 use opentelemetry::KeyValue;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_otlp::ExporterBuildError;
