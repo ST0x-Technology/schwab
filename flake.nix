@@ -28,6 +28,7 @@
               rustfmt.enable = true;
 
               # Misc
+              denofmt.enable = true;
               yamlfmt.enable = true;
               yamlfmt.settings.lint-only = false;
               shellcheck.enable = true;
