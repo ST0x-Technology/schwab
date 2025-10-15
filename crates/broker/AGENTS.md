@@ -113,8 +113,9 @@ Before exposing anything:
 
 - **Database isolation**: Always use in-memory SQLite (`":memory:"`) for tests
 - **HTTP mocking**: Use `httpmock` for API testing, never make real API calls
-- **Migration compatibility**: Tests must use `sqlx::migrate!("../../migrations")`
-  to ensure compatibility with the parent workspace schema
+- **Migration compatibility**: Tests must use
+  `sqlx::migrate!("../../migrations")` to ensure compatibility with the parent
+  workspace schema
 - **No test utils bloat**: Only add test utilities that are reused across
   multiple test modules
 
