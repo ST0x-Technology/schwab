@@ -15,7 +15,7 @@ mod symbol;
 mod telemetry;
 mod trade_execution_link;
 
-pub use telemetry::{TelemetryError, TelemetryGuard, setup_telemetry};
+pub use telemetry::{TelemetryError, TelemetryGuard};
 
 #[cfg(test)]
 pub mod test_utils;

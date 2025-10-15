@@ -25,12 +25,12 @@
 //!
 //! # Usage
 //!
-//! ```no_run
-//! # use st0x_hedge::setup_telemetry;
-//! # use tracing::Level;
-//! // Optional telemetry setup
-//! let telemetry_guard = if let Some(api_key) = std::env::var("HYPERDX_API_KEY").ok() {
-//!     match setup_telemetry(api_key, Level::INFO) {
+//! ```ignore
+//! // Optional telemetry setup through config
+//! let config = env::Env::parse().into_config();
+//!
+//! let telemetry_guard = if let Some(ref hyperdx) = config.hyperdx {
+//!     match hyperdx.setup_telemetry() {
 //!         Ok(guard) => Some(guard),
 //!         Err(e) => {
 //!             eprintln!("Failed to setup telemetry: {e}");
@@ -74,6 +74,75 @@ use tracing_subscriber::layer::{Layer, SubscriberExt};
 pub struct HyperDxConfig {
     pub(crate) api_key: String,
     pub(crate) service_name: String,
+    pub(crate) log_level: tracing::Level,
+}
+
+impl HyperDxConfig {
+    pub fn setup_telemetry(&self) -> Result<TelemetryGuard, TelemetryError> {
+        let headers = HashMap::from([("authorization".to_string(), self.api_key.clone())]);
+
+        let http_client = std::thread::spawn(|| {
+            reqwest::blocking::Client::builder()
+                .gzip(true)
+                .build()
+                .map_err(|e| format!("Failed to build HTTP client: {e}"))
+        })
+        .join()
+        .map_err(|_| TelemetryError::ThreadSpawn)?
+        .map_err(TelemetryError::HttpClient)?;
+
+        let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
+            .with_http()
+            .with_http_client(http_client)
+            .with_endpoint("https://in-otel.hyperdx.io/v1/traces")
+            .with_headers(headers)
+            .with_protocol(opentelemetry_otlp::Protocol::Grpc)
+            .build()?;
+
+        let batch_exporter = BatchSpanProcessor::builder(otlp_exporter)
+            .with_batch_config(
+                BatchConfigBuilder::default()
+                    .with_max_export_batch_size(512)
+                    .with_max_queue_size(2048)
+                    .with_scheduled_delay(Duration::from_secs(3))
+                    .build(),
+            )
+            .build();
+
+        let tracer_provider = SdkTracerProvider::builder()
+            .with_span_processor(batch_exporter)
+            .with_resource(
+                Resource::builder()
+                    .with_service_name(self.service_name.clone())
+                    .with_attributes(vec![KeyValue::new("deployment.environment", "production")])
+                    .build(),
+            )
+            .build();
+
+        let tracer = tracer_provider.tracer(TRACER_NAME);
+
+        let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+
+        let default_filter = format!(
+            "st0x_hedge={},st0x_broker={}",
+            self.log_level, self.log_level
+        );
+
+        let fmt_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| default_filter.clone().into());
+
+        let telemetry_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| default_filter.into());
+
+        let fmt_layer = tracing_subscriber::fmt::layer().with_filter(fmt_filter);
+        let telemetry_layer = telemetry_layer.with_filter(telemetry_filter);
+
+        let subscriber = Registry::default().with(fmt_layer).with(telemetry_layer);
+
+        tracing::subscriber::set_global_default(subscriber)?;
+
+        Ok(TelemetryGuard { tracer_provider })
+    }
 }
 
 #[derive(Debug, Error)]
@@ -130,69 +199,3 @@ impl Drop for TelemetryGuard {
 /// auto-instrumentation, this distinction is somewhat artificial but
 /// maintained for semantic clarity.
 const TRACER_NAME: &str = "st0x-tracer";
-
-pub fn setup_telemetry(
-    config: &HyperDxConfig,
-    log_level: tracing::Level,
-) -> Result<TelemetryGuard, TelemetryError> {
-    let headers = HashMap::from([("authorization".to_string(), config.api_key.clone())]);
-
-    let http_client = std::thread::spawn(|| {
-        reqwest::blocking::Client::builder()
-            .gzip(true)
-            .build()
-            .map_err(|e| format!("Failed to build HTTP client: {e}"))
-    })
-    .join()
-    .map_err(|_| TelemetryError::ThreadSpawn)?
-    .map_err(TelemetryError::HttpClient)?;
-
-    let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
-        .with_http()
-        .with_http_client(http_client)
-        .with_endpoint("https://in-otel.hyperdx.io/v1/traces")
-        .with_headers(headers)
-        .with_protocol(opentelemetry_otlp::Protocol::Grpc)
-        .build()?;
-
-    let batch_exporter = BatchSpanProcessor::builder(otlp_exporter)
-        .with_batch_config(
-            BatchConfigBuilder::default()
-                .with_max_export_batch_size(512)
-                .with_max_queue_size(2048)
-                .with_scheduled_delay(Duration::from_secs(3))
-                .build(),
-        )
-        .build();
-
-    let tracer_provider = SdkTracerProvider::builder()
-        .with_span_processor(batch_exporter)
-        .with_resource(
-            Resource::builder()
-                .with_service_name(config.service_name.clone())
-                .with_attributes(vec![KeyValue::new("deployment.environment", "production")])
-                .build(),
-        )
-        .build();
-
-    let tracer = tracer_provider.tracer(TRACER_NAME);
-
-    let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-
-    let default_filter = format!("st0x_hedge={log_level},st0x_broker={log_level}");
-
-    let fmt_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| default_filter.clone().into());
-
-    let telemetry_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| default_filter.into());
-
-    let fmt_layer = tracing_subscriber::fmt::layer().with_filter(fmt_filter);
-    let telemetry_layer = telemetry_layer.with_filter(telemetry_filter);
-
-    let subscriber = Registry::default().with(fmt_layer).with(telemetry_layer);
-
-    tracing::subscriber::set_global_default(subscriber)?;
-
-    Ok(TelemetryGuard { tracer_provider })
-}

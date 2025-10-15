@@ -9,7 +9,7 @@ async fn main() -> anyhow::Result<()> {
     let config = parsed_env.into_config();
 
     let telemetry_guard = if let Some(ref hyperdx) = config.hyperdx {
-        match st0x_hedge::setup_telemetry(hyperdx, (&config.log_level).into()) {
+        match hyperdx.setup_telemetry() {
             Ok(guard) => Some(guard),
             Err(e) => {
                 eprintln!("Failed to setup telemetry: {e}");

@@ -110,9 +110,11 @@ impl Env {
             SupportedBroker::DryRun => BrokerConfig::DryRun,
         };
 
+        let log_level_tracing: Level = (&self.log_level).into();
         let hyperdx = self.hyperdx_api_key.map(|api_key| HyperDxConfig {
             api_key,
             service_name: self.hyperdx_service_name,
+            log_level: log_level_tracing,
         });
 
         Config {
