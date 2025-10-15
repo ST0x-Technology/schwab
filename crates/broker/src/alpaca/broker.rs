@@ -102,11 +102,11 @@ mod tests {
     use httpmock::prelude::*;
     use serde_json::json;
 
-    fn create_test_auth_env(_base_url: &str) -> AlpacaAuthEnv {
+    fn create_test_auth_env(base_url: &str) -> AlpacaAuthEnv {
         AlpacaAuthEnv {
             alpaca_api_key: "test_key_id".to_string(),
             alpaca_api_secret: "test_secret_key".to_string(),
-            alpaca_trading_mode: AlpacaTradingMode::Paper,
+            alpaca_trading_mode: AlpacaTradingMode::Mock(base_url.to_string()),
         }
     }
 

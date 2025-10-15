@@ -3,19 +3,25 @@ use apca::{Client, RequestError};
 use clap::{Parser, ValueEnum};
 
 /// Trading mode for Alpaca API
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, PartialEq, Eq, ValueEnum)]
 pub enum AlpacaTradingMode {
     /// Paper trading mode (simulated trading with fake money)
     Paper,
     /// Live trading mode (real money)
     Live,
+    /// Mock mode for testing (test-only)
+    #[cfg(test)]
+    #[clap(skip)]
+    Mock(String),
 }
 
 impl AlpacaTradingMode {
-    fn base_url(self) -> &'static str {
+    fn base_url(&self) -> String {
         match self {
-            Self::Paper => "https://paper-api.alpaca.markets",
-            Self::Live => "https://api.alpaca.markets",
+            Self::Paper => "https://paper-api.alpaca.markets".to_string(),
+            Self::Live => "https://api.alpaca.markets".to_string(),
+            #[cfg(test)]
+            Self::Mock(url) => url.clone(),
         }
     }
 }
@@ -47,7 +53,7 @@ impl std::fmt::Debug for AlpacaAuthEnv {
 }
 
 impl AlpacaAuthEnv {
-    pub(crate) fn base_url(&self) -> &'static str {
+    pub(crate) fn base_url(&self) -> String {
         self.alpaca_trading_mode.base_url()
     }
 }
@@ -71,13 +77,13 @@ impl AlpacaClient {
     pub(crate) fn new(env: &AlpacaAuthEnv) -> Result<Self, crate::BrokerError> {
         let base_url = env.base_url();
         let api_info =
-            apca::ApiInfo::from_parts(base_url, &env.alpaca_api_key, &env.alpaca_api_secret)?;
+            apca::ApiInfo::from_parts(&base_url, &env.alpaca_api_key, &env.alpaca_api_secret)?;
 
         let client = Client::new(api_info);
 
         Ok(Self {
             client,
-            trading_mode: env.alpaca_trading_mode,
+            trading_mode: env.alpaca_trading_mode.clone(),
         })
     }
 
@@ -119,11 +125,11 @@ mod tests {
     fn test_alpaca_trading_mode_urls() {
         assert_eq!(
             AlpacaTradingMode::Paper.base_url(),
-            "https://paper-api.alpaca.markets"
+            "https://paper-api.alpaca.markets".to_string()
         );
         assert_eq!(
             AlpacaTradingMode::Live.base_url(),
-            "https://api.alpaca.markets"
+            "https://api.alpaca.markets".to_string()
         );
     }
 
