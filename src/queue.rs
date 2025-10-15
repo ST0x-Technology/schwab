@@ -5,7 +5,7 @@ use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::str::FromStr;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
 use crate::error::EventQueueError;
@@ -69,8 +69,22 @@ async fn enqueue_event(
         .map_err(|e| EventQueueError::Processing(format!("Failed to serialize event: {e}")))?;
 
     let block_timestamp_naive = log.block_timestamp.and_then(|ts| {
-        let ts_i64 = i64::try_from(ts).ok()?;
-        DateTime::from_timestamp(ts_i64, 0).map(|dt| dt.naive_utc())
+        let Ok(ts_i64) = i64::try_from(ts) else {
+            warn!(
+                "Block timestamp {ts} exceeds i64::MAX, storing NULL for tx {tx_hash:#x} log_index {log_index}"
+            );
+            return None;
+        };
+
+        DateTime::from_timestamp(ts_i64, 0).map_or_else(
+            || {
+                warn!(
+                    "Invalid block timestamp {ts_i64}, storing NULL for tx {tx_hash:#x} log_index {log_index}"
+                );
+                None
+            },
+            |dt| Some(dt.naive_utc()),
+        )
     });
 
     sqlx::query!(
