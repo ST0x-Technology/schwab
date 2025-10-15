@@ -35,6 +35,10 @@ DOCKER_COMPOSE_BACKUP="${DATA_VOLUME_PATH}/docker-compose.yaml.backup"
 ENV_BACKUP="${DATA_VOLUME_PATH}/.env.backup"
 DOCKER_COMPOSE="${DATA_VOLUME_PATH}/docker-compose.yaml"
 ENV_FILE="${DATA_VOLUME_PATH}/.env"
+GRAFANA_DATASOURCE_BACKUP="${DATA_VOLUME_PATH}/grafana-datasource.yaml.backup"
+GRAFANA_DATASOURCE="${DATA_VOLUME_PATH}/grafana-datasource.yaml"
+GRAFANA_DOCKERFILE_BACKUP="${DATA_VOLUME_PATH}/Dockerfile.grafana.backup"
+GRAFANA_DOCKERFILE="${DATA_VOLUME_PATH}/Dockerfile.grafana"
 
 # Parse arguments
 while [ $# -gt 0 ]; do
@@ -90,6 +94,19 @@ if [ "${DRY_RUN}" = true ]; then
         echo "    ✗ .env.backup not found: ${ENV_BACKUP}" >&2
         echo "    No previous deployment to rollback to" >&2
         exit 1
+    fi
+
+    # Check optional grafana backup files
+    if [ -f "${GRAFANA_DATASOURCE_BACKUP}" ]; then
+        echo "    ✓ grafana-datasource.yaml.backup found"
+    else
+        echo "    ⚠ grafana-datasource.yaml.backup not found (optional)" >&2
+    fi
+
+    if [ -f "${GRAFANA_DOCKERFILE_BACKUP}" ]; then
+        echo "    ✓ Dockerfile.grafana.backup found"
+    else
+        echo "    ⚠ Dockerfile.grafana.backup not found (optional)" >&2
     fi
 
     # Check docker is available
@@ -166,6 +183,21 @@ docker compose down
 echo "==> Restoring backed-up configuration..."
 cp -p "${DOCKER_COMPOSE_BACKUP}" "${DOCKER_COMPOSE}"
 cp -p "${ENV_BACKUP}" "${ENV_FILE}"
+
+# Conditionally restore grafana config files if backups exist
+if [ -f "${GRAFANA_DATASOURCE_BACKUP}" ]; then
+    echo "==> Restoring grafana-datasource.yaml from backup"
+    cp -p "${GRAFANA_DATASOURCE_BACKUP}" "${GRAFANA_DATASOURCE}"
+else
+    echo "==> No backup found for grafana-datasource.yaml, skipping"
+fi
+
+if [ -f "${GRAFANA_DOCKERFILE_BACKUP}" ]; then
+    echo "==> Restoring Dockerfile.grafana from backup"
+    cp -p "${GRAFANA_DOCKERFILE_BACKUP}" "${GRAFANA_DOCKERFILE}"
+else
+    echo "==> No backup found for Dockerfile.grafana, skipping"
+fi
 
 echo "==> Starting containers with restored configuration..."
 docker compose up -d

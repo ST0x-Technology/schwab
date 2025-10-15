@@ -168,6 +168,9 @@ jobs:
             echo "Deployment logs: ${DEPLOY_LOG}" | tee -a "${DEPLOY_LOG}"
             echo "Container logs will be saved to: ${DOCKER_LOG}" | tee -a "${DEPLOY_LOG}"
 
+            # Set production data volume path
+            export DATA_VOLUME_PATH="/mnt/volume_nyc3_01"
+
             # Validate all required environment variables
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Validating required environment variables..." | tee -a "${DEPLOY_LOG}"
             validate_required_env
@@ -203,7 +206,6 @@ jobs:
             fi
 
             # Generate docker-compose.yaml using prep script
-            export DATA_VOLUME_PATH="/mnt/volume_nyc3_01"
             log_exec ./prep-docker-compose.sh --prod
 
             # Pull images and stop existing services
