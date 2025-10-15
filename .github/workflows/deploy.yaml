@@ -48,7 +48,7 @@ jobs:
       - name: Verify required files exist
         run: |
           echo "Checking for required files..."
-          ls -la .env.example docker-compose.template.yaml Dockerfile.grafana grafana-datasource.yaml
+          ls -la .env.example docker-compose.template.yaml Dockerfile.grafana grafana-datasource.yaml prep-docker-compose.sh
           echo "File verification complete"
 
       - name: Encode file contents
@@ -57,6 +57,7 @@ jobs:
           echo "DOCKER_COMPOSE_TEMPLATE=$(base64 -w 0 docker-compose.template.yaml)" >> $GITHUB_ENV
           echo "GRAFANA_DOCKERFILE=$(base64 -w 0 Dockerfile.grafana)" >> $GITHUB_ENV
           echo "GRAFANA_DATASOURCE_YAML=$(base64 -w 0 grafana-datasource.yaml)" >> $GITHUB_ENV
+          echo "PREP_SCRIPT=$(base64 -w 0 prep-docker-compose.sh)" >> $GITHUB_ENV
 
       - name: Push image to DO Registry
         run: |
@@ -69,7 +70,7 @@ jobs:
           host: ${{ secrets.DROPLET_HOST }}
           username: root
           key: ${{ secrets.DROPLET_SSH_KEY }}
-          envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_OWNER,DEPLOYMENT_BLOCK,APP_KEY,APP_SECRET,ALPACA_KEY,ALPACA_SECRET,ENCRYPTION_KEY,ENV_TEMPLATE,DOCKER_COMPOSE_TEMPLATE,GRAFANA_DOCKERFILE,GRAFANA_DATASOURCE_YAML,GRAFANA_ADMIN_PASSWORD
+          envs: DIGITALOCEAN_ACCESS_TOKEN,REGISTRY_NAME,SHORT_SHA,WS_RPC_URL,ORDERBOOK,ORDER_OWNER,DEPLOYMENT_BLOCK,SCHWAB_APP_KEY,SCHWAB_APP_SECRET,ALPACA_API_KEY_ID,ALPACA_API_SECRET_KEY,ENCRYPTION_KEY,ENV_TEMPLATE,DOCKER_COMPOSE_TEMPLATE,GRAFANA_DOCKERFILE,GRAFANA_DATASOURCE_YAML,PREP_SCRIPT,GRAFANA_ADMIN_PASSWORD
           script: |
             set -euo pipefail
 
@@ -99,16 +100,19 @@ jobs:
             # Decode and create files from base64-encoded content
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating configuration files from templates" | tee -a "${DEPLOY_LOG}"
 
-            # Create docker-compose.yaml from template using envsubst
-            export DATA_VOLUME_PATH="/mnt/volume_nyc3_01"
-            echo "$DOCKER_COMPOSE_TEMPLATE" | base64 -d | envsubst '$DATA_VOLUME_PATH $SHORT_SHA $REGISTRY_NAME' > /mnt/volume_nyc3_01/docker-compose.yaml
-
-            # Create Grafana files needed for custom image build
+            # Create required files in deployment directory
+            echo "$DOCKER_COMPOSE_TEMPLATE" | base64 -d > /mnt/volume_nyc3_01/docker-compose.template.yaml
             echo "$GRAFANA_DOCKERFILE" | base64 -d > /mnt/volume_nyc3_01/Dockerfile.grafana
             echo "$GRAFANA_DATASOURCE_YAML" | base64 -d > /mnt/volume_nyc3_01/grafana-datasource.yaml
+            echo "$PREP_SCRIPT" | base64 -d > /mnt/volume_nyc3_01/prep-docker-compose.sh
+            chmod +x /mnt/volume_nyc3_01/prep-docker-compose.sh
+
+            # Generate docker-compose.yaml using prep script
+            cd /mnt/volume_nyc3_01
+            export DATA_VOLUME_PATH="/mnt/volume_nyc3_01"
+            log_exec ./prep-docker-compose.sh --prod
 
             # Pull images and stop existing services
-            cd /mnt/volume_nyc3_01
             log_exec docker compose pull
             log_exec docker compose down || true
 
@@ -204,18 +208,23 @@ jobs:
             ls -t deploy-*.log 2>/dev/null | tail -n +11 | xargs -r rm -f || true
             ls -t docker-*.log 2>/dev/null | tail -n +11 | xargs -r rm -f || true
 
+            # Save deployed SHA for rollback capability
+            echo "${SHORT_SHA}" > /mnt/volume_nyc3_01/.last-deployed-sha
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Saved deployed SHA: ${SHORT_SHA}" | tee -a "${DEPLOY_LOG}"
+
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Deployment completed successfully!" | tee -a "${DEPLOY_LOG}"
             echo "Deployment logs: ${DEPLOY_LOG}"
             echo "Container logs: ${DOCKER_LOG}"
         env:
           WS_RPC_URL: ${{ secrets.WS_RPC_URL }}
-          APP_KEY: ${{ secrets.APP_KEY }}
-          APP_SECRET: ${{ secrets.APP_SECRET }}
-          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
-          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+          SCHWAB_APP_KEY: ${{ secrets.APP_KEY }}
+          SCHWAB_APP_SECRET: ${{ secrets.APP_SECRET }}
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_KEY }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_SECRET }}
           ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
           ENV_TEMPLATE: ${{ env.ENV_TEMPLATE }}
           DOCKER_COMPOSE_TEMPLATE: ${{ env.DOCKER_COMPOSE_TEMPLATE }}
           GRAFANA_DOCKERFILE: ${{ env.GRAFANA_DOCKERFILE }}
           GRAFANA_DATASOURCE_YAML: ${{ env.GRAFANA_DATASOURCE_YAML }}
+          PREP_SCRIPT: ${{ env.PREP_SCRIPT }}

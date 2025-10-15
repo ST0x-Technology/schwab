@@ -101,16 +101,16 @@ Reference feat/pnl branch for exact implementation.
 **Changes**: Replace manual env var mapping and docker-compose generation with
 prep script. Map GitHub secrets to correct CLI variable names.
 
-- [ ] Add env var mappings to workflow: `SCHWAB_APP_KEY=${{ secrets.APP_KEY }}`
-- [ ] Add env var mappings: `SCHWAB_APP_SECRET=${{ secrets.APP_SECRET }}`
-- [ ] Add env var mappings: `ALPACA_API_KEY_ID=${{ secrets.ALPACA_KEY }}`
-- [ ] Add env var mappings: `ALPACA_API_SECRET_KEY=${{ secrets.ALPACA_SECRET }}`
-- [ ] Add env var mappings: `ENCRYPTION_KEY=${{ secrets.TOKEN_ENCRYPTION_KEY }}`
-- [ ] Remove manual envsubst and docker-compose.yaml generation code
-- [ ] Replace with: export REGISTRY_NAME, SHORT_SHA, DATA_VOLUME_PATH,
+- [x] Add env var mappings to workflow: `SCHWAB_APP_KEY=${{ secrets.APP_KEY }}`
+- [x] Add env var mappings: `SCHWAB_APP_SECRET=${{ secrets.APP_SECRET }}`
+- [x] Add env var mappings: `ALPACA_API_KEY_ID=${{ secrets.ALPACA_KEY }}`
+- [x] Add env var mappings: `ALPACA_API_SECRET_KEY=${{ secrets.ALPACA_SECRET }}`
+- [x] Add env var mappings: `ENCRYPTION_KEY=${{ secrets.TOKEN_ENCRYPTION_KEY }}`
+- [x] Remove manual envsubst and docker-compose.yaml generation code
+- [x] Replace with: export REGISTRY_NAME, SHORT_SHA, DATA_VOLUME_PATH,
       GRAFANA_ADMIN_PASSWORD
-- [ ] Replace with: call `./prep-docker-compose.sh --prod`
-- [ ] After deployment succeeds, save SHA:
+- [x] Replace with: call `./prep-docker-compose.sh --prod`
+- [x] After deployment succeeds, save SHA:
       `echo "${SHORT_SHA}" > /mnt/volume_nyc3_01/.last-deployed-sha`
 
 ## Task 7. Create rollback script
