@@ -69,6 +69,7 @@ impl Broker for MockBroker {
         Ok(std::time::Duration::MAX)
     }
 
+    #[tracing::instrument(skip(self), fields(symbol = %order.symbol, shares = %order.shares, direction = %order.direction), level = tracing::Level::INFO)]
     async fn place_market_order(
         &self,
         order: MarketOrder,

@@ -36,7 +36,12 @@ chrono = { version = "0.4.38", features = ["serde"] }
 clap = { version = "4.5.40", features = ["derive", "env"] }
 flate2 = "1.0"
 httpmock = "0.7.0"
-reqwest = { version = "0.12.4", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12.4", features = [
+  "json",
+  "rustls-tls",
+  "gzip",
+  "blocking",
+] }
 serde = { version = "1.0.197", features = ["derive"] }
 serde_json = "1.0.140"
 serial_test = "3.2.0"
@@ -48,6 +53,10 @@ urlencoding = "2.1"
 rand = "0.8"
 chrono-tz = "0.10.4"
 num-traits = "0.2"
+opentelemetry = "0.30.0"
+opentelemetry_sdk = { version = "0.30.0", features = ["rt-tokio"] }
+opentelemetry-otlp = "0.30.0"
+tracing-opentelemetry = "0.31.0"
 
 [package]
 name = "st0x-hedge"
@@ -84,6 +93,10 @@ chrono-tz.workspace = true
 aes-gcm = "0.10.3"
 rust_decimal = "1.38.0"
 num-traits.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+tracing-opentelemetry.workspace = true
 
 [dev-dependencies]
 httpmock.workspace = true

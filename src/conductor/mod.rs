@@ -451,6 +451,7 @@ async fn run_queue_processor<P: Provider + Clone, B: Broker + Clone>(
     }
 }
 
+#[tracing::instrument(skip_all, level = tracing::Level::DEBUG)]
 async fn process_next_queued_event<P: Provider + Clone>(
     broker_type: SupportedBroker,
     config: &Config,
@@ -484,6 +485,7 @@ fn extract_event_id(queued_event: &QueuedEvent) -> Result<i64, EventProcessingEr
     })
 }
 
+#[tracing::instrument(skip_all, level = tracing::Level::DEBUG)]
 async fn convert_event_to_trade<P: Provider + Clone>(
     config: &Config,
     cache: &SymbolCache,
@@ -521,6 +523,7 @@ async fn convert_event_to_trade<P: Provider + Clone>(
     Ok(onchain_trade)
 }
 
+#[tracing::instrument(skip(pool, queued_event), fields(event_id), level = tracing::Level::DEBUG)]
 async fn handle_filtered_event(
     pool: &SqlitePool,
     queued_event: &QueuedEvent,
@@ -555,6 +558,7 @@ async fn handle_filtered_event(
     Ok(None)
 }
 
+#[tracing::instrument(skip(pool, queued_event, trade), fields(event_id, symbol = %trade.symbol), level = tracing::Level::INFO)]
 async fn process_valid_trade(
     broker_type: SupportedBroker,
     pool: &SqlitePool,
@@ -663,6 +667,7 @@ fn reconstruct_log_from_queued_event(
     }
 }
 
+#[tracing::instrument(skip_all, level = tracing::Level::DEBUG)]
 async fn check_and_execute_accumulated_positions<B: Broker + Clone + Send + 'static>(
     broker: &B,
     pool: &SqlitePool,
@@ -713,6 +718,7 @@ async fn check_and_execute_accumulated_positions<B: Broker + Clone + Send + 'sta
     Ok(())
 }
 
+#[tracing::instrument(skip(broker, pool), level = tracing::Level::INFO)]
 async fn execute_pending_offchain_execution<B: Broker + Clone + Send + 'static>(
     broker: &B,
     pool: &SqlitePool,
