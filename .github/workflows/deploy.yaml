@@ -108,20 +108,20 @@ jobs:
 
               # Restore backed-up configuration
               echo "$(date '+%Y-%m-%d %H:%M:%S') - Restoring backed-up configuration..." | tee -a "${DEPLOY_LOG}"
-              cp docker-compose.yaml.backup docker-compose.yaml
-              cp .env.backup .env
+              cp -p docker-compose.yaml.backup docker-compose.yaml
+              cp -p .env.backup .env
 
               # Conditionally restore grafana config files if backups exist
               if [ -f "grafana-datasource.yaml.backup" ]; then
                 echo "$(date '+%Y-%m-%d %H:%M:%S') - Restoring grafana-datasource.yaml from backup" | tee -a "${DEPLOY_LOG}"
-                cp grafana-datasource.yaml.backup grafana-datasource.yaml
+                cp -p grafana-datasource.yaml.backup grafana-datasource.yaml
               else
                 echo "$(date '+%Y-%m-%d %H:%M:%S') - No backup found for grafana-datasource.yaml, skipping" | tee -a "${DEPLOY_LOG}"
               fi
 
               if [ -f "Dockerfile.grafana.backup" ]; then
                 echo "$(date '+%Y-%m-%d %H:%M:%S') - Restoring Dockerfile.grafana from backup" | tee -a "${DEPLOY_LOG}"
-                cp Dockerfile.grafana.backup Dockerfile.grafana
+                cp -p Dockerfile.grafana.backup Dockerfile.grafana
               else
                 echo "$(date '+%Y-%m-%d %H:%M:%S') - No backup found for Dockerfile.grafana, skipping" | tee -a "${DEPLOY_LOG}"
               fi
@@ -192,12 +192,12 @@ jobs:
             cd /mnt/volume_nyc3_01
             if [ -f "docker-compose.yaml" ] && [ -f ".env" ]; then
               echo "$(date '+%Y-%m-%d %H:%M:%S') - Backing up current configuration for rollback" | tee -a "${DEPLOY_LOG}"
-              cp docker-compose.yaml docker-compose.yaml.backup
-              cp .env .env.backup
+              cp -p docker-compose.yaml docker-compose.yaml.backup
+              cp -p .env .env.backup
 
               # Also backup grafana config files if they exist
-              [ -f "grafana-datasource.yaml" ] && cp grafana-datasource.yaml grafana-datasource.yaml.backup
-              [ -f "Dockerfile.grafana" ] && cp Dockerfile.grafana Dockerfile.grafana.backup
+              [ -f "grafana-datasource.yaml" ] && cp -p grafana-datasource.yaml grafana-datasource.yaml.backup
+              [ -f "Dockerfile.grafana" ] && cp -p Dockerfile.grafana Dockerfile.grafana.backup
             else
               echo "$(date '+%Y-%m-%d %H:%M:%S') - No existing configuration to backup (first deployment)" | tee -a "${DEPLOY_LOG}"
             fi

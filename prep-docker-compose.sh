@@ -5,8 +5,8 @@ PROD_MODE=false
 SKIP_BUILD=false
 
 # Parse arguments
-for arg in "$@"; do
-  case $arg in
+while [ "$#" -gt 0 ]; do
+  case "$1" in
     --prod)
       PROD_MODE=true
       shift
@@ -16,7 +16,7 @@ for arg in "$@"; do
       shift
       ;;
     *)
-      echo "Unknown argument: $arg"
+      echo "Unknown argument: $1"
       echo "Usage: prep-docker-compose.sh [--prod] [--skip-build]"
       exit 1
       ;;

@@ -120,6 +120,31 @@ if [ "${DRY_RUN}" = true ]; then
 fi
 
 # Perform actual rollback
+echo "==> Performing safety checks..."
+
+# Check docker is available
+if ! command -v docker &> /dev/null; then
+    echo "ERROR: docker command not found" >&2
+    exit 1
+fi
+
+# Check docker daemon is reachable
+if ! docker info &> /dev/null; then
+    echo "ERROR: Docker daemon is not reachable. Is Docker running?" >&2
+    exit 1
+fi
+
+# Check data directory exists and is writable
+if [ ! -d "${DATA_VOLUME_PATH}" ]; then
+    echo "ERROR: Data directory not found: ${DATA_VOLUME_PATH}" >&2
+    exit 1
+fi
+
+if [ ! -w "${DATA_VOLUME_PATH}" ]; then
+    echo "ERROR: Data directory is not writable: ${DATA_VOLUME_PATH}" >&2
+    exit 1
+fi
+
 echo "==> Validating backup files..."
 if [ ! -f "${DOCKER_COMPOSE_BACKUP}" ] || [ ! -f "${ENV_BACKUP}" ]; then
     echo "ERROR: Backup files not found. Cannot rollback." >&2
@@ -130,12 +155,17 @@ fi
 
 cd "${DATA_VOLUME_PATH}"
 
+# Check that containers exist before trying to stop them
+if ! docker compose ps --quiet 2>/dev/null | grep -q .; then
+    echo "WARNING: No running containers found in this compose project" >&2
+fi
+
 echo "==> Stopping current containers..."
 docker compose down
 
 echo "==> Restoring backed-up configuration..."
-cp docker-compose.yaml.backup docker-compose.yaml
-cp .env.backup .env
+cp -p "${DOCKER_COMPOSE_BACKUP}" "${DOCKER_COMPOSE}"
+cp -p "${ENV_BACKUP}" "${ENV_FILE}"
 
 echo "==> Starting containers with restored configuration..."
 docker compose up -d

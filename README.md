@@ -140,7 +140,7 @@ Add credentials to `.env`:
 ```bash
 ALPACA_API_KEY=your_api_key
 ALPACA_API_SECRET=your_secret
-ALPACA_BASE_URL=https://paper-api.alpaca.markets  # or https://api.alpaca.markets for live
+ALPACA_TRADING_MODE=paper  # or 'live' for live trading
 ```
 
 ### Step 3: Configuration
