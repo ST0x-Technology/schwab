@@ -56,9 +56,6 @@ impl AlpacaAuthEnv {
 pub struct AlpacaClient {
     client: Client,
     trading_mode: AlpacaTradingMode,
-    base_url: String,
-    api_key: String,
-    api_secret: String,
 }
 
 impl std::fmt::Debug for AlpacaClient {
@@ -66,9 +63,6 @@ impl std::fmt::Debug for AlpacaClient {
         f.debug_struct("AlpacaClient")
             .field("client", &"<Client>")
             .field("trading_mode", &self.trading_mode)
-            .field("base_url", &self.base_url)
-            .field("api_key", &"[REDACTED]")
-            .field("api_secret", &"[REDACTED]")
             .finish()
     }
 }
@@ -84,9 +78,6 @@ impl AlpacaClient {
         Ok(Self {
             client,
             trading_mode: env.alpaca_trading_mode,
-            base_url: base_url.to_string(),
-            api_key: env.alpaca_api_key.clone(),
-            api_secret: env.alpaca_api_secret.clone(),
         })
     }
 
@@ -197,17 +188,15 @@ mod tests {
     }
 
     #[test]
-    fn test_alpaca_client_debug_redacts_secrets() {
+    fn test_alpaca_client_debug_does_not_leak_credentials() {
         let config = create_test_paper_config();
         let client = AlpacaClient::new(&config).unwrap();
 
         let debug_output = format!("{:?}", client);
 
-        assert!(debug_output.contains("[REDACTED]"));
         assert!(!debug_output.contains("test_key_id"));
         assert!(!debug_output.contains("test_secret_key"));
         assert!(debug_output.contains("Paper"));
-        assert!(debug_output.contains("https://paper-api.alpaca.markets"));
         assert!(debug_output.contains("<Client>"));
     }
 }
