@@ -89,6 +89,7 @@ jobs:
 
             # Function to perform automatic rollback on deployment failure
             perform_rollback() {
+              trap - ERR  # Disable ERR trap to prevent re-entrancy
               echo "$(date '+%Y-%m-%d %H:%M:%S') - DEPLOYMENT FAILED - Attempting automatic rollback" | tee -a "${DEPLOY_LOG}" >&2
 
               cd /mnt/volume_nyc3_01
@@ -211,6 +212,10 @@ jobs:
 
             # Pull images and stop existing services
             log_exec docker compose pull
+
+            # Enable ERR trap for automatic rollback during risky window
+            trap 'perform_rollback' ERR
+
             log_exec docker compose down || true
 
             # Ensure database directory exists and has proper permissions
@@ -272,6 +277,9 @@ jobs:
             fi
 
             echo "$(date '+%Y-%m-%d %H:%M:%S') - All containers confirmed running" | tee -a "${DEPLOY_LOG}"
+
+            # Disable ERR trap - deployment successful, no longer in risky window
+            trap - ERR
 
             # Capture initial container logs
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Services started successfully, capturing logs..." | tee -a "${DEPLOY_LOG}"
