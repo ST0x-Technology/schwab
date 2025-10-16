@@ -10,3 +10,5 @@ tarpaulin-report.html
 .pre-commit-config.yaml
 .claude/tasks/
 .sqlx/
+
+docker-compose.yaml

@@ -87,7 +87,6 @@ pub(crate) fn routes() -> Vec<Route> {
 mod tests {
     use alloy::primitives::{FixedBytes, address};
     use backon::{ExponentialBuilder, Retryable};
-    use clap::Parser;
     use httpmock::{Mock, MockServer};
     use reqwest::Client as ReqwestClient;
     use rocket::http::{ContentType, Status};
@@ -98,7 +97,7 @@ mod tests {
     use url::Url;
 
     use super::*;
-    use crate::env::{Config, Env};
+    use crate::env::{BrokerConfig, Config, LogLevel};
     use crate::launch;
     use crate::onchain::EvmEnv;
     use crate::test_utils::setup_test_db;
@@ -392,47 +391,28 @@ mod tests {
 
     fn create_test_config_for_server(server: &MockServer, server_port: u16) -> Config {
         let base_url = server.base_url();
-        let db_name = ":memory:";
-        let server_port_str = server_port.to_string();
 
-        let args = vec![
-            "test",
-            "--db",
-            db_name,
-            "--log-level",
-            "info",
-            "--server-port",
-            &server_port_str,
-            "--ws-rpc-url",
-            "ws://127.0.0.1:8545",
-            "--orderbook",
-            "0x1234567890123456789012345678901234567890",
-            "--order-owner",
-            "0xD2843D9E7738d46D90CB6Dff8D6C83db58B9c165",
-            "--deployment-block",
-            "1",
-            "--schwab-app-key",
-            "test_app_key",
-            "--schwab-app-secret",
-            "test_app_secret",
-            "--schwab-redirect-uri",
-            "https://127.0.0.1",
-            "--schwab-base-url",
-            &base_url,
-            "--schwab-account-index",
-            "0",
-            "--encryption-key",
-            "0x0000000000000000000000000000000000000000000000000000000000000000",
-            "--alpaca-api-key-id",
-            "",
-            "--alpaca-api-secret-key",
-            "",
-            "--broker",
-            "schwab",
-        ];
-
-        let parsed_env = Env::try_parse_from(args).expect("Failed to parse test environment");
-        parsed_env.into_config()
+        Config {
+            database_url: ":memory:".to_string(),
+            log_level: LogLevel::Info,
+            server_port,
+            evm: EvmEnv {
+                ws_rpc_url: url::Url::parse("ws://127.0.0.1:8545").unwrap(),
+                orderbook: address!("0x1234567890123456789012345678901234567890"),
+                order_owner: address!("0xD2843D9E7738d46D90CB6Dff8D6C83db58B9c165"),
+                deployment_block: 1,
+            },
+            order_polling_interval: 15,
+            order_polling_max_jitter: 5,
+            broker: BrokerConfig::Schwab(SchwabAuthEnv {
+                schwab_app_key: "test_app_key".to_string(),
+                schwab_app_secret: "test_app_secret".to_string(),
+                schwab_redirect_uri: "https://127.0.0.1".to_string(),
+                schwab_base_url: base_url,
+                schwab_account_index: 0,
+                encryption_key: TEST_ENCRYPTION_KEY,
+            }),
+        }
     }
 
     fn setup_schwab_api_mocks(server: &MockServer) -> Vec<Mock> {

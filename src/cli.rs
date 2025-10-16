@@ -83,7 +83,7 @@ impl CliEnv {
     /// Parse CLI arguments and convert to internal Config struct
     pub fn parse_and_convert() -> anyhow::Result<(Config, Commands)> {
         let cli_env = Self::parse();
-        let config = cli_env.env.into_config();
+        let config = cli_env.env.into_config()?;
         Ok((config, cli_env.command))
     }
 }

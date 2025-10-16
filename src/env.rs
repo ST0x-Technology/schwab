@@ -8,6 +8,11 @@ use st0x_broker::SupportedBroker;
 use st0x_broker::alpaca::AlpacaAuthEnv;
 use st0x_broker::schwab::SchwabAuthEnv;
 
+// Dummy program name required by clap when parsing from environment variables.
+// clap's try_parse_from expects argv[0] to be the program name, but we only
+// care about environment variables, so this is just a placeholder.
+const DUMMY_PROGRAM_NAME: &[&str] = &["server"];
+
 #[derive(Debug, Clone)]
 pub enum BrokerConfig {
     Schwab(SchwabAuthEnv),
@@ -78,10 +83,6 @@ pub struct Env {
     #[clap(long, env, default_value = "8080")]
     server_port: u16,
     #[clap(flatten)]
-    schwab_auth: SchwabAuthEnv,
-    #[clap(flatten)]
-    alpaca_auth: AlpacaAuthEnv,
-    #[clap(flatten)]
     pub(crate) evm: EvmEnv,
     /// Interval in seconds between order status polling checks
     #[clap(long, env, default_value = "15")]
@@ -95,14 +96,20 @@ pub struct Env {
 }
 
 impl Env {
-    pub fn into_config(self) -> Config {
+    pub fn into_config(self) -> Result<Config, clap::Error> {
         let broker = match self.broker {
-            SupportedBroker::Schwab => BrokerConfig::Schwab(self.schwab_auth),
-            SupportedBroker::Alpaca => BrokerConfig::Alpaca(self.alpaca_auth),
+            SupportedBroker::Schwab => {
+                let schwab_auth = SchwabAuthEnv::try_parse_from(DUMMY_PROGRAM_NAME)?;
+                BrokerConfig::Schwab(schwab_auth)
+            }
+            SupportedBroker::Alpaca => {
+                let alpaca_auth = AlpacaAuthEnv::try_parse_from(DUMMY_PROGRAM_NAME)?;
+                BrokerConfig::Alpaca(alpaca_auth)
+            }
             SupportedBroker::DryRun => BrokerConfig::DryRun,
         };
 
-        Config {
+        Ok(Config {
             database_url: self.database_url,
             log_level: self.log_level,
             server_port: self.server_port,
@@ -110,7 +117,7 @@ impl Env {
             order_polling_interval: self.order_polling_interval,
             order_polling_max_jitter: self.order_polling_max_jitter,
             broker,
-        }
+        })
     }
 }
 
@@ -129,7 +136,7 @@ impl Config {
 
 pub fn setup_tracing(log_level: &LogLevel) {
     let level: Level = log_level.into();
-    let default_filter = format!("st0x_hedge={level},auth={level},main={level}");
+    let default_filter = format!("st0x_hedge={level},st0x_broker={level}");
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -235,5 +242,28 @@ pub mod tests {
         assert!(matches!(config.log_level, LogLevel::Debug));
         assert!(matches!(config.broker, BrokerConfig::Schwab(_)));
         assert_eq!(config.evm.deployment_block, 1);
+    }
+
+    #[test]
+    fn test_dry_run_broker_does_not_require_any_credentials() {
+        let args = vec![
+            "test",
+            "--db",
+            ":memory:",
+            "--ws-rpc-url",
+            "ws://localhost:8545",
+            "--orderbook",
+            "0x1111111111111111111111111111111111111111",
+            "--order-owner",
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--deployment-block",
+            "1",
+            "--broker",
+            "dry-run",
+        ];
+
+        let env = Env::try_parse_from(args).unwrap();
+        let config = env.into_config().unwrap();
+        assert!(matches!(config.broker, BrokerConfig::DryRun));
     }
 }

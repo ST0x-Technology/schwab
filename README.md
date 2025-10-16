@@ -138,9 +138,9 @@ SCHWAB_REDIRECT_URI=https://127.0.0.1
 Add credentials to `.env`:
 
 ```bash
-ALPACA_API_KEY_ID=your_api_key_id
-ALPACA_API_SECRET_KEY=your_secret_key
-ALPACA_BASE_URL=https://paper-api.alpaca.markets  # or https://api.alpaca.markets for live
+ALPACA_API_KEY=your_api_key
+ALPACA_API_SECRET=your_secret
+ALPACA_TRADING_MODE=paper  # or 'live' for live trading
 ```
 
 ### Step 3: Configuration
@@ -148,13 +148,14 @@ ALPACA_BASE_URL=https://paper-api.alpaca.markets  # or https://api.alpaca.market
 Create a `.env` file with your environment-specific settings:
 
 ```bash
-# Database
-DATABASE_URL=sqlite:st0x.db
+# Database (for local development - Docker Compose manages paths in containers)
+DATABASE_URL=sqlite:data/schwab.db
 
 # Blockchain
 WS_RPC_URL=wss://your-ethereum-node.com
 ORDERBOOK=0x... # Raindex orderbook contract address
 ORDER_OWNER=0x... # Order owner address to monitor
+DEPLOYMENT_BLOCK=... # Block number where orderbook was deployed
 
 # Broker credentials (from Step 2)
 # Add either Schwab OR Alpaca credentials based on your choice
@@ -164,12 +165,29 @@ See `.env.example` for complete configuration options.
 
 ### Step 4: Database Setup
 
-Initialize the database and run migrations:
+Create the data directory and initialize the database:
 
 ```bash
+mkdir -p data
+export DATABASE_URL=sqlite:data/schwab.db
 sqlx db create
 sqlx migrate run
 ```
+
+**Note**: If you plan to run both broker instances via Docker Compose, you must
+create both databases before starting the containers:
+
+```bash
+# Create Schwab database
+sqlx db create --database-url sqlite:data/schwab.db
+sqlx migrate run --database-url sqlite:data/schwab.db
+
+# Create Alpaca database
+sqlx db create --database-url sqlite:data/alpaca.db
+sqlx migrate run --database-url sqlite:data/alpaca.db
+```
+
+The containers will fail to start if these database files don't exist.
 
 ### Step 5: Authentication
 
@@ -203,6 +221,85 @@ cargo run --bin server -- --broker dry-run
 The bot will now monitor blockchain events and execute offsetting trades
 automatically.
 
+## Docker Deployment
+
+The system uses Docker Compose to run two separate bot instances with isolated
+databases:
+
+- **schwarbot**: Charles Schwab instance (uses `data/schwab.db`)
+- **alpacabot**: Alpaca Markets instance (uses `data/alpaca.db`)
+- **grafana**: Observability stack with Grafana, Prometheus, Loki, Tempo, and
+  Pyroscope
+
+### Local Testing
+
+**Prerequisites**: Create both databases before starting containers:
+
+```bash
+mkdir -p data
+
+# Create Schwab database
+sqlx db create --database-url sqlite:data/schwab.db
+sqlx migrate run --database-url sqlite:data/schwab.db
+
+# Create Alpaca database
+sqlx db create --database-url sqlite:data/alpaca.db
+sqlx migrate run --database-url sqlite:data/alpaca.db
+```
+
+**Deploy locally**:
+
+```bash
+# Generate docker-compose.yaml and build debug image
+./prep-docker-compose.sh
+
+# Or skip rebuild if image already exists
+./prep-docker-compose.sh --skip-build
+
+# Start containers
+docker compose up -d
+
+# View logs
+docker compose logs -f schwarbot alpacabot
+
+# Stop containers
+docker compose down
+```
+
+**Note**: In local mode, schwarbot runs in `dry-run` mode (no real trades) and
+alpacabot uses Alpaca paper trading.
+
+### Production Deployment
+
+**Prerequisites**: On the production server, create both databases in the data
+volume:
+
+```bash
+# Create Schwab database
+sqlx db create --database-url sqlite:/mnt/volume_path/schwab.db
+sqlx migrate run --database-url sqlite:/mnt/volume_path/schwab.db
+
+# Create Alpaca database
+sqlx db create --database-url sqlite:/mnt/volume_path/alpaca.db
+sqlx migrate run --database-url sqlite:/mnt/volume_path/alpaca.db
+```
+
+**Deploy**:
+
+```bash
+# Set required environment variables
+export REGISTRY_NAME=your_registry
+export SHORT_SHA=git_commit_sha
+export DATA_VOLUME_PATH=/mnt/volume_path
+export GRAFANA_ADMIN_PASSWORD=secure_password
+
+# Generate docker-compose.yaml for production
+./prep-docker-compose.sh --prod
+
+# Deploy
+docker compose up -d
+```
+
 ## Project Structure
 
 This is a Cargo workspace with two crates:
@@ -222,6 +319,9 @@ src/
 ├── conductor/          # Trade accumulation and broker orchestration
 └── symbol/             # Token symbol caching
 migrations/             # SQLite database schema
+data/                   # SQLite databases (created at runtime)
+├── schwab.db           # Schwab instance database
+└── alpaca.db           # Alpaca instance database
 ```
 
 ### `st0x-broker` (Broker Abstraction Library)
