@@ -70,17 +70,12 @@ ARG BUILD_PROFILE=release
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates && \
-    rm -rf /var/lib/apt/lists/* && \
-    useradd -m -u 1000 schwab
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Copy only the compiled binaries from builder stage (now with fixed interpreter paths)
 COPY --from=builder /app/target/${BUILD_PROFILE}/server ./
 COPY --from=builder /app/migrations ./migrations
-
-RUN chown -R schwab:schwab /app
-
-USER schwab
 
 ENTRYPOINT ["./server"]
