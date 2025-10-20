@@ -225,17 +225,13 @@ jobs:
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Creating .env file from template" | tee -a "${DEPLOY_LOG}"
 
             # Set deployment-specific values for .env file
-            export DATABASE_URL="sqlite:///data/schwab.db"
-            export RUST_LOG="rain_schwab=debug"
+            export RUST_LOG="st0x_hedge=debug,st0x_broker=debug"
+            export ENCRYPTION_KEY="${ENCRYPTION_KEY}"
+            export GRAFANA_ADMIN_PASSWORD="${GRAFANA_ADMIN_PASSWORD}"
 
             # Create .env file using template with envsubst
             echo "$ENV_TEMPLATE" | base64 -d | envsubst > /mnt/volume_nyc3_01/.env
             chmod 600 /mnt/volume_nyc3_01/.env
-
-            # Start services with docker-compose
-            # Export sensitive variables so docker-compose can read them from environment
-            export ENCRYPTION_KEY="${ENCRYPTION_KEY}"
-            export GRAFANA_ADMIN_PASSWORD="${GRAFANA_ADMIN_PASSWORD}"
 
             echo "$(date '+%Y-%m-%d %H:%M:%S') - Starting services with docker-compose" | tee -a "${DEPLOY_LOG}"
             if ! docker compose up -d 2>&1 | tee -a "${DEPLOY_LOG}"; then
