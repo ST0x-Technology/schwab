@@ -435,11 +435,11 @@ and offchain Schwab).
 | 2    | ONCHAIN  | SELL | 0.4 | $151.00 | —                              | —                                                   | NULL         | $0.00      | -0.7    | 0.3@$150, 0.4@$151 (short)           | Accumulating short position                  |
 | 3    | ONCHAIN  | BUY  | 0.2 | $148.00 | 0.2@$150                       | (150-148)×0.2                                       | **+$0.40**   | **+$0.40** | -0.5    | 0.1@$150, 0.4@$151 (short)           | **P&L from onchain only, no offchain hedge** |
 | 4    | ONCHAIN  | SELL | 0.6 | $149.00 | —                              | —                                                   | NULL         | $0.40      | -1.1    | 0.1@$150, 0.4@$151, 0.6@$149 (short) | Crosses ≥1.0 threshold                       |
-| 5    | OFFCHAIN | BUY  | 1.0 | $148.50 | 0.1@$150 + 0.4@$151 + 0.5@$149 | (150-148.5)×0.1 + (151-148.5)×0.4 + (149-148.5)×0.5 | **+$1.15**   | **+$1.55** | -0.1    | 0.1@$149 (short)                     | Hedges floor(1.1)=1 share                    |
-| 6    | ONCHAIN  | BUY  | 1.5 | $147.50 | 0.1@$149 then reverses         | (149-147.5)×0.1                                     | **+$0.15**   | **+$1.70** | +1.4    | 1.4@$147.50 (long)                   | Position reversal: short→long                |
-| 7    | OFFCHAIN | SELL | 1.0 | $149.00 | 1.0@$147.50                    | (149-147.5)×1.0                                     | **+$1.50**   | **+$3.20** | +0.4    | 0.4@$147.50 (long)                   | Hedges floor(1.4)=1 share                    |
+| 5    | OFFCHAIN | BUY  | 1.0 | $148.50 | 0.1@$150 + 0.4@$151 + 0.5@$149 | (150-148.5)×0.1 + (151-148.5)×0.4 + (149-148.5)×0.5 | **+$1.40**   | **+$1.80** | -0.1    | 0.1@$149 (short)                     | Hedges floor(1.1)=1 share                    |
+| 6    | ONCHAIN  | BUY  | 1.5 | $147.50 | 0.1@$149 then reverses         | (149-147.5)×0.1                                     | **+$0.15**   | **+$1.95** | +1.4    | 1.4@$147.50 (long)                   | Position reversal: short→long                |
+| 7    | OFFCHAIN | SELL | 1.0 | $149.00 | 1.0@$147.50                    | (149-147.5)×1.0                                     | **+$1.50**   | **+$3.45** | +0.4    | 0.4@$147.50 (long)                   | Hedges floor(1.4)=1 share                    |
 
-**Final State:** Total P&L = **$3.20**, Net Position = **+0.4 long**
+**Final State:** Total P&L = **$3.45**, Net Position = **+0.4 long**
 
 ## How It Works
 
