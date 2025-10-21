@@ -33,11 +33,28 @@ services:
       - grafana
     restart: unless-stopped
 
-  reporter:
+  reporter-schwab:
     image: ${DOCKER_IMAGE}
     pull_policy: ${PULL_POLICY}
-    container_name: reporter
+    container_name: reporter-schwab
     command: ["reporter"]
+    environment:
+      - DATABASE_URL=sqlite:///data/schwab.db
+    env_file:
+      - .env
+    volumes:
+      - ${DATA_VOLUME_PATH}:/data
+    depends_on:
+      - grafana
+    restart: unless-stopped
+
+  reporter-alpaca:
+    image: ${DOCKER_IMAGE}
+    pull_policy: ${PULL_POLICY}
+    container_name: reporter-alpaca
+    command: ["reporter"]
+    environment:
+      - DATABASE_URL=sqlite:///data/alpaca.db
     env_file:
       - .env
     volumes:
