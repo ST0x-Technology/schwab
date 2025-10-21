@@ -1,6 +1,6 @@
 use clap::Parser;
-use rain_schwab::env::setup_tracing;
-use rain_schwab::reporter::{self, ReporterEnv};
+use st0x_hedge::env::setup_tracing;
+use st0x_hedge::reporter::{self, ReporterEnv};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

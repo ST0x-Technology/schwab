@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{error, info};
 
-use crate::schwab::Direction;
 use crate::symbol::Symbol;
+use st0x_broker::Direction;
 
 mod pnl;
 
@@ -102,7 +102,7 @@ impl Trade {
 
         let direction = direction
             .parse()
-            .map_err(|e: String| anyhow::anyhow!("Invalid direction: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Invalid direction: {e}"))?;
 
         let timestamp = created_at
             .ok_or_else(|| anyhow::anyhow!("created_at is NULL"))?
@@ -141,7 +141,7 @@ impl Trade {
 
         let direction = direction
             .parse()
-            .map_err(|e: String| anyhow::anyhow!("Invalid direction: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Invalid direction: {e}"))?;
 
         Ok(Self {
             r#type: TradeType::Offchain,
@@ -274,7 +274,7 @@ async fn load_all_trades(pool: &SqlitePool) -> anyhow::Result<Vec<Trade>> {
             direction,
             price_cents,
             executed_at
-         FROM schwab_executions
+         FROM offchain_trades
          WHERE status = 'FILLED'
          ORDER BY executed_at, id"
     )
@@ -298,8 +298,12 @@ async fn load_all_trades(pool: &SqlitePool) -> anyhow::Result<Vec<Trade>> {
     let offchain_trades = offchain
         .into_iter()
         .map(|row| {
+            let id = row
+                .id
+                .ok_or_else(|| anyhow::anyhow!("offchain trade missing id"))?;
+
             Trade::from_offchain_row(
-                row.id,
+                id,
                 row.symbol,
                 row.shares,
                 &row.direction,
@@ -578,8 +582,8 @@ mod tests {
         let naive_timestamp = timestamp.naive_utc();
 
         sqlx::query!(
-            "INSERT INTO schwab_executions (
-                order_id,
+            "INSERT INTO offchain_trades (
+                broker_order_id,
                 symbol,
                 shares,
                 direction,

@@ -154,6 +154,13 @@ impl Config {
 
         Ok(pool)
     }
+
+    pub const fn get_order_poller_config(&self) -> OrderPollerConfig {
+        OrderPollerConfig {
+            polling_interval: std::time::Duration::from_secs(self.order_polling_interval),
+            max_jitter: std::time::Duration::from_secs(self.order_polling_max_jitter),
+        }
+    }
 }
 
 impl Env {
