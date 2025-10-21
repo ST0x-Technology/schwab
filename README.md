@@ -315,8 +315,9 @@ to the `metrics_pnl` table, which is optimized for Grafana visualization.
   `schwab_executions` tables for auditing and reconciliation
 - **FIFO Accounting**: Maintains in-memory inventory state per symbol, rebuilt
   on startup by replaying all trades
-- **Checkpoint Resume**: Uses MAX(timestamp) from metrics_pnl to process only
-  new trades in each iteration
+- **Composite Checkpoint**: Resumes from the last `(timestamp, trade_type,
+  trade_id)` tuple in metrics_pnl, ensuring deterministic ordering even when
+  multiple trades share identical timestamps (no trades are skipped)
 
 ## Project Structure
 
