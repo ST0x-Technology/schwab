@@ -62,7 +62,7 @@ RUN nix develop --command bash -c ' \
     fi'
 
 # Fix binary interpreter path to use standard Linux paths
-RUN apt-get update && apt-get install -y patchelf && \
+RUN apt-get update && apt-get install -y --no-install-recommends patchelf && \
     patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 /app/target/${BUILD_PROFILE}/server && \
     patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 /app/target/${BUILD_PROFILE}/reporter && \
     apt-get remove -y patchelf && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*

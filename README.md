@@ -332,10 +332,12 @@ src/
 ├── lib.rs              # Main event loop and orchestration
 ├── bin/
 │   ├── server.rs       # Arbitrage bot server
+│   ├── reporter.rs     # P&L reporter
 │   └── cli.rs          # CLI for manual operations
 ├── onchain/            # Blockchain event processing
 ├── offchain/           # Database models and execution tracking
 ├── conductor/          # Trade accumulation and broker orchestration
+├── reporter/           # FIFO P&L calculation and metrics
 └── symbol/             # Token symbol caching
 migrations/             # SQLite database schema
 data/                   # SQLite databases (created at runtime)
