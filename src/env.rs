@@ -30,6 +30,39 @@ impl BrokerConfig {
     }
 }
 
+pub(crate) trait HasSqlite {
+    async fn get_sqlite_pool(&self) -> Result<SqlitePool, sqlx::Error>;
+}
+
+pub(crate) async fn configure_sqlite_pool(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
+    let pool = SqlitePool::connect(database_url).await?;
+
+    // SQLite Concurrency Configuration:
+    //
+    // WAL Mode: Allows concurrent readers but only ONE writer at a time across
+    // all processes. When both main bot and reporter try to write simultaneously,
+    // one will block until the other completes. This is a fundamental SQLite
+    // limitation.
+    sqlx::query("PRAGMA journal_mode = WAL")
+        .execute(&pool)
+        .await?;
+
+    // Busy Timeout: 10 seconds - when a write is blocked by another process,
+    // SQLite will wait up to 10 seconds before failing with "database is locked".
+    // This prevents immediate failures when main bot and reporter write concurrently.
+    //
+    // CRITICAL: Reporter must keep transactions SHORT (single INSERT per trade)
+    // to avoid blocking mission-critical main bot operations.
+    //
+    // Future: This limitation will be eliminated when migrating to Kafka +
+    // Elasticsearch with CQRS pattern for separate read/write paths.
+    sqlx::query("PRAGMA busy_timeout = 10000")
+        .execute(&pool)
+        .await?;
+
+    Ok(pool)
+}
+
 #[derive(clap::ValueEnum, Debug, Clone)]
 pub enum LogLevel {
     Trace,
@@ -123,7 +156,7 @@ impl Env {
 
 impl Config {
     pub async fn get_sqlite_pool(&self) -> Result<SqlitePool, sqlx::Error> {
-        SqlitePool::connect(&self.database_url).await
+        configure_sqlite_pool(&self.database_url).await
     }
 
     pub const fn get_order_poller_config(&self) -> OrderPollerConfig {

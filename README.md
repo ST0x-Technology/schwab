@@ -300,6 +300,25 @@ export GRAFANA_ADMIN_PASSWORD=secure_password
 docker compose up -d
 ```
 
+## P&L Tracking and Metrics
+
+### P&L Metrics and Grafana Integration
+
+The P&L reporter processes all trades using FIFO accounting and writes metrics
+to the `metrics_pnl` table, which is optimized for Grafana visualization.
+
+- **Metrics Table Design**: Uses REAL (f64) types for seamless Grafana
+  integration and query performance
+- **Precision Trade-off**: Slight precision loss from internal Decimal
+  calculations is acceptable for analytics dashboards
+- **Source of Truth**: Full precision maintained in `onchain_trades` and
+  `schwab_executions` tables for auditing and reconciliation
+- **FIFO Accounting**: Maintains in-memory inventory state per symbol, rebuilt
+  on startup by replaying all trades
+- **Composite Checkpoint**: Resumes from the last `(timestamp, trade_type,
+  trade_id)` tuple in metrics_pnl, ensuring deterministic ordering even when
+  multiple trades share identical timestamps (no trades are skipped)
+
 ## Project Structure
 
 This is a Cargo workspace with two crates:
@@ -313,10 +332,12 @@ src/
 ├── lib.rs              # Main event loop and orchestration
 ├── bin/
 │   ├── server.rs       # Arbitrage bot server
+│   ├── reporter.rs     # P&L reporter
 │   └── cli.rs          # CLI for manual operations
 ├── onchain/            # Blockchain event processing
 ├── offchain/           # Database models and execution tracking
 ├── conductor/          # Trade accumulation and broker orchestration
+├── reporter/           # FIFO P&L calculation and metrics
 └── symbol/             # Token symbol caching
 migrations/             # SQLite database schema
 data/                   # SQLite databases (created at runtime)
@@ -373,6 +394,56 @@ nix run .#checkTestCoverage
 - **[SPEC.md](SPEC.md)** - Complete technical specification and architecture
   details
 - **[AGENTS.md](AGENTS.md)** - Development guidelines for AI-assisted coding
+
+## P&L Reporter
+
+The reporter calculates realized profit/loss using FIFO (First-In-First-Out)
+accounting. It processes all trades (onchain and offchain) and maintains
+performance metrics in the `metrics_pnl` table for Grafana visualization.
+
+### How It Works
+
+- **FIFO Accounting**: Oldest position lots are consumed first when closing
+  positions
+- **In-Memory State**: FIFO inventory rebuilt on startup by replaying all trades
+- **Composite Checkpoint**: Resumes from the last `(timestamp, trade_type,
+  trade_id)` tuple in metrics_pnl, ensuring deterministic ordering even when
+  multiple trades share identical timestamps (no trades are skipped)
+- **All Trades Tracked**: Both position-increasing and position-reducing trades
+  recorded
+
+### Running Locally
+
+```bash
+# Run reporter
+cargo run --bin reporter
+```
+
+### Metrics Table Schema
+
+Every trade gets a row in `metrics_pnl`:
+
+- **realized_pnl**: NULL for position increases, value for position decreases
+- **cumulative_pnl**: Running total of realized P&L for this symbol
+- **net_position_after**: Current position after trade (positive=long,
+  negative=short)
+
+### Example: Market Making tAAPL
+
+This example demonstrates P&L calculation across both venues (onchain Raindex
+and offchain Schwab).
+
+| Step | Source   | Side | Qty | Price   | Lots Consumed (FIFO)           | Realized P&L Calculation                            | Realized P&L | Cum P&L    | Net Pos | Inventory After                      | Notes                                        |
+| ---- | -------- | ---- | --- | ------- | ------------------------------ | --------------------------------------------------- | ------------ | ---------- | ------- | ------------------------------------ | -------------------------------------------- |
+| 1    | ONCHAIN  | SELL | 0.3 | $150.00 | —                              | —                                                   | NULL         | $0.00      | -0.3    | 0.3@$150 (short)                     | Fractional sell, below hedge threshold       |
+| 2    | ONCHAIN  | SELL | 0.4 | $151.00 | —                              | —                                                   | NULL         | $0.00      | -0.7    | 0.3@$150, 0.4@$151 (short)           | Accumulating short position                  |
+| 3    | ONCHAIN  | BUY  | 0.2 | $148.00 | 0.2@$150                       | (150-148)×0.2                                       | **+$0.40**   | **+$0.40** | -0.5    | 0.1@$150, 0.4@$151 (short)           | **P&L from onchain only, no offchain hedge** |
+| 4    | ONCHAIN  | SELL | 0.6 | $149.00 | —                              | —                                                   | NULL         | $0.40      | -1.1    | 0.1@$150, 0.4@$151, 0.6@$149 (short) | Crosses ≥1.0 threshold                       |
+| 5    | OFFCHAIN | BUY  | 1.0 | $148.50 | 0.1@$150 + 0.4@$151 + 0.5@$149 | (150-148.5)×0.1 + (151-148.5)×0.4 + (149-148.5)×0.5 | **+$1.40**   | **+$1.80** | -0.1    | 0.1@$149 (short)                     | Hedges floor(1.1)=1 share                    |
+| 6    | ONCHAIN  | BUY  | 1.5 | $147.50 | 0.1@$149 then reverses         | (149-147.5)×0.1                                     | **+$0.15**   | **+$1.95** | +1.4    | 1.4@$147.50 (long)                   | Position reversal: short→long                |
+| 7    | OFFCHAIN | SELL | 1.0 | $149.00 | 1.0@$147.50                    | (149-147.5)×1.0                                     | **+$1.50**   | **+$3.45** | +0.4    | 0.4@$147.50 (long)                   | Hedges floor(1.4)=1 share                    |
+
+**Final State:** Total P&L = **$3.45**, Net Position = **+0.4 long**
 
 ## How It Works
 
