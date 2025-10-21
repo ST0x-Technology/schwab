@@ -82,5 +82,3 @@ WORKDIR /app
 COPY --from=builder /app/target/${BUILD_PROFILE}/server ./
 COPY --from=builder /app/target/${BUILD_PROFILE}/reporter ./
 COPY --from=builder /app/migrations ./migrations
-
-ENTRYPOINT ["./server"]
