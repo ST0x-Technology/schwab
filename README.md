@@ -403,8 +403,9 @@ performance metrics in the `metrics_pnl` table for Grafana visualization.
 - **FIFO Accounting**: Oldest position lots are consumed first when closing
   positions
 - **In-Memory State**: FIFO inventory rebuilt on startup by replaying all trades
-- **Checkpoint**: Uses MAX(timestamp) from metrics_pnl to resume processing new
-  trades
+- **Composite Checkpoint**: Resumes from the last `(timestamp, trade_type,
+  trade_id)` tuple in metrics_pnl, ensuring deterministic ordering even when
+  multiple trades share identical timestamps (no trades are skipped)
 - **All Trades Tracked**: Both position-increasing and position-reducing trades
   recorded
 

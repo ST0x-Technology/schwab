@@ -3,7 +3,6 @@ services:
     image: ${DOCKER_IMAGE}
     pull_policy: ${PULL_POLICY}
     container_name: schwarbot
-    command: ["server"]
     environment:
       - BROKER=${SCHWAB_BROKER}
       - OTEL_METRICS_EXPORTER_ENDPOINT=http://grafana:4318

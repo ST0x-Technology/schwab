@@ -71,26 +71,16 @@ FROM debian:12-slim
 
 ARG BUILD_PROFILE=release
 
-# Install runtime dependencies and create user
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates && \
-    rm -rf /var/lib/apt/lists/* && \
-    groupadd -r appuser && \
-    useradd -r -g appuser appuser
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Copy only the compiled binaries from builder stage (now with fixed interpreter paths)
-COPY --from=builder /app/target/${BUILD_PROFILE}/server /usr/local/bin/
-COPY --from=builder /app/target/${BUILD_PROFILE}/reporter /usr/local/bin/
+COPY --from=builder /app/target/${BUILD_PROFILE}/server ./
+COPY --from=builder /app/target/${BUILD_PROFILE}/reporter ./
 COPY --from=builder /app/migrations ./migrations
 
-# Set proper ownership and permissions
-RUN chown -R appuser:appuser /app && \
-    chown appuser:appuser /usr/local/bin/server && \
-    chown appuser:appuser /usr/local/bin/reporter
-
-USER appuser
-
-ENTRYPOINT []
+ENTRYPOINT ["./server"]
