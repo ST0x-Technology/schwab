@@ -384,14 +384,14 @@ async fn create_execution_within_transaction(
     Ok(execution_with_id)
 }
 
-/// Clean up stale executions that have been in SUBMITTED state for too long
+/// Clean up stale executions that have been in PENDING or SUBMITTED state for too long
 async fn clean_up_stale_executions(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     base_symbol: &Symbol,
 ) -> Result<(), OnChainError> {
     const STALE_EXECUTION_MINUTES: i32 = 10;
 
-    // Find executions that are SUBMITTED but the accumulator was last updated more than timeout ago
+    // Find executions that are PENDING or SUBMITTED but the accumulator was last updated more than timeout ago
     let timeout_param = format!("-{STALE_EXECUTION_MINUTES} minutes");
     let base_symbol_str = base_symbol.to_string();
     let stale_executions = sqlx::query!(
@@ -400,7 +400,7 @@ async fn clean_up_stale_executions(
         FROM offchain_trades se
         JOIN trade_accumulators ta ON ta.pending_execution_id = se.id
         WHERE ta.symbol = ?1
-          AND se.status = 'SUBMITTED'
+          AND se.status IN ('PENDING', 'SUBMITTED')
           AND ta.last_updated < datetime('now', ?2)
         "#,
         base_symbol_str,
@@ -1540,6 +1540,102 @@ mod tests {
         let pending_executions = find_executions_by_symbol_status_and_broker(
             &pool,
             Some(Symbol::new("AAPL").unwrap()),
+            OrderStatus::Pending,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(pending_executions.len(), 1);
+        assert_ne!(pending_executions[0].id.unwrap(), execution_id);
+    }
+
+    #[tokio::test]
+    async fn test_stale_pending_execution_cleanup() {
+        let pool = setup_test_db().await;
+
+        // Create a pending execution that is stale (simulates deployment restart mid-execution)
+        let stale_pending_execution = OffchainExecution {
+            id: None,
+            symbol: Symbol::new("NVDA").unwrap(),
+            shares: Shares::new(1).unwrap(),
+            direction: Direction::Buy,
+            broker: SupportedBroker::Schwab,
+            state: OrderState::Pending,
+        };
+
+        let mut sql_tx = pool.begin().await.unwrap();
+        let execution_id = stale_pending_execution
+            .save_within_transaction(&mut sql_tx)
+            .await
+            .unwrap();
+
+        // Set up accumulator with pending execution
+        let calculator = PositionCalculator::new();
+        save_within_transaction(
+            &mut sql_tx,
+            &symbol!("NVDA"),
+            &calculator,
+            Some(execution_id),
+        )
+        .await
+        .unwrap();
+
+        // Manually set last_updated to be stale (15 minutes ago)
+        sqlx::query!(
+            "UPDATE trade_accumulators SET last_updated = datetime('now', '-15 minutes') WHERE symbol = ?1",
+            "NVDA"
+        )
+        .execute(sql_tx.as_mut())
+        .await
+        .unwrap();
+
+        sql_tx.commit().await.unwrap();
+
+        // Now process a new trade - it should clean up the stale PENDING execution
+        let trade = OnchainTrade {
+            id: None,
+            tx_hash: fixed_bytes!(
+                "0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+            ),
+            log_index: 1,
+            symbol: tokenized_symbol!("NVDA0x"),
+            amount: 1.5,
+            direction: Direction::Sell,
+            price_usdc: 140.0,
+            block_timestamp: None,
+            created_at: None,
+            gas_used: Some(51000),
+            effective_gas_price: Some(1_550_000_000),
+            pyth_price: None,
+            pyth_confidence: None,
+            pyth_exponent: None,
+            pyth_publish_time: None,
+        };
+
+        let result = process_trade_with_tx(&pool, trade).await.unwrap();
+
+        // Should succeed and create new execution (because stale PENDING one was cleaned up)
+        assert!(result.is_some());
+        let new_execution = result.unwrap();
+        assert_eq!(new_execution.symbol, Symbol::new("NVDA").unwrap());
+        assert_eq!(new_execution.shares, Shares::new(1).unwrap());
+
+        // Verify the stale PENDING execution was marked as failed
+        let failed_executions = find_executions_by_symbol_status_and_broker(
+            &pool,
+            Some(Symbol::new("NVDA").unwrap()),
+            OrderStatus::Failed,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(failed_executions.len(), 1);
+        assert_eq!(failed_executions[0].id.unwrap(), execution_id);
+
+        // Verify the new execution was created and is pending
+        let pending_executions = find_executions_by_symbol_status_and_broker(
+            &pool,
+            Some(Symbol::new("NVDA").unwrap()),
             OrderStatus::Pending,
             None,
         )
