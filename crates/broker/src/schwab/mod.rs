@@ -121,11 +121,11 @@ mod tests {
 
     fn create_test_env_with_mock_server(mock_server: &MockServer) -> SchwabAuthEnv {
         SchwabAuthEnv {
-            app_key: "test_app_key".to_string(),
-            app_secret: "test_app_secret".to_string(),
-            redirect_uri: "https://127.0.0.1".to_string(),
-            base_url: mock_server.base_url(),
-            account_index: 0,
+            schwab_app_key: "test_app_key".to_string(),
+            schwab_app_secret: "test_app_secret".to_string(),
+            schwab_redirect_uri: "https://127.0.0.1".to_string(),
+            schwab_base_url: mock_server.base_url(),
+            schwab_account_index: 0,
             encryption_key: TEST_ENCRYPTION_KEY,
         }
     }
