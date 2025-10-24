@@ -61,6 +61,7 @@ impl<B: Broker> OrderStatusPoller<B> {
         }
     }
 
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     async fn poll_pending_orders(&self) -> Result<(), OrderPollingError> {
         debug!("Starting polling cycle for submitted orders");
 

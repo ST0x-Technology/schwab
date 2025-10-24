@@ -106,6 +106,7 @@ async fn enqueue_event(
 }
 
 /// Gets the next unprocessed event from the queue, ordered by block number then log index
+#[tracing::instrument(skip(pool), level = tracing::Level::DEBUG)]
 pub(crate) async fn get_next_unprocessed_event(
     pool: &SqlitePool,
 ) -> Result<Option<QueuedEvent>, EventQueueError> {
@@ -159,6 +160,7 @@ pub(crate) async fn get_next_unprocessed_event(
 }
 
 /// Marks an event as processed in the queue within a transaction
+#[tracing::instrument(skip(sql_tx), fields(event_id), level = tracing::Level::DEBUG)]
 pub(crate) async fn mark_event_processed(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     event_id: i64,
@@ -179,6 +181,7 @@ pub(crate) async fn mark_event_processed(
 
 /// Generic function to enqueue any event that implements Enqueueable
 #[allow(clippy::future_not_send)]
+#[tracing::instrument(skip_all, level = tracing::Level::DEBUG)]
 pub(crate) async fn enqueue<E: Enqueueable>(
     pool: &SqlitePool,
     event: &E,
@@ -189,6 +192,7 @@ pub(crate) async fn enqueue<E: Enqueueable>(
 }
 
 /// Enqueues buffered events that were collected during coordination phase
+#[tracing::instrument(skip(pool, event_buffer), fields(buffer_size = event_buffer.len()), level = tracing::Level::INFO)]
 pub(crate) async fn enqueue_buffer(
     pool: &sqlx::SqlitePool,
     event_buffer: Vec<(TradeEvent, alloy::rpc::types::Log)>,

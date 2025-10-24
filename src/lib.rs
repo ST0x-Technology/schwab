@@ -1,5 +1,5 @@
 use sqlx::SqlitePool;
-use tracing::{error, info, warn};
+use tracing::{error, info, info_span, warn};
 
 pub mod api;
 mod bindings;
@@ -13,7 +13,10 @@ mod onchain;
 mod queue;
 pub mod reporter;
 mod symbol;
+mod telemetry;
 mod trade_execution_link;
+
+pub use telemetry::{TelemetryError, TelemetryGuard};
 
 #[cfg(test)]
 pub mod test_utils;
@@ -23,6 +26,9 @@ use st0x_broker::schwab::{SchwabConfig, SchwabError};
 use st0x_broker::{Broker, BrokerError, MockBrokerConfig, TryIntoBroker};
 
 pub async fn launch(config: Config) -> anyhow::Result<()> {
+    let launch_span = info_span!("launch");
+    let _enter = launch_span.enter();
+
     let pool = config.get_sqlite_pool().await?;
 
     sqlx::migrate!().run(&pool).await?;
@@ -40,6 +46,9 @@ pub async fn launch(config: Config) -> anyhow::Result<()> {
 
     let bot_pool = pool.clone();
     let bot_task = tokio::spawn(async move {
+        let bot_span = info_span!("bot_task");
+        let _enter = bot_span.enter();
+
         if let Err(e) = Box::pin(run(config, bot_pool)).await {
             error!("Bot failed: {e}");
         }
@@ -70,6 +79,7 @@ pub async fn launch(config: Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tracing::instrument(skip_all, level = tracing::Level::INFO)]
 async fn run(config: Config, pool: SqlitePool) -> anyhow::Result<()> {
     const RERUN_DELAY_SECS: u64 = 10;
 
@@ -103,6 +113,7 @@ async fn run(config: Config, pool: SqlitePool) -> anyhow::Result<()> {
     }
 }
 
+#[tracing::instrument(skip_all, level = tracing::Level::INFO)]
 async fn run_bot_session(config: &Config, pool: &SqlitePool) -> anyhow::Result<()> {
     match &config.broker {
         BrokerConfig::DryRun => {
