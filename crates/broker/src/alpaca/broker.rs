@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use tracing::info;
 use uuid::Uuid;
@@ -8,7 +10,7 @@ use crate::{Broker, BrokerError, MarketOrder, OrderPlacement, OrderState, OrderU
 /// Alpaca broker implementation
 #[derive(Debug, Clone)]
 pub struct AlpacaBroker {
-    client: AlpacaClient,
+    client: Arc<AlpacaClient>,
 }
 
 #[async_trait]
@@ -33,7 +35,9 @@ impl Broker for AlpacaBroker {
             }
         );
 
-        Ok(Self { client })
+        Ok(Self {
+            client: Arc::new(client),
+        })
     }
 
     async fn wait_until_market_open(&self) -> Result<std::time::Duration, Self::Error> {
@@ -98,11 +102,11 @@ mod tests {
     use httpmock::prelude::*;
     use serde_json::json;
 
-    fn create_test_auth_env(_base_url: &str) -> AlpacaAuthEnv {
+    fn create_test_auth_env(base_url: &str) -> AlpacaAuthEnv {
         AlpacaAuthEnv {
-            alpaca_api_key_id: "test_key_id".to_string(),
-            alpaca_api_secret_key: "test_secret_key".to_string(),
-            alpaca_trading_mode: AlpacaTradingMode::Paper,
+            alpaca_api_key: "test_key_id".to_string(),
+            alpaca_api_secret: "test_secret_key".to_string(),
+            alpaca_trading_mode: AlpacaTradingMode::Mock(base_url.to_string()),
         }
     }
 

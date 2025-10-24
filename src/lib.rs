@@ -11,6 +11,7 @@ mod lock;
 mod offchain;
 mod onchain;
 mod queue;
+pub mod reporter;
 mod symbol;
 mod telemetry;
 mod trade_execution_link;

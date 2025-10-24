@@ -1,8 +1,11 @@
 services:
   schwarbot:
-    image: registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}
+    image: ${DOCKER_IMAGE}
+    pull_policy: ${PULL_POLICY}
     container_name: schwarbot
+    command: ["./server"]
     environment:
+      - BROKER=${SCHWAB_BROKER}
       - OTEL_METRICS_EXPORTER_ENDPOINT=http://grafana:4318
       - DATABASE_URL=sqlite:///data/schwab.db
       - ENCRYPTION_KEY
@@ -15,12 +18,44 @@ services:
     restart: unless-stopped
 
   alpacabot:
-    image: registry.digitalocean.com/${REGISTRY_NAME}/schwarbot:${SHORT_SHA}
+    image: ${DOCKER_IMAGE}
+    pull_policy: ${PULL_POLICY}
     container_name: alpacabot
+    command: ["./server"]
     environment:
+      - BROKER=${ALPACA_BROKER}
       - OTEL_METRICS_EXPORTER_ENDPOINT=http://grafana:4318
       - DATABASE_URL=sqlite:///data/alpaca.db
-      - ENCRYPTION_KEY
+    env_file:
+      - .env
+    volumes:
+      - ${DATA_VOLUME_PATH}:/data
+    depends_on:
+      - grafana
+    restart: unless-stopped
+
+  reporter-schwab:
+    image: ${DOCKER_IMAGE}
+    pull_policy: ${PULL_POLICY}
+    container_name: reporter-schwab
+    command: ["./reporter"]
+    environment:
+      - DATABASE_URL=sqlite:///data/schwab.db
+    env_file:
+      - .env
+    volumes:
+      - ${DATA_VOLUME_PATH}:/data
+    depends_on:
+      - grafana
+    restart: unless-stopped
+
+  reporter-alpaca:
+    image: ${DOCKER_IMAGE}
+    pull_policy: ${PULL_POLICY}
+    container_name: reporter-alpaca
+    command: ["./reporter"]
+    environment:
+      - DATABASE_URL=sqlite:///data/alpaca.db
     env_file:
       - .env
     volumes:
@@ -46,8 +81,8 @@ services:
       - "4318:4318"  # OTLP HTTP receiver
     volumes:
       - grafana-data:/data
-      - ${DATA_VOLUME_PATH}/schwab.db:/data/schwab.db:ro
-      - ${DATA_VOLUME_PATH}/alpaca.db:/data/alpaca.db:ro
+      - ${DATA_VOLUME_PATH}/schwab.db:/databases/schwab.db:ro
+      - ${DATA_VOLUME_PATH}/alpaca.db:/databases/alpaca.db:ro
       - ./grafana-datasource.yaml:/otel-lgtm/grafana/conf/provisioning/datasources/sqlite.yaml:ro
     restart: unless-stopped
 

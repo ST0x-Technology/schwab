@@ -101,6 +101,8 @@ tracing-opentelemetry.workspace = true
 [dev-dependencies]
 httpmock.workspace = true
 serial_test.workspace = true
+rust_decimal_macros = "1.38.0"
+proptest = "1.6.0"
 
 [lints]
 workspace = true

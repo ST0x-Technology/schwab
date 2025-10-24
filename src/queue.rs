@@ -5,7 +5,7 @@ use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::str::FromStr;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::bindings::IOrderBookV4::{ClearV2, TakeOrderV2};
 use crate::error::EventQueueError;
@@ -29,15 +29,16 @@ impl Enqueueable for TakeOrderV2 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QueuedEvent {
-    pub id: Option<i64>,
-    pub tx_hash: B256,
-    pub log_index: u64,
-    pub block_number: u64,
-    pub event: TradeEvent,
-    pub processed: bool,
-    pub created_at: Option<DateTime<Utc>>,
-    pub processed_at: Option<DateTime<Utc>>,
+pub(crate) struct QueuedEvent {
+    pub(crate) id: Option<i64>,
+    pub(crate) tx_hash: B256,
+    pub(crate) log_index: u64,
+    pub(crate) block_number: u64,
+    pub(crate) event: TradeEvent,
+    pub(crate) processed: bool,
+    pub(crate) created_at: Option<DateTime<Utc>>,
+    pub(crate) processed_at: Option<DateTime<Utc>>,
+    pub(crate) block_timestamp: Option<DateTime<Utc>>,
 }
 
 async fn enqueue_event(
@@ -67,16 +68,36 @@ async fn enqueue_event(
     let event_json = serde_json::to_string(&event)
         .map_err(|e| EventQueueError::Processing(format!("Failed to serialize event: {e}")))?;
 
+    let block_timestamp_naive = log.block_timestamp.and_then(|ts| {
+        let Ok(ts_i64) = i64::try_from(ts) else {
+            warn!(
+                "Block timestamp {ts} exceeds i64::MAX, storing NULL for tx {tx_hash:#x} log_index {log_index}"
+            );
+            return None;
+        };
+
+        DateTime::from_timestamp(ts_i64, 0).map_or_else(
+            || {
+                warn!(
+                    "Invalid block timestamp {ts_i64}, storing NULL for tx {tx_hash:#x} log_index {log_index}"
+                );
+                None
+            },
+            |dt| Some(dt.naive_utc()),
+        )
+    });
+
     sqlx::query!(
         r#"
-        INSERT OR IGNORE INTO event_queue 
-        (tx_hash, log_index, block_number, event_data, processed)
-        VALUES (?, ?, ?, ?, 0)
+        INSERT OR IGNORE INTO event_queue
+        (tx_hash, log_index, block_number, event_data, processed, block_timestamp)
+        VALUES (?, ?, ?, ?, 0, ?)
         "#,
         tx_hash_str,
         log_index_i64,
         block_number_i64,
-        event_json
+        event_json,
+        block_timestamp_naive
     )
     .execute(pool)
     .await?;
@@ -91,7 +112,16 @@ pub(crate) async fn get_next_unprocessed_event(
 ) -> Result<Option<QueuedEvent>, EventQueueError> {
     let row = sqlx::query!(
         r#"
-        SELECT id, tx_hash, log_index, block_number, event_data, processed, created_at, processed_at
+        SELECT
+            id,
+            tx_hash,
+            log_index,
+            block_number,
+            event_data,
+            processed,
+            created_at,
+            processed_at,
+            block_timestamp
         FROM event_queue
         WHERE processed = 0
         ORDER BY block_number ASC, log_index ASC
@@ -125,6 +155,7 @@ pub(crate) async fn get_next_unprocessed_event(
         processed: row.processed,
         created_at: Some(row.created_at.and_utc()),
         processed_at: row.processed_at.map(|dt| dt.and_utc()),
+        block_timestamp: row.block_timestamp.map(|dt| dt.and_utc()),
     }))
 }
 

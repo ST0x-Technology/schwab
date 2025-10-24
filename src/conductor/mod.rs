@@ -652,6 +652,10 @@ fn reconstruct_log_from_queued_event(
         TradeEvent::TakeOrderV2(take_event) => take_event.as_ref().clone().into_log_data(),
     };
 
+    let block_timestamp = queued_event
+        .block_timestamp
+        .and_then(|dt| u64::try_from(dt.timestamp()).ok());
+
     Log {
         inner: alloy::primitives::Log {
             address: evm_env.orderbook,
@@ -659,7 +663,7 @@ fn reconstruct_log_from_queued_event(
         },
         block_hash: None,
         block_number: Some(queued_event.block_number),
-        block_timestamp: None,
+        block_timestamp,
         transaction_hash: Some(queued_event.tx_hash),
         transaction_index: None,
         log_index: Some(queued_event.log_index),
