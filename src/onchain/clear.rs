@@ -14,6 +14,7 @@ use crate::symbol::cache::SymbolCache;
 
 impl OnchainTrade {
     /// Creates OnchainTrade directly from ClearV2 blockchain events
+    #[tracing::instrument(skip_all, fields(tx_hash = ?log.transaction_hash, log_index = ?log.log_index), level = tracing::Level::DEBUG)]
     pub async fn try_from_clear_v2<P: Provider>(
         env: &EvmEnv,
         cache: &SymbolCache,

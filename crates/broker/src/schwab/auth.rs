@@ -726,6 +726,6 @@ mod tests {
             refresh_token: "test_refresh_token".to_string(),
             refresh_token_fetched_at: Utc::now(),
         };
-        tokens.store(pool).await.unwrap();
+        tokens.store(pool, &TEST_ENCRYPTION_KEY).await.unwrap();
     }
 }

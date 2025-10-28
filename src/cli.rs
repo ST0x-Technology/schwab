@@ -1000,6 +1000,7 @@ mod tests {
                 schwab_account_index: 0,
                 encryption_key: TEST_ENCRYPTION_KEY,
             }),
+            hyperdx: None,
         }
     }
 

@@ -22,6 +22,7 @@ use st0x_broker::{Direction, OrderState, Shares, SupportedBroker, Symbol};
 /// was accumulated but didn't trigger an execution (or was a duplicate).
 ///
 /// The transaction must be committed by the caller.
+#[tracing::instrument(skip(sql_tx, trade), fields(symbol = %trade.symbol, amount = %trade.amount, direction = ?trade.direction), level = tracing::Level::INFO)]
 pub async fn process_onchain_trade(
     sql_tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     trade: OnchainTrade,
@@ -460,6 +461,7 @@ async fn clean_up_stale_executions(
 /// to ensure accumulated positions execute even when no new events arrive for those symbols.
 /// It prevents positions from sitting idle indefinitely when they've accumulated
 /// enough shares to execute but the triggering trade didn't push them over the threshold.
+#[tracing::instrument(skip(pool), fields(broker_type = %broker_type), level = tracing::Level::DEBUG)]
 pub async fn check_all_accumulated_positions(
     pool: &SqlitePool,
     broker_type: st0x_broker::SupportedBroker,

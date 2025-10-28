@@ -9,6 +9,7 @@ use crate::symbol::cache::SymbolCache;
 
 impl OnchainTrade {
     /// Creates OnchainTrade directly from TakeOrderV2 blockchain events
+    #[tracing::instrument(skip_all, fields(tx_hash = ?log.transaction_hash, log_index = ?log.log_index), level = tracing::Level::DEBUG)]
     pub async fn try_from_take_order_if_target_owner<P: Provider>(
         cache: &SymbolCache,
         provider: P,
